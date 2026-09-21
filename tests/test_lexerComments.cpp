@@ -88,7 +88,7 @@ namespace {
 const ibLexem* FindIdentifier(const ibCompileCode& cc, const wxString& name)
 {
 	for (const ibLexem& lexem : cc.GetLexems())
-		if (lexem.m_lexType == IDENTIFIER && lexem.m_strData == name)
+		if (lexem.m_lexType == IDENTIFIER && lexem.m_strData.CmpNoCase(name) == 0)   // identifiers are stored upper-cased
 			return &lexem;
 	return nullptr;
 }
