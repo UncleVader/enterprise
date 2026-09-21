@@ -716,7 +716,7 @@ ibValue ibValueModelTable::TotalOf(const wxString& column) const
 		}
 		if (cell.IsEmpty())
 			continue;   // nothing there adds nothing
-		ibBackendCoreException::Error(_("Table column '%s' holds a value that is not a number (row %d)"),
+		ibBackendCoreException::Error(_("Table column '%s' holds a value that is not a number (row %d); a column added without a type holds text - declare it as a Number"),
 			column, static_cast<int>(row + 1));
 	}
 	return ibValue(total);
