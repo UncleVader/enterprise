@@ -190,8 +190,10 @@ bool ibValueModelTable::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 		return true;
 
 	case enFindRows: {
-		const ibValueContainer* const filter = paParams[0] != nullptr ? paParams[0]->ConvertToType<ibValueContainer>() : nullptr;
-		if (filter == nullptr)
+		// ConvertToValue, not ConvertToType: it CHECKS what the argument is (a string handed in by mistake is
+		// answered with the message below), where the raw cast has no way to say "not one of these".
+		ibValueContainer* filter = nullptr;
+		if (paParams[0] == nullptr || !paParams[0]->ConvertToValue(filter))
 			ibBackendCoreException::Error(_("FindRows expects a Structure of column = value"));
 		pvarRetValue = FindRows(*filter);
 		return true;
