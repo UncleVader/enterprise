@@ -77,3 +77,47 @@ TEST(LexerComments, CommentsBetweenStatements_LeaveTheStatementsAlone)
 
 	EXPECT_EQ(with.GetLexemCount(), without.GetLexemCount());
 }
+
+// ---- what the walk reports AFTER comments: the line, and the character/UTF-8 offset ----------------
+//
+// SkipSpaces also keeps the line counter and the UTF-8 offset, and the recursion it lost carried both
+// through the comment's line end. These pin them down: the same numbers the recursive version gave.
+
+namespace {
+
+const ibLexem* FindIdentifier(const ibCompileCode& cc, const wxString& name)
+{
+	for (const ibLexem& lexem : cc.GetLexems())
+		if (lexem.m_lexType == IDENTIFIER && lexem.m_strData.CmpNoCase(name) == 0)   // identifiers are stored upper-cased
+			return &lexem;
+	return nullptr;
+}
+
+} // namespace
+
+TEST(LexerComments, TheLineAfterSeveralComments_IsCountedRight)
+{
+	// four line ends of every kind before `abc`: \n, \r\n (two characters, one line each way it is counted
+	// today), and a tab-indented comment
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.Load(wxT("// one\n// two\n\t// three\n\nabc = 1;"));
+	ASSERT_TRUE(cc.PrepareLexem());
+	const ibLexem* abc = FindIdentifier(cc, wxT("abc"));
+	ASSERT_NE(abc, nullptr);
+	EXPECT_EQ(abc->GetLine(), 5u) << "abc is on the fifth line";
+}
+
+TEST(LexerComments, TheOffsetsAfterAComment_PointAtTheStatement_InCharactersAndInUtf8)
+{
+	const wxString source = wxString::FromUTF8("// \xD1\x82\xD0\xB5\xD0\xBA\xD1\x81\xD1\x82\n// \xD0\xB5\xD1\x89\xD1\x91\nabc = 1;");   // two Cyrillic comment lines
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.Load(source);
+	ASSERT_TRUE(cc.PrepareLexem());
+	const ibLexem* abc = FindIdentifier(cc, wxT("abc"));
+	ASSERT_NE(abc, nullptr);
+
+	const size_t character = source.Find(wxT("abc"));
+	EXPECT_EQ(abc->m_numString, character) << "character offset";
+	const wxString before = source.Left(character);
+	EXPECT_EQ(abc->m_numUtf8String, static_cast<unsigned int>(before.ToUTF8().length())) << "UTF-8 byte offset";
+}
