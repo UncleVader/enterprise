@@ -149,6 +149,7 @@ add_executable(oes_tests
     test_sectionInterfaceItems.cpp
     test_socketLock.cpp
     test_typeFamilyAdjust.cpp
+    test_metadataMove.cpp
 )
 
 target_link_libraries(oes_tests
