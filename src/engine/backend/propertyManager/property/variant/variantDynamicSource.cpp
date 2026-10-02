@@ -6,12 +6,23 @@
 #include "backend/query/queryable.h"              // GetQueryTableId / GetQueryName
 #include "backend/propertyManager/propertyObject.h"   // ibPropertyObject::GetMetaData
 
+// The configuration this cell re-resolves through. A metadata-backed source names its own — that is where
+// RegisterSource put it. The property owner's GetMetaData() is the form, or, for a list that is not attached
+// yet, the ACTIVE configuration. Those are different objects whenever the list was built against a
+// configuration that is not the process-wide one, and ResolveById on the wrong factory answers null.
+// RunComposerPage then returns an empty page without sending SQL.
+static const ibMetaData* ibVariantConfig(const ibBackendQueryable* queryable, const ibPropertyObject* owner)
+{
+	if (queryable != nullptr) {
+		if (const ibMetaData* md = queryable->GetMetaData())
+			return md;
+	}
+	return owner != nullptr ? owner->GetMetaData() : nullptr;
+}
+
 ibVariantDataDynamicSource::ibVariantDataDynamicSource(const ibBackendQueryable* queryable, const ibPropertyObject* owner)
 	: wxVariantData(), m_tableId(queryable != nullptr ? (ibMetaID)queryable->GetQueryTableId() : wxNOT_FOUND),
-	// Resolve the owner's SPECIFIC config ONCE, here, and keep the metadata — NOT the owner pointer (which, for a
-	// form-attribute's transient dynamic list, dangles once the list is re-materialised). (CONST owner: the non-const
-	// GetMetaData wxFAILs.)
-	  m_metaData(owner != nullptr ? owner->GetMetaData() : nullptr)
+	  m_metaData(ibVariantConfig(queryable, owner))
 {
 }
 

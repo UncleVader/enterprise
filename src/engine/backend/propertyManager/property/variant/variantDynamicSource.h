@@ -19,11 +19,12 @@ class BACKEND_API ibMetaData;
 class BACKEND_API ibVariantDataDynamicSource : public wxVariantData {
 public:
 
-	// `owner` = the property object this cell belongs to; at construction we resolve owner→GetMetaData() ONCE and
-	// keep the SPECIFIC config (each metadata owns its own queryable set — the queryable lives in the config where
-	// it was created, never in a global/active one). We keep the METADATA, not the owner pointer: a form-attribute's
-	// dynamic list is TRANSIENT (re-materialised on a Type change) while the grid's display cell (a COPY) outlives
-	// it — storing the owner would then dangle and crash on the next paint. The config metadata outlives the list.
+	// `owner` is the property object this cell belongs to. The config we keep is the one the QUERYABLE names
+	// (each metadata owns its own queryable set — the source lives where it was created, never in whichever
+	// configuration happens to be active). The owner is only the fallback, for a source that names no
+	// configuration. We keep the METADATA, not the owner pointer: a form-attribute's dynamic list is TRANSIENT
+	// (re-materialised on a Type change) while the grid's display cell (a COPY) outlives it — storing the owner
+	// would then dangle and crash on the next paint. The config metadata outlives the list.
 	ibVariantDataDynamicSource(const ibBackendQueryable* queryable = nullptr, const ibPropertyObject* owner = nullptr);
 	ibVariantDataDynamicSource(const ibVariantDataDynamicSource& src)
 		: wxVariantData(), m_tableId(src.m_tableId), m_metaData(src.m_metaData) {}

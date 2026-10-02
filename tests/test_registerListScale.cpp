@@ -13,7 +13,8 @@
 // submodule is private). The register is built here, the same way the
 // metadata tests build a catalog: a document GoodsReceipt and an accumulation
 // register Goods (Warehouse, Item, Quantity), schema applied through
-// BuildSchemaSnapshot + ibStructureBuilder::Recreate, then a prepared INSERT
+// BuildSchemaSnapshot + the create-all save, then RunDatabase so the
+// register's queryable is in that configuration's factory, then a prepared INSERT
 // of 10 000 documents x 100 lines. Totals triggers are dropped after DDL —
 // the list reads movements, and maintaining totals is not what this measures.
 //
@@ -58,6 +59,7 @@
 #include "backend/propertyManager/property/propertyBoolean.h"
 #include "backend/propertyManager/property/propertyEnum.h"
 #include "backend/query/queryColumn.h"
+#include "backend/query/schemaSnapshot.h"
 #include "backend/query/structureBuilder.h"
 #include "backend/system/value/valueDynamicList.h"
 #include "backend/tabularModel.h"
@@ -175,8 +177,9 @@ struct Report {
 		out << "is `(document + line) % 20`; item is `(document * 3 + line) % 50`;\n";
 		out << "quantity is `1 + ((document * 100 + line) % 500)` so the range is 1..500.\n";
 		out << "Warehouse 7 therefore matches 5 lines of every document.\n\n";
-		out << "Schema is `BuildSchemaSnapshot` plus `ibStructureBuilder::Recreate` on a\n";
-		out << "file SQLite database (`" << dbPath << "`). Physical table: `" << table << "`.\n";
+		out << "Schema is `BuildSchemaSnapshot` plus the create-all save (`OnSave` from an\n";
+		out << "empty baseline) on a file SQLite database (`" << dbPath << "`).\n";
+		out << "Physical table: `" << table << "`.\n";
 		out << "Split totals is off, and every SQLite trigger is dropped after DDL, so\n";
 		out << "the insert does not maintain balance or turnover tables. The list does\n";
 		out << "not read those tables. Totals upkeep is out of scope.\n\n";
@@ -224,6 +227,18 @@ struct Report {
 		out << "   order and that the next page continues it.\n";
 		out << "5. Open the filter and restrict Warehouse, Quantity and Period. The grid\n";
 		out << "   must show only matching rows, and an impossible value must show an empty list.\n\n";
+		out << "## Defects\n\n";
+		out << "SQLite bound every number as a double and read a 64-bit integer back through\n";
+		out << "`sqlite3_column_int`. A reference class id near 2^60 does not survive that, and\n";
+		out << "a register list keys its page on the recorder reference. Integer values now bind\n";
+		out << "and read as integers; a fraction still goes through the double path.\n\n";
+		out << "A dynamic list remembered its source as a table id and resolved that id through\n";
+		out << "the property owner's configuration. A list that is not on a form answers with the\n";
+		out << "active configuration, which is a different object from the one that registered the\n";
+		out << "register. The resolve missed, `GetSourceQueryable()` was null, and the first page\n";
+		out << "came back empty in a fraction of a millisecond with no error. The cell now keeps\n";
+		out << "the configuration the queryable itself names. The configuration still has to be\n";
+		out << "run (`RunDatabase`) so the source is registered; this harness does that after DDL.\n\n";
 		out << "Dragging the scrollbar to the end is not implemented. `datavgen.cpp` says so:\n";
 		out << "a snap to the bottom would need N forward fetches, and there is no model API\n";
 		out << "for the last batch. That waits on async fetch. It is not fixed here.\n\n";
@@ -488,13 +503,43 @@ TEST(RegisterListScale, MillionMovementsNavigateFilterSort) {
 	const auto schemaT0 = std::chrono::steady_clock::now();
 	try {
 		ibStructureBuilder builder;
-		builder.Recreate(cfg.BuildSchemaSnapshot());
+		// Recreate drops every declared table first. A fresh file has none of them, so
+		// that drop is "no such table". The first apply of a configuration is the
+		// create-all save: an empty baseline.
+		const ibSchemaSnapshot snapshot = cfg.BuildSchemaSnapshot();
+		if (!builder.OnBeforeSave()) {
+			fail(wxT("schema transaction did not open"));
+			return;
+		}
+		try {
+			builder.OnSave(nullptr, snapshot);
+			builder.OnAfterSave(false);
+		}
+		catch (...) {
+			try { builder.OnAfterSave(true); } catch (...) {}
+			throw;
+		}
 	}
 	catch (...) {
-		fail(wxT("schema recreate failed: ") + CatchText());
+		fail(wxT("schema create failed: ") + CatchText());
 		return;
 	}
 	report.schemaMs = MsSince(schemaT0);
+
+	// The list re-resolves its source through the configuration's factory. That
+	// factory exists only while the configuration is open, and the register
+	// registers its queryable in OnAfterRun. Creating the metaobjects is not enough.
+	if (!cfg.RunDatabase()) {
+		fail(wxT("configuration did not run"));
+		return;
+	}
+	struct CloseRun {
+		ibMetaDataConfigurationFile* cfg;
+		~CloseRun() {
+			if (cfg != nullptr && cfg->IsConfigOpen())
+				cfg->CloseDatabase(forceCloseFlag);
+		}
+	} closeRun{&cfg};
 
 	std::vector<wxString> triggers;
 	{
@@ -696,6 +741,14 @@ TEST(RegisterListScale, MillionMovementsNavigateFilterSort) {
 	ids.recorder  = reg->GetRegisterRecorder()->GetMetaID();
 
 	const ibBackendQueryable* queryable = reg->GetQueryable();
+	{
+		std::unique_ptr<ibValueDynamicList> probe(
+			ibCreateList(queryable, reg->GetRegisterPeriod()->GetQueryColumn()));
+		if (probe == nullptr || probe->GetSourceQueryable() == nullptr) {
+			fail(wxT("list source did not resolve"));
+			return;
+		}
+	}
 	auto consider = [&](Scenario s) {
 		std::fprintf(stderr, "%s  rows=%d  ms=%.1f  %s\n",
 			s.name.c_str(), s.rows, s.ms, s.ok ? "ok" : "FAIL");
@@ -864,9 +917,13 @@ TEST(RegisterListScale, MillionMovementsNavigateFilterSort) {
 			return true;
 		});
 
-	const wxDateTime late = dates[700];
+	// Day 700 is inside a million-row load (10 000 documents walk the 730-day cycle).
+	// A shorter load only reaches document-count days, so the bound stays inside the data.
+	const int boundDay = std::min(700, static_cast<int>(documents) - 1);
+	const wxDateTime late = dates[static_cast<size_t>(boundDay)];
 	const long long lateKey = ibValue(late).GetDate();
-	filtered(wxT("Filter Period >= day 700"), reg->GetRegisterPeriod()->GetName(), wxT(">="), ibValue(late),
+	filtered(wxString::Format(wxT("Filter Period >= day %d"), boundDay),
+		reg->GetRegisterPeriod()->GetName(), wxT(">="), ibValue(late),
 		[&](const Page& page, std::string& why) {
 			if (page.rows.empty()) {
 				why = "the seek matched nothing";
