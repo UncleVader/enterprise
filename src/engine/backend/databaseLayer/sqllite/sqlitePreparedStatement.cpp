@@ -3,6 +3,7 @@
 #include "sqliteDatabaseLayer.h"
 
 #include "backend/databaseLayer/databaseErrorCodes.h"
+#include "backend/fnumber.h"   // ibNumber::ToInt — exact integer bind below
 
 // ctor
 ibPreparedStatementSQLite::ibPreparedStatementSQLite(sqlite3* pDatabase)
@@ -104,7 +105,17 @@ void ibPreparedStatementSQLite::SetParamNumber(int nPosition, const ibNumber &db
 	if (nIndex > -1)
 	{
 		sqlite3_reset(m_Statements[nIndex]);
-		int nReturn = sqlite3_bind_double(m_Statements[nIndex], nPosition, dblValue.ToDouble());
+		// ⭐ AN INTEGER IS NOT A DOUBLE. sqlite3_bind_double keeps 53 bits of mantissa.
+		// A reference clsid lives near 2^60 (the kind in the high byte), where the unit in
+		// the last place is 256, so the stored class is a different one and the keyset
+		// built from it no longer names the row. Bind an exact int64 when the value is one;
+		// a fraction still goes through double, which is what this driver always did.
+		int nReturn = SQLITE_OK;
+		long long asInt = 0;
+		if (dblValue.ToInt(asInt) == 0 && ibNumber(asInt) == dblValue)
+			nReturn = sqlite3_bind_int64(m_Statements[nIndex], nPosition, static_cast<sqlite3_int64>(asInt));
+		else
+			nReturn = sqlite3_bind_double(m_Statements[nIndex], nPosition, dblValue.ToDouble());
 		if (nReturn != SQLITE_OK)
 		{
 			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));

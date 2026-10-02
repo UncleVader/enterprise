@@ -5,6 +5,7 @@
 
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "backend/databaseLayer/databaseErrorCodes.h"
+#include "backend/fnumber.h"   // ibNumber(long long) — exact INTEGER read
 
 // ctor
 ibDatabaseResultSetSQLite::ibDatabaseResultSetSQLite()
@@ -103,12 +104,12 @@ wxString ibDatabaseResultSetSQLite::GetResultString(int nField)
 
 long long ibDatabaseResultSetSQLite::GetResultLong(int nField)
 {
-	long long nValue = -1;
 	if (m_pSqliteStatement == nullptr)
 		m_pSqliteStatement = m_pStatement->GetLastStatement();
-	nValue = sqlite3_column_int(m_pSqliteStatement, nField - 1);
-
-	return nValue;
+	// ⭐ THE COLUMN IS 64 BITS. sqlite3_column_int returns the low 32, so a reference
+	// clsid (kind in the high byte, ~2^60) came back as its metaID alone and the row
+	// was read as a different type. The signature is long long; the read matches it.
+	return static_cast<long long>(sqlite3_column_int64(m_pSqliteStatement, nField - 1));
 }
 
 bool ibDatabaseResultSetSQLite::GetResultBool(int nField)
@@ -157,12 +158,14 @@ double ibDatabaseResultSetSQLite::GetResultDouble(int nField)
 
 ibNumber ibDatabaseResultSetSQLite::GetResultNumber(int nField)
 {
-	ibNumber dblValue = -1;
 	if (m_pSqliteStatement == nullptr)
 		m_pSqliteStatement = m_pStatement->GetLastStatement();
-	dblValue = sqlite3_column_double(m_pSqliteStatement, nField - 1);
-
-	return dblValue;
+	const int col = nField - 1;
+	// An INTEGER cell is an exact int64 (see SetParamNumber). Reading it back through
+	// sqlite3_column_double would round the same clsid the bind just stopped rounding.
+	if (sqlite3_column_type(m_pSqliteStatement, col) == SQLITE_INTEGER)
+		return ibNumber(static_cast<long long>(sqlite3_column_int64(m_pSqliteStatement, col)));
+	return ibNumber(sqlite3_column_double(m_pSqliteStatement, col));
 }
 
 void* ibDatabaseResultSetSQLite::GetResultBlob(int nField, wxMemoryBuffer& buffer)
