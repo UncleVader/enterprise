@@ -55,6 +55,7 @@ add_executable(oes_tests
     test_firebirdBatchInsert.cpp
     test_logger.cpp
     test_dbTaxonomy.cpp
+    test_sqliteExactInteger.cpp
     test_gitService.cpp
     test_metadataSerialize.cpp
     test_metadataPasteIdentity.cpp
@@ -367,6 +368,37 @@ set_target_properties(oes_temp_db_sqlite_test PROPERTIES
 )
 
 oes_discover_tests(oes_temp_db_sqlite_test)
+
+# ---------------------------------------------------------------------------
+# Million-row accumulation-register list. NOT discovered: ctest's 300s budget
+# and the CI target list must not grow a manual stress binary. Run it by name:
+#   cmake --build build/linux-release --target oes_register_list_scale
+#   ./build/linux-release/bin/Release/oes_register_list_scale
+# OES_REGISTER_ROWS (default 1000000), OES_REGISTER_DB, OES_REGISTER_REPORT.
+# ---------------------------------------------------------------------------
+add_executable(oes_register_list_scale test_registerListScale.cpp)
+
+target_link_libraries(oes_register_list_scale
+    PRIVATE
+        backend
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(oes_register_list_scale PRIVATE OES_TESTING)
+
+target_include_directories(oes_register_list_scale PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/src/engine"
+    "${CMAKE_SOURCE_DIR}/src/engine/backend"
+)
+
+set_target_properties(oes_register_list_scale PROPERTIES
+    CXX_STANDARD          17
+    CXX_STANDARD_REQUIRED ON
+    BUILD_RPATH            "${CMAKE_BINARY_DIR}/bin"
+    INSTALL_RPATH          "${CMAKE_BINARY_DIR}/bin"
+)
 
 # ---------------------------------------------------------------------------
 # Rented background runs (ibJobTenancy::Tenant) — integration scope.

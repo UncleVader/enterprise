@@ -3,6 +3,7 @@
 #include "sqliteDatabaseLayer.h"
 
 #include "backend/databaseLayer/databaseErrorCodes.h"
+#include "backend/fnumber.h"   // ibNumber::ToInt — exact integer bind below
 
 // ctor
 ibPreparedStatementSQLite::ibPreparedStatementSQLite(sqlite3* pDatabase)
@@ -104,7 +105,17 @@ void ibPreparedStatementSQLite::SetParamNumber(int nPosition, const ibNumber &db
 	if (nIndex > -1)
 	{
 		sqlite3_reset(m_Statements[nIndex]);
-		int nReturn = sqlite3_bind_double(m_Statements[nIndex], nPosition, dblValue.ToDouble());
+		// ⭐ AN INTEGER IS NOT A DOUBLE. sqlite3_bind_double keeps 53 bits of mantissa.
+		// A reference clsid lives near 2^60 (the kind in the high byte), where the unit in
+		// the last place is 256, so the stored class is a different one and the keyset
+		// built from it no longer names the row. Bind an exact int64 when the value is one;
+		// a fraction still goes through double, which is what this driver always did.
+		int nReturn = SQLITE_OK;
+		long long asInt = 0;
+		if (dblValue.ToInt(asInt) == 0 && ibNumber(asInt) == dblValue)
+			nReturn = sqlite3_bind_int64(m_Statements[nIndex], nPosition, static_cast<sqlite3_int64>(asInt));
+		else
+			nReturn = sqlite3_bind_double(m_Statements[nIndex], nPosition, dblValue.ToDouble());
 		if (nReturn != SQLITE_OK)
 		{
 			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
@@ -159,7 +170,12 @@ void ibPreparedStatementSQLite::SetParamBlob(int nPosition, const void* pData, l
 	if (nIndex > -1)
 	{
 		sqlite3_reset(m_Statements[nIndex]);
-		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_STATIC);
+		// ⭐ COPY THE BYTES. SQLITE_STATIC would keep this pointer, and the query layer
+		// steps the statement only when the caller reads the cursor — after the rendered
+		// query, and the buffer it owned, have already gone. A keyset page that ties on a
+		// reference then compares a dead blob and skips every row that shared the sort
+		// value. Text and dates already copy (SQLITE_TRANSIENT); a blob has to as well.
+		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_TRANSIENT);
 		if (nReturn != SQLITE_OK)
 		{
 			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));

@@ -38,7 +38,7 @@ public:
 		return get_cell_variant<ibVariantDataDynamicSource>()->GetDescriptor();
 	}
 	void SetQueryable(const ibBackendQueryable* queryable) {
-		m_propValue = new ibVariantDataDynamicSource(queryable, m_owner);   // owner → re-resolve through ITS config factory
+		m_propValue = new ibVariantDataDynamicSource(queryable, m_owner);   // keeps the queryable's config; owner only if the source names none
 	}
 
 	// ⭐ THE SOURCE AS THE ID IT IS — see the variant. Reading and writing both go through this, so a
