@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include <wx/init.h>
 
 #include "backend/clsid.h"
@@ -88,4 +90,34 @@ TEST_F(SqliteExactIntegerFix, FractionStillRoundTrips) {
 	ASSERT_NE(rs, nullptr);
 	EXPECT_EQ(rs->GetResultNumber(1), half);
 	db.CloseResultSet(rs);
+}
+
+// The cursor steps when it is read, not when it is created. A blob bound from
+// a buffer the caller then reuses must still be the bytes that were bound —
+// the keyset hands the recorder guid over this way, and the rendered query
+// is already gone by the time the first row is fetched.
+TEST_F(SqliteExactIntegerFix, BlobBindingOutlivesTheCallerBuffer) {
+	db.RunQuery(wxT("CREATE TABLE b (id INTEGER PRIMARY KEY, g BLOB)"));
+	const unsigned char stored[16] = {
+		0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01 };
+	ibPreparedStatement* ins = db.PrepareStatement(wxT("INSERT INTO b (id, g) VALUES (?, ?)"));
+	ASSERT_NE(ins, nullptr);
+	ins->SetParamInt(1, 1);
+	ins->SetParamBlob(2, stored, 16);
+	ins->RunQuery();
+	db.CloseStatement(ins);
+
+	ibPreparedStatement* st = db.PrepareStatement(wxT("SELECT id FROM b WHERE g = ?"));
+	ASSERT_NE(st, nullptr);
+	unsigned char buf[16];
+	std::memcpy(buf, stored, 16);
+	st->SetParamBlob(1, buf, 16);
+	std::memset(buf, 0xFF, 16);
+
+	ibDatabaseResultSet* rs = st->RunQueryWithResults();
+	ASSERT_NE(rs, nullptr);
+	ASSERT_TRUE(rs->Next()) << "the bound blob was compared after its buffer was reused";
+	EXPECT_EQ(rs->GetResultLong(1), 1);
+	db.CloseResultSet(rs);
+	db.CloseStatement(st);
 }

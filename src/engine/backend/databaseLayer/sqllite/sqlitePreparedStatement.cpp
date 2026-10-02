@@ -170,7 +170,12 @@ void ibPreparedStatementSQLite::SetParamBlob(int nPosition, const void* pData, l
 	if (nIndex > -1)
 	{
 		sqlite3_reset(m_Statements[nIndex]);
-		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_STATIC);
+		// ⭐ COPY THE BYTES. SQLITE_STATIC would keep this pointer, and the query layer
+		// steps the statement only when the caller reads the cursor — after the rendered
+		// query, and the buffer it owned, have already gone. A keyset page that ties on a
+		// reference then compares a dead blob and skips every row that shared the sort
+		// value. Text and dates already copy (SQLITE_TRANSIENT); a blob has to as well.
+		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_TRANSIENT);
 		if (nReturn != SQLITE_OK)
 		{
 			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));

@@ -239,6 +239,10 @@ struct Report {
 		out << "came back empty in a fraction of a millisecond with no error. The cell now keeps\n";
 		out << "the configuration the queryable itself names. The configuration still has to be\n";
 		out << "run (`RunDatabase`) so the source is registered; this harness does that after DDL.\n\n";
+		out << "SQLite bound a blob with `SQLITE_STATIC`, and the cursor steps when the caller\n";
+		out << "reads it, after that buffer is gone. A page that ties on a reference — many\n";
+		out << "movements share a period — compared a dead guid and jumped to the next distinct\n";
+		out << "sort value. The binder now copies the bytes, the same way it already copies text.\n\n";
 		out << "Dragging the scrollbar to the end is not implemented. `datavgen.cpp` says so:\n";
 		out << "a snap to the bottom would need N forward fetches, and there is no model API\n";
 		out << "for the last batch. That waits on async fetch. It is not fixed here.\n\n";
@@ -841,10 +845,19 @@ TEST(RegisterListScale, MillionMovementsNavigateFilterSort) {
 			back.ok = prevPage.error.empty() && prevPage.rows.size() == page.rows.size()
 				&& prevPage.rows.front() == page.rows.front()
 				&& prevPage.rows.back() == page.rows.back();
+			auto brief = [](const Sig& s) {
+				return "p=" + std::to_string(s.period) + " line=" + std::to_string(s.line)
+					+ " wh=" + std::to_string(s.warehouse) + " item=" + std::to_string(s.item);
+			};
 			if (!prevPage.error.empty())
 				back.note = std::string(prevPage.error.ToUTF8());
-			else if (!back.ok)
-				back.note = "the page before the second page is not the first page";
+			else if (!back.ok) {
+				back.note = "the page before the second page is not the first page. page1 "
+					+ brief(page.rows.front()) + " .. " + brief(page.rows.back())
+					+ "; page2 " + brief(second.rows.front()) + " .. " + brief(second.rows.back())
+					+ "; back " + brief(prevPage.rows.empty() ? Sig{} : prevPage.rows.front())
+					+ " .. " + brief(prevPage.rows.empty() ? Sig{} : prevPage.rows.back());
+			}
 			consider(std::move(back));
 		}
 	}
