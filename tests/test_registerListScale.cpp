@@ -157,9 +157,9 @@ struct Report {
 		out << "```bash\n";
 		out << "cmake --preset linux-release -DBUILD_TESTING=ON\n";
 		out << "cmake --build build/linux-release --target oes_register_list_scale -j 2\n";
-		out << "OES_REGISTER_ROWS=1000000 \\\\\n";
-		out << "OES_REGISTER_DB=/tmp/oes-goods-movements.db \\\\\n";
-		out << "OES_REGISTER_REPORT=tests/register-list-scale-report.md \\\\\n";
+		out << "OES_REGISTER_ROWS=1000000 \\\n";
+		out << "OES_REGISTER_DB=/tmp/oes-goods-movements.db \\\n";
+		out << "OES_REGISTER_REPORT=tests/register-list-scale-report.md \\\n";
 		out << "  ./build/linux-release/bin/Release/oes_register_list_scale\n";
 		out << "```\n\n";
 		out << "The binary is not registered with ctest. `OES_REGISTER_ROWS` is rounded\n";
