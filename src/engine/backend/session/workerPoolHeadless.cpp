@@ -555,9 +555,19 @@ void ibWorkerPoolHeadless::WorkerLoop()
 
 void ibWorkerPoolHeadless::Stop()
 {
+	// The destructor calls Stop again. By then the caller has usually
+	// destroyed the sessions, and the map still holds their pointers.
+	// Cancelling them a second time is a use-after-free. The first call
+	// did the cancel and the drain.
+	if (m_stop.exchange(true, std::memory_order_acq_rel)) {
+		std::unique_lock<std::mutex> lk(m_stopMtx);
+		m_stopCv.wait(lk, [this] {
+			return m_aliveWorkers.load(std::memory_order_acquire) == 0;
+		});
+		return;
+	}
 	{
 		std::unique_lock<std::mutex> lk(m_mtx);
-		m_stop.store(true);
 		// CANCEL EVERY KNOWN SESSION. m_stop alone is only read
 		// between tasks — a task already running reads nothing, and a task
 		// that blocks for minutes (the Firebird maintenance poll) turns
