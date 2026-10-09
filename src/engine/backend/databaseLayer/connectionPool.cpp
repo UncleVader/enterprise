@@ -6,6 +6,32 @@
 #include "connectionScope.h"
 #include "databaseLayer.h"
 #include "backend/diagnostics/journal.h"   // ibJournalInfo — what an interruption found to interrupt
+#include "backend/session/fiberLocals.h"   // per-fiber db_query pin — see ThreadHolder
+
+namespace {
+
+// The pool keys a transaction reservation by the HOLDER'S ADDRESS
+// (ReserveTx / GetReservedTx). Copying the bytes of ts_holder onto a
+// fiber snapshot would not move the pin: the next session on this
+// thread would still be the same object, and would see — or release —
+// the parked question's transaction. Each fiber therefore owns a
+// holder, and this pointer says which one ThreadHolder() returns.
+// Null means the scheduler, which keeps the per-thread holder below.
+thread_local ibDatabaseConnectionHolder* t_activeHolder = nullptr;
+
+struct ibRegisterHolderLocal {
+	ibRegisterHolderLocal()
+	{
+		ibFiberLocals::RegisterOwned(
+			[]() -> void* { return new ibSingleConnectionHolder; },
+			[](void* p) { delete static_cast<ibSingleConnectionHolder*>(p); },
+			[](void* p) { t_activeHolder = static_cast<ibDatabaseConnectionHolder*>(p); });
+	}
+};
+
+const ibRegisterHolderLocal s_registerHolderLocal;
+
+} // namespace
 
 ibDatabaseConnectionHolder* ibConnectionPool::ThreadHolder()
 {
@@ -15,7 +41,12 @@ ibDatabaseConnectionHolder* ibConnectionPool::ThreadHolder()
 	// independent pool connections rather than serialising on one singleton.
 	// Block-local thread_local static guarantees zero-init on first use per
 	// thread, no global ctor ordering.
+	//
+	// A fiber parked on a question installs its own holder (t_activeHolder)
+	// so the pin stays with the question while this thread runs someone else.
 	static thread_local ibSingleConnectionHolder ts_holder;
+	if (t_activeHolder != nullptr)
+		return t_activeHolder;
 	return &ts_holder;
 }
 

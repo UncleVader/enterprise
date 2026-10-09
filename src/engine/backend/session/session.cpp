@@ -10,7 +10,9 @@
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/appData.h"
 #include "workerPool.h"
+#include "fiberLocals.h"
 
+#include <new>
 #include <utility>
 #include <chrono>
 #include <shared_mutex>
@@ -482,6 +484,53 @@ namespace {
 // next observation — no UAF.
 std::shared_mutex s_currentMutex;
 std::unordered_map<std::thread::id, std::weak_ptr<ibSession>> s_currentByThread;
+
+// The map slot is one per OS thread, and a parked fiber shares that
+// thread with the next session. ibSessionScope saves its previous
+// binding on the fiber stack, which is right for a single stack and
+// wrong once two fibers interleave: the scope would restore whichever
+// binding happened to be current when it was entered. The snapshot
+// below is the map entry itself, swapped with the fiber.
+void SaveSessionBinding(void* dst)
+{
+	auto* slot = static_cast<std::weak_ptr<ibSession>*>(dst);
+	const auto tid = std::this_thread::get_id();
+	std::shared_lock<std::shared_mutex> lk(s_currentMutex);
+	auto it = s_currentByThread.find(tid);
+	if (it != s_currentByThread.end())
+		*slot = it->second;
+	else
+		slot->reset();
+}
+
+void RestoreSessionBinding(const void* src)
+{
+	const auto* slot = static_cast<const std::weak_ptr<ibSession>*>(src);
+	const auto tid = std::this_thread::get_id();
+	std::unique_lock<std::shared_mutex> lk(s_currentMutex);
+	// expired() is also true of an empty slot. Either way the thread
+	// has no live session, and leaving a dead weak_ptr in the map is
+	// how a later Current() would observe a session that is gone.
+	if (slot->expired())
+		s_currentByThread.erase(tid);
+	else
+		s_currentByThread[tid] = *slot;
+}
+
+struct ibRegisterBindingLocal {
+	ibRegisterBindingLocal()
+	{
+		ibFiberLocals::Register(
+			sizeof(std::weak_ptr<ibSession>),
+			alignof(std::weak_ptr<ibSession>),
+			[](void* p) { new (p) std::weak_ptr<ibSession>(); },
+			[](void* p) { static_cast<std::weak_ptr<ibSession>*>(p)->~weak_ptr(); },
+			&SaveSessionBinding,
+			&RestoreSessionBinding);
+	}
+};
+
+const ibRegisterBindingLocal s_registerBindingLocal;
 
 } // namespace
 

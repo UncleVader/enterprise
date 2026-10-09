@@ -5,6 +5,7 @@
 
 #include "procUnit.h"
 #include "procUnitLambda.h"    // ibValueIterator / ibValueFunction / AsFunction / AsIterator
+#include "session/fiberLocals.h"   // ts_threeValuedNullCompare travels with the fiber
 
 #include "debugger/debugServer.h"
 #include "system/systemManager.h"
@@ -834,6 +835,24 @@ inline void ModValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 
 // Definition of the LINQ-filter three-valued NULL flag (declared in procUnitLambda.h).
 thread_local bool ts_threeValuedNullCompare = false;
+
+namespace {
+
+// ScopedThreeValuedNull sets this around one filter and restores it on
+// the way out. Two fibers on one thread do not nest, so the restore
+// would hand the parked filter's flag to the session that runs next.
+struct ibRegisterThreeValuedLocal {
+	ibRegisterThreeValuedLocal()
+	{
+		ibFiberLocals::RegisterTrivial<bool>(
+			[](void* dst) { *static_cast<bool*>(dst) = ts_threeValuedNullCompare; },
+			[](const void* src) { ts_threeValuedNullCompare = *static_cast<const bool*>(src); });
+	}
+};
+
+const ibRegisterThreeValuedLocal s_registerThreeValuedLocal;
+
+} // namespace
 
 
 // SQL three-valued NULL: in a filter, a comparison with a NULL operand yields UNKNOWN

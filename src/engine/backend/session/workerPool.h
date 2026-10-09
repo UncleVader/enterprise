@@ -12,9 +12,10 @@
 //
 // Concrete backends:
 //   - ibWorkerPoolHeadless (in this directory): N threads, per-session
-//     queue + lease, blocking workers wait on a CV. Suitable for
-//     wenterprise-server.exe and the future oes-server.exe compute
-//     server.
+//     queue + lease. A task that waits on a person (Await) is a fiber
+//     pinned to its worker; the OS thread keeps serving other sessions.
+//     Suitable for wenterprise-server.exe and the future oes-server.exe
+//     compute server.
 //   - ibWorkerPoolGUI (frontend/session/workerPoolGUI.{h,cpp}): wraps
 //     wxTheApp's CallAfter so tasks run on the wx main thread. Implemented,
 //     but NOT auto-installed — the desktop still runs script on the wx main
@@ -62,7 +63,28 @@ public:
 	// Drain queues, signal workers to stop, join. Idempotent. Pending
 	// tasks at the time of Stop run to completion before workers exit
 	// — the pool acts as an actor-system shutdown, not a force-kill.
+	// A fiber parked in Await is resumed so it can unwind; it does not
+	// stay parked across shutdown.
 	virtual void Stop() = 0;
+
+	// Park the calling task until `done` returns true. Cancellation
+	// (ibRunCancelled on the task's session, or Stop) throws
+	// ibBackendInterruptException on the waiting task's stack, before
+	// `done` is consulted again and before any task queued behind the
+	// waiter is run under it.
+	//
+	// On the headless pool the waiter is a stackful fiber pinned to the
+	// worker that started it, and the OS thread is free to run other
+	// sessions. Wake resumes that session's fiber on its home thread so
+	// it can re-check `done`. A question asked from a task that itself
+	// ran while an outer question was waiting is a nested Await on the
+	// same fiber: the outer frame cannot return before the inner one.
+	//
+	// Called from a task this pool is running. The base implementation
+	// throws — the GUI pool does not park fibers (desktop questions are
+	// modal on the UI thread, and that pool is out of this change).
+	virtual void Await(std::function<bool()> done);
+	virtual void Wake(ibSession* session);
 };
 
 #endif

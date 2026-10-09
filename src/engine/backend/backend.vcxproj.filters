@@ -876,6 +876,12 @@
     <ClInclude Include="session\designerExclusivePolicy.h">
       <Filter>session</Filter>
     </ClInclude>
+    <ClInclude Include="session\fiber.h">
+      <Filter>session</Filter>
+    </ClInclude>
+    <ClInclude Include="session\fiberLocals.h">
+      <Filter>session</Filter>
+    </ClInclude>
     <ClInclude Include="session\workerPool.h">
       <Filter>session</Filter>
     </ClInclude>
@@ -2252,6 +2258,15 @@
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\designerExclusivePolicy.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\fiber.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\fiberLocals.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\workerPool.cpp">
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\workerPoolHeadless.cpp">

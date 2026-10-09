@@ -12,6 +12,7 @@
 #include "backend/backend_exception.h"
 #include "backend/system/systemManager.h"          // WriteJournalEvent - the run's own record
 #include "backend/diagnostics/journal.h"            // ibJournalInfo - the engine's account of a cancel
+#include "backend/session/fiberLocals.h"            // t_currentRun travels with the fiber
 
 #include <wx/log.h>
 
@@ -57,6 +58,21 @@ struct ibBackgroundLaunch {
 
 // THE RUN THIS THREAD IS DOING — set around its body (ibCurrentRun), read by ibBackgroundRun::Current.
 thread_local ibBackgroundRun* t_currentRun = nullptr;
+
+// ibCurrentRun saves the previous pointer on the C++ stack. A fiber
+// parked under a question leaves that stack behind, so the pointer has
+// to be swapped with the fiber or the next session on this thread
+// answers Current() with somebody else's run.
+struct ibRegisterCurrentRun {
+	ibRegisterCurrentRun()
+	{
+		ibFiberLocals::RegisterTrivial<ibBackgroundRun*>(
+			[](void* dst) { *static_cast<ibBackgroundRun**>(dst) = t_currentRun; },
+			[](const void* src) { t_currentRun = *static_cast<ibBackgroundRun* const*>(src); });
+	}
+};
+
+const ibRegisterCurrentRun s_registerCurrentRun;
 
 struct ibCurrentRun {
 	ibBackgroundRun* const m_previous;
