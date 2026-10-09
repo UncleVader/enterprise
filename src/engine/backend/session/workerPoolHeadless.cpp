@@ -77,7 +77,7 @@ void ibWorkerPoolHeadless::RegisterFiberLocals()
 		return;
 	ibFiberLocals::RegisterTrivial<ibSession*>(
 		[](void* dst) { *static_cast<ibSession**>(dst) = tl_currentLease; },
-		[](const void* src) { tl_currentLease = *static_cast<const ibSession**>(src); });
+		[](const void* src) { tl_currentLease = *static_cast<ibSession* const*>(src); });
 	ibFiberLocals::RegisterTrivial<ibSessionQueue*>(
 		[](void* dst) { *static_cast<ibSessionQueue**>(dst) = tl_currentQueue; },
 		[](const void* src) { tl_currentQueue = *static_cast<ibSessionQueue* const*>(src); });

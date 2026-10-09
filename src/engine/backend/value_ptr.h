@@ -3,6 +3,9 @@
 
 #include "backend_core.h"
 
+#include <cstddef>   // std::nullptr_t — Clang does not inject the name globally
+using std::nullptr_t;
+
 // ----------------------------------------------------------------------------
 // ibValuePtr<T>: an owning, refcounted reference to an ibValue-derived T that
 // also gives typed access. It IS an ibValue — just like a plain ibValue it holds

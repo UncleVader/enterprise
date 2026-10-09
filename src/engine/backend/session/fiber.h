@@ -14,6 +14,12 @@
 #include <cstddef>
 #include <exception>
 
+#if !defined(_WIN32)
+// The asm trampoline calls this. It has to reach RunEntry, which stays
+// private so a caller cannot run a fiber's body out from under the switch.
+extern "C" void ibFiberEnter();
+#endif
+
 class ibFiber {
 public:
 	using Entry = void (*)(void* arg);
@@ -59,7 +65,9 @@ private:
 	std::size_t m_stackAllocSize = 0;
 	void* m_stackBottom = nullptr;
 	std::size_t m_stackSize = 0;
+#if defined(_WIN32)
 	void* m_osFiber = nullptr;
+#endif
 	bool m_scheduler = false;
 	bool m_finished = false;
 	std::exception_ptr m_exception;
@@ -67,6 +75,9 @@ private:
 	ibFiberLocals::Snapshot m_locals;
 
 	void RunEntry();
+#if !defined(_WIN32)
+	friend void ibFiberEnter();
+#endif
 #if !defined(_WIN32)
 	void InitPosixStack();
 #endif

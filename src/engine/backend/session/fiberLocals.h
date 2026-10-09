@@ -91,8 +91,10 @@ public:
 	// RegisterOwned slot. This is a task fiber's snapshot.
 	static Snapshot MakeForFiber();
 
-private:
+	// Defined in fiberLocals.cpp, same as Snapshot::Impl.
 	struct Registry;
+
+private:
 	static Registry& Get();
 };
 

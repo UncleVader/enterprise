@@ -11,6 +11,11 @@
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
 #  endif
+// CreateFiberEx / ConvertThreadToFiberEx are Vista. The backend project
+// does not set _WIN32_WINNT itself; wx does, but only after its own headers.
+#  ifndef _WIN32_WINNT
+#    define _WIN32_WINNT 0x0600
+#  endif
 #  include <windows.h>
 #else
 #  include <sys/mman.h>
