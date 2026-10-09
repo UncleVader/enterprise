@@ -2313,6 +2313,14 @@ void GatherColumnExprColumns(const ibQueryColumnExpr* e, const std::function<voi
 			for (const ibQueryColumnExprPtr& key : e->m_partition)
 				GatherColumnExprColumns(key.get(), add);
 			break;
+		// A published result column is not a source column — the row answers it by name.
+		case ibQueryColumnExprKind::OutputRef:
+			break;
+		// The question is asked of the value, so whatever that value reads has to be in the row.
+		// Missing here, PRESENTATION of a column nobody projected comes back as a question about nothing.
+		case ibQueryColumnExprKind::ValueAsk:
+			GatherColumnExprColumns(e->m_lhs.get(), add);
+			break;
 	}
 }
 

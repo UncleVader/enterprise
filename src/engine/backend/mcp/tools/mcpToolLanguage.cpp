@@ -392,7 +392,9 @@ public:
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_Object:        return "object";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_Selection:     return "selection";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_TabularSection: return "tabularSection";
+				case ibCtorObjectMetaType::ibCtorObjectMetaType_TabularSection_String: return "tabularSectionString";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_RecordSet:     return "recordSet";
+				case ibCtorObjectMetaType::ibCtorObjectMetaType_RecordSet_String: return "recordSetString";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_RecordKey:     return "recordKey";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_RecordManager: return "recordManager";
 				case ibCtorObjectMetaType::ibCtorObjectMetaType_Characteristic: return "characteristic";
