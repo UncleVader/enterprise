@@ -2252,6 +2252,9 @@ ibQueryPredicatePtr BuildWherePredicate(const std::vector<ibSourceBinding>& sour
 std::vector<const ibBackendQueryColumn*> ResolveWhereTarget(const std::vector<ibSourceBinding>& sources,
                                                             const ibQueryAstExpr& e, bool allowDotWalk)
 {
+	if (e.m_kind == ibQueryAstExprKind::Nested)
+		ThrowQueryException(e.m_line, e.m_col, wxString::Format(
+			_("a nested tabular section is a result column, not a condition: %s"), ibRenderQueryExpr(e)));
 	if (e.m_kind != ibQueryAstExprKind::Column || e.m_path.empty())
 		ThrowQueryException(e.m_line, e.m_col, _("expected a column (or a reference dot-walk path) here"));
 	std::vector<const ibBackendQueryColumn*> cols = ResolvePath(sources, e);
