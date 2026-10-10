@@ -15,6 +15,7 @@
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/metaCollection/partial/declaredPresentation.h"   // how a reference reads in the designer
 #include "backend/typeDescription.h"                               // a predefined characteristic's value type
+#include "backend/metaCollection/partial/chartOfAccountsEnum.h"    // Active / Passive / ActivePassive
 
 //***********************************************************************
 //*								 metaData                               *
@@ -1241,6 +1242,61 @@ wxString ibValueMetaObjectRecordDataHierarchyMutableRef::SetPredefinedType(
 	return wxString();
 }
 
+wxString ibValueMetaObjectRecordDataHierarchyMutableRef::ReadAccountSide(const wxString& word, int& side) const
+{
+	if (!PredefinedDeclaresAccountSide())
+		return wxString::Format(
+			_("An account side belongs on a chart of accounts, and '%s' is not one"), GetName());
+
+	if (word.IsSameAs(wxT("Active"), false)) { side = ibAccountType::eActive; return wxString(); }
+	if (word.IsSameAs(wxT("Passive"), false)) { side = ibAccountType::ePassive; return wxString(); }
+	if (word.IsSameAs(wxT("ActivePassive"), false) || word.IsSameAs(wxT("Active/Passive"), false)) {
+		side = ibAccountType::eActivePassive;
+		return wxString();
+	}
+	return wxString::Format(_("'%s' is not an account side. Say Active, Passive or ActivePassive"), word);
+}
+
+wxString ibValueMetaObjectRecordDataHierarchyMutableRef::SetPredefinedAccountSide(const wxString& item, int side)
+{
+	if (!PredefinedDeclaresAccountSide())
+		return wxString::Format(
+			_("An account side belongs on a chart of accounts, and '%s' is not one"), GetName());
+	wxObjectDataPtr<ibPredefinedValueObject> found = FindPredefinedValue(item);
+	if (found == nullptr)
+		return wxString::Format(_("'%s' has no predefined item named '%s'"), GetName(), item);
+	found->m_hasAccountSide = true;
+	found->m_accountSide = side;
+	if (m_metaData != nullptr)
+		m_metaData->Modify(true);
+	return wxString();
+}
+
+wxString ibValueMetaObjectRecordDataHierarchyMutableRef::SetPredefinedOffBalance(const wxString& item, bool offBalance)
+{
+	if (!PredefinedDeclaresAccountSide())
+		return wxString::Format(
+			_("An account side belongs on a chart of accounts, and '%s' is not one"), GetName());
+	wxObjectDataPtr<ibPredefinedValueObject> found = FindPredefinedValue(item);
+	if (found == nullptr)
+		return wxString::Format(_("'%s' has no predefined item named '%s'"), GetName(), item);
+	found->m_hasOffBalance = true;
+	found->m_offBalance = offBalance;
+	if (m_metaData != nullptr)
+		m_metaData->Modify(true);
+	return wxString();
+}
+
+wxString ibValueMetaObjectRecordDataHierarchyMutableRef::SpellAccountSide(int side)
+{
+	switch (static_cast<ibAccountType>(side)) {
+	case ibAccountType::eActive: return wxT("Active");
+	case ibAccountType::ePassive: return wxT("Passive");
+	case ibAccountType::eActivePassive: return wxT("ActivePassive");
+	}
+	return wxString();
+}
+
 wxString ibValueMetaObjectRecordDataHierarchyMutableRef::SpellPredefinedType(const ibTypeDescription& type) const
 {
 	const ibClassID clsid = type.GetFirstClsid();
@@ -1287,6 +1343,10 @@ bool ibValueMetaObjectRecordDataHierarchyMutableRef::WriteData(ibDataNode& node)
 			ibTypeDescriptionMemory::WriteNode(typeNode, value->GetDeclaredType(), GetMetaData());
 			pv->AddField(wxT("ValueType"), typeNode);
 		}
+		if (value->HasAccountSide())
+			pv->SetValue(wxT("AccountType"), static_cast<s32>(value->GetAccountSide()));
+		if (value->HasOffBalance())
+			pv->SetValue(wxT("OffBalance"), value->GetOffBalance());
 		predefined.push_back(ibDataValue::Child(pv));
 	}
 	node.SetProperty(wxT("Predefined"), ibDataValue::Array(predefined));
@@ -1325,6 +1385,14 @@ bool ibValueMetaObjectRecordDataHierarchyMutableRef::ReadData(const ibDataNode& 
 					created->m_hasDeclaredType = true;
 					created->m_declaredType = described;
 				}
+			}
+			if (const ibDataValue* side = pv->FindField(wxT("AccountType"))) {
+				created->m_hasAccountSide = true;
+				created->m_accountSide = static_cast<int>(side->AsInt());
+			}
+			if (const ibDataValue* flag = pv->FindField(wxT("OffBalance"))) {
+				created->m_hasOffBalance = true;
+				created->m_offBalance = flag->AsBool();
 			}
 			m_predefinedObjectVector.emplace_back(created);
 		}

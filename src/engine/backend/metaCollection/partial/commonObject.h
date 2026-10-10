@@ -1355,6 +1355,10 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 		// a catalog has neither, and an apply must not invent one.
 		bool HasDeclaredType() const { return m_hasDeclaredType; }
 		const ibTypeDescription& GetDeclaredType() const { return m_declaredType; }
+		bool HasAccountSide() const { return m_hasAccountSide; }
+		int GetAccountSide() const { return m_accountSide; }
+		bool HasOffBalance() const { return m_hasOffBalance; }
+		bool GetOffBalance() const { return m_offBalance; }
 
 		friend class ibValueMetaObjectRecordDataHierarchyMutableRef;
 
@@ -1372,6 +1376,10 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 
 		bool m_hasDeclaredType = false;
 		ibTypeDescription m_declaredType;
+		bool m_hasAccountSide = false;
+		int m_accountSide = 0;
+		bool m_hasOffBalance = false;
+		bool m_offBalance = false;
 	};
 
 	ibValueMetaObjectAttributePredefined* GetDataPredefinedName() const { return m_propertyAttributePredefined->GetMetaObject(); }
@@ -1568,8 +1576,12 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	// so a type or a side that lives only in the row is blanked. Empty is accepted. A refusal
 	// names the word, or the object when this kind has no such cell.
 	wxString ReadPredefinedType(const wxString& spelling, ibTypeDescription& type) const;
+	wxString ReadAccountSide(const wxString& word, int& side) const;
 	wxString SetPredefinedType(const wxString& item, const ibTypeDescription& type);
+	wxString SetPredefinedAccountSide(const wxString& item, int side);
+	wxString SetPredefinedOffBalance(const wxString& item, bool offBalance);
 	wxString SpellPredefinedType(const ibTypeDescription& type) const;
+	static wxString SpellAccountSide(int side);
 
 	//find predefined value
 	wxObjectDataPtr<ibPredefinedValueObject> FindPredefinedValue(const ibGuid& predefinedGuid) const {
@@ -1603,6 +1615,8 @@ protected:
 
 	// A chart of characteristic types declares each item's value type. A catalog does not.
 	virtual bool PredefinedDeclaresValueType() const { return false; }
+	// A chart of accounts declares each account's side and whether it is off-balance.
+	virtual bool PredefinedDeclaresAccountSide() const { return false; }
 
 	// Cells this kind owns beyond name, code, description, folder and parent. The base row does not
 	// know them; the kind stamps them so the apply writes the declaration.

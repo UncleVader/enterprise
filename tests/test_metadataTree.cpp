@@ -15,6 +15,7 @@
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaObject.h"   // ibValueMetaObject + g_meta*CLSID
 #include "backend/metaCollection/partial/chartOfCharacteristicTypes.h"
+#include "backend/metaCollection/partial/chartOfAccounts.h"
 #include "backend/system/value/valueType.h"
 #include "backend/query/schemaSnapshot.h"
 
@@ -251,4 +252,49 @@ TEST(PredefinedShape, ACatalogCannotDeclareATypeAndAnUnknownTypeIsNamed) {
 	ASSERT_NE(chart, nullptr);
 	const wxString unknown = chart->ReadPredefinedType(wxT("NotAType"), type);
 	EXPECT_TRUE(unknown.Contains(wxT("NotAType"))) << unknown.ToStdString();
+}
+
+TEST(PredefinedShape, AnAccountSideAndOffBalanceAreWhatTheNextApplyWrites) {
+	ibMetaDataConfigurationFile cfg;
+	auto* chart = dynamic_cast<ibValueMetaObjectChartOfAccounts*>(
+		cfg.CreateMetaObject(g_metaChartOfAccountsCLSID, cfg.GetCommonMetaObject(), false));
+	ASSERT_NE(chart, nullptr);
+	chart->SetName(wxT("Balance"));
+	chart->AppendPredefinedValue(wxT("Cash"), wxT("50"), wxT("Cash"));
+
+	int side = 0;
+	ASSERT_TRUE(chart->ReadAccountSide(wxT("Passive"), side).IsEmpty());
+	EXPECT_EQ(side, static_cast<int>(ibAccountType::ePassive));
+	ASSERT_TRUE(chart->SetPredefinedAccountSide(wxT("Cash"), side).IsEmpty());
+	ASSERT_TRUE(chart->SetPredefinedOffBalance(wxT("Cash"), true).IsEmpty());
+
+	ibSchemaSnapshot snapshot;
+	cfg.GetCommonMetaObject()->ContributeTables(snapshot);
+	const ibValue* sideCell = SeedCell(snapshot, chart, chart->GetAccountType()->GetQueryColumn());
+	const ibValue* offCell = SeedCell(snapshot, chart, chart->GetOffBalance()->GetQueryColumn());
+	ASSERT_NE(sideCell, nullptr);
+	ASSERT_NE(offCell, nullptr);
+	EXPECT_EQ(sideCell->GetInteger(), static_cast<int>(ibAccountType::ePassive));
+	EXPECT_TRUE(offCell->GetBoolean());
+
+	ibDataNode saved;
+	ASSERT_TRUE(chart->SaveNode(saved));
+	auto* loaded = dynamic_cast<ibValueMetaObjectChartOfAccounts*>(
+		cfg.CreateMetaObject(g_metaChartOfAccountsCLSID, cfg.GetCommonMetaObject(), false));
+	ASSERT_NE(loaded, nullptr);
+	ASSERT_TRUE(loaded->LoadNode(saved));
+	ASSERT_EQ(loaded->GetPredefinedValueArray().size(), 1u);
+	EXPECT_EQ(loaded->GetPredefinedValueArray().front()->GetAccountSide(), static_cast<int>(ibAccountType::ePassive));
+	EXPECT_TRUE(loaded->GetPredefinedValueArray().front()->GetOffBalance());
+	EXPECT_FALSE(loaded->GetPredefinedValueArray().front()->HasDeclaredType());
+
+	auto* catalog = dynamic_cast<ibValueMetaObjectRecordDataHierarchyMutableRef*>(
+		cfg.CreateMetaObject(g_metaCatalogCLSID, cfg.GetCommonMetaObject(), false));
+	ASSERT_NE(catalog, nullptr);
+	catalog->SetName(wxT("Warehouses"));
+	const wxString refused = catalog->ReadAccountSide(wxT("Active"), side);
+	EXPECT_TRUE(refused.Contains(wxT("Warehouses"))) << refused.ToStdString();
+
+	const wxString word = chart->ReadAccountSide(wxT("Both"), side);
+	EXPECT_TRUE(word.Contains(wxT("Both"))) << word.ToStdString();
 }

@@ -98,6 +98,21 @@ const ibArg& ArgType()
 	return s_a;
 }
 
+const ibArg& ArgAccountType()
+{
+	static const ibArg s_a(wxT("accountType"), ibArg::Kind::Text,
+		ibMcpText("An account's side: Active, Passive or ActivePassive. Only a chart of accounts has one. "
+		          "The declaration owns the cell."));
+	return s_a;
+}
+
+const ibArg& ArgOffBalance()
+{
+	static const ibArg s_a(wxT("offBalance"), ibArg::Kind::Flag,
+		ibMcpText("Declare the account off-balance. Only a chart of accounts has one. The declaration owns the cell."));
+	return s_a;
+}
+
 typedef ibValueMetaObjectRecordDataHierarchyMutableRef ibPredefinedOwner;
 typedef ibPredefinedOwner::ibPredefinedValueObject     ibPredefinedItem;
 
@@ -157,6 +172,10 @@ ibDataValue ItemEntry(const ibPredefinedOwner* owner, const ibPredefinedItem* it
 		if (!spelled.IsEmpty())
 			node->SetValue(wxT("type"), spelled);
 	}
+	if (item->HasAccountSide())
+		node->SetValue(wxT("accountType"), owner->SpellAccountSide(item->GetAccountSide()));
+	if (item->HasOffBalance())
+		node->AddField(wxT("offBalance"), ibDataValue::Bool(item->GetOffBalance()));
 
 	return ibDataValue::Child(node);
 }
@@ -238,14 +257,15 @@ public:
 		return ibMcpText("Declare a predefined item on a catalog or a chart - exactly as adding one in "
 			"the designer would. The name is what code will refer to it by and must be unique "
 			"within the object; the description is what a person sees. A chart of characteristic "
-			"types also takes the item's value type. To remove one, pass delete:true with its name.");
+			"types also takes the item's value type, and a chart of accounts its side and whether "
+			"it is off-balance. To remove one, pass delete:true with its name.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
 	{
 		static const std::vector<ibMcpArgument> s_arguments = {
 			ArgObject(), ArgName(), ArgDescription(), ArgCode(), ArgFolder(), ArgParent(),
-			ArgType(), ArgDelete() };
+			ArgType(), ArgAccountType(), ArgOffBalance(), ArgDelete() };
 		return s_arguments;
 	}
 
@@ -326,6 +346,18 @@ public:
 			hasType = true;
 		}
 
+		int side = 0;
+		bool hasSide = false;
+		if (ArgAccountType().Given(params) && !ArgAccountType().Text(params).IsEmpty()) {
+			const wxString why = owner->ReadAccountSide(ArgAccountType().Text(params), side);
+			if (!why.IsEmpty()) {
+				refusal = why;
+				return false;
+			}
+			hasSide = true;
+		}
+		const bool setOffBalance = ArgOffBalance().Given(params);
+
 		const wxString description = ArgDescription().Text(params);
 
 		owner->AppendPredefinedValue(name,
@@ -337,6 +369,10 @@ public:
 		wxString shape;
 		if (hasType)
 			shape = owner->SetPredefinedType(name, declaredType);
+		if (shape.IsEmpty() && hasSide)
+			shape = owner->SetPredefinedAccountSide(name, side);
+		if (shape.IsEmpty() && setOffBalance)
+			shape = owner->SetPredefinedOffBalance(name, ArgOffBalance().Flag(params));
 		if (!shape.IsEmpty()) {
 			if (const auto added = owner->FindPredefinedValue(name))
 				owner->DeletePredefinedValue(added->GetPredefinedGuid());
