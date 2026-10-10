@@ -377,13 +377,15 @@ void ibWorkerPoolHeadless::Await(ibSession* session, const std::function<bool()>
 
 		// Before the switch. A catch handler and a mutex are the thread's;
 		// the next fiber would see both. The same refusal in every build,
-		// and one a script Try can catch. #241's AssertClear is the other
-		// half of this check and lands with that branch.
+		// and one a script Try can catch. A scope that is still installed
+		// belongs to this fiber; leaving it on the thread hands it to the
+		// next session.
 		try {
 			if (std::current_exception() != nullptr)
 				RefusePark(_("a fiber cannot park inside a catch handler"));
 			if (self->LockDepth() != 0)
 				RefusePark(_("a fiber cannot park while a mutex is held"));
+			ibFiberLocals::AssertClear();
 		}
 		catch (...) {
 			std::lock_guard<std::mutex> relock(m_mtx);
