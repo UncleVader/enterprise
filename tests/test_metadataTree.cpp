@@ -224,12 +224,12 @@ TEST(CodeLength, ANewCatalogIsString8AndNineCharactersAreNamed) {
 	EXPECT_EQ(catalog->GetDataCode()->GetTypeDesc().GetLength(), 9u);
 	EXPECT_NO_THROW(catalog->AppendPredefinedValue(wxT("Commission"), wxT("000000001"), wxT("Commission")));
 	ibSchemaSnapshot snapshot;
-	EXPECT_NO_THROW(catalog->ContributeTables(snapshot));
+	EXPECT_NO_THROW(cfg.GetCommonMetaObject()->ContributeTables(snapshot));
 
 	ASSERT_TRUE(SetCodeLength(catalog, 8));
 	try {
 		ibSchemaSnapshot again;
-		catalog->ContributeTables(again);
+		cfg.GetCommonMetaObject()->ContributeTables(again);
 		FAIL() << "the apply wrote a code the column cannot hold";
 	}
 	catch (const ibBackendCoreException& error) {
@@ -257,17 +257,17 @@ TEST(CodeLength, ANumberCodeCountsDigitsAndTheChoiceSurvives) {
 	EXPECT_NO_THROW(chart->AppendPredefinedValue(wxT("Cash"), wxT("000000001"), wxT("Cash")));
 
 	ibDataNode saved;
-	ASSERT_TRUE(chart->WriteData(saved));
+	ASSERT_TRUE(chart->SaveNode(saved));
 	auto* loaded = HierarchyOf(cfg, g_metaChartOfAccountsCLSID);
 	ASSERT_NE(loaded, nullptr);
-	ASSERT_TRUE(loaded->ReadData(saved));
+	ASSERT_TRUE(loaded->LoadNode(saved));
 	EXPECT_EQ(loaded->GetCodeLength(), 9u);
 	EXPECT_EQ(loaded->GetCodeType(), ibCodeType_Number);
 	EXPECT_EQ(loaded->GetDataCode()->GetTypeDesc().GetPrecision(), 9u);
 
 	ibDataNode older;
 	auto* plain = HierarchyOf(cfg, g_metaCatalogCLSID);
-	ASSERT_TRUE(plain->WriteData(older));
+	ASSERT_TRUE(plain->SaveNode(older));
 	ibDataNode stripped;
 	for (const auto& prop : older.Properties())
 		if (!prop.first.IsSameAs(wxT("CodeLength")) && !prop.first.IsSameAs(wxT("CodeType")))
@@ -276,7 +276,7 @@ TEST(CodeLength, ANumberCodeCountsDigitsAndTheChoiceSurvives) {
 		stripped.SetField(field.first, field.second);
 	stripped.Children() = older.Children();
 	auto* legacy = HierarchyOf(cfg, g_metaCatalogCLSID);
-	ASSERT_TRUE(legacy->ReadData(stripped));
+	ASSERT_TRUE(legacy->LoadNode(stripped));
 	EXPECT_EQ(legacy->GetCodeLength(), 8u);
 	EXPECT_EQ(legacy->GetCodeType(), ibCodeType_String);
 	EXPECT_EQ(legacy->GetDataCode()->GetTypeDesc().GetLength(), 8u);
