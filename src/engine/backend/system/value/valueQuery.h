@@ -107,7 +107,7 @@ public:
 	// PUBLIC because the bind function that names the property is a free one (the static member
 	// table is shared, so it cannot be a member) — and naming the index in both places beats
 	// writing a bare 0 in one of them.
-	enum { enPropTempTablesManager = 0 };
+	enum { enPropTempTablesManager = 0, enPropText = 1 };
 
 private:
 
@@ -134,6 +134,10 @@ private:
 	// Run the package. `names` — when asked for, the ONTO name of each statement, in step with the
 	// results (empty where a statement gave none).
 	bool RunPackage(std::vector<ibValue>& out, std::vector<wxString>* names = nullptr);
+
+	// The query's text. Empty is a statement-less query. Anything else is parsed the way New Query
+	// parses it; a text that is not a query is refused and the previous text stays.
+	bool RememberText(const wxString& text);
 
 public:
 	ibValueQueryExec() : ibValueStaticMembers(ibValueTypes::TYPE_VALUE) {}
