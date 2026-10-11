@@ -640,13 +640,21 @@ BACKEND_API wxString ibMcpBusyWith();
 // not answer in time, it may still be running" — about an application that had CRASHED a second after
 // the request went out (2026-09-10, three times in one evening; the process list and the Windows event
 // log were what told them apart). The process THIS designer started (app_run) is remembered by id, so
-// an expired wait asks whether it is still there before it counsels patience.
+// an expired wait asks whether it is still there before it counsels patience. The crash log it names
+// is this machine's — the Windows event log there, Console's crash reports on macOS, the system log
+// elsewhere.
 BACKEND_API void ibMcpRememberStartedApplication(long pid);
 BACKEND_API long ibMcpStartedApplication();   // 0 when app_run has started nothing
 
 // The refusal for a wait that expired: `usual` while the application's process is there (or unknown —
 // started by somebody else), and "it is gone" when the process this designer started has exited.
 BACKEND_API wxString ibMcpNoAnswer(const wxString& usual);
+
+// A job that came back with no answer. `debuggerAttached` is whether a debug session is connected
+// now. Without one, the refusal is that nothing is listening — code_run against an application
+// started without debug: true used to be reported as `timedOut` ("did not answer in time"). A
+// process this designer started that has already exited is still reported as gone.
+BACKEND_API wxString ibMcpUnanswered(bool debuggerAttached, const wxString& timedOut);
 
 // ⭐⭐ A CAPTION GOES IN EVERY LANGUAGE THE CONFIGURATION DECLARES. True when `text` already carries
 // its languages (`en = '...'; ru = '...';`), is empty, or the configuration has one language at most;

@@ -344,13 +344,37 @@ wxString ibMcpNoAnswer(const wxString& usual)
 	const long pid = ibMcpStartedApplication();
 	if (pid == 0 || wxProcess::Exists((int)pid))
 		return usual;
+	// The log a person on this machine can actually open. Naming the Windows event log on macOS
+	// sends them to a window they do not have.
+#if defined(__WXMSW__)
+	const wxString where = ibMcpText("the Windows event log (Application, 'Application Error')");
+#elif defined(__WXOSX__)
+	const wxString where = ibMcpText("Console's crash reports");
+#else
+	const wxString where = ibMcpText("the system log");
+#endif
 	return wxString::Format(
 		ibMcpText("The application is GONE - its process (%ld, started by app_run) is no longer running, "
 			  "so nothing is waiting to answer. If nobody closed it, it crashed while this request was "
-			  "in hand: the Windows event log (Application, 'Application Error') names the faulting "
-			  "module, and a debugger attached before the repeat gives the stack. Whatever it was "
-			  "writing is rolled back with it. app_run starts it again."),
-		pid);
+			  "in hand: %s names the faulting module, and a debugger attached before the repeat gives "
+			  "the stack. Whatever it was writing is rolled back with it. app_run starts it again."),
+		pid, where);
+}
+
+wxString ibMcpUnanswered(bool debuggerAttached, const wxString& timedOut)
+{
+	if (debuggerAttached)
+		return ibMcpNoAnswer(timedOut);
+
+	// A crash takes the debug connection with it. "Nothing is attached" would hide that the
+	// process is already gone.
+	const wxString gone = ibMcpNoAnswer(timedOut);
+	if (gone != timedOut)
+		return gone;
+
+	return ibMcpText("No debugger is attached, so there is no application to run the code in. "
+		"app_run with debug: true starts one and attaches it; a run started without that has "
+		"nothing listening.");
 }
 
 // ⭐ THE GREETING'S OWN VERBS. Each one is here because the greeting cannot be made without it:
