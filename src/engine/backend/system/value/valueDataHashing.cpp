@@ -59,12 +59,10 @@ std::vector<unsigned char> BytesOf(const ibValue& value)
 		return out;
 	}
 	if (value.GetRef()->GetType() == ibValueTypes::TYPE_STRING) {
-		const wxScopedCharBuffer utf8 = wxString(value.GetString()).utf8_str();
-		if (utf8.data() == nullptr || utf8.length() == 0)
-			return {};
-		return std::vector<unsigned char>(
-			reinterpret_cast<const unsigned char*>(utf8.data()),
-			reinterpret_cast<const unsigned char*>(utf8.data()) + utf8.length());
+		// The text's own UTF-8. A conversion buffer borrowed from a temporary wxString
+		// dies with that temporary, and the digest was then of whatever stood there.
+		const std::string utf8 = value.GetString().ToUtf8();
+		return std::vector<unsigned char>(utf8.begin(), utf8.end());
 	}
 	ibBackendCoreException::Error(_("DataHashing: Append takes a BinaryData or a string"));
 	return {};
