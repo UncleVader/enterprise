@@ -124,7 +124,10 @@ enum
 	// everything else — the ordinal IS the method index, so a new name goes at the END or every
 	// later case answers to the wrong verb.
 	enSerializeValue,
-	enDeserializeValue
+	enDeserializeValue,
+	// Functional options are not a metadata kind. The ordinal still goes at the
+	// end: it is the method index.
+	enGetFunctionalOption
 };
 
 void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -251,6 +254,8 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	//--- …and value-as-text last, matching the enSerializeValue / enDeserializeValue tail above.
 	helper.AppendFunc(wxT("SerializeValue"), 1, wxT("SerializeValue(value : any)"));
 	helper.AppendFunc(wxT("DeserializeValue"), 1, wxT("DeserializeValue(json : string)"));
+	// Functional options are not metadata. The name is accepted; the value is off.
+	helper.AppendFunc(wxT("GetFunctionalOption"), 2, wxT("GetFunctionalOption(name : string, parameters : structure)"));
 };
 
 #include "backend/compiler/enumUnit.h"
@@ -262,6 +267,16 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 
 bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
+	// Answered before the designer-mode gate: there is no option store to read, and the
+	// call must not touch appData. A guard written as `If GetFunctionalOption("…")` takes
+	// the off branch. The second argument (option parameters) is accepted and ignored.
+	if (lMethodNum == enGetFunctionalOption) {
+		if (lSizeArray < 1 || paParams[0] == nullptr)
+			return false;
+		pvarRetValue = false;
+		return true;
+	}
+
 	if (!appData->DesignerMode()) {
 		switch (lMethodNum)
 		{

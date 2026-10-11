@@ -1951,6 +1951,20 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.SerializeValue"],
       "reviewed": true
+    },
+    {
+      "id": "fn.GetFunctionalOption",
+      "name_local": "GetFunctionalOption",
+      "name_en": "GetFunctionalOption",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "GetFunctionalOption(name : string, parameters : structure) : boolean",
+      "description": "Значення функціональної опції (ПолучитьФункциональнуюОпцию). Функціональних опцій як виду метаданих немає, тому будь-яке ім'я читається як False: гілка `If GetFunctionalOption(\"…\")` іде у вимкнене. Ім'я обов'язкове. Другий аргумент — параметри опції — приймається і не використовується.",
+      "parameters": "name — ім'я опції.\nparameters — необов'язковий. Приймається і не використовується.",
+      "return_descr": "Булеве. False, доки функціональні опції не стануть видом метаданих.",
+      "example": "If GetFunctionalOption(\"UseWarehouses\") Then\n    Message(\"warehouses are on\");\nEndIf;",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
     }
   ]
 }
