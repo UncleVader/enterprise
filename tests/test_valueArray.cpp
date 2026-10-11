@@ -83,6 +83,37 @@ TEST(ValueArray, ConstructFromVector) {
     EXPECT_TRUE(a.Contains(ibValue(ibNumber(6))));
 }
 
+TEST(ValueTree, ARowKeepsANamedCellAndAChild) {
+    ibValue tree = ibValue::CreateObject(wxT("ValueTree"));
+    ibValue columns;
+    ASSERT_TRUE(tree.GetPropVal(tree.FindProp(wxT("Columns")), columns));
+    ibValue title(wxString(wxT("Title")));
+    ibValue* add[] = { &title };
+    ibValue added;
+    ASSERT_TRUE(columns.CallAsFunc(columns.FindMethod(wxT("Add")), added, add, 1));
+    ibValue rows;
+    ASSERT_TRUE(tree.GetPropVal(tree.FindProp(wxT("Rows")), rows));
+    ibValue row;
+    ASSERT_TRUE(rows.CallAsFunc(rows.FindMethod(wxT("Add")), row, nullptr, 0));
+    ASSERT_TRUE(row.SetPropVal(row.FindProp(wxT("Title")), ibValue(wxString(wxT("Root")))));
+    ibValue read;
+    ASSERT_TRUE(row.GetPropVal(row.FindProp(wxT("Title")), read));
+    EXPECT_EQ(read.GetString(), wxString(wxT("Root")));
+    ibValue children;
+    ASSERT_TRUE(row.GetPropVal(row.FindProp(wxT("Rows")), children));
+    ibValue child;
+    ASSERT_TRUE(children.CallAsFunc(children.FindMethod(wxT("Add")), child, nullptr, 0));
+    ASSERT_TRUE(child.SetPropVal(child.FindProp(wxT("Title")), ibValue(wxString(wxT("Leaf")))));
+    ibValue parent;
+    ASSERT_TRUE(child.GetPropVal(child.FindProp(wxT("Parent")), parent));
+    ibValue parentTitle;
+    ASSERT_TRUE(parent.GetPropVal(parent.FindProp(wxT("Title")), parentTitle));
+    EXPECT_EQ(parentTitle.GetString(), wxString(wxT("Root")));
+    ibValue count;
+    ASSERT_TRUE(rows.CallAsFunc(rows.FindMethod(wxT("Count")), count, nullptr, 0));
+    EXPECT_EQ(count.GetInteger(), 1);
+}
+
 TEST(ValueArray, SumNumeric) {
     ibValueArray a;
     a.Add(ibValue(ibNumber(10)));
