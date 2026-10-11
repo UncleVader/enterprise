@@ -36,8 +36,8 @@ TEST(FunctionalOption, TheNameCompiles) {
 	try {
 		ASSERT_TRUE(cc.Compile(
 			wxT("Procedure Check()\n")
-			wxT("    var on;\n")
-			wxT("    on = GetFunctionalOption(\"UseWarehouses\");\n")
+			wxT("    var enabled;\n")
+			wxT("    enabled = GetFunctionalOption(\"UseWarehouses\");\n")
 			wxT("EndProcedure\n")));
 	}
 	catch (const ibBackendException& err) {
