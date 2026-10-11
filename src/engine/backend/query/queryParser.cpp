@@ -140,9 +140,24 @@ ibQueryAstExprPtr ibQueryMakeCast(ibQueryAstExprPtr value, const ibTypeDescripti
 // token cursor helpers
 //////////////////////////////////////////////////////////////////////
 
+// ПО is 1C's one word for both ON and BY. The lexer records it as On; a BY
+// position (ORDER / GROUP / TOTALS / INDEX) accepts the same token. English
+// ON stays On and is not a BY.
+static bool IsRussianPo(const ibQueryToken& t)
+{
+	if (!t.IsKeyword(ibQueryKeyword::On))
+		return false;
+	wxString folded;
+	folded.reserve(t.m_text.length());
+	for (wxUniChar c : t.m_text)
+		folded += c.ToUpper();
+	return folded == wxT("ПО");
+}
+
 bool ibQueryParser::AcceptKw(ibQueryKeyword kw)
 {
 	if (Cur().IsKeyword(kw)) { ++m_pos; return true; }
+	if (kw == ibQueryKeyword::By && IsRussianPo(Cur())) { ++m_pos; return true; }
 	return false;
 }
 

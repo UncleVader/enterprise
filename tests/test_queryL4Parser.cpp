@@ -232,6 +232,40 @@ TEST(QueryL4Parser, JoinInnerAndLeft)
 	EXPECT_EQ(sel->m_joins[1].m_kind, ibQueryJoinKindAst::Left);
 }
 
+// 1C writes ПО where this language writes ON, and the same word where it writes BY.
+// A parenthesised condition after either word is an ordinary predicate.
+TEST(QueryL4Parser, JoinOnParenthesisedAndRussianPo)
+{
+	auto sel = Parse(wxT("SELECT * FROM Document.Orders AS o\n")
+	                 wxT("LEFT JOIN Catalog.Stores AS s\n")
+	                 wxT("ON (o.Store = s.Ref AND o.Posted = TRUE)"));
+	ASSERT_EQ(sel->m_joins.size(), 1u);
+	EXPECT_EQ(sel->m_joins[0].m_kind, ibQueryJoinKindAst::Left);
+	ASSERT_TRUE(sel->m_joins[0].m_on != nullptr);
+	EXPECT_EQ(sel->m_joins[0].m_on->m_kind, ibQueryAstExprKind::Logical);
+	EXPECT_FALSE(sel->m_joins[0].m_on->m_isOr);
+
+	auto po = Parse(wxT("SELECT * FROM Document.Orders AS o ")
+	                wxT("LEFT JOIN Catalog.Stores AS s ПО (o.Store = s.Ref)"));
+	ASSERT_EQ(po->m_joins.size(), 1u);
+	EXPECT_EQ(po->m_joins[0].m_kind, ibQueryJoinKindAst::Left);
+	ASSERT_TRUE(po->m_joins[0].m_on != nullptr);
+	EXPECT_EQ(po->m_joins[0].m_on->m_kind, ibQueryAstExprKind::Compare);
+
+	auto ordered = Parse(wxT("SELECT Code FROM Catalog.Products ORDER ПО Code"));
+	ASSERT_EQ(ordered->m_orderBy.size(), 1u);
+	EXPECT_EQ(ordered->m_orderBy[0].m_expr->m_path[0], wxT("Code"));
+
+	auto grouped = Parse(wxT("SELECT Code FROM Catalog.Products GROUP ПО Code"));
+	ASSERT_EQ(grouped->m_groupBy.size(), 1u);
+	EXPECT_EQ(grouped->m_groupBy[0]->m_path[0], wxT("Code"));
+
+	// Rendering keeps the English spelling: ПО is an accepted writing, not the one written back.
+	const wxString written = ibRenderQuery(*po);
+	EXPECT_TRUE(written.Contains(wxT(" ON "))) << written.ToStdString();
+	EXPECT_FALSE(written.Contains(wxT("ПО"))) << written.ToStdString();
+}
+
 TEST(QueryL4Parser, TotalsByDimensions)
 {
 	// TOTALS <aggregates> BY <dimension levels> — hierarchical subtotals.
