@@ -689,7 +689,9 @@ ibQuerySource ibQueryParser::ParseSource()
 			ThrowQueryException(Cur(), _("expected an alias name after AS"));
 		s.m_alias = Next().m_text;
 	}
-	else if (Cur().m_kind == ibQueryTokenKind::Ident) {
+	else if (Cur().m_kind == ibQueryTokenKind::Ident
+		&& !(Cur().m_text.IsSameAs(wxT("CROSS"), false) && Peek().IsKeyword(ibQueryKeyword::Join))) {
+		// CROSS JOIN is the join, not an alias of the table in front of it.
 		s.m_alias = Next().m_text;
 	}
 	return s;
@@ -715,8 +717,17 @@ void ibQueryParser::ParseJoins(ibQuerySelect& sel)
 			continue;
 		}
 
-		ibQueryJoinKindAst kind;
-		if (!ParseJoinKind(kind))
+		ibQueryJoinKindAst kind = ibQueryJoinKindAst::Inner;
+		// CROSS JOIN is the product said as a join: no condition, the same shape the comma writes.
+		// The word is not a keyword — an attribute may be called Cross — so it counts only when JOIN follows.
+		const bool cross = Cur().m_kind == ibQueryTokenKind::Ident
+			&& Cur().m_text.IsSameAs(wxT("CROSS"), false)
+			&& Peek().IsKeyword(ibQueryKeyword::Join);
+		if (cross) {
+			++m_pos;
+			++m_pos;
+		}
+		else if (!ParseJoinKind(kind))
 			break;
 
 		ibQueryAstJoin j;
@@ -725,10 +736,20 @@ void ibQueryParser::ParseJoins(ibQuerySelect& sel)
 		// ⚠ AND A JOIN ALWAYS CARRIES ITS CONDITION. `JOIN B` with nothing after it reads as a
 		// sentence somebody stopped writing, and it used to be accepted — silently meaning the
 		// product, which the comma above now says properly. Whoever wants every combination writes
-		// the comma, or `ON TRUE`; whoever forgot the keys is told, here, at the position of the
-		// table they forgot them on.
-		ExpectKw(ibQueryKeyword::On, wxT("ON after JOIN (use a comma for every combination of rows)"));
-		j.m_on = ParsePredicate();
+		// the comma, `CROSS JOIN`, or `ON TRUE`; whoever forgot the keys is told, here, at the
+		// position of the table they forgot them on.
+		//
+		// BY is the same condition. A join written `JOIN B BY a.x = b.y` is the ON it means.
+		// CROSS JOIN may still carry one (`CROSS JOIN B ON …`); without one it is the product.
+		if (cross) {
+			if (AcceptKw(ibQueryKeyword::On) || AcceptKw(ibQueryKeyword::By))
+				j.m_on = ParsePredicate();
+		}
+		else {
+			if (!AcceptKw(ibQueryKeyword::On) && !AcceptKw(ibQueryKeyword::By))
+				ExpectKw(ibQueryKeyword::On, wxT("ON after JOIN (use a comma for every combination of rows)"));
+			j.m_on = ParsePredicate();
+		}
 		sel.m_joins.push_back(std::move(j));
 	}
 }

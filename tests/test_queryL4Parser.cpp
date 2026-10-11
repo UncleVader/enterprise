@@ -647,6 +647,29 @@ TEST(QueryL4Parser, AJoinWithoutOnIsRefused) {
 	             ibBackendException);
 }
 
+// CROSS JOIN is the product. The word before JOIN is not the alias of the table in front of it,
+// and it does not demand an ON. BY after a join is the same condition ON is.
+TEST(QueryL4Parser, CrossJoinIsTheProductAndByIsOn)
+{
+	auto crossed = Parse(wxT("SELECT p.Ref FROM Catalog.Products AS p CROSS JOIN Catalog.Units AS u"));
+	ASSERT_EQ(crossed->m_joins.size(), 1u);
+	EXPECT_EQ(crossed->m_from.m_alias, wxT("p"));
+	EXPECT_EQ(crossed->m_joins[0].m_kind, ibQueryJoinKindAst::Inner);
+	EXPECT_EQ(crossed->m_joins[0].m_source.m_alias, wxT("u"));
+	EXPECT_TRUE(crossed->m_joins[0].m_on == nullptr);
+
+	auto bare = Parse(wxT("SELECT Ref FROM Catalog.Products CROSS JOIN Catalog.Units"));
+	ASSERT_EQ(bare->m_joins.size(), 1u);
+	EXPECT_TRUE(bare->m_from.m_alias.IsEmpty());
+	EXPECT_EQ(bare->m_joins[0].m_source.m_name.back(), wxT("Units"));
+	EXPECT_TRUE(bare->m_joins[0].m_on == nullptr);
+
+	auto by = Parse(wxT("SELECT p.Ref FROM Catalog.Products AS p JOIN Catalog.Units AS u BY p.Unit = u.Ref"));
+	ASSERT_EQ(by->m_joins.size(), 1u);
+	ASSERT_TRUE(by->m_joins[0].m_on != nullptr);
+	EXPECT_EQ(by->m_joins[0].m_on->m_kind, ibQueryAstExprKind::Compare);
+}
+
 TEST(QueryRender, GroupHavingOrderRoundTrip) {
 	ExpectRoundTrip(wxT("SELECT Owner, SUM(Price) AS total FROM Catalog.Products ")
 		wxT("GROUP BY Owner HAVING SUM(Price) > 100 ORDER BY Owner DESC"));
