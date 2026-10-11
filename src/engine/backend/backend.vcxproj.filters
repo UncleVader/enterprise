@@ -624,6 +624,9 @@
     <ClInclude Include="system\systemManager.h">
       <Filter>system</Filter>
     </ClInclude>
+    <ClInclude Include="system\binaryScript.h">
+      <Filter>system</Filter>
+    </ClInclude>
     <ClInclude Include="system\systemManagerEnum.h">
       <Filter>system</Filter>
     </ClInclude>
@@ -1988,6 +1991,9 @@
     <ClCompile Include="choiceLinkResolver.cpp" />
     <ClCompile Include="typeDescription.cpp" />
     <ClCompile Include="system\systemManager.cpp">
+      <Filter>system</Filter>
+    </ClCompile>
+    <ClCompile Include="system\binaryScript.cpp">
       <Filter>system</Filter>
     </ClCompile>
     <ClCompile Include="system\systemManagerEnum.cpp">

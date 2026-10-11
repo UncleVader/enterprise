@@ -395,6 +395,7 @@
     <ClInclude Include="functionalOptionHelper.h" />
     <ClInclude Include="system\systemEnum.h" />
     <ClInclude Include="system\systemManager.h" />
+    <ClInclude Include="system\binaryScript.h" />
     <ClInclude Include="system\systemManagerEnum.h" />
     <ClInclude Include="system\value\valueArray.h" />
     <ClInclude Include="system\value\valueColour.h" />
@@ -956,6 +957,7 @@
     <ClCompile Include="compositionHelper.cpp" />
     <ClCompile Include="functionalOptionHelper.cpp" />
     <ClCompile Include="system\systemManager.cpp" />
+    <ClCompile Include="system\binaryScript.cpp" />
     <ClCompile Include="system\systemManagerEnum.cpp" />
     <ClCompile Include="system\systemManagerFunc.cpp" />
     <ClCompile Include="system\value\valueArray.cpp" />

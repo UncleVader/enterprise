@@ -124,7 +124,12 @@ enum
 	// everything else — the ordinal IS the method index, so a new name goes at the END or every
 	// later case answers to the wrong verb.
 	enSerializeValue,
-	enDeserializeValue
+	enDeserializeValue,
+	//--- Bytes as text. Appended at the END: the ordinal is the method index.
+	enBase64String,
+	enBase64Value,
+	enGetBinaryDataFromString,
+	enGetStringFromBinaryData
 };
 
 void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -251,6 +256,11 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	//--- …and value-as-text last, matching the enSerializeValue / enDeserializeValue tail above.
 	helper.AppendFunc(wxT("SerializeValue"), 1, wxT("SerializeValue(value : any)"));
 	helper.AppendFunc(wxT("DeserializeValue"), 1, wxT("DeserializeValue(json : string)"));
+	//--- Bytes as text, matching enBase64String..enGetStringFromBinaryData above.
+	helper.AppendFunc(wxT("Base64String"), 1, wxT("Base64String(data : BinaryData)"));
+	helper.AppendFunc(wxT("Base64Value"), 1, wxT("Base64Value(text : string)"));
+	helper.AppendFunc(wxT("GetBinaryDataFromString"), 2, wxT("GetBinaryDataFromString(text : string, encoding : TextEncoding = UTF8)"));
+	helper.AppendFunc(wxT("GetStringFromBinaryData"), 2, wxT("GetStringFromBinaryData(data : BinaryData, encoding : TextEncoding = UTF8)"));
 };
 
 #include "backend/compiler/enumUnit.h"
@@ -259,9 +269,36 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 #include "backend/backend_exception.h"   // a call this dispatcher itself refuses (Date with two arguments)
 
 #include "backend/appData.h"
+#include "binaryScript.h"
 
 bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
+	// Before the appData gate: these answers do not ask the session, so a test can call them.
+	switch (lMethodNum) {
+	case enBase64String:
+		if (lSizeArray < 1)
+			return false;
+		pvarRetValue = ibBase64String(*paParams[0]);
+		return true;
+	case enBase64Value:
+		if (lSizeArray < 1)
+			return false;
+		pvarRetValue = ibBase64Value(*paParams[0]);
+		return true;
+	case enGetBinaryDataFromString:
+		if (lSizeArray < 1)
+			return false;
+		pvarRetValue = ibGetBinaryDataFromString(*paParams[0], lSizeArray > 1 ? paParams[1] : nullptr);
+		return true;
+	case enGetStringFromBinaryData:
+		if (lSizeArray < 1)
+			return false;
+		pvarRetValue = ibGetStringFromBinaryData(*paParams[0], lSizeArray > 1 ? paParams[1] : nullptr);
+		return true;
+	default:
+		break;
+	}
+
 	if (!appData->DesignerMode()) {
 		switch (lMethodNum)
 		{
