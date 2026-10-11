@@ -624,6 +624,9 @@
     <ClInclude Include="system\systemManager.h">
       <Filter>system</Filter>
     </ClInclude>
+    <ClInclude Include="system\hashFunction.h">
+      <Filter>system</Filter>
+    </ClInclude>
     <ClInclude Include="system\systemManagerEnum.h">
       <Filter>system</Filter>
     </ClInclude>
@@ -637,6 +640,9 @@
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valueBinaryData.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
+    <ClInclude Include="system\value\valueDataHashing.h">
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valueTextFile.h">
@@ -1993,6 +1999,9 @@
     <ClCompile Include="system\systemManagerEnum.cpp">
       <Filter>system</Filter>
     </ClCompile>
+    <ClCompile Include="system\hashFunction.cpp">
+      <Filter>system</Filter>
+    </ClCompile>
     <ClCompile Include="system\systemManagerFunc.cpp">
       <Filter>system</Filter>
     </ClCompile>
@@ -2006,6 +2015,9 @@
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueBinaryData.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
+    <ClCompile Include="system\value\valueDataHashing.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueTextFile.cpp">
