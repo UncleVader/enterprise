@@ -52,7 +52,7 @@ class FRMSERVER_API ibValueEnumOrientNotebookPage :
 private:
 };
 
-enum class ibCellAlign {
+enum ibCellAlign {
 	Auto = 0,
 	Left,
 	Center,
