@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "fn.Exit",
+      "name_local": "Exit",
+      "name_en": "Exit",
+      "kind": "system_procedure",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "Exit(code : number)",
+      "description": "Завершує поточний сеанс так само, як EndJob. Код зберігається на сеансі, щоб процес міг прочитати його, коли закінчиться останній сеанс. Якщо сеанс відмовляється закритися, код не встановлюється і сеанс працює далі. Exit не завершує процес.",
+      "parameters": "code — число, яке хост читає після завершення сеансу.",
+      "return_descr": "None.",
+      "example": "Exit(0);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": [],
+      "reviewed": false
+    }
+  ]
+}

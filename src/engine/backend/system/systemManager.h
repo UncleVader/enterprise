@@ -172,6 +172,9 @@ public:
 	static void SetExclusive(bool on);
 	static wxString GeneralLanguage();
 	static void EndJob(bool force = false);
+	// Ends the current session the way EndJob does. The code is kept only when Close accepts.
+	// It does not terminate the process.
+	static void Exit(int code);
 
 	static void UserInterruptProcessing();
 

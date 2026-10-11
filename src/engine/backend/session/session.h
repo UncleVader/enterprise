@@ -373,6 +373,12 @@ public:
 	// window never has to notify the session — the release says it.
 	bool Close(bool force = false);
 
+	// The code Exit() kept, once Close accepted. A refused close leaves it unset.
+	void SetExitCode(int code) { m_hasExitCode = true; m_exitCode = code; }
+	void ClearExitCode() { m_hasExitCode = false; }
+	bool HasExitCode() const { return m_hasExitCode; }
+	int ExitCode() const { return m_exitCode; }
+
 	// Drop the user identity bound to this session. Auth axis transitions
 	// back to Anonymous; the session itself stays Added so the caller can
 	// retry Authenticate. Best-effort with a soft timeout.
@@ -1051,6 +1057,10 @@ private:
 	// a configuration author certain the value was set, and the row filter says
 	// otherwise somewhere far away.
 	bool m_sessionParametersOpen = false;
+
+	// Set by Exit() only after Close accepts. The process host reads it when the last session ends.
+	bool m_hasExitCode = false;
+	int m_exitCode = 0;
 
 public:
 
