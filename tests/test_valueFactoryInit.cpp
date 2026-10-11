@@ -8,6 +8,11 @@
 
 #include <string>
 
+#include <wx/image.h>
+#include <wx/init.h>
+#include <wx/log.h>
+
+#include "backend/appData.h"
 #include "backend/backend_exception.h"
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/value.h"
@@ -164,8 +169,18 @@ TEST(OpenForm, ACloseRunsTheNotifyAndTheSameKeyReturnsTheOpenForm) {
 	ibValue mode(wxT("Modal"));
 	ibValue* args[] = { &name, &structure, &owner, &key, &notify, &mode };
 
+	// Current() answers nothing until the process has a host, even when a scope is bound.
+	wxInitializer wxInit;
+	ASSERT_TRUE(wxInit.IsOk());
+	wxInitAllImageHandlers();
+	if (wxLog::GetActiveTarget() != nullptr)
+		delete wxLog::SetActiveTarget(new wxLogStderr());
+	if (ibApplicationInstance::Get() == nullptr)
+		ASSERT_TRUE(ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE));
+
 	const auto session = std::make_shared<ibSession>(wxT("open-form"), ibSessionKind::Enterprise);
 	ibSessionScope scope(session.get());
+	ASSERT_EQ(ibSession::Current(), session.get());
 
 	ibValue opened = ibValueSystemFunction::OpenForm(args, 6);
 	ibValueOpenedForm* form = nullptr;
