@@ -12,9 +12,10 @@
 //               worst answer a sum can give;
 //   FindRows  - every term must match, in table order; an empty filter is every row; a filter naming a column
 //               that is not there raises instead of "no rows";
-//   Sort      - ONE column, the second argument its way; `Sort("A")` with one argument works (it used to read a
-//               second that was never given); a column that is not there raises and nothing moves. An order
-//               over several keys is not parsed out of the string: that is a query's (`orderby A, B`).
+//   Sort      - a comma-separated list of columns, each with an optional way (`Asc`/`Desc`, `Возр`/`Убыв`);
+//               `Sort("A")` with one argument works (it used to read a second that was never given); a column
+//               that is not there raises and nothing moves. The second argument is the way of a column that
+//               does not name one.
 //
 // Pure RAM: no database, no session, no configuration. Columns are untyped (typing one needs metadata).
 // =============================================================================
@@ -135,10 +136,49 @@ TEST_F(ValueTableVerbs, SortNamingAMissingColumn_RaisesAndMovesNothing)
     EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("NoSuchColumn")) }), ibBackendException);
     EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a")) << "nothing moves";
 
-    // Nor is a list of keys read out of the string: an order over several is a query's -
-    // `from r in t orderby r.N, r.Name`.
-    EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("N, Name Desc")) }), ibBackendException);
+    // A missing name in a list is the same refusal, and the rows stay where they were.
+    EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("N, NoSuchColumn")) }), ibBackendException);
     EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a"));
+}
+
+// "A,B", "A, B" and "A Asc, B Desc" are one order: the first column wins, and a later
+// column orders the rows that agree on it. Issue #310.
+TEST_F(ValueTableVerbs, SortSeveralColumns_FirstKeyWins)
+{
+    Column(wxT("A")); Column(wxT("B"));
+    AddRow({ Text(wxT("2")), Text(wxT("b")) });
+    AddRow({ Text(wxT("1")), Text(wxT("b")) });
+    AddRow({ Text(wxT("1")), Text(wxT("a")) });
+    AddRow({ Text(wxT("2")), Text(wxT("a")) });
+
+    Call(wxT("Sort"), { Text(wxT("A,B")) });
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("A"))), wxT("1,1,2,2"));
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("B"))), wxT("a,b,a,b"));
+
+    Call(wxT("Sort"), { Text(wxT("A Desc, B")) });
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("A"))), wxT("2,2,1,1"));
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("B"))), wxT("a,b,a,b"));
+
+    Call(wxT("Sort"), { Text(wxT("A, B Desc")) });
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("A"))), wxT("1,1,2,2"));
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("B"))), wxT("b,a,b,a"));
+}
+
+TEST_F(ValueTableVerbs, SortSeveralColumns_RussianWayAndTheDefault)
+{
+    Column(wxT("A")); Column(wxT("B"));
+    AddRow({ Text(wxT("1")), Text(wxT("a")) });
+    AddRow({ Text(wxT("2")), Text(wxT("b")) });
+    AddRow({ Text(wxT("1")), Text(wxT("c")) });
+
+    Call(wxT("Sort"), { Text(wxT("A Убыв, B Возр")) });
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("A"))), wxT("2,1,1"));
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("B"))), wxT("b,a,c"));
+
+    // No direction word: the second argument is the way of every such column.
+    Call(wxT("Sort"), { Text(wxT("A, B")), ibValue(false) });
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("A"))), wxT("2,1,1"));
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("B"))), wxT("b,c,a"));
 }
 
 // ------------------------------------- Total ----------------------------------------
