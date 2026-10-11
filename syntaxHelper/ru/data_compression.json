@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.DataCompression",
+      "name_local": "DataCompression",
+      "name_en": "DataCompression",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New DataCompression([level : number = -1])",
+      "description": "Уровень, с которым просят хранить значение (СжатиеДанных). New DataCompression() оставляет -1 — уровень платформы по умолчанию. New DataCompression(level) принимает -1 или 0..9; иное — отказ: «DataCompression: level N is outside -1..9». CompressionLevel читает уровень обратно. 0 хранит значение как есть.",
+      "parameters": "level — число от -1 до 9. Если опущено, это -1.",
+      "return_descr": "DataCompression.",
+      "example": "Pack = New DataCompression(9);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.DataCompression",
+      "name_local": "DataCompression",
+      "name_en": "DataCompression",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New DataCompression([level : number = -1])",
+      "description": "The level a stored value is asked to use (СжатиеДанных). New DataCompression() leaves it at -1, the platform default. New DataCompression(level) takes -1 or 0..9; anything else is a refusal: \"DataCompression: level N is outside -1..9\". CompressionLevel reads the level back. 0 stores the value as it is.",
+      "parameters": "level - a number from -1 to 9. Left out, it is -1.",
+      "return_descr": "DataCompression.",
+      "example": "Pack = New DataCompression(9);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
