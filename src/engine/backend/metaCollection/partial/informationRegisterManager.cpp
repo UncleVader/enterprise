@@ -33,7 +33,7 @@ void ibValueManagerDataObjectInformationRegister::FillManagerMethods(ibMemberTab
 {
 	helper.AppendFunc(wxT("CreateRecordSet"), wxT("CreateRecordSet()"));
 	helper.AppendFunc(wxT("CreateRecordManager"), wxT("CreateRecordManager()"));
-	helper.AppendFunc(wxT("CreateRecordKey"), wxT("CreateRecordKey()"));
+	helper.AppendFunc(wxT("CreateRecordKey"), 1, wxT("CreateRecordKey(KeyValues)"));
 	// TWO ARGUMENTS, because there are two forms: Get(filter) and Get(period, filter). Declared as
 	// one, the periodic form was unreachable — the interpreter refuses a call with more arguments
 	// than the helper declares, so the branch existed and could not be entered.
@@ -50,6 +50,44 @@ void ibValueManagerDataObjectInformationRegister::FillManagerMethods(ibMemberTab
 }
 
 #include "selector/objectSelector.h"
+#include "backend/system/value/valueMap.h"
+
+// The structure names dimensions. A name that is not one is refused, rather than
+// stored and then ignored. A dimension the structure does not mention stays the
+// empty value of its type — the key constructor fills that.
+static ibValue RecordKeyFromStructure(const ibValueMetaObjectInformationRegister* meta, const ibValue& filter)
+{
+	ibValueStructure* structure = nullptr;
+	if (meta == nullptr || !filter.ConvertToValue(structure) || structure == nullptr) {
+		ibBackendCoreException::Error(_("CreateRecordKey: the key is a Structure of dimension values"));
+		return {};
+	}
+
+	ibRowMetaValues values;
+	for (long key = 0; key < structure->GetNProps(); ++key) {
+		const wxString name = structure->GetPropName(key);
+		const ibValueMetaObjectAttributeBase* found = nullptr;
+		for (const auto* attr : meta->GetGenericDimensionArrayObject()) {
+			if (attr == nullptr)
+				continue;
+			wxString published;
+			if (!attr->GetObjectNameAsString(published))
+				continue;
+			if (stringUtils::CompareString(name, published)) {
+				found = attr;
+				break;
+			}
+		}
+		if (found == nullptr) {
+			ibBackendCoreException::Error(_("CreateRecordKey: '%s' is not a dimension of '%s'"), name, meta->GetName());
+			return {};
+		}
+		ibValue value;
+		structure->GetPropVal(key, value);
+		values.insert_or_assign(found->GetMetaID(), value);
+	}
+	return meta->CreateRecordKeyObjectValue(values);
+}
 
 bool ibValueManagerDataObjectInformationRegister::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
@@ -63,7 +101,10 @@ bool ibValueManagerDataObjectInformationRegister::CallAsFunc(const long lMethodN
 		pvarRetValue = m_metaObject->CreateRecordManagerObjectValue();
 		return true;
 	case eCreateRecordKey:
-		pvarRetValue = new ibValueRecordKeyObject(m_metaObject);
+		if (lSizeArray > 0 && paParams != nullptr && paParams[0] != nullptr && !paParams[0]->IsEmpty())
+			pvarRetValue = RecordKeyFromStructure(m_metaObject, *paParams[0]);
+		else
+			pvarRetValue = new ibValueRecordKeyObject(m_metaObject);
 		return true;
 	case eGet:
 		pvarRetValue = lSizeArray > 1 ?
