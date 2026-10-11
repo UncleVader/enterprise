@@ -8,6 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <string>
+
 #include <wx/init.h>
 
 #include "backend/appData.h"
@@ -15,6 +18,9 @@
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"
 #include "backend/databaseLayer/sqllite/sqliteDatabaseLayer.h"
+#ifdef OES_USE_POSTGRESQL
+#include "backend/databaseLayer/postgres/postgresDatabaseLayer.h"
+#endif
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/attribute/metaAttributeObject.h"
 #include "backend/metaCollection/metaObject.h"
@@ -121,8 +127,10 @@ namespace {
 
 struct ApplyGate : ::testing::Test {
 	wxInitializer wx;
-	std::shared_ptr<ibDatabaseLayerSQLite> db;
+	std::shared_ptr<ibDatabaseLayer> db;
 
+	// OES_TYPECHANGE_ENGINE=postgres runs the same apply on PostgreSQL.
+	// Unset, the fixture stays on in-memory SQLite, which is what CI runs.
 	void SetUp() override
 	{
 		if (!wx.IsOk())
@@ -132,9 +140,40 @@ struct ApplyGate : ::testing::Test {
 		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool";
-		db = std::make_shared<ibDatabaseLayerSQLite>();
-		if (!db->Open(wxT(":memory:")))
-			GTEST_SKIP() << "in-memory SQLite open failed";
+
+		const char* engine = std::getenv("OES_TYPECHANGE_ENGINE");
+		const bool postgres = engine != nullptr && std::string(engine) == "postgres";
+		if (postgres) {
+#ifdef OES_USE_POSTGRESQL
+			const char* user = std::getenv("OES_PG_USER");
+			if (user == nullptr || *user == '\0')
+				GTEST_SKIP() << "OES_PG_USER is not set";
+			auto envOr = [](const char* name, const wxString& fallback) {
+				const char* value = std::getenv(name);
+				return (value != nullptr && *value != '\0') ? wxString::FromUTF8(value) : fallback;
+			};
+			auto layer = std::make_shared<ibDatabaseLayerPostgres>();
+			if (!layer->Open(envOr("OES_PG_HOST", wxT("127.0.0.1")),
+			                 envOr("OES_PG_PORT", wxT("5432")),
+			                 wxT("oes_typechange"),
+			                 envOr("OES_PG_USER", wxT("postgres")),
+			                 envOr("OES_PG_PASSWORD", wxEmptyString)))
+				GTEST_SKIP() << "PostgreSQL database oes_typechange did not open";
+			layer->RunQuery(wxT("%s"), wxT("DROP SCHEMA IF EXISTS public CASCADE"));
+			layer->RunQuery(wxT("%s"), wxT("CREATE SCHEMA public"));
+			if (layer->IsActiveTransaction())
+				layer->Commit();
+			db = layer;
+#else
+			GTEST_SKIP() << "this build has no PostgreSQL driver";
+#endif
+		}
+		else {
+			auto layer = std::make_shared<ibDatabaseLayerSQLite>();
+			if (!layer->Open(wxT(":memory:")))
+				GTEST_SKIP() << "in-memory SQLite open failed";
+			db = layer;
+		}
 		pool->Init(db, 1, 0);
 	}
 

@@ -3,12 +3,18 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <string>
+
 #include <wx/init.h>
 
 #include "backend/appData.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"
 #include "backend/databaseLayer/sqllite/sqliteDatabaseLayer.h"
+#ifdef OES_USE_POSTGRESQL
+#include "backend/databaseLayer/postgres/postgresDatabaseLayer.h"
+#endif
 #include "backend/query/columnLayout.h"
 #include "backend/query/queryColumn.h"
 #include "backend/query/schemaBuilder.h"
@@ -28,9 +34,11 @@ struct StoredColumn : ibBackendQueryColumn {
 };
 
 struct LedgerBase : ::testing::Test {
-	wxInitializer                          wx;
-	std::shared_ptr<ibDatabaseLayerSQLite> db;
+	wxInitializer wx;
+	std::shared_ptr<ibDatabaseLayer> db;
 
+	// OES_TYPECHANGE_ENGINE=postgres runs the same clear on PostgreSQL.
+	// Unset, the fixture stays on in-memory SQLite, which is what CI runs.
 	void SetUp() override
 	{
 		if (!wx.IsOk())
@@ -40,9 +48,40 @@ struct LedgerBase : ::testing::Test {
 		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool";
-		db = std::make_shared<ibDatabaseLayerSQLite>();
-		if (!db->Open(wxT(":memory:")))
-			GTEST_SKIP() << "in-memory SQLite open failed";
+
+		const char* engine = std::getenv("OES_TYPECHANGE_ENGINE");
+		const bool postgres = engine != nullptr && std::string(engine) == "postgres";
+		if (postgres) {
+#ifdef OES_USE_POSTGRESQL
+			const char* user = std::getenv("OES_PG_USER");
+			if (user == nullptr || *user == '\0')
+				GTEST_SKIP() << "OES_PG_USER is not set";
+			auto envOr = [](const char* name, const wxString& fallback) {
+				const char* value = std::getenv(name);
+				return (value != nullptr && *value != '\0') ? wxString::FromUTF8(value) : fallback;
+			};
+			auto layer = std::make_shared<ibDatabaseLayerPostgres>();
+			if (!layer->Open(envOr("OES_PG_HOST", wxT("127.0.0.1")),
+			                 envOr("OES_PG_PORT", wxT("5432")),
+			                 wxT("oes_typechange"),
+			                 envOr("OES_PG_USER", wxT("postgres")),
+			                 envOr("OES_PG_PASSWORD", wxEmptyString)))
+				GTEST_SKIP() << "PostgreSQL database oes_typechange did not open";
+			layer->RunQuery(wxT("%s"), wxT("DROP SCHEMA IF EXISTS public CASCADE"));
+			layer->RunQuery(wxT("%s"), wxT("CREATE SCHEMA public"));
+			if (layer->IsActiveTransaction())
+				layer->Commit();
+			db = layer;
+#else
+			GTEST_SKIP() << "this build has no PostgreSQL driver";
+#endif
+		}
+		else {
+			auto layer = std::make_shared<ibDatabaseLayerSQLite>();
+			if (!layer->Open(wxT(":memory:")))
+				GTEST_SKIP() << "in-memory SQLite open failed";
+			db = layer;
+		}
 		pool->Init(db, 1, 0);
 	}
 
@@ -135,7 +174,7 @@ TEST_F(LedgerBase, AWiderStringClearsNothing)
 	ASSERT_FALSE(typeCol.IsEmpty());
 	wxString fields;
 	for (const ibColumnSlot& slot : was.DescribeLayout())
-		fields << (fields.IsEmpty() ? wxT("") : wxT(", ")) << slot.m_name;
+		fields << (fields.IsEmpty() ? wxT("") : wxT(", ")) << slot.m_name << wxT(" INTEGER");
 	ASSERT_GE(db->RunQuery(wxT("%s"), wxT("CREATE TABLE goods (") + fields + wxT(")")), 0);
 	ASSERT_GE(db->RunQuery(wxT("%s"),
 		wxString::Format(wxT("INSERT INTO goods (%s) VALUES (%d)"), typeCol, ibPersistedTypeTag(ibColumnRole::String))), 0);
@@ -160,7 +199,7 @@ TEST_F(LedgerBase, AThousandIsGrouped)
 	ASSERT_FALSE(typeCol.IsEmpty());
 	wxString fields;
 	for (const ibColumnSlot& slot : was.DescribeLayout())
-		fields << (fields.IsEmpty() ? wxT("") : wxT(", ")) << slot.m_name;
+		fields << (fields.IsEmpty() ? wxT("") : wxT(", ")) << slot.m_name << wxT(" INTEGER");
 	ASSERT_GE(db->RunQuery(wxT("%s"), wxT("CREATE TABLE goods (") + fields + wxT(")")), 0);
 	const int stringTag = ibPersistedTypeTag(ibColumnRole::String);
 	for (int i = 0; i < 1234; ++i)
