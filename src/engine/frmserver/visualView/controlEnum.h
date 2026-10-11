@@ -52,6 +52,24 @@ class FRMSERVER_API ibValueEnumOrientNotebookPage :
 private:
 };
 
+enum ibQuickChoice {
+	Auto = 0,
+	Use,
+	DontUse
+};
+
+class FRMSERVER_API ibValueEnumQuickChoice :
+	public ibValueEnumeration<ibQuickChoice> {
+	public:
+	ibValueEnumQuickChoice() : ibValueEnumeration() {}
+	virtual void CreateEnumeration() {
+		AddEnumeration(ibQuickChoice::Auto, wxT("Auto"), _("Auto"));
+		AddEnumeration(ibQuickChoice::Use, wxT("Use"), _("Use"));
+		AddEnumeration(ibQuickChoice::DontUse, wxT("DontUse"), _("Don't use"));
+	}
+private:
+};
+
 class FRMSERVER_API ibValueEnumHorizontalAlignment :
 	public ibValueEnumeration<wxAlignment> {
 	public:

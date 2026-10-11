@@ -13,6 +13,8 @@
 #include "frontendFormFix.h"                      // FrontendFormFix + NewForm()
 
 #include "frontend/visualView/ctrl/tableBox.h"   // ibValueModelTableBox + g_controlTableBox*CLSID
+#include "frontend/visualView/ctrl/widgets.h"    // g_controlTextCtrlCLSID
+#include "backend/propertyManager/property/propertyChoiceLink.h"
 #include "frontend/visualView/ctrl/textBox.h"    // ibValueTextBox
 #include "frontend/visualView/ctrl/gridBox.h"    // ibValueGridBox
 #include "frontend/visualView/ctrl/notebook.h"   // ibValueNotebook + g_controlNotebook*CLSID
@@ -221,6 +223,94 @@ TEST_F(FrontendFormFix, FormSerializeRoundTripPreservesControls)
 	ASSERT_TRUE(dst->LoadForm(buffer)) << "LoadForm rebuilds the control tree";
 	EXPECT_EQ(dst->GetControlList().size(), srcCount)
 		<< "the round-tripped form owns the same controls";
+}
+
+// A control's own choice rows replace the attribute's row for the same parameter,
+// and a fixed parameter replaces a link of the same parameter.
+TEST_F(FrontendFormFix, AFieldAndAColumnCanNarrowTheirOwnChoice)
+{
+	if (!frameReady)
+		GTEST_SKIP();
+
+	ibValueForm* form = NewForm();
+	ASSERT_NE(form, nullptr);
+	ibValueFrame* field = form->NewObject(g_controlTextCtrlCLSID, form);
+	ibValueFrame* table = form->NewObject(g_controlTableBoxCLSID, form);
+	ASSERT_NE(field, nullptr);
+	ASSERT_NE(table, nullptr);
+	ibValueFrame* column = form->NewObject(g_controlTableBoxColumnCLSID, table);
+	ASSERT_NE(column, nullptr);
+
+	auto* quick = dynamic_cast<ibPropertyEnum<ibValueEnumQuickChoice>*>(field->GetProperty(wxT("QuickChoice")));
+	ASSERT_NE(quick, nullptr);
+	EXPECT_EQ(quick->GetValueAsEnum(), ibQuickChoice::Auto);
+	EXPECT_NE(column->GetProperty(wxT("QuickChoice")), nullptr);
+	EXPECT_NE(field->GetProperty(wxT("ChoiceParameters")), nullptr);
+	EXPECT_NE(field->GetProperty(wxT("ChoiceParameterLinks")), nullptr);
+	EXPECT_NE(column->GetProperty(wxT("ChoiceParameterLinks")), nullptr);
+
+	quick->SetValue(ibQuickChoice::Use);
+	EXPECT_TRUE(field->HasQuickChoice());
+	quick->SetValue(ibQuickChoice::DontUse);
+	EXPECT_FALSE(field->HasQuickChoice());
+
+	wxMemoryBuffer buffer;
+	ASSERT_TRUE(form->SaveForm(buffer));
+	ibValueForm* loaded = NewForm();
+	ASSERT_NE(loaded, nullptr);
+	ASSERT_TRUE(loaded->LoadForm(buffer));
+	ibValueFrame* loadedField = nullptr;
+	for (unsigned i = 0; i < loaded->GetChildCount(); ++i) {
+		ibValueFrame* child = loaded->GetChild(i);
+		if (child != nullptr && child->GetClassType() == g_controlTextCtrlCLSID)
+			loadedField = child;
+	}
+	ASSERT_NE(loadedField, nullptr);
+	auto* loadedQuick = dynamic_cast<ibPropertyEnum<ibValueEnumQuickChoice>*>(loadedField->GetProperty(wxT("QuickChoice")));
+	ASSERT_NE(loadedQuick, nullptr);
+	EXPECT_EQ(loadedQuick->GetValueAsEnum(), ibQuickChoice::DontUse);
+
+	auto* links = dynamic_cast<ibPropertyChoiceParameters*>(field->GetProperty(wxT("ChoiceParameterLinks")));
+	auto* fixed = dynamic_cast<ibPropertyChoiceParameters*>(field->GetProperty(wxT("ChoiceParameters")));
+	ASSERT_NE(links, nullptr);
+	ASSERT_NE(fixed, nullptr);
+
+	ibChoiceParametersDescription linkRows;
+	ibChoiceParameterRowDescription link;
+	link.m_parameter = 7;
+	link.m_source.AppendSource(11);
+	linkRows.SetRow(link);
+	links->SetValue(linkRows);
+
+	ibChoiceParametersDescription fixedRows;
+	ibChoiceParameterRowDescription chosen;
+	chosen.m_parameter = 7;
+	chosen.m_source.AppendSource(22);
+	fixedRows.SetRow(chosen);
+	fixed->SetValue(fixedRows);
+
+	ibChoiceParametersDescription merged;
+	ibChoiceParameterRowDescription attribute;
+	attribute.m_parameter = 7;
+	attribute.m_source.AppendSource(3);
+	merged.SetRow(attribute);
+	ibChoiceParameterRowDescription other;
+	other.m_parameter = 8;
+	other.m_source.AppendSource(4);
+	merged.SetRow(other);
+	field->ContributeChoiceParameters(merged);
+
+	ASSERT_EQ(merged.m_rows.size(), 2u);
+	const ibChoiceParameterRowDescription* row7 = nullptr;
+	const ibChoiceParameterRowDescription* row8 = nullptr;
+	for (const ibChoiceParameterRowDescription& row : merged.m_rows) {
+		if (row.m_parameter == 7) row7 = &row;
+		if (row.m_parameter == 8) row8 = &row;
+	}
+	ASSERT_NE(row7, nullptr);
+	ASSERT_NE(row8, nullptr);
+	EXPECT_EQ(row7->m_source.GetLeaf(), 22);
+	EXPECT_EQ(row8->m_source.GetLeaf(), 4);
 }
 
 // ------------------------------ clsid kind-typing ----------------------------
