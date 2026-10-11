@@ -80,12 +80,51 @@ TEST(XmlString, AWriterEscapesTextAndClosesElements) {
 	EXPECT_EQ(written.GetString(), wxT("<?xml version=\"1.0\" encoding=\"UTF-8\"?><root id=\"1\"><child>a&lt;b</child></root>"));
 }
 
+TEST(XmlString, AReaderWalksElementsAndAttributes) {
+	const wxString text = wxT("<?xml version=\"1.0\" encoding=\"UTF-8\"?><root id=\"1\"><child>a&lt;b</child></root>");
+	ibValue reader = ibValue::CreateObject(wxT("XMLReader"));
+	const long setString = reader.FindMethod(wxT("SetString"));
+	const long read = reader.FindMethod(wxT("Read"));
+	const long attribute = reader.FindMethod(wxT("GetAttribute"));
+	ASSERT_NE(setString, wxNOT_FOUND);
+	ibValue source(text);
+	ibValue* sourceArg[] = { &source };
+	reader.CallAsProc(setString, sourceArg, 1);
+
+	ibValue ok;
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	EXPECT_TRUE(ok.GetBoolean());
+	ibValue node;
+	ASSERT_TRUE(reader.GetPropVal(reader.FindProp(wxT("NodeType")), node));
+	EXPECT_EQ(node.GetString(), wxT("StartElement"));
+	ibValue id(wxT("id"));
+	ibValue* idArg[] = { &id };
+	ibValue attr;
+	ASSERT_TRUE(reader.CallAsFunc(attribute, attr, idArg, 1));
+	EXPECT_EQ(attr.GetString(), wxT("1"));
+
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	ASSERT_TRUE(reader.GetPropVal(reader.FindProp(wxT("Name")), node));
+	EXPECT_EQ(node.GetString(), wxT("child"));
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	ASSERT_TRUE(reader.GetPropVal(reader.FindProp(wxT("Value")), node));
+	EXPECT_EQ(node.GetString(), wxT("a<b"));
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	EXPECT_TRUE(ok.GetBoolean());
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	EXPECT_TRUE(ok.GetBoolean());
+	ASSERT_TRUE(reader.CallAsFunc(read, ok, nullptr, 0));
+	EXPECT_FALSE(ok.GetBoolean());
+}
+
 TEST(XmlString, TheNameCompiles) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	const wxString src =
 		wxT("Procedure Check()\n")
 		wxT("    var writer;\n")
+		wxT("    var reader;\n")
 		wxT("    writer = New XMLWriter();\n")
+		wxT("    reader = New XMLReader();\n")
 		wxT("EndProcedure\n");
 	try {
 		ASSERT_TRUE(cc.Compile(src));

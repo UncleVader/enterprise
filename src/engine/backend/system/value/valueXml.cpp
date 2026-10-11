@@ -2,6 +2,10 @@
 
 #include "backend/backend_exception.h"
 
+#include <wx/xml/xml.h>
+#include <wx/sstream.h>
+#include <wx/log.h>
+
 namespace {
 
 wxString EscapeXml(const wxString& text)
@@ -169,4 +173,137 @@ bool ibValueXmlWriter::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, 
 	return true;
 }
 
+enum {
+	eReaderNodeType,
+	eReaderName,
+	eReaderValue
+};
+
+enum {
+	eReaderSetString,
+	eReaderRead,
+	eReaderGetAttribute
+};
+
+namespace {
+
+void Collect(const wxXmlNode* node, std::vector<ibValueXmlReader::Token>& out)
+{
+	if (node == nullptr)
+		return;
+	if (node->GetType() == wxXML_ELEMENT_NODE) {
+		ibValueXmlReader::Token start;
+		start.type = wxT("StartElement");
+		start.name = node->GetName();
+		for (const wxXmlAttribute* attr = node->GetAttributes(); attr != nullptr; attr = attr->GetNext())
+			start.attrs.emplace(attr->GetName(), attr->GetValue());
+		out.push_back(std::move(start));
+		for (const wxXmlNode* child = node->GetChildren(); child != nullptr; child = child->GetNext())
+			Collect(child, out);
+		ibValueXmlReader::Token end;
+		end.type = wxT("EndElement");
+		end.name = node->GetName();
+		out.push_back(std::move(end));
+		return;
+	}
+	if (node->GetType() == wxXML_TEXT_NODE || node->GetType() == wxXML_CDATA_SECTION_NODE) {
+		if (node->GetContent().IsEmpty())
+			return;
+		ibValueXmlReader::Token text;
+		text.type = wxT("Text");
+		text.value = node->GetContent();
+		out.push_back(std::move(text));
+	}
+}
+
+} // namespace
+
+ibValueXmlReader::ibValueXmlReader()
+	: ibValueStaticMembers(ibValueTypes::TYPE_VALUE)
+{
+}
+
+void ibValueXmlReader::SetString(const wxString& text)
+{
+	m_tokens.clear();
+	m_index = 0;
+	m_current = Token();
+	wxStringInputStream in(text);
+	wxXmlDocument xml;
+	wxLogNull quiet;
+	if (!xml.Load(in) || xml.GetRoot() == nullptr)
+		ibBackendCoreException::Error(_("XMLReader: the text is not XML"));
+	Collect(xml.GetRoot(), m_tokens);
+}
+
+bool ibValueXmlReader::Read()
+{
+	if (m_index >= static_cast<long>(m_tokens.size())) {
+		m_current = Token();
+		return false;
+	}
+	m_current = m_tokens[static_cast<size_t>(m_index++)];
+	return true;
+}
+
+wxString ibValueXmlReader::GetAttribute(const wxString& name) const
+{
+	const auto found = m_current.attrs.find(name);
+	if (found == m_current.attrs.end())
+		return wxString();
+	return found->second;
+}
+
+void ibValueXmlReader_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
+{
+	helper.AppendProp(wxT("NodeType"));
+	helper.AppendProp(wxT("Name"));
+	helper.AppendProp(wxT("Value"));
+	helper.AppendProc(wxT("SetString"), 1, wxT("SetString(text)"));
+	helper.AppendFunc(wxT("Read"), wxT("Read()"));
+	helper.AppendFunc(wxT("GetAttribute"), 1, wxT("GetAttribute(name)"));
+	helper.AppendConstructor(0, wxT("XMLReader()"));
+}
+
+bool ibValueXmlReader::SetPropVal(const long, const ibValue&)
+{
+	return false;
+}
+
+bool ibValueXmlReader::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+{
+	switch (lPropNum) {
+	case eReaderNodeType: pvarPropVal = m_current.type; return true;
+	case eReaderName:     pvarPropVal = m_current.name; return true;
+	case eReaderValue:    pvarPropVal = m_current.value; return true;
+	}
+	return false;
+}
+
+bool ibValueXmlReader::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
+{
+	if (lMethodNum != eReaderSetString)
+		return false;
+	if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+		ibBackendCoreException::Error(_("XMLReader: the text is not given"));
+	SetString(paParams[0]->GetString());
+	return true;
+}
+
+bool ibValueXmlReader::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+{
+	if (lMethodNum == eReaderRead) {
+		pvarRetValue = Read();
+		return true;
+	}
+	if (lMethodNum == eReaderGetAttribute) {
+		if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+			ibBackendCoreException::Error(_("GetAttribute: the name is not given"));
+		pvarRetValue = GetAttribute(paParams[0]->GetString());
+		return true;
+	}
+	return CallAsProc(lMethodNum, paParams, lSizeArray);
+}
+
 VALUE_TYPE_REGISTER(ibValueXmlWriter, "XMLWriter", value_to_clsid("VL_XMLW"));
+VALUE_TYPE_REGISTER(ibValueXmlReader, "XMLReader", value_to_clsid("VL_XMLR"));
