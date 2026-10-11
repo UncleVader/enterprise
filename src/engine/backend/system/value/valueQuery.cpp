@@ -4,6 +4,8 @@
 
 #include "valueQuery.h"
 
+#include <utility>
+
 #include "backend/query/queryParser.h"
 #include "core/diagnostics/crashGuard.h"  // ibJournal — the technology journal
 #include "valueArray.h"                  // ibValueArray — a package answers with results BY POSITION
@@ -65,6 +67,8 @@ void ibValueQueryExec_BindNames(ibValue::ibMemberTable& helper, const ibValue* /
 	// WHERE this query's temp tables live. Left unset they die with the execution; set to a
 	// TempTablesManager they outlive it and other queries attached to the same manager read them.
 	helper.AppendProp(wxT("TempTablesManager"), true, true, ibValueQueryExec::enPropTempTablesManager);
+	// The text the query runs. Set after New Query() the way a script writes `Query.Text = "…"`.
+	helper.AppendProp(wxT("Text"), true, true, ibValueQueryExec::enPropText);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -87,28 +91,39 @@ bool ibValueTempTablesManager::CallAsProc(const long lMethodNum, ibValue** /*paP
 	return true;
 }
 
-bool ibValueQueryExec::Init(ibValue** paParams, const long lSizeArray)
+bool ibValueQueryExec::RememberText(const wxString& text)
 {
-	m_text = (lSizeArray >= 1) ? paParams[0]->GetString() : ibString();
-	m_package = ibQueryPackage();
+	ibQueryPackage package;
 
-	// An empty query is a valid, statement-less object: its method surface (SetParameter / Execute /
-	// ExecuteBatch) comes from the static bind, NOT from the AST — so `New Query()` still completes
-	// and introspects. Execute() on a statement-less Query yields an empty QueryResult.
-	if (m_text.IsEmpty())
-		return true;
-
-	// The caret's walk for completion (eval_complete): tolerate a malformed / half-typed query so the value
-	// (and its method chain) stays reachable — in whichever editor is completing, the client's included.
-	// Anything else: a syntax error throws ibBackendException (line:pos) as before.
-	if (ibBackendException::IsEvalComplete()) {
-		try { m_package = ibQueryParser().ParsePackage(m_text); }
-		catch (const ibCoreException&) { m_package = ibQueryPackage(); }
-		return true;
+	// An empty query is a valid, statement-less object: its method surface comes from the static
+	// bind, NOT from the AST — so `New Query()` and `Query.Text = ""` still complete. Execute()
+	// on a statement-less Query yields an empty QueryResult.
+	if (!text.IsEmpty()) {
+		// The caret's walk for completion (eval_complete): tolerate a malformed / half-typed query so the value
+		// (and its method chain) stays reachable — in whichever editor is completing, the client's included.
+		// Anything else: a syntax error throws ibBackendException (line:pos) as before, and the text that
+		// was already stored stays — a refused assignment does not wipe the query.
+		if (ibBackendException::IsEvalComplete()) {
+			try { package = ibQueryParser().ParsePackage(text); }
+			catch (const ibCoreException&) { package = ibQueryPackage(); }
+		}
+		else {
+			package = ibQueryParser().ParsePackage(text);
+			if (package.m_statements.empty())
+				return false;
+		}
 	}
 
-	m_package = ibQueryParser().ParsePackage(m_text);
-	return !m_package.m_statements.empty();
+	m_text = text;
+	m_package = std::move(package);
+	return true;
+}
+
+bool ibValueQueryExec::Init(ibValue** paParams, const long lSizeArray)
+{
+	const wxString text = (lSizeArray >= 1 && paParams != nullptr && paParams[0] != nullptr)
+		? wxString(paParams[0]->GetString()) : wxString();
+	return RememberText(text);
 }
 
 bool ibValueQueryExec::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
@@ -230,6 +245,10 @@ bool ibValueQueryExec::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 // a data tag, so the index IS the identity (the ibValuePoint / ibValueColour convention).
 bool ibValueQueryExec::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 {
+	if (lPropNum == enPropText) {
+		pvarPropVal.SetString(m_text);
+		return true;
+	}
 	if (lPropNum != enPropTempTablesManager)
 		return false;
 	pvarPropVal = m_tempTables;
@@ -238,6 +257,9 @@ bool ibValueQueryExec::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 
 bool ibValueQueryExec::SetPropVal(const long lPropNum, const ibValue& varPropVal)
 {
+	if (lPropNum == enPropText)
+		return RememberText(varPropVal.GetString());
+
 	if (lPropNum != enPropTempTablesManager)
 		return false;
 
