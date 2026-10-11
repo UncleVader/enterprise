@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "fn.InfoBaseConnectionString",
+      "name_local": "InfoBaseConnectionString",
+      "name_en": "InfoBaseConnectionString",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "InfoBaseConnectionString()",
+      "description": "Соединение, которым открыта база этого сеанса. Файловая база отвечает своим файлом. Серверная — сервером, портом и базой, которые были заданы при открытии. Второе соединение не открывается.",
+      "parameters": "None.",
+      "return_descr": "Строка.",
+      "example": "where = InfoBaseConnectionString();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": [],
+      "reviewed": false
+    }
+  ]
+}

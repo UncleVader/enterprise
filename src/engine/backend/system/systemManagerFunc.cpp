@@ -913,6 +913,15 @@ void ibValueSystemFunction::EndJob(bool force) //EndJob
 		session->Close(force);
 }
 
+wxString ibValueSystemFunction::InfoBaseConnectionString()
+{
+	const ibApplicationInstance* const application = ibApplicationInstance::Get(false);
+	if (application == nullptr)
+		return wxEmptyString;
+	// What the open already stored. A file base is its folder. A server base is server:port/database.
+	return application->GetDatabaseDescription();
+}
+
 void ibValueSystemFunction::UserInterruptProcessing()
 {
 	if (wxGetKeyState(WXK_CONTROL) && wxGetKeyState(WXK_CANCEL))

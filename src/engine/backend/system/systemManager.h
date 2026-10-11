@@ -148,6 +148,9 @@ public:
 	// runtime values just by passing JSON"*).
 	static wxString SerializeValue(const ibValue& cData);
 	static ibValue  DeserializeValue(const wxString& strJson);
+	// The connection this session's base was opened with. A file base answers with its file.
+	// A server base answers with the server and the database the open stored.
+	static wxString InfoBaseConnectionString();
 
 	// (⛔ NO MESSAGE CAPTURE HERE. Getting the lines a run printed is not a new mechanism: the
 	//  debug channel already carries messages from a running application to whoever is attached —

@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "fn.InfoBaseConnectionString",
+      "name_local": "InfoBaseConnectionString",
+      "name_en": "InfoBaseConnectionString",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "InfoBaseConnectionString()",
+      "description": "З'єднання, яким відкрито базу цього сеансу. Файлова база відповідає своїм файлом. Серверна — сервером, портом і базою, які було задано при відкритті. Друге з'єднання не відкривається.",
+      "parameters": "None.",
+      "return_descr": "Рядок.",
+      "example": "where = InfoBaseConnectionString();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": [],
+      "reviewed": false
+    }
+  ]
+}
