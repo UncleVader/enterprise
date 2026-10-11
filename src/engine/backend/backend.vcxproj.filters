@@ -1993,6 +1993,9 @@
     <ClCompile Include="system\systemManagerEnum.cpp">
       <Filter>system</Filter>
     </ClCompile>
+    <ClCompile Include="system\smtpAuthentication.cpp">
+      <Filter>system</Filter>
+    </ClCompile>
     <ClCompile Include="system\systemManagerFunc.cpp">
       <Filter>system</Filter>
     </ClCompile>
