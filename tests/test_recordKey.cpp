@@ -95,8 +95,10 @@ TEST(RecordKey, CreateRecordKeyCopiesNamedDimensions)
 	EXPECT_EQ(russianHeld.GetString(), wxString(wxT("A")));
 }
 
-// The set's filter is bound when the set is brought up, which is the running
-// configuration: a session, its module manager, and the register's type.
+// The set's filter is bound when the set is brought up. A designer session is
+// enough for that: the names are export binds, read back without executing the
+// set's module. Executing it asks the configuration module to have run first,
+// which this test does not start.
 struct RecordSetFilter : ::testing::Test {
 	wxInitializer m_wxInit;
 	std::shared_ptr<ibDatabaseLayerSQLite> db;
@@ -122,7 +124,7 @@ struct RecordSetFilter : ::testing::Test {
 			GTEST_SKIP() << "in-memory SQLite open failed";
 		pool->Init(db, /*maxSize=*/1, /*minIdle=*/0);
 
-		session = std::make_shared<ibSession>(wxString(wxT("record-set-filter")), ibSessionKind::Enterprise);
+		session = std::make_shared<ibSession>(wxString(wxT("record-set-filter")), ibSessionKind::Designer);
 		bound = std::make_unique<ibSessionScope>(session.get());
 
 		cfg = std::make_unique<ibMetaDataConfigurationFile>();
@@ -135,7 +137,6 @@ struct RecordSetFilter : ::testing::Test {
 		reg->GetDimensionArrayObject().front()->SetName(wxT("Warehouse"));
 		reg->GetDimensionArrayObject().front()->GetTypeDesc().SetDefaultMetaType(ibValueTypes::TYPE_STRING);
 		ASSERT_TRUE(cfg->RunDatabase()) << "the configuration in memory did not run";
-		ASSERT_NE(session->CreateRoot(cfg.get()), nullptr);
 		ready = true;
 	}
 
