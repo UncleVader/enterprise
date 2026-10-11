@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.XDTOFactory",
+      "name_local": "XDTOFactory",
+      "name_en": "XDTOFactory",
+      "kind": "collection",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "XDTOFactory.Type(namespaceURI : string, name : string)",
+      "description": "The XDTO factory (ФабрикаXDTO), a property of the global context. No package is loaded and no schema is checked.\n\nType(namespaceURI, name) records those two strings as an XDTOType. Both are required strings; an empty one is a refusal: \"XDTOFactory: the type needs a namespace and a name\".\n\nCreate(type) takes that XDTOType and returns an XDTODataObject. A field is opened the first time it is named. Until it is written, it reads as Undefined. Type() on the object returns the XDTOType it was created from. Create of anything else is a refusal: \"XDTOFactory: Create takes an XDTOType\".",
+      "parameters": "namespaceURI, name — the type's namespace and local name.",
+      "return_descr": "XDTOType from Type, XDTODataObject from Create.",
+      "example": "Order = XDTOFactory.Create(XDTOFactory.Type(\"http://example/goods\", \"Order\"));\nOrder.addr = \"ada@example.com\";",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}

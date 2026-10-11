@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "cls.XDTOFactory",
+      "name_local": "XDTOFactory",
+      "name_en": "XDTOFactory",
+      "kind": "collection",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "XDTOFactory.Type(namespaceURI : string, name : string)",
+      "description": "Фабрика XDTO (ФабрикаXDTO), властивість глобального контексту. Пакет не завантажується, і схема не перевіряється.\n\nType(namespaceURI, name) записує ці два рядки як XDTOType. Обидва обов'язкові і це рядки; порожній — відмова: «XDTOFactory: the type needs a namespace and a name».\n\nCreate(type) приймає цей XDTOType і повертає XDTODataObject. Поле відкривається при першому згадуванні імені. Поки його не записали, воно читається як Undefined. Type() в об'єкта повертає XDTOType, з якого його створили. Create від чогось іншого — відмова: «XDTOFactory: Create takes an XDTOType».",
+      "parameters": "namespaceURI, name — простір імен типу і локальне ім'я.",
+      "return_descr": "XDTOType з Type, XDTODataObject з Create.",
+      "example": "Order = XDTOFactory.Create(XDTOFactory.Type(\"http://example/goods\", \"Order\"));\nOrder.addr = \"ada@example.com\";",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
