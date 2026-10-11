@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "cls.TextDocument",
+      "name_local": "TextDocument",
+      "name_en": "TextDocument",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime", "text_files"],
+      "signature": "New TextDocument()",
+      "description": "Рядки тексту в пам'яті (ТекстовыйДокумент). New TextDocument() створює порожній документ.\n\nSetText замінює весь текст. Переведення рядка — LF, CRLF або CR; переведення в самому кінці завершує останній рядок і не відкриває після нього порожній. GetText з'єднує рядки символом LF і не додає його після останнього.\n\nAddLine додає рядок у кінець; без аргумента рядок порожній. InsertLine(number, line) вставляє рядок під цим номером і зсуває решту вниз; номер LineCount + 1 дописує в кінець. DeleteLine, ReplaceLine і GetLine звертаються до рядка, рахуючи з 1. Номер поза 1..LineCount (для InsertLine — поза 1..LineCount+1) — відмова: «TextDocument: line N is outside 1..M». LineCount — скільки рядків. Clear видаляє їх усі.",
+      "parameters": "Немає.",
+      "return_descr": "TextDocument.",
+      "example": "Doc = New TextDocument;\nDoc.AddLine(\"Hello\");\nDoc.AddLine(\"World\");\nMessage(Doc.GetLine(1));\nMessage(Doc.GetText());",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.TextReader", "cls.TextWriter"],
+      "reviewed": false
+    }
+  ]
+}

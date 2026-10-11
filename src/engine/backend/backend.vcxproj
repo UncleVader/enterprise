@@ -401,6 +401,7 @@
     <ClInclude Include="system\value\valueEvent.h" />
     <ClInclude Include="system\value\valueBinaryData.h" />
     <ClInclude Include="system\value\valueTextFile.h" />
+    <ClInclude Include="system\value\valueTextDocument.h" />
     <ClInclude Include="system\value\valueHttp.h" />
     <ClInclude Include="system\value\valueSecureConnection.h" />
     <ClInclude Include="system\value\valueFile.h" />
@@ -965,6 +966,7 @@
     <ClCompile Include="system\value\valueEvent.cpp" />
     <ClCompile Include="system\value\valueBinaryData.cpp" />
     <ClCompile Include="system\value\valueTextFile.cpp" />
+    <ClCompile Include="system\value\valueTextDocument.cpp" />
     <ClCompile Include="system\value\valueHttp.cpp" />
     <ClCompile Include="system\value\valueSecureConnection.cpp" />
     <ClCompile Include="system\value\valueFile.cpp" />
