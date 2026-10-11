@@ -420,6 +420,11 @@ private:
 	mutable ibTypeDescription             m_typeDesc;
 };
 
+// `Predefined` in a query is the hierarchy's predefined-name column. Defined in
+// commonObjectMetaQuery.cpp; a chart of characteristic types is asked it by this name.
+const ibValueMetaObjectAttributeBase* ibHierarchyPredefinedColumn(
+	const ibValueMetaObject* meta, const wxString& name);
+
 // ibRecordQueryable — the L3 queryable for the catalog / document / charts / enums
 // family. The metaobject no longer IS a queryable; it VENDS this adapter (a stable
 // member), which forwards navigation to the metaobject's own query methods — so the
@@ -459,6 +464,11 @@ public:
 		if (name.IsSameAs(m_sortOrder.GetName(), false))
 			return &m_sortOrder;
 		const ibValueMetaObjectAttributeBase* attribute = m_meta->FindAnyAttributeObjectByFilter(name);
+		// `Predefined` is the name a query uses for "this item was declared by the configuration"
+		// on a chart of characteristic types. What is stored is the predefined name; an attribute
+		// that is itself called Predefined is the one the find above already returned.
+		if (attribute == nullptr)
+			attribute = ibHierarchyPredefinedColumn(m_meta, name);
 		return attribute != nullptr ? attribute->GetQueryColumn() : nullptr;
 	}
 
