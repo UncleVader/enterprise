@@ -35,7 +35,8 @@ enum Func {
 	eGetListForm,
 	eGetSelectForm,
 	eGetTemplate,
-	eEmptyRef
+	eEmptyRef,
+	eFindByAttribute
 };
 
 void ibValueManagerDataObjectJob::FillManagerMethods(ibMemberTable& helper) const
@@ -55,6 +56,7 @@ void ibValueManagerDataObjectJob::FillManagerMethods(ibMemberTable& helper) cons
 	helper.AppendFunc(wxT("GetSelectForm"), 3, wxT("GetSelectForm(name : string, owner : any, id : guid)"));
 	helper.AppendFunc(wxT("GetTemplate"), 1, wxT("GetTemplate(name : string)"));
 	helper.AppendFunc(wxT("EmptyRef"), wxT("EmptyRef()"));
+	helper.AppendFunc(wxT("FindByAttribute"), 2, wxT("FindByAttribute(name : string, value)"));
 }
 
 bool ibValueManagerDataObjectJob::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
@@ -111,6 +113,10 @@ bool ibValueManagerDataObjectJob::CallAsFunc(const long lMethodNum, ibValue& pva
 		return true;
 	case eEmptyRef:
 		pvarRetValue = EmptyRef();
+		return true;
+	case eFindByAttribute:
+		pvarRetValue = FindByAttribute(lSizeArray > 0 ? *paParams[0] : ibValue(),
+			lSizeArray > 1 ? *paParams[1] : ibValue());
 		return true;
 	}
 
