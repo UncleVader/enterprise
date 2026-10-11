@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 #include "backend/system/value/valueArray.h"
+#include "core/serialize/dataBuilder.h"
 
 TEST(ValueArray, EmptyByDefault) {
     ibValueArray a;
@@ -81,6 +82,25 @@ TEST(ValueArray, ConstructFromVector) {
     ibValueArray a(v);
     EXPECT_EQ(a.Count(), 2u);
     EXPECT_TRUE(a.Contains(ibValue(ibNumber(6))));
+}
+
+TEST(ValueStorage, GetReturnsWhatWasStoredAndTheValueRoundTrips) {
+    ibValue held(wxString(wxT("kept")));
+    ibValue* args[] = { &held };
+    ibValue box = ibValue::CreateObject(wxT("ValueStorage"), args, 1);
+    ibValue got;
+    ASSERT_TRUE(box.CallAsFunc(box.FindMethod(wxT("Get")), got, nullptr, 0));
+    EXPECT_EQ(got.GetString(), wxString(wxT("kept")));
+    ibDataNode node;
+    ASSERT_TRUE(box.Serialize(node));
+    ibValue restored = ibValue::FromNode(node);
+    ibValue again;
+    ASSERT_TRUE(restored.CallAsFunc(restored.FindMethod(wxT("Get")), again, nullptr, 0));
+    EXPECT_EQ(again.GetString(), wxString(wxT("kept")));
+    ibValue empty = ibValue::CreateObject(wxT("ValueStorage"));
+    ibValue blank;
+    ASSERT_TRUE(empty.CallAsFunc(empty.FindMethod(wxT("Get")), blank, nullptr, 0));
+    EXPECT_TRUE(blank.IsEmpty());
 }
 
 TEST(ValueArray, SumNumeric) {

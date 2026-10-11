@@ -462,3 +462,42 @@ bool ibValueArray::CompareValueEQ(const ibValue& cParam) const
 //**********************************************************************
 
 VALUE_TYPE_REGISTER(ibValueArray, "Array", g_valueArrayCLSID);
+
+// A value kept so it can be stored and read back. New ValueStorage(value), then Get().
+class ibValueStorage : public ibValueDynamicMembers {
+public:
+	ibValueStorage() : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, false) {
+		m_members.Bind(this, &ibValueStorage::Fill);
+	}
+	virtual bool Init() override { m_held = ibValue(); return true; }
+	virtual bool Init(ibValue** paParams, const long lSizeArray) override {
+		if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+			return Init();
+		m_held = *paParams[0];
+		return true;
+	}
+	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override {
+		(void)paParams;
+		(void)lSizeArray;
+		if (lMethodNum != 0)
+			return false;
+		pvarRetValue = m_held;
+		return true;
+	}
+	virtual bool DoSerialize(ibDataNode& node) const override {
+		ibDataNode& child = node.AddChild(m_held.GetClassType(), 0);
+		return m_held.Serialize(child);
+	}
+	virtual bool DoDeserialize(const ibDataNode& node) override {
+		if (node.Children().empty()) {
+			m_held = ibValue();
+			return true;
+		}
+		m_held = ibValue::FromNode(node.Children().front());
+		return true;
+	}
+private:
+	void Fill(ibMemberTable& helper) const { helper.AppendFunc(wxT("Get"), 0, wxT("Get()")); }
+	ibValue m_held;
+};
+VALUE_TYPE_REGISTER(ibValueStorage, "ValueStorage");

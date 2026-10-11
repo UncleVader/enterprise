@@ -1,0 +1,37 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.ValueStorage",
+      "name_local": "ValueStorage",
+      "name_en": "ValueStorage",
+      "kind": "collection",
+      "category_keys": ["value_types"],
+      "signature": "New ValueStorage(value)",
+      "description": "A value kept so it can be stored and read back. Get returns the value that was given. An empty storage returns an empty value. This is the store a session parameter or an event log uses for a value of any type (1C: ХранилищеЗначения).",
+      "parameters": "value — the value to keep. Left out, the storage is empty.",
+      "return_descr": "ValueStorage.",
+      "example": "stored = New ValueStorage(\"kept\");\ntext = stored.Get();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["mth.ValueStorage.Get"],
+      "reviewed": false
+    },
+    {
+      "id": "mth.ValueStorage.Get",
+      "name_local": "Get",
+      "name_en": "Get",
+      "kind": "method",
+      "category_keys": ["value_types"],
+      "signature": "Get()",
+      "description": "The value this storage was given.",
+      "parameters": "None.",
+      "return_descr": "The stored value, or an empty value.",
+      "example": "text = stored.Get();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.ValueStorage"],
+      "reviewed": false
+    }
+  ]
+}
