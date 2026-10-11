@@ -437,3 +437,50 @@ bool ibMetaDiffWalker::ChildOrderDiffers(
 
 	return true;
 }
+
+std::vector<wxString> ibMetaDiffWalker::AppliedAccount(
+	ibValueMetaObject* baseline,
+	ibValueMetaObject* edited)
+{
+	std::vector<wxString> lines;
+	const std::vector<ibMetaDiffRecord> records = Walk(baseline, edited);
+	for (const ibMetaDiffRecord& record : records) {
+		if (record.IsGroup() || record.IsProperty())
+			continue;
+		if (record.m_status == ibMetaDiffStatus::Same)
+			continue;
+
+		const ibValueMetaObject* const object = record.GetAnyObject();
+		if (object == nullptr)
+			continue;
+		if (object->GetClassType() == g_metaModuleCLSID || object->GetClassType() == g_metaManagerCLSID)
+			continue;
+		if (record.m_status == ibMetaDiffStatus::OnlyInRight && object->IsDeleted())
+			continue;
+
+		const wxChar* verb = wxT("Change ");
+		switch (record.m_status) {
+		case ibMetaDiffStatus::OnlyInRight: verb = wxT("Add "); break;
+		case ibMetaDiffStatus::OnlyInLeft:  verb = wxT("Remove "); break;
+		case ibMetaDiffStatus::Reordered:   verb = wxT("Reorder "); break;
+		case ibMetaDiffStatus::Changed:     verb = wxT("Change "); break;
+		default: continue;
+		}
+
+		wxString what;
+		if (object->GetClassType() == g_metaAttributeCLSID) {
+			const ibValueMetaObject* const parent = object->GetParent();
+			const bool column = parent != nullptr
+				&& (parent->GetClassType() == g_metaTableCLSID || parent->GetClassType() == g_metaTableRefCLSID);
+			const wxString owner = parent != nullptr ? parent->GetFullName() : wxString();
+			what = wxString(column ? wxT("column ") : wxT("attribute ")) + object->GetName();
+			if (!owner.IsEmpty())
+				what += wxT(" of ") + owner;
+		}
+		else {
+			what = object->GetFullName();
+		}
+		lines.push_back(wxString(verb) + what);
+	}
+	return lines;
+}

@@ -97,6 +97,7 @@ bool ibMetaDataConfiguration::LoadDatabase(int flags)
 
 #include "metaCollection/metaStoredValueObject.h"   // the shared sys_const table every stored value lives in
 #include "backend/query/schemaSnapshot.h"   // ibSchemaSnapshot — the Storage builds it (ContributeTables) and hands it to the builder
+#include "backend/metaCollection/metaDiff.h"   // the objects, attributes and columns an apply actually published
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -201,6 +202,18 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 		// Extract what the builder changed into this metadata's ledger (so the apply-change dialog shows it
 		// alongside validation warnings/errors). The builder owns the delta; metadata just reads it out.
 		GetRestructureInfo().Absorb(m_structureBuilder.GetChanges());
+
+		// The builder's log is DDL. A new data processor, a new attribute, a tabular
+		// column, or a module change moves no table, so that log stays empty while the
+		// configuration is still published. The account of those objects is what
+		// config_apply's changes and ledger, and the apply journal, have to show.
+		{
+			ibValueMetaObject* const edited = GetCommonMetaObject();
+			ibValueMetaObject* const held = hasBaseline ? m_configMetadata->GetCommonMetaObject() : nullptr;
+			ibRestructureInfo& ledger = GetRestructureInfo();
+			for (const wxString& line : ibMetaDiffWalker::AppliedAccount(held, edited))
+				ledger.AppendInfo(line);
+		}
 
 		// ⚠ NOT A FAILURE TEST. `structRet` is an affected-row count, and 0 is what a pure-DDL delta
 		// returns — a restructuring that only added a column changes no ROWS and is entirely
