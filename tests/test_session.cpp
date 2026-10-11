@@ -12,6 +12,10 @@
 
 #include "backend/session/session.h"
 #include "backend/databaseLayer/connectionHolder.h"
+#include "backend/system/systemManager.h"
+#include "backend/metadataConfiguration.h"
+#include "backend/metaCollection/metaLanguageObject.h"
+#include "backend/compiler/compileCode.h"
 
 #include <type_traits>
 
@@ -56,6 +60,74 @@ TEST(SessionHolder, DistinctSessionsHaveDistinctHolders) {
 // ---------------------------------------------------------------------------
 // DatabaseLayer static — backs the ses_query macro
 // ---------------------------------------------------------------------------
+
+TEST(PlatformLanguage, CurrentLanguageFindsTheLanguageByCode) {
+    ibMetaDataConfigurationFile cfg;
+    ibValueMetaObject* root = cfg.GetCommonMetaObject();
+    ibValueMetaObject* created = cfg.CreateMetaObject(g_metaLanguageCLSID, root, false);
+    ASSERT_NE(created, nullptr);
+    auto* language = dynamic_cast<ibValueMetaObjectLanguage*>(created);
+    ASSERT_NE(language, nullptr);
+    language->SetName(wxT("Ukrainian"));
+    language->SetLangCode(wxT("uk"));
+
+    ibValue found = ibValueSystemFunction::LanguageObject(&cfg, wxT("uk"));
+    ibValueMetaObjectLanguage* asLanguage = nullptr;
+    ASSERT_TRUE(found.ConvertToValue(asLanguage));
+    EXPECT_EQ(asLanguage->GetName(), wxT("Ukrainian"));
+    EXPECT_TRUE(ibValueSystemFunction::LanguageObject(&cfg, wxT("de")).IsEmpty());
+}
+
+TEST(PlatformPrivilege, ScriptModeDoesNotClearATrustScope) {
+    ibSession sess(wxT("priv"), ibSessionKind::Designer);
+    ibSessionScope scope(&sess);
+    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+
+    ibValueSystemFunction::SetPrivilegedMode(true);
+    EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
+    {
+        // A trust scope is still privileged after script turns its own flag off.
+        ibAccessTrustScope trust(&sess);
+        ibValueSystemFunction::SetPrivilegedMode(false);
+        EXPECT_TRUE(sess.PrivilegedMode());
+    }
+    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+
+    // And a trust scope ending does not clear a mode script turned on.
+    ibValueSystemFunction::SetPrivilegedMode(true);
+    {
+        ibAccessTrustScope trust(&sess);
+    }
+    EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
+    ibValueSystemFunction::SetPrivilegedMode(false);
+    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+}
+
+TEST(PlatformPrivilege, SetPrivilegedModeWithoutASessionIsNamed) {
+    try {
+        ibValueSystemFunction::SetPrivilegedMode(true);
+        FAIL() << "a session-less call must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("session")));
+    }
+}
+
+TEST(PlatformPrivilege, TheNamesCompile) {
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    const wxString src =
+        wxT("Procedure Check()\n")
+        wxT("    var lang;\n")
+        wxT("    lang = CurrentLanguage();\n")
+        wxT("    If Not PrivilegedMode() Then\n")
+        wxT("        SetPrivilegedMode(True);\n")
+        wxT("    EndIf;\n")
+        wxT("EndProcedure\n");
+    try {
+        ASSERT_TRUE(cc.Compile(src));
+    } catch (const ibBackendException& err) {
+        FAIL() << err.GetErrorDescription().ToStdString();
+    }
+}
 
 TEST(SessionDbLayer, ThrowsWhenNoCurrentSession) {
     // No SessionScope active on this thread → ibSession::Current() is
