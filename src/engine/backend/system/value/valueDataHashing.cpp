@@ -1,6 +1,7 @@
 #include "valueDataHashing.h"
 
 #include "backend/backend_exception.h"
+#include "backend/compiler/enumUnit.h"   // ConvertToEnumValue needs the enumeration variant complete
 #include "backend/system/hashFunction.h"
 #include "backend/system/value/valueBinaryData.h"
 #include "core/clsid.h"
