@@ -94,7 +94,10 @@ TEST(InformationRegisterCommonAttribute, ItIsAColumnARecordFieldAndAQueryAttribu
 	}
 	EXPECT_TRUE(inSchema);
 
-	const ibValuePtr<ibValueRecordManagerObject> record = f.reg->CreateRecordManagerObjectRegValue();
+	// The public record-manager constructor. CreateRecordManagerObjectRegValue is the
+	// metadata's own factory and stays protected; this is the same object it news.
+	const ibValuePtr<ibValueRecordManagerObject> record(
+		new ibValueRecordManagerObjectInformationRegister(f.reg));
 	ASSERT_TRUE(record);
 	EXPECT_GE(record->FindProp(wxT("АвторСотрудник")), 0);
 
