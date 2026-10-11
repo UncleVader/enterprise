@@ -2086,6 +2086,11 @@ class BACKEND_API ibValueManagerDataObject : public ibValueManagerObject {
 
 	void FillMembers(ibMemberTable& helper) const;       // manager-module methods (was PrepareNames)
 
+	// The commands for creating something on the basis of this object, taken from its
+	// ListGeneration and added to the value table in the first argument (Presentation, Id).
+	// A manager module that already exports AddCreationBasedOnCommands is left to do it.
+	bool AddCreationBasedOnCommands(ibValue** paParams, long lSizeArray);
+
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray);//method call
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);//method call
 
@@ -2108,7 +2113,8 @@ protected:
 	//
 	// The table already carries what is needed and nothing read it: every entry records WHO
 	// contributed it (alias) and ITS OWN number (data). This translates a table index into the
-	// subclass's own ordinal, and answers wxNOT_FOUND when the entry belongs to the module.
+	// subclass's own ordinal, and answers wxNOT_FOUND when the entry belongs to the module
+	// or to AddCreationBasedOnCommands (its own alias, so it does not renumber the verbs).
 	// The same shape ibValueTabularSectionDataObjectBase::CallAsFunc has always used.
 	//
 	// Counted rather than subtracted deliberately: an offset would encode WHICH BLOCK COMES
