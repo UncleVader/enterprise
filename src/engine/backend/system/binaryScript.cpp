@@ -1,6 +1,7 @@
 #include "binaryScript.h"
 
 #include "backend/backend_exception.h"
+#include "backend/compiler/enumUnit.h"   // ConvertToEnumValue needs the enumeration variant complete
 #include "backend/system/value/valueBinaryData.h"
 #include "backend/system/value/valueTextFile.h"
 #include "core/clsid.h"
