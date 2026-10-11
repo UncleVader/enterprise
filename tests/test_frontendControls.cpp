@@ -254,11 +254,21 @@ TEST_F(FrontendFormFix, AFieldAndAColumnCanNarrowTheirOwnChoice)
 	quick->SetValue(ibQuickChoice::DontUse);
 	EXPECT_FALSE(field->HasQuickChoice());
 
-	ibDataNode saved;
-	ASSERT_TRUE(field->WriteData(saved));
-	quick->SetValue(ibQuickChoice::Auto);
-	ASSERT_TRUE(field->ReadData(saved));
-	EXPECT_EQ(quick->GetValueAsEnum(), ibQuickChoice::DontUse);
+	wxMemoryBuffer buffer;
+	ASSERT_TRUE(form->SaveForm(buffer));
+	ibValueForm* loaded = NewForm();
+	ASSERT_NE(loaded, nullptr);
+	ASSERT_TRUE(loaded->LoadForm(buffer));
+	ibValueFrame* loadedField = nullptr;
+	for (unsigned i = 0; i < loaded->GetChildCount(); ++i) {
+		ibValueFrame* child = loaded->GetChild(i);
+		if (child != nullptr && child->GetClassType() == g_controlTextCtrlCLSID)
+			loadedField = child;
+	}
+	ASSERT_NE(loadedField, nullptr);
+	auto* loadedQuick = dynamic_cast<ibPropertyEnum<ibValueEnumQuickChoice>*>(loadedField->GetProperty(wxT("QuickChoice")));
+	ASSERT_NE(loadedQuick, nullptr);
+	EXPECT_EQ(loadedQuick->GetValueAsEnum(), ibQuickChoice::DontUse);
 
 	auto* links = dynamic_cast<ibPropertyChoiceParameters*>(field->GetProperty(wxT("ChoiceParameterLinks")));
 	auto* fixed = dynamic_cast<ibPropertyChoiceParameters*>(field->GetProperty(wxT("ChoiceParameters")));
