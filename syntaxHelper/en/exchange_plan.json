@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.ExchangePlans",
+      "name_local": "ExchangePlans",
+      "name_en": "ExchangePlans",
+      "kind": "collection",
+      "category_keys": ["global_context", "metadata"],
+      "signature": "ExchangePlans.<Name>.ThisNode()",
+      "description": "Exchange plans (ПланыОбмена). A configuration can hold an ExchangePlan. ExchangePlans.<Name> is that plan's manager.\n\nNodes are not stored. ThisNode(), EmptyRef() and FindByCode(code) return an empty ExchangePlanNode (Code is empty, SentNo and ReceivedNo are 0, DeletionMark is False). Select() returns an empty array.\n\nMasterNode() is Undefined until SetMasterNode(node) or SetMasterNode(code). A node, a string code, or Undefined are accepted. The code is remembered for this configuration in this process and is not written to the database. SetMasterNode(Undefined) clears it.",
+      "parameters": "node — an ExchangePlanNode, a string code, or Undefined.",
+      "return_descr": "MasterNode returns an ExchangePlanNode, or Undefined when none is set.",
+      "example": "ExchangePlans.SetMasterNode(\"SHOP\");\nNode = ExchangePlans.MasterNode();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}

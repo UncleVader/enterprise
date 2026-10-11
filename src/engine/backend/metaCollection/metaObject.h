@@ -145,6 +145,9 @@ constexpr ibClassID g_metaRecalculationCLSID = metadata_to_clsid("MD_RCLC");   /
 // SEQUENCES — up to which point the documents of a key have been posted in order (sequence-arc.md)
 constexpr ibClassID g_metaSequenceCLSID = metadata_to_clsid("MD_SEQN");
 
+// EXCHANGE PLANS — a named plan. Nodes are not stored; the master node is remembered in this process.
+constexpr ibClassID g_metaExchangePlanCLSID = metadata_to_clsid("MD_EXCH");
+
 // EXTERNAL
 constexpr ibClassID g_metaExternalDataProcessorCLSID = metadata_to_clsid("MD_EDPR");
 constexpr ibClassID g_metaExternalReportCLSID = metadata_to_clsid("MD_ERPT");

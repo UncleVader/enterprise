@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.ExchangePlans",
+      "name_local": "ExchangePlans",
+      "name_en": "ExchangePlans",
+      "kind": "collection",
+      "category_keys": ["global_context", "metadata"],
+      "signature": "ExchangePlans.<Name>.ThisNode()",
+      "description": "Планы обмена (ПланыОбмена). В конфигурации может быть ExchangePlan. ExchangePlans.<Имя> — менеджер этого плана.\n\nУзлы не хранятся. ThisNode(), EmptyRef() и FindByCode(code) возвращают пустой ExchangePlanNode (Code пустой, SentNo и ReceivedNo равны 0, DeletionMark — False). Select() возвращает пустой массив.\n\nMasterNode() — Undefined, пока не вызван SetMasterNode(node) или SetMasterNode(code). Принимаются узел, строковый код или Undefined. Код запоминается для этой конфигурации в этом процессе и в базу не пишется. SetMasterNode(Undefined) его стирает.",
+      "parameters": "node — ExchangePlanNode, строковый код или Undefined.",
+      "return_descr": "MasterNode возвращает ExchangePlanNode или Undefined, если главный узел не задан.",
+      "example": "ExchangePlans.SetMasterNode(\"SHOP\");\nNode = ExchangePlans.MasterNode();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
