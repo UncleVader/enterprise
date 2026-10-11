@@ -462,3 +462,185 @@ bool ibValueArray::CompareValueEQ(const ibValue& cParam) const
 //**********************************************************************
 
 VALUE_TYPE_REGISTER(ibValueArray, "Array", g_valueArrayCLSID);
+
+// A tree of named cells. Columns.Add(name), Rows.Add(), and a row's own Rows for its children.
+class ibValueTree : public ibValueDynamicMembers {
+public:
+	struct Node {
+		std::vector<ibValue> m_cells;
+		std::vector<int> m_children;
+		int m_parent = -1;
+	};
+	ibValueTree() : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, false) {
+		m_members.Bind(this, &ibValueTree::Fill);
+	}
+	int ColumnOf(const wxString& name) const {
+		for (size_t i = 0; i < m_columns.size(); ++i)
+			if (m_columns[i].CmpNoCase(name) == 0)
+				return static_cast<int>(i);
+		return -1;
+	}
+	void AddColumn(const wxString& name) {
+		m_columns.push_back(name);
+		for (Node& node : m_nodes)
+			node.m_cells.emplace_back();
+	}
+	int AddNode(int parent) {
+		Node node;
+		node.m_parent = parent;
+		node.m_cells.resize(m_columns.size());
+		const int index = static_cast<int>(m_nodes.size());
+		m_nodes.push_back(std::move(node));
+		if (parent < 0)
+			m_roots.push_back(index);
+		else
+			m_nodes[static_cast<size_t>(parent)].m_children.push_back(index);
+		return index;
+	}
+	const std::vector<wxString>& Columns() const { return m_columns; }
+	const std::vector<int>& Roots() const { return m_roots; }
+	Node& At(int index) { return m_nodes[static_cast<size_t>(index)]; }
+	const Node& At(int index) const { return m_nodes[static_cast<size_t>(index)]; }
+	ibValue ColumnsValue();
+	ibValue RowsValue(int parent);
+	ibValue RowValue(int index);
+	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override;
+private:
+	void Fill(ibMemberTable& helper) const {
+		helper.AppendProp(wxT("Columns"));
+		helper.AppendProp(wxT("Rows"));
+	}
+	std::vector<wxString> m_columns;
+	std::vector<Node> m_nodes;
+	std::vector<int> m_roots;
+};
+class ibValueTreeRow : public ibValueDynamicMembers {
+public:
+	ibValueTreeRow(ibValueTree* tree, int index) : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, false), m_index(index) {
+		m_tree = tree;
+	}
+	virtual ibClassID GetClassType() const override { return 0; }
+	virtual long FindProp(const ibString& name) const override;
+	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override;
+	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal) override;
+private:
+	ibValueTree* Tree() const { return dynamic_cast<ibValueTree*>(m_tree.GetRef()); }
+	ibValue m_tree;
+	int m_index;
+};
+class ibValueTreeColumns : public ibValueDynamicMembers {
+public:
+	explicit ibValueTreeColumns(ibValueTree* tree) : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, false) {
+		m_tree = tree;
+		m_members.Bind(this, &ibValueTreeColumns::Fill);
+	}
+	virtual ibClassID GetClassType() const override { return 0; }
+	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
+private:
+	void Fill(ibMemberTable& helper) const {
+		helper.AppendFunc(wxT("Add"), 1, wxT("Add(name)"));
+		helper.AppendFunc(wxT("Count"), 0, wxT("Count()"));
+	}
+	ibValueTree* Tree() const { return dynamic_cast<ibValueTree*>(m_tree.GetRef()); }
+	ibValue m_tree;
+};
+class ibValueTreeRows : public ibValueDynamicMembers {
+public:
+	ibValueTreeRows(ibValueTree* tree, int parent) : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, false), m_parent(parent) {
+		m_tree = tree;
+		m_members.Bind(this, &ibValueTreeRows::Fill);
+	}
+	virtual ibClassID GetClassType() const override { return 0; }
+	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
+private:
+	void Fill(ibMemberTable& helper) const {
+		helper.AppendFunc(wxT("Add"), 0, wxT("Add()"));
+		helper.AppendFunc(wxT("Count"), 0, wxT("Count()"));
+		helper.AppendFunc(wxT("Get"), 1, wxT("Get(index)"));
+	}
+	const std::vector<int>& Items() const {
+		ibValueTree* const tree = Tree();
+		if (tree == nullptr)
+			return m_none;
+		return m_parent < 0 ? tree->Roots() : tree->At(m_parent).m_children;
+	}
+	ibValueTree* Tree() const { return dynamic_cast<ibValueTree*>(m_tree.GetRef()); }
+	ibValue m_tree;
+	int m_parent;
+	std::vector<int> m_none;
+};
+ibValue ibValueTree::ColumnsValue() { return new ibValueTreeColumns(this); }
+ibValue ibValueTree::RowsValue(int parent) { return new ibValueTreeRows(this, parent); }
+ibValue ibValueTree::RowValue(int index) { return new ibValueTreeRow(this, index); }
+bool ibValueTree::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+{
+	if (lPropNum == 0) { pvarPropVal = ColumnsValue(); return true; }
+	if (lPropNum == 1) { pvarPropVal = RowsValue(-1); return true; }
+	return false;
+}
+long ibValueTreeRow::FindProp(const ibString& name) const
+{
+	if (wxString(name).CmpNoCase(wxT("Rows")) == 0)
+		return 0;
+	if (wxString(name).CmpNoCase(wxT("Parent")) == 0)
+		return 1;
+	ibValueTree* const tree = Tree();
+	const int column = tree != nullptr ? tree->ColumnOf(wxString(name)) : -1;
+	return column < 0 ? wxNOT_FOUND : 2 + column;
+}
+bool ibValueTreeRow::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+{
+	ibValueTree* const tree = Tree();
+	if (tree == nullptr)
+		return false;
+	if (lPropNum == 0) { pvarPropVal = tree->RowsValue(m_index); return true; }
+	if (lPropNum == 1) {
+		const int parent = tree->At(m_index).m_parent;
+		pvarPropVal = parent < 0 ? ibValue() : tree->RowValue(parent);
+		return true;
+	}
+	const int column = static_cast<int>(lPropNum) - 2;
+	if (column < 0 || column >= static_cast<int>(tree->At(m_index).m_cells.size()))
+		return false;
+	pvarPropVal = tree->At(m_index).m_cells[static_cast<size_t>(column)];
+	return true;
+}
+bool ibValueTreeRow::SetPropVal(const long lPropNum, const ibValue& varPropVal)
+{
+	ibValueTree* const tree = Tree();
+	if (tree == nullptr || lPropNum < 2)
+		return false;
+	const int column = static_cast<int>(lPropNum) - 2;
+	if (column < 0 || column >= static_cast<int>(tree->At(m_index).m_cells.size()))
+		return false;
+	tree->At(m_index).m_cells[static_cast<size_t>(column)] = varPropVal;
+	return true;
+}
+bool ibValueTreeColumns::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+{
+	ibValueTree* const tree = Tree();
+	if (tree == nullptr)
+		return false;
+	if (lMethodNum == 1) { pvarRetValue = ibValue(static_cast<int>(tree->Columns().size())); return true; }
+	if (lMethodNum != 0 || lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+		return false;
+	tree->AddColumn(paParams[0]->GetString());
+	pvarRetValue = *paParams[0];
+	return true;
+}
+bool ibValueTreeRows::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+{
+	ibValueTree* const tree = Tree();
+	if (tree == nullptr)
+		return false;
+	if (lMethodNum == 0) { pvarRetValue = tree->RowValue(tree->AddNode(m_parent)); return true; }
+	if (lMethodNum == 1) { pvarRetValue = ibValue(static_cast<int>(Items().size())); return true; }
+	if (lMethodNum != 2 || lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+		return false;
+	const int at = paParams[0]->GetInteger();
+	if (at < 0 || at >= static_cast<int>(Items().size()))
+		return false;
+	pvarRetValue = tree->RowValue(Items()[static_cast<size_t>(at)]);
+	return true;
+}
+VALUE_TYPE_REGISTER(ibValueTree, "ValueTree");
