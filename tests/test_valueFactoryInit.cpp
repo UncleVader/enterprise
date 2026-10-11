@@ -120,11 +120,11 @@ TEST(FormScriptEnums, TheNamesCompile) {
 		wxT("Procedure Check()\n")
 		wxT("    var kind;\n")
 		wxT("    var picture;\n")
-		wxT("    var group;\n")
+		wxT("    var columns;\n")
 		wxT("    var period;\n")
 		wxT("    kind = FormFieldType.InputField;\n")
 		wxT("    picture = ButtonRepresentation.PictureAndText;\n")
-		wxT("    group = ColumnsGroup.InCell;\n")
+		wxT("    columns = ColumnsGroup.InCell;\n")
 		wxT("    period = StandardPeriodVariant.Today;\n")
 		wxT("EndProcedure\n");
 	try {
