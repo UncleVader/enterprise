@@ -2779,6 +2779,9 @@
     <ClCompile Include="system\value\valueQuery.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
+    <ClCompile Include="system\value\valueQueryBuilder.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
     <ClCompile Include="system\value\valueQueryable.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
@@ -2966,6 +2969,9 @@
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valueQuery.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
+    <ClInclude Include="system\value\valueQueryBuilder.h">
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valueQueryable.h">

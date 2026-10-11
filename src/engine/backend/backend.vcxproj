@@ -308,6 +308,7 @@
     <ClInclude Include="system\value\composition\valueComposerSettings.h" />
     <ClInclude Include="system\value\valueComposer.h" />
     <ClInclude Include="system\value\valueQuery.h" />
+    <ClInclude Include="system\value\valueQueryBuilder.h" />
     <ClInclude Include="system\value\valueQueryable.h" />
     <ClInclude Include="system\value\valueDataComposition.h" />
     <ClInclude Include="system\value\valueDynamicList.h" />
@@ -839,6 +840,7 @@
     <ClCompile Include="system\value\composition\valueComposerSettings.cpp" />
     <ClCompile Include="system\value\valueComposer.cpp" />
     <ClCompile Include="system\value\valueQuery.cpp" />
+    <ClCompile Include="system\value\valueQueryBuilder.cpp" />
     <ClCompile Include="system\value\valueQueryable.cpp" />
     <ClCompile Include="query\queryProvider.cpp" />
     <ClCompile Include="query\queryReadState.cpp" />
