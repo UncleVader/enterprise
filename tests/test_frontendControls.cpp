@@ -249,14 +249,13 @@ TEST_F(FrontendFormFix, AColumnAndAFieldCanAlignTheirCells)
 	EXPECT_EQ(columnEnum->GetValueAsEnum(), ibCellAlign::Auto);
 	columnEnum->SetValue(ibCellAlign::Right);
 
-	ibDataNode saved;
-	ASSERT_TRUE(column->WriteData(saved));
-	columnEnum->SetValue(ibCellAlign::Auto);
-	ASSERT_TRUE(column->ReadData(saved));
-	EXPECT_EQ(columnEnum->GetValueAsEnum(), ibCellAlign::Right);
-
 	auto* boxColumn = dynamic_cast<ibValueModelTableBoxColumn*>(column);
 	ASSERT_NE(boxColumn, nullptr);
+	ibDataNode saved;
+	ASSERT_TRUE(boxColumn->WriteData(saved));
+	columnEnum->SetValue(ibCellAlign::Auto);
+	ASSERT_TRUE(boxColumn->ReadData(saved));
+	EXPECT_EQ(columnEnum->GetValueAsEnum(), ibCellAlign::Right);
 	ibValue number(ibNumber(12));
 	EXPECT_TRUE((boxColumn->CellAlignment(&number) & wxALIGN_RIGHT) != 0);
 }
