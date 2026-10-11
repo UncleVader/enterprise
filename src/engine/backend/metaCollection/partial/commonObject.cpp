@@ -11,6 +11,7 @@
 #include "backend/session/session.h"
 #include "core/serialize/dataBuilder.h"   // node serialization (WriteData / ReadData)
 #include "backend/choiceLinkResolver.h"      // what narrows a choice, put on the list before it is shown
+#include "backend/system/value/valueTable.h" // AddCreationBasedOnCommands fills a value table
 
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/metaCollection/partial/declaredPresentation.h"   // how a reference reads in the designer
@@ -1727,6 +1728,10 @@ ibValuePtr<ibValueRecordManagerObject> ibValueMetaObjectRegisterData::CopyRecord
 //*                        ibValueManagerDataObject						*
 //***********************************************************************
 
+// Not a module export and not a built-in ordinal. BuiltinMethodNum skips it, so the
+// procedure can sit in this table without renumbering CreateElement and the rest.
+constexpr long g_aliasCreationCommands = 1001;
+
 // Manager-module methods. Surfaces the common module's exported methods through its
 // runtime descriptor (ExportMethodsToHelper) rather than copying its whole helper
 // table — the former CopyMethod wart. The bytecode-function index it keys on is
@@ -1747,6 +1752,61 @@ void ibValueManagerDataObject::FillMembers(ibMemberTable& helper) const
 
 	if (pRefData != nullptr)
 		pRefData->ExportMethodsToHelper(&helper, g_aliasExport);
+
+	// The default for ДобавитьКомандыСозданияНаОсновании. A module that already exports the
+	// procedure is the one a caller reaches; this fills the table from ListGeneration otherwise.
+	if (helper.FindMethod(wxT("AddCreationBasedOnCommands")) < 0) {
+		helper.AppendProc(wxT("AddCreationBasedOnCommands"), 2,
+			wxT("AddCreationBasedOnCommands(commands, parameters)"),
+			wxNOT_FOUND, g_aliasCreationCommands);
+	}
+}
+
+bool ibValueManagerDataObject::AddCreationBasedOnCommands(ibValue** paParams, long lSizeArray)
+{
+	if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+		return false;
+	ibValueModelTable* table = nullptr;
+	if (!paParams[0]->ConvertToValue(table) || table == nullptr)
+		return false;
+
+	ibValueModel::ibValueModelColumnCollection* columns = table->GetColumnCollection();
+	if (columns == nullptr)
+		return false;
+
+	auto columnId = [&](const wxString& name) -> ibMetaID {
+		if (ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* existing = columns->GetColumnByName(name))
+			return existing->GetColumnID();
+		ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* added =
+			columns->AddColumn(name, ibTypeDescription(ibValue::GetIDByVT(ibValueTypes::TYPE_STRING)), name);
+		return added != nullptr ? added->GetColumnID() : static_cast<ibMetaID>(wxNOT_FOUND);
+	};
+	const ibMetaID presentationId = columnId(wxT("Presentation"));
+	const ibMetaID idColumn = columnId(wxT("Id"));
+	if (presentationId == static_cast<ibMetaID>(wxNOT_FOUND) || idColumn == static_cast<ibMetaID>(wxNOT_FOUND))
+		return false;
+
+	const auto* owner = dynamic_cast<const ibValueMetaObjectRecordDataMutableRef*>(GetMetaObject());
+	if (owner == nullptr)
+		return true;
+	const ibMetaData* metaData = owner->GetMetaData();
+	if (metaData == nullptr)
+		return true;
+
+	const ibMetaDescription& generation = owner->GetGenerationDescription();
+	for (unsigned int i = 0; i < generation.GetTypeCount(); ++i) {
+		const ibValueMetaObject* object = metaData->FindAnyObjectByFilter<ibValueMetaObject>(generation.GetByIdx(i));
+		if (object == nullptr || !object->IsAllowed())
+			continue;
+		wxString presentation = object->GetSynonym();
+		if (presentation.IsEmpty())
+			presentation = object->GetName();
+		table->AppendRow({
+			{ presentationId, ibValue(presentation) },
+			{ idColumn, ibValue(object->GetName()) },
+		});
+	}
+	return true;
 }
 
 // ⭐⭐ THE MODULE IS ASKED BY THE NAME, AND ANSWERS WITH ITS OWN NUMBER. The entry's data is the
@@ -1771,6 +1831,9 @@ static long ibModuleMethodNum(const ibValue& unit, const wxString& methodName)
 
 bool ibValueManagerDataObject::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
 {
+	if (m_members.GetMethodAlias(lMethodNum) == g_aliasCreationCommands)
+		return AddCreationBasedOnCommands(paParams, lSizeArray);
+
 	const ibValueMetaObjectGenericData* valueMetaObject = GetMetaObject();
 	wxASSERT(valueMetaObject);
 
@@ -1849,12 +1912,14 @@ long ibValueManagerDataObject::BuiltinMethodNum(const long lMethodNum) const
 	if (lMethodNum < 0 || lMethodNum >= m_members.GetNMethods())
 		return wxNOT_FOUND;
 
-	if (m_members.GetMethodAlias(lMethodNum) == g_aliasExport)
+	const long alias = m_members.GetMethodAlias(lMethodNum);
+	if (alias == g_aliasExport || alias == g_aliasCreationCommands)
 		return wxNOT_FOUND;
 
 	long ordinal = 0;
 	for (long i = 0; i < lMethodNum; ++i) {
-		if (m_members.GetMethodAlias(i) != g_aliasExport)
+		const long one = m_members.GetMethodAlias(i);
+		if (one != g_aliasExport && one != g_aliasCreationCommands)
 			++ordinal;
 	}
 	return ordinal;
