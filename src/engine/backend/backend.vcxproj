@@ -400,6 +400,7 @@
     <ClInclude Include="system\value\valueColour.h" />
     <ClInclude Include="system\value\valueEvent.h" />
     <ClInclude Include="system\value\valueBinaryData.h" />
+    <ClInclude Include="system\value\valueDataCompression.h" />
     <ClInclude Include="system\value\valueTextFile.h" />
     <ClInclude Include="system\value\valueHttp.h" />
     <ClInclude Include="system\value\valueSecureConnection.h" />
@@ -964,6 +965,7 @@
     <ClCompile Include="system\value\valueDatabaseResultSet.cpp" />
     <ClCompile Include="system\value\valueEvent.cpp" />
     <ClCompile Include="system\value\valueBinaryData.cpp" />
+    <ClCompile Include="system\value\valueDataCompression.cpp" />
     <ClCompile Include="system\value\valueTextFile.cpp" />
     <ClCompile Include="system\value\valueHttp.cpp" />
     <ClCompile Include="system\value\valueSecureConnection.cpp" />
