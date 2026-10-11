@@ -1511,6 +1511,21 @@ bool PredicateHasPath(const ibQueryPredicatePtr& p)
 	return false;
 }
 
+// A comparison or IS NULL asked of an expression (Qty * Price > N). ColocatedWhere only pushes a
+// condition whose column one leaf owns, so this filter would be dropped — or, in a boolean tree,
+// the leaf has no column to qualify. The RAM stitch evaluates it over the joined row.
+bool PredicateHasComputed(const ibQueryPredicate* p)
+{
+	if (p == nullptr) return false;
+	if (p->m_kind == ibQueryPredicateKind::Leaf)
+		return p->m_leaf.m_expr != nullptr || p->m_leaf.m_valueExpr != nullptr;
+	if (p->m_kind == ibQueryPredicateKind::IsNull)
+		return p->m_expr != nullptr;
+	for (const ibQueryPredicatePtr& c : p->m_children)
+		if (PredicateHasComputed(c.get())) return true;
+	return false;
+}
+
 ibQueryExprPtr BuildColocatedPredicate(const ibQueryPredicatePtr& p, const ColocatedLeaves& leaves)
 {
 	if (!p) return nullptr;
@@ -3311,6 +3326,14 @@ static bool CanColocateBase(const ibDataQuerySpec& spec, ColocatedLeaves& leaves
 	if (!ColocatableJoinTree(spec, leaves)) return false;
 	if (!spec.m_dotWalks->empty() || !spec.m_keyIn->empty()) return false;
 	if (!AllNodeKeysSingleField(spec.m_root, leaves)) return false;
+	// An expression comparison reads columns of more than one leaf. The SQL WHERE only pushes a
+	// condition one leaf owns, so the filter would vanish. The stitch applies it after the join.
+	if (spec.m_conditions != nullptr)
+		for (const ibQueryCondition& c : *spec.m_conditions)
+			if (c.m_expr || c.m_valueExpr)
+				return false;
+	if (PredicateHasComputed(spec.m_predicate.get()))
+		return false;
 	return true;
 }
 
