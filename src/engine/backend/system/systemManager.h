@@ -172,6 +172,9 @@ public:
 	static void SetExclusive(bool on);
 	static wxString GeneralLanguage();
 	static void EndJob(bool force = false);
+	// Registers a procedure of the session's root module. The host asks the session when to run it.
+	static void AttachIdleHandler(const wxString& name, double seconds);
+	static void DetachIdleHandler(const wxString& name);
 
 	static void UserInterruptProcessing();
 

@@ -686,6 +686,65 @@ bool ibSession::Close(bool force)
 	return OnClose(force);
 }
 
+void ibSession::AttachIdleHandler(const wxString& name, double seconds)
+{
+	if (name.IsEmpty())
+		return;
+	const double period = seconds < 0 ? 0 : seconds;
+	const long long next = static_cast<long long>(wxGetUTCTimeMillis().GetValue())
+		+ static_cast<long long>(period * 1000.0);
+	for (IdleHandler& handler : m_idleHandlers) {
+		if (handler.m_name.CmpNoCase(name) == 0) {
+			handler.m_seconds = period;
+			handler.m_nextMs = next;
+			return;
+		}
+	}
+	m_idleHandlers.push_back(IdleHandler{ name, period, next });
+}
+
+void ibSession::DetachIdleHandler(const wxString& name)
+{
+	m_idleHandlers.erase(
+		std::remove_if(m_idleHandlers.begin(), m_idleHandlers.end(),
+			[&](const IdleHandler& handler) { return handler.m_name.CmpNoCase(name) == 0; }),
+		m_idleHandlers.end());
+}
+
+bool ibSession::HasIdleHandler(const wxString& name) const
+{
+	return IdleHandlerPeriod(name) >= 0;
+}
+
+double ibSession::IdleHandlerPeriod(const wxString& name) const
+{
+	for (const IdleHandler& handler : m_idleHandlers)
+		if (handler.m_name.CmpNoCase(name) == 0)
+			return handler.m_seconds;
+	return -1;
+}
+
+int ibSession::RunDueIdleHandlers(long long nowMs)
+{
+	ibValue* const root = GetManagerModule();
+	if (root != nullptr)
+		root->InvalidateNames();
+	int ran = 0;
+	for (IdleHandler& handler : m_idleHandlers) {
+		if (nowMs < handler.m_nextMs)
+			continue;
+		if (root == nullptr)
+			continue;
+		const long method = root->FindMethod(handler.m_name);
+		if (method == wxNOT_FOUND)
+			continue;
+		handler.m_nextMs = nowMs + static_cast<long long>(handler.m_seconds * 1000.0);
+		if (root->CallAsProc(method, nullptr, 0))
+			++ran;
+	}
+	return ran;
+}
+
 void ibSession::Teardown()
 {
 	// The other half: what actually dismantles the session. Reached only

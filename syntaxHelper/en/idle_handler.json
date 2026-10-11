@@ -1,0 +1,37 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "fn.AttachIdleHandler",
+      "name_local": "AttachIdleHandler",
+      "name_en": "AttachIdleHandler",
+      "kind": "system_procedure",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "AttachIdleHandler(name : string, seconds : number)",
+      "description": "Asks the session to call a procedure of its root module on a period. name is that procedure. seconds is the period. A second attach of the same name replaces the period. The session keeps the registration. A host asks the session to run what is due. The backend does not own a timer, so a host that never asks runs nothing.",
+      "parameters": "name — a procedure of the session's root module.\nseconds — the period, in seconds.",
+      "return_descr": "None.",
+      "example": "AttachIdleHandler(\"Tick\", 5);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.DetachIdleHandler"],
+      "reviewed": false
+    },
+    {
+      "id": "fn.DetachIdleHandler",
+      "name_local": "DetachIdleHandler",
+      "name_en": "DetachIdleHandler",
+      "kind": "system_procedure",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "DetachIdleHandler(name : string)",
+      "description": "Drops the idle registration of that name. A name that was not attached is left as it was.",
+      "parameters": "name — the procedure that was attached.",
+      "return_descr": "None.",
+      "example": "DetachIdleHandler(\"Tick\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.AttachIdleHandler"],
+      "reviewed": false
+    }
+  ]
+}
