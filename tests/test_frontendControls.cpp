@@ -19,6 +19,7 @@
 #include "backend/compiler/value.h"
 #include "backend/mcp/mcpTool.h"
 #include "backend/propertyManager/property/propertyType.h"
+#include "frontend/visualView/ctrl/formAttribute.h"
 #include "core/types.h"
 
 #include <wx/buffer.h>                            // wxMemoryBuffer (form serialize round-trip)
