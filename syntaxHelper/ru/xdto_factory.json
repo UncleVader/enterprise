@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.XDTOFactory",
+      "name_local": "XDTOFactory",
+      "name_en": "XDTOFactory",
+      "kind": "collection",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "XDTOFactory.Type(namespaceURI : string, name : string)",
+      "description": "Фабрика XDTO (ФабрикаXDTO), свойство глобального контекста. Пакет не загружается, и схема не проверяется.\n\nType(namespaceURI, name) записывает эти две строки как XDTOType. Обе обязательны и это строки; пустая — отказ: «XDTOFactory: the type needs a namespace and a name».\n\nCreate(type) принимает этот XDTOType и возвращает XDTODataObject. Поле открывается при первом упоминании имени. Пока его не записали, оно читается как Undefined. Type() у объекта возвращает XDTOType, из которого его создали. Create от чего-либо иного — отказ: «XDTOFactory: Create takes an XDTOType».",
+      "parameters": "namespaceURI, name — пространство имён типа и локальное имя.",
+      "return_descr": "XDTOType из Type, XDTODataObject из Create.",
+      "example": "Order = XDTOFactory.Create(XDTOFactory.Type(\"http://example/goods\", \"Order\"));\nOrder.addr = \"ada@example.com\";",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
