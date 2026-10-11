@@ -340,7 +340,10 @@ void DescribeRun(const ibJobRunByteCodeState& state, ibDataNode& into)
 bool Answered(bool sent, const ibJobRunByteCodeState& state, wxString& refusal)
 {
 	if (!sent) {
-		refusal = ibMcpNoAnswer(ibMcpText("The application did not answer in time. That is not the same "
+		// A bridge with nobody on the other end returns at once. That is not a wait that expired:
+		// the application was started without debug: true, so nothing is attached to answer.
+		const bool attached = debugClient != nullptr && debugClient->HasConnections();
+		refusal = ibMcpUnanswered(attached, ibMcpText("The application did not answer in time. That is not the same "
 			"as 'it did not happen' - if a run was being started, it may be running. code_status "
 			"with the token, when you have one, is the only thing that settles it."));
 		return false;

@@ -39,6 +39,12 @@
 #include <wx/dir.h>        // the ASCII rule reads the MCP sources themselves
 #include <wx/file.h>
 #include <wx/filename.h>
+#include <wx/init.h>       // wxInitializer — wxProcess::Exists needs wxBase
+#include <wx/process.h>
+#include <wx/utils.h>      // wxMilliSleep, wxGetProcessId
+#if defined(__UNIX__)
+#include <sys/wait.h>
+#endif
 
 #include <map>
 #include <set>
@@ -850,4 +856,68 @@ TEST(McpClipboard, OnlyFilledSlots_AreListed)
 
 	EXPECT_NE(std::find(slots.begin(), slots.end(), wxT("test.listed")), slots.end());
 	EXPECT_EQ(std::find(slots.begin(), slots.end(), wxT("test.notlisted")), slots.end());
+}
+
+// code_run with no debug session used to wait out and then say the application did not answer.
+// Nothing was listening. A process that has already exited is a different sentence, and it names
+// the crash log on this machine.
+TEST(CodeRunAnswer, NoDebuggerIsNotATimeout)
+{
+	const long saved = ibMcpStartedApplication();
+	ibMcpRememberStartedApplication(0);
+
+	const wxString timedOut = wxT("The application did not answer in time.");
+	const wxString said = ibMcpUnanswered(false, timedOut);
+	EXPECT_EQ(said.Find(wxT("did not answer in time")), wxNOT_FOUND);
+	EXPECT_NE(said.Find(wxT("No debugger is attached")), wxNOT_FOUND);
+
+	const wxString waited = ibMcpUnanswered(true, timedOut);
+	EXPECT_NE(waited.Find(wxT("did not answer in time")), wxNOT_FOUND);
+	EXPECT_EQ(waited.Find(wxT("No debugger is attached")), wxNOT_FOUND);
+
+	ibMcpRememberStartedApplication(saved);
+}
+
+TEST(CodeRunAnswer, AGoneProcessNamesThisMachinesCrashLog)
+{
+	wxInitializer wxInit;
+	ASSERT_TRUE(wxInit.IsOk());
+
+	const long saved = ibMcpStartedApplication();
+	struct Restore {
+		long m_pid;
+		~Restore() { ibMcpRememberStartedApplication(m_pid); }
+	} restore{ saved };
+
+	const long pid = wxExecute(wxT("sleep 30"), wxEXEC_ASYNC);
+	ASSERT_GT(pid, 0);
+	wxProcess::Kill(static_cast<int>(pid), wxSIGKILL, wxKILL_NOCHILDREN);
+#if defined(__UNIX__)
+	int status = 0;
+	for (int i = 0; i < 50 && ::waitpid(static_cast<pid_t>(pid), &status, WNOHANG) == 0; ++i)
+		wxMilliSleep(10);
+#endif
+	ASSERT_FALSE(wxProcess::Exists(static_cast<int>(pid)));
+
+	ibMcpRememberStartedApplication(pid);
+	const wxString usual = wxT("The application did not answer in time.");
+	const wxString gone = ibMcpNoAnswer(usual);
+	EXPECT_NE(gone.Find(wxT("GONE")), wxNOT_FOUND);
+#if defined(__WXMSW__)
+	EXPECT_NE(gone.Find(wxT("Windows event log")), wxNOT_FOUND);
+#elif defined(__WXOSX__)
+	EXPECT_EQ(gone.Find(wxT("Windows event log")), wxNOT_FOUND);
+	EXPECT_NE(gone.Find(wxT("Console")), wxNOT_FOUND);
+#else
+	EXPECT_EQ(gone.Find(wxT("Windows event log")), wxNOT_FOUND);
+	EXPECT_NE(gone.Find(wxT("system log")), wxNOT_FOUND);
+#endif
+
+	// A crash drops the connection. That is still "gone", not "nothing was attached".
+	const wxString unanswered = ibMcpUnanswered(false, usual);
+	EXPECT_NE(unanswered.Find(wxT("GONE")), wxNOT_FOUND);
+	EXPECT_EQ(unanswered.Find(wxT("No debugger is attached")), wxNOT_FOUND);
+
+	ibMcpRememberStartedApplication(static_cast<long>(wxGetProcessId()));
+	EXPECT_EQ(ibMcpNoAnswer(usual), usual);
 }
