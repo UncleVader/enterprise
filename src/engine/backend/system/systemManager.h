@@ -148,6 +148,9 @@ public:
 	// runtime values just by passing JSON"*).
 	static wxString SerializeValue(const ibValue& cData);
 	static ibValue  DeserializeValue(const wxString& strJson);
+	// Opens a form and returns it. A notify, when the close is accepted, is called with the
+	// close result. The backend does not create a window and does not wait.
+	static ibValue OpenForm(ibValue** paParams, const long lSizeArray);
 
 	// (⛔ NO MESSAGE CAPTURE HERE. Getting the lines a run printed is not a new mechanism: the
 	//  debug channel already carries messages from a running application to whoever is attached —

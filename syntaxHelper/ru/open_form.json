@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "fn.OpenForm",
+      "name_local": "OpenForm",
+      "name_en": "OpenForm",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "OpenForm(name, params, owner, uniqueKey, notify, windowMode)",
+      "description": "Открывает форму и возвращает ее. name — то же имя, что принимает GetCommonForm; пустое имя означает собственную форму объекта. params — Structure, ее поля записываются в запрос формы. owner — форма или фрейм, либо пусто. uniqueKey держит одну открытую форму: повторное открытие с тем же ключом возвращает ее; пустой ключ означает новую форму на каждый вызов. notify — NotifyDescription или пусто. Принятое закрытие вызывает notify с результатом закрытия и дополнительными параметрами описания. Отказ закрыть форму его не вызывает. windowMode записывается в запрос для фрейма. Бэкенд не создает окно и не ждет закрытия.",
+      "parameters": "name — имя формы.\nparams — Structure параметров открытия или пусто.\nowner — форма-владелец или фрейм, либо пусто.\nuniqueKey — ключ уже открытой формы или пусто.\nnotify — NotifyDescription, вызываемый при принятом закрытии, или пусто.\nwindowMode — как фрейм показывает окно, или пусто.",
+      "return_descr": "Форма.",
+      "example": "notify = New NotifyDescription(\"AfterClose\", ThisObject);\nform = OpenForm(\"Sales\", params, , \"sales\", notify, \"Modal\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.NotifyDescription"],
+      "reviewed": false
+    }
+  ]
+}

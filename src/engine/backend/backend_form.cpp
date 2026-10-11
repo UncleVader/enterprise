@@ -2,6 +2,7 @@
 #include "backend/backend_exception.h"
 #include "backend/backend_mainFrame.h"
 #include "backend/session/session.h"
+#include "backend/system/value/valueNotifyDescription.h"
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -30,6 +31,17 @@ ibFormPtr<ibBackendValueForm> ibBackendValueForm::CreateNewForm(
 
 	ibBackendFormException::Error();
 	return nullptr;
+}
+
+void ibBackendValueForm::RunCloseNotify(const ibValue& result)
+{
+	if (!m_closeNotify.IsReference())
+		return;
+	ibValueNotifyDescription* notify = nullptr;
+	if (!m_closeNotify.ConvertToValue(notify) || notify == nullptr)
+		return;
+	m_closeNotify = ibValue();
+	notify->Call(result);
 }
 
 bool ibSessionHasFrame()

@@ -5,6 +5,11 @@
 
 #include "systemManager.h"
 #include "backend/system/value/valueNotifyDescription.h"
+#include "backend/system/value/valueOpenForm.h"
+#include "backend/system/value/valueMap.h"
+#include "backend/system/value/valueGuid.h"
+
+#include <algorithm>
 
 #include "backend/metaCollection/metaFormObject.h"
 #include "backend/metadataConfiguration.h"
@@ -1171,3 +1176,156 @@ void ibValueNotifyDescription::Call(const ibValue& result)
 }
 
 VALUE_TYPE_REGISTER(ibValueNotifyDescription, "NotifyDescription", value_to_clsid("VL_NTFY"));
+
+namespace {
+
+// Forms this session has open, by the key the script passed. The session does not
+// know the type. A host with no session gets a new form on every open.
+struct OpenedForms {
+	std::vector<std::pair<wxString, ibValue>> m_items;
+};
+
+ibValue* OpenFormArg(ibValue** paParams, const long lSizeArray, const long index)
+{
+	if (paParams == nullptr || index >= lSizeArray || paParams[index] == nullptr)
+		return nullptr;
+	return paParams[index];
+}
+
+}
+
+ibValueOpenedForm::ibValueOpenedForm()
+	: ibValueDynamicMembers(ibValueTypes::TYPE_VALUE)
+{
+	m_members.Bind(this, &ibValueOpenedForm::Fill);
+}
+
+void ibValueOpenedForm::Fill(ibMemberTable& helper) const
+{
+	helper.AppendProp(wxT("WindowMode"), true, false, wxNOT_FOUND);
+	helper.AppendFunc(wxT("Close"), 1, wxT("Close(result)"));
+}
+
+void ibValueOpenedForm::Remember(const ibFormRequest& request, const ibValue& notify)
+{
+	m_request = request;
+	m_notify = notify;
+}
+
+bool ibValueOpenedForm::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+{
+	if (lPropNum != 0)
+		return false;
+	pvarPropVal = m_request.m_windowMode;
+	return true;
+}
+
+bool ibValueOpenedForm::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+{
+	if (lMethodNum != 0)
+		return false;
+	if (lSizeArray > 0 && paParams != nullptr && paParams[0] != nullptr)
+		m_result = *paParams[0];
+	pvarRetValue = CloseForm();
+	return true;
+}
+
+bool ibValueOpenedForm::CloseForm()
+{
+	if (m_closed)
+		return false;
+	// One refusal, the way a single beforeClose cancel works. The notify does not run.
+	if (m_refuse) {
+		m_refuse = false;
+		return false;
+	}
+	m_closed = true;
+	Forget();
+	ibValueNotifyDescription* notify = nullptr;
+	if (m_notify.IsReference() && m_notify.ConvertToValue(notify) && notify != nullptr)
+		notify->Call(m_result);
+	return true;
+}
+
+void ibValueOpenedForm::Forget()
+{
+	ibSession* const session = ibSession::Current();
+	if (session == nullptr)
+		return;
+	const std::shared_ptr<OpenedForms> opened = session->Local<OpenedForms>(false);
+	if (!opened)
+		return;
+	opened->m_items.erase(
+		std::remove_if(opened->m_items.begin(), opened->m_items.end(),
+			[this](const std::pair<wxString, ibValue>& item) {
+				return item.second.GetRef() == this;
+			}),
+		opened->m_items.end());
+}
+
+ibValue ibValueSystemFunction::OpenForm(ibValue** paParams, const long lSizeArray)
+{
+	ibFormRequest request;
+	ibValue notify;
+	wxString key;
+
+	if (ibValue* const name = OpenFormArg(paParams, lSizeArray, 0))
+		request.m_formName = wxString(name->GetString());
+
+	// params is a Structure. Its fields are the request's named values.
+	if (ibValue* const params = OpenFormArg(paParams, lSizeArray, 1)) {
+		ibValueContainer* structure = nullptr;
+		if (params->ConvertToValue(structure) && structure != nullptr) {
+			const long count = structure->GetNProps();
+			for (long i = 0; i < count; ++i) {
+				ibValue cell;
+				if (structure->GetPropVal(i, cell))
+					request.Set(wxString(structure->GetPropName(i)), cell);
+			}
+		}
+	}
+
+	// owner (argument 2) is the form or the frame. This call does not show a window,
+	// so the owner is not asked to create one.
+
+	if (ibValue* const unique = OpenFormArg(paParams, lSizeArray, 3)) {
+		key = wxString(unique->GetString());
+		ibValueGuid* guid = nullptr;
+		if (unique->ConvertToValue(guid) && guid != nullptr && !guid->IsEmpty())
+			request.m_formGuid = ibUniqueKey(static_cast<ibGuid>(*guid));
+	}
+
+	if (ibValue* const notifyArg = OpenFormArg(paParams, lSizeArray, 4)) {
+		if (notifyArg->IsReference())
+			notify = *notifyArg;
+	}
+
+	if (ibValue* const mode = OpenFormArg(paParams, lSizeArray, 5))
+		request.m_windowMode = wxString(mode->GetString());
+
+	ibSession* const session = ibSession::Current();
+	if (session != nullptr && !key.IsEmpty()) {
+		const std::shared_ptr<OpenedForms> opened = session->Local<OpenedForms>();
+		for (std::size_t i = 0; i < opened->m_items.size();) {
+			ibValueOpenedForm* existing = nullptr;
+			const bool alive = opened->m_items[i].second.ConvertToValue(existing)
+				&& existing != nullptr && !existing->IsClosed();
+			if (!alive) {
+				opened->m_items.erase(opened->m_items.begin() + static_cast<std::ptrdiff_t>(i));
+				continue;
+			}
+			if (opened->m_items[i].first.CmpNoCase(key) == 0)
+				return opened->m_items[i].second;
+			++i;
+		}
+	}
+
+	// A host with no frame still receives a form. Closing it runs the notify.
+	// CreateNewForm throws when there is no frame, and would make a window when there is one.
+	ibValueOpenedForm* const created = new ibValueOpenedForm();
+	created->Remember(request, notify);
+	ibValue held(created);
+	if (session != nullptr && !key.IsEmpty())
+		session->Local<OpenedForms>()->m_items.emplace_back(key, held);
+	return held;
+}

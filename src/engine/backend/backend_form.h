@@ -165,6 +165,13 @@ public:
 	// Its first reader is the list's Add: a row created in a list narrowed to one owner must be born
 	// with that owner, or it vanishes from the list the moment it is written.
 	virtual const ibFormRequest& GetFormRequest() const = 0;
+
+	// Called when this form has accepted CloseForm. A refused close does not call it.
+	void SetCloseNotify(const ibValue& notify) { m_closeNotify = notify; }
+	void RunCloseNotify(const ibValue& result);
+
+private:
+	ibValue m_closeNotify;
 };
 
 // ----------------------------------------------------------------------------

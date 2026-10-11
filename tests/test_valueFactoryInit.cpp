@@ -11,8 +11,11 @@
 #include "backend/backend_exception.h"
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/value.h"
+#include "backend/session/session.h"
 #include "backend/system/systemManager.h"
+#include "backend/system/value/valueMap.h"
 #include "backend/system/value/valueNotifyDescription.h"
+#include "backend/system/value/valueOpenForm.h"
 
 namespace {
 
@@ -137,6 +140,74 @@ TEST(NotifyDescription, TheNameAndQuestionCompile) {
 	} catch (const ibBackendException& err) {
 		FAIL() << err.GetErrorDescription().ToStdString();
 	}
+}
+
+TEST(OpenForm, ACloseRunsTheNotifyAndTheSameKeyReturnsTheOpenForm) {
+	g_notifyCalls = 0;
+	g_notifyResult.clear();
+	g_notifyExtra.clear();
+
+	ibValue module = ibValue::CreateObject(wxT("NotifyProbe"));
+	ibValue procedure(wxT("Handler"));
+	ibValue extra(wxT("more"));
+	ibValue* notifyArgs[] = { &procedure, &module, &extra };
+	ibValue notify = ibValue::CreateObject(wxT("NotifyDescription"), notifyArgs, 3);
+
+	ibValue structure = ibValue::CreateObject(wxT("Structure"));
+	ibValueStructure* asStructure = nullptr;
+	ASSERT_TRUE(structure.ConvertToValue(asStructure));
+	asStructure->Insert(ibValue(wxT("Period")), ibValue(wxT("2024")));
+
+	ibValue name(wxT("Sales"));
+	ibValue owner;
+	ibValue key(wxT("sales"));
+	ibValue mode(wxT("Modal"));
+	ibValue* args[] = { &name, &structure, &owner, &key, &notify, &mode };
+
+	const auto session = std::make_shared<ibSession>(wxT("open-form"), ibSessionKind::Enterprise);
+	ibSessionScope scope(session.get());
+
+	ibValue opened = ibValueSystemFunction::OpenForm(args, 6);
+	ibValueOpenedForm* form = nullptr;
+	ASSERT_TRUE(opened.ConvertToValue(form));
+	EXPECT_EQ(wxString(form->Request().m_formName), wxT("Sales"));
+	EXPECT_EQ(wxString(form->Request().Get(wxT("Period")).GetString()), wxT("2024"));
+	EXPECT_EQ(form->Request().m_windowMode, wxT("Modal"));
+	EXPECT_EQ(form->FindProp(wxT("WindowMode")), 0);
+	ibValue windowMode;
+	ASSERT_TRUE(form->GetPropVal(0, windowMode));
+	EXPECT_EQ(windowMode.GetString(), wxString(wxT("Modal")));
+
+	ibValue again = ibValueSystemFunction::OpenForm(args, 6);
+	EXPECT_EQ(again.GetRef(), opened.GetRef());
+
+	form->RefuseNextClose();
+	ibValue result(wxT("Yes"));
+	ibValue* closeArgs[] = { &result };
+	ibValue refused;
+	ASSERT_TRUE(form->CallAsFunc(form->FindMethod(wxT("Close")), refused, closeArgs, 1));
+	EXPECT_FALSE(refused.GetBoolean());
+	EXPECT_EQ(g_notifyCalls, 0);
+	EXPECT_FALSE(form->IsClosed());
+
+	ibValue still = ibValueSystemFunction::OpenForm(args, 6);
+	EXPECT_EQ(still.GetRef(), opened.GetRef());
+
+	ibValue accepted;
+	ASSERT_TRUE(form->CallAsFunc(0, accepted, closeArgs, 1));
+	EXPECT_TRUE(accepted.GetBoolean());
+	EXPECT_TRUE(form->IsClosed());
+	EXPECT_EQ(g_notifyCalls, 1);
+	EXPECT_EQ(g_notifyResult, wxT("Yes"));
+	EXPECT_EQ(g_notifyExtra, wxT("more"));
+
+	ibValue second;
+	ASSERT_TRUE(form->CallAsFunc(0, second, closeArgs, 1));
+	EXPECT_FALSE(second.GetBoolean());
+	EXPECT_EQ(g_notifyCalls, 1);
+
+	ibValue reopened = ibValueSystemFunction::OpenForm(args, 6);
+	EXPECT_NE(reopened.GetRef(), opened.GetRef());
 }
 
 TEST(ValueFactory, AnInitThatAnswersFalseIsStillCleanedUpAfter) {

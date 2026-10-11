@@ -133,6 +133,10 @@ struct ibFormRequest {
 	// period to open in, a row to stand on. A script writes these as a Structure.
 	std::map<wxString, ibValue> m_values;
 
+	// How the frame shows the window. The backend records it. The frame reads it. Empty means
+	// the frame's ordinary window.
+	wxString m_windowMode;
+
 	ibFormRequest() = default;
 
 	// 🛑⭐⭐ EXPLICIT, AND IT HAD TO BECOME SO. Implicit, this constructor turned every `wxString` into
