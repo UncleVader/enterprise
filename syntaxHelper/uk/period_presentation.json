@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "fn.PeriodPresentation",
+      "name_local": "PeriodPresentation",
+      "name_en": "PeriodPresentation",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "PeriodPresentation(begin : date, end : date, format : string)",
+      "description": "Інтервал дат так, як його читає заголовок звіту. Цілий місяць — його англійська назва і рік, цілий квартал — Qn yyyy, цілий рік — рік, один день — цей день, будь-який інший інтервал — дві дати. format можна не передавати. Формат з FP=False завжди відповідає двома датами. Це читання 1С ПредставлениеПериода для заголовків звітів.",
+      "parameters": "begin — перша дата.\nend — остання дата.\nformat — необов'язковий. FP=False лишає дві дати.",
+      "return_descr": "Рядок.",
+      "example": "header = PeriodPresentation(BegOfMonth(WorkingDate()), EndOfMonth(WorkingDate()));",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.BegOfMonth"],
+      "reviewed": false
+    }
+  ]
+}

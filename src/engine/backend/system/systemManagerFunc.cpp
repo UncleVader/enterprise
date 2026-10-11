@@ -395,6 +395,42 @@ ibValue ibValueSystemFunction::EndOfWeek(const ibValue& cData)   { return ibValu
 ibValue ibValueSystemFunction::BegOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Day)); }
 ibValue ibValueSystemFunction::EndOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Day)); }
 
+wxString ibValueSystemFunction::PeriodPresentation(const ibValue& begin, const ibValue& end, const wxString& format)
+{
+	ibDateTime from = begin.GetDate();
+	ibDateTime to = end.GetDate();
+	if (to < from) {
+		const ibDateTime swap = from;
+		from = to;
+		to = swap;
+	}
+	const auto day = [](const ibDateTime& date) {
+		return wxString::Format(wxT("%02ld.%02ld.%04ld"),
+			date.GetPart(ibDatePart::Day), date.GetPart(ibDatePart::Month), date.GetPart(ibDatePart::Year));
+	};
+	const auto whole = [&](ibTotalsPeriod unit) {
+		return from == from.BeginOfPeriod(unit) && to == from.EndOfPeriod(unit);
+	};
+	if (format.Find(wxT("FP=False")) == wxNOT_FOUND) {
+		if (whole(ibTotalsPeriod::Year))
+			return wxString::Format(wxT("%ld"), from.GetPart(ibDatePart::Year));
+		if (whole(ibTotalsPeriod::Quarter))
+			return wxString::Format(wxT("Q%ld %ld"), from.GetPart(ibDatePart::Quarter), from.GetPart(ibDatePart::Year));
+		if (whole(ibTotalsPeriod::Month)) {
+			static const wxChar* const months[] = {
+				wxT("January"), wxT("February"), wxT("March"), wxT("April"), wxT("May"), wxT("June"),
+				wxT("July"), wxT("August"), wxT("September"), wxT("October"), wxT("November"), wxT("December")
+			};
+			const long month = from.GetPart(ibDatePart::Month);
+			const wxChar* const name = month >= 1 && month <= 12 ? months[month - 1] : wxT("");
+			return wxString::Format(wxT("%s %ld"), name, from.GetPart(ibDatePart::Year));
+		}
+		if (whole(ibTotalsPeriod::Day))
+			return day(from);
+	}
+	return day(from) + wxT(" - ") + day(to);
+}
+
 int ibValueSystemFunction::GetYear(const ibValue& cData)         { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Year)); }
 int ibValueSystemFunction::GetMonth(const ibValue& cData)        { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Month)); }
 int ibValueSystemFunction::GetDay(const ibValue& cData)          { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Day)); }
