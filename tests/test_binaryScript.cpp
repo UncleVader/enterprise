@@ -129,11 +129,11 @@ TEST(BinaryScript, TheNameCompiles) {
 	cc.AddContextVariable(wxT("System"), &sys, true);
 	try {
 		ASSERT_TRUE(cc.Compile(
-			wxT("Procedure Check() {\n")
+			wxT("Procedure Check()\n")
 			wxT("    var text;\n")
 			wxT("    text = GetStringFromBinaryData(GetBinaryDataFromString(\"abc\"));\n")
 			wxT("    text = Base64String(Base64Value(\"YWJj\"));\n")
-			wxT("}\n")));
+			wxT("EndProcedure\n")));
 	}
 	catch (const ibBackendException& err) {
 		FAIL() << err.GetErrorDescription().ToStdString();
