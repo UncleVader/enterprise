@@ -59,8 +59,10 @@ TEST(RecordKey, CreateRecordKeyCopiesNamedDimensions)
 
 	ibValue empty;
 	ASSERT_TRUE(manager.CallAsFunc(create, empty, nullptr, 0));
+	const long blankField = empty.FindProp(wxT("Warehouse"));
+	ASSERT_GE(blankField, 0);
 	ibValue blank;
-	ASSERT_TRUE(empty.GetPropVal(warehouse, blank));
+	ASSERT_TRUE(empty.GetPropVal(blankField, blank));
 	EXPECT_TRUE(blank.IsEmpty());
 
 	ibValue wrong = StructureOf(wxT("Missing"), ibValue(wxT("x")));
