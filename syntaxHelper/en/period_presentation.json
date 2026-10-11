@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "fn.PeriodPresentation",
+      "name_local": "PeriodPresentation",
+      "name_en": "PeriodPresentation",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "PeriodPresentation(begin : date, end : date, format : string)",
+      "description": "A span of dates, as a report header reads it. A whole month is its English name and year, a whole quarter is Qn yyyy, a whole year is the year, a single day is that day, and any other span is the two days. format may be omitted. A format containing FP=False always answers with the two days. This is the 1C ПредставлениеПериода reading used on report headers.",
+      "parameters": "begin — the first date.\nend — the last date.\nformat — optional. FP=False keeps the two days.",
+      "return_descr": "String.",
+      "example": "header = PeriodPresentation(BegOfMonth(WorkingDate()), EndOfMonth(WorkingDate()));",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.BegOfMonth"],
+      "reviewed": false
+    }
+  ]
+}

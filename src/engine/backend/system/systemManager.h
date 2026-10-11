@@ -148,6 +148,9 @@ public:
 	// runtime values just by passing JSON"*).
 	static wxString SerializeValue(const ibValue& cData);
 	static ibValue  DeserializeValue(const wxString& strJson);
+	// A span of dates, as a report header reads it. A whole month, quarter or year is named;
+	// anything else is the two days. The format string is accepted; FP=False keeps the two days.
+	static wxString PeriodPresentation(const ibValue& begin, const ibValue& end, const wxString& format = wxEmptyString);
 
 	// (⛔ NO MESSAGE CAPTURE HERE. Getting the lines a run printed is not a new mechanism: the
 	//  debug channel already carries messages from a running application to whoever is attached —

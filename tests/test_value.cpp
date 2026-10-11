@@ -337,6 +337,16 @@ TEST(ValueTest, TheScriptsPeriodsAreTheDatesOwn) {
     EXPECT_EQ(ibDateTime(2024, 9, 30, 23, 59, 59), ibValueSystemFunction::EndOfQuart(d).GetDate());
     EXPECT_EQ(ibDateTime(2024, 1, 1), ibValueSystemFunction::BegOfYear(d).GetDate());
     EXPECT_EQ(ibDateTime(2024, 12, 31, 23, 59, 59), ibValueSystemFunction::EndOfYear(d).GetDate());
+    EXPECT_EQ(wxString(wxT("August 2024")), ibValueSystemFunction::PeriodPresentation(
+        ibValueSystemFunction::BegOfMonth(d), ibValueSystemFunction::EndOfMonth(d)));
+    EXPECT_EQ(wxString(wxT("2024")), ibValueSystemFunction::PeriodPresentation(
+        ibValueSystemFunction::BegOfYear(d), ibValueSystemFunction::EndOfYear(d)));
+    EXPECT_EQ(wxString(wxT("Q3 2024")), ibValueSystemFunction::PeriodPresentation(
+        ibValueSystemFunction::BegOfQuart(d), ibValueSystemFunction::EndOfQuart(d)));
+    EXPECT_EQ(wxString(wxT("01.08.2024 - 17.08.2024")), ibValueSystemFunction::PeriodPresentation(
+        ibValueSystemFunction::BegOfMonth(d), d, wxT("FP=False")));
+    ibValueSystemFunction system;
+    EXPECT_NE(system.FindMethod(wxT("PeriodPresentation")), wxNOT_FOUND);
     EXPECT_EQ(ibDateTime(2024, 8, 17), ibValueSystemFunction::BegOfDay(d).GetDate());
     EXPECT_EQ(ibDateTime(2024, 8, 17, 23, 59, 59), ibValueSystemFunction::EndOfDay(d).GetDate());
     EXPECT_EQ(ibDateTime(2024, 2, 29, 10, 30), ibValueSystemFunction::AddMonth(ibValue(2024, 1, 31, 10, 30, 0), 1).GetDate());
