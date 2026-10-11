@@ -4,6 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "systemManager.h"
+#include "backend/system/value/valueNotifyDescription.h"
 
 #include "backend/metaCollection/metaFormObject.h"
 #include "backend/metadataConfiguration.h"
@@ -1095,3 +1096,78 @@ ibValue ibValueSystemFunction::RunBackground(const wxString& strProcedureName, i
 	// natural handling point.
 	return new ibValueBackgroundJob(manager->StartBackground(strProcedureName, args));
 }
+
+enum {
+	eNotifyProcedure,
+	eNotifyModule,
+	eNotifyAdditional
+};
+
+ibValueNotifyDescription::ibValueNotifyDescription()
+	: ibValueStaticMembers(ibValueTypes::TYPE_VALUE)
+{
+}
+
+bool ibValueNotifyDescription::Init(ibValue** paParams, const long lSizeArray)
+{
+	if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr || paParams[0]->GetString().IsEmpty())
+		ibBackendCoreException::Error(_("NotifyDescription: the procedure name is not given"));
+	m_procedure = paParams[0]->GetString();
+	if (lSizeArray > 1 && paParams[1] != nullptr)
+		m_module = *paParams[1];
+	if (lSizeArray > 2 && paParams[2] != nullptr)
+		m_additional = *paParams[2];
+	return true;
+}
+
+void ibValueNotifyDescription_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
+{
+	helper.AppendProp(wxT("ProcedureName"));
+	helper.AppendProp(wxT("Module"));
+	helper.AppendProp(wxT("AdditionalParameters"));
+	helper.AppendConstructor(3, wxT("NotifyDescription(procedureName, module, additionalParameters)"));
+}
+
+bool ibValueNotifyDescription::SetPropVal(const long lPropNum, const ibValue& varPropVal)
+{
+	switch (lPropNum) {
+	case eNotifyProcedure:  m_procedure = varPropVal.GetString(); return true;
+	case eNotifyModule:     m_module = varPropVal; return true;
+	case eNotifyAdditional: m_additional = varPropVal; return true;
+	}
+	return false;
+}
+
+bool ibValueNotifyDescription::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+{
+	switch (lPropNum) {
+	case eNotifyProcedure:  pvarPropVal = m_procedure; return true;
+	case eNotifyModule:     pvarPropVal = m_module; return true;
+	case eNotifyAdditional: pvarPropVal = m_additional; return true;
+	}
+	return false;
+}
+
+void ibValueNotifyDescription::Call(const ibValue& result)
+{
+	if (m_procedure.IsEmpty())
+		ibBackendCoreException::Error(_("NotifyDescription: the procedure name is not given"));
+	if (m_module.IsEmpty())
+		ibBackendCoreException::Error(_("NotifyDescription: the module is not given"));
+
+	const long method = m_module.FindMethod(m_procedure);
+	if (method == wxNOT_FOUND)
+		ibBackendCoreException::Error(_("NotifyDescription: '%s' is not a procedure of the module"), m_procedure);
+
+	ibValue answer = result;
+	ibValue extra = m_additional;
+	ibValue* args[] = { &answer, &extra };
+	ibValue sink;
+	const bool ran = m_module.HasRetVal(method)
+		? m_module.CallAsFunc(method, sink, args, 2)
+		: m_module.CallAsProc(method, args, 2);
+	if (!ran)
+		ibBackendCoreException::Error(_("NotifyDescription: '%s' did not run"), m_procedure);
+}
+
+VALUE_TYPE_REGISTER(ibValueNotifyDescription, "NotifyDescription", value_to_clsid("VL_NTFY"));
