@@ -32,6 +32,10 @@
 #include <wx/process.h>   // wxProcess::Exists — is the application app_run started still there
 #include <wx/utils.h>     // wxMilliSleep — waiting for that process to go
 #include <mutex>
+#if defined(__UNIX__)
+#include <cstring>        // memset — waitid's siginfo
+#include <sys/wait.h>     // waitid — an exited child is a zombie until the event loop reaps it
+#endif
 
 #include <map>   // property name -> the category it was declared into
 #include "backend/restructureInfo.h"              // the ledger an object complains into
@@ -340,23 +344,52 @@ long ibMcpStartedApplication()
 	return StartedApplication().load();
 }
 
+namespace {
+
+// wxKILL_CHILDREN signals the process group (-pid). A client that is not the group
+// leader never sees it, so the process stays up and the designer stays on its port.
+void SignalStartedApplication(long pid, wxSignal sig)
+{
+	wxProcess::Kill(static_cast<int>(pid), sig, wxKILL_NOCHILDREN);
+	wxProcess::Kill(static_cast<int>(pid), sig, wxKILL_CHILDREN);
+}
+
+// Exited, whether or not this process has been reaped. wxProcess::Exists is kill(pid, 0),
+// which still succeeds for a zombie, and the designer's SIGCHLD handler reaps only when
+// the event loop next runs — so a client that has already died looks alive for the whole
+// wait. The port is free either way. WNOWAIT leaves the reap to that handler.
+bool StartedApplicationHasExited(long pid)
+{
+#if defined(__UNIX__)
+	siginfo_t info;
+	std::memset(&info, 0, sizeof(info));
+	if (::waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0
+		&& info.si_pid != 0)
+		return true;
+#endif
+	return !wxProcess::Exists(static_cast<int>(pid));
+}
+
+} // namespace
+
 bool ibMcpEndStartedApplication(long pid)
 {
 	if (pid == 0)
 		return false;
-	if (!wxProcess::Exists((int)pid))
+	if (StartedApplicationHasExited(pid))
 		return true;
 
 	// Ask, then insist. SIGTERM lets it close its session; a client that does not
 	// go still holds the debug port, and the designer reconnects to that port.
-	wxProcess::Kill((int)pid, wxSIGTERM, wxKILL_CHILDREN);
-	for (int waited = 0; waited < 100 && wxProcess::Exists((int)pid); ++waited)
+	SignalStartedApplication(pid, wxSIGTERM);
+	for (int waited = 0; waited < 100 && !StartedApplicationHasExited(pid); ++waited)
 		wxMilliSleep(50);
-	if (wxProcess::Exists((int)pid))
-		wxProcess::Kill((int)pid, wxSIGKILL, wxKILL_CHILDREN);
-	for (int waited = 0; waited < 100 && wxProcess::Exists((int)pid); ++waited)
-		wxMilliSleep(50);
-	return !wxProcess::Exists((int)pid);
+	if (!StartedApplicationHasExited(pid)) {
+		SignalStartedApplication(pid, wxSIGKILL);
+		for (int waited = 0; waited < 100 && !StartedApplicationHasExited(pid); ++waited)
+			wxMilliSleep(50);
+	}
+	return StartedApplicationHasExited(pid);
 }
 
 wxString ibMcpNoAnswer(const wxString& usual)
