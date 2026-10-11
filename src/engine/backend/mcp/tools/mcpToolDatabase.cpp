@@ -215,8 +215,9 @@ public:
 			"database holds, so an edited module gets to the running application only through this, and "
 			"then after a restart (app_run restart). READ database_diff FIRST: this writes DDL and can "
 			"take the base exclusively. With confirm=false it goes all the way and then rolls "
-			"back, answering with the ledger of every CREATE, ALTER and DROP it would have made - "
-			"which is the only way to see the schema changes in advance, because the engine has "
+			"back, answering with the ledger of what it applied: each new, changed or removed "
+			"object, attribute and tabular column, and every CREATE, ALTER and DROP. "
+			"A metadata change that moves no table is still a change. The engine has "
 			"no rehearsal mode by design. Saving first costs nothing here - config_save stores the "
 			"configuration without touching the structure, so the ledger this hands back still "
 			"holds everything the base has not got.");

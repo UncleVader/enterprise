@@ -148,6 +148,14 @@ public:
 		ibValueMetaObject* rightRoot
 	);
 
+	// What an apply would hand a caller: one line per object, attribute, or tabular
+	// column that differs. Left is the database's copy, right is the configuration
+	// being applied. Modules are left out — they ride their object.
+	static std::vector<wxString> AppliedAccount(
+		ibValueMetaObject* baseline,
+		ibValueMetaObject* edited
+	);
+
 	// Localized group label for a metadata CLSID (Catalogs, Documents,
 	// Attributes, ...). Mirrors the constants in
 	// treeConfiguration_impl.cpp. Returns a hex-formatted fallback for

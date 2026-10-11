@@ -14,6 +14,8 @@
 #include <iterator>
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaObject.h"   // ibValueMetaObject + g_meta*CLSID
+#include "backend/metaCollection/metaDiff.h"
+#include "backend/restructureInfo.h"
 
 TEST(MetadataTree, FreshConfigHasNoBusinessObjects) {
     ibMetaDataConfigurationFile cfg;
@@ -168,4 +170,47 @@ TEST(MetadataTree, CreatingEveryHostedKindTwiceKeepsBothAndNamesThemApart) {
 			<< "two " << candidate.name
 			<< " objects were created with the same name";
 	}
+}
+
+// config_apply's changes count is the ledger's length. A new object, its attribute
+// and a tabular column used to leave that ledger empty, because none of them is a
+// CREATE or ALTER by itself.
+TEST(MetadataTree, AnApplyAccountsForTheObjectTheAttributeAndTheColumn) {
+	ibMetaDataConfigurationFile cfg;
+	ibValueMetaObjectConfiguration* root = cfg.GetCommonMetaObject();
+	ASSERT_NE(root, nullptr);
+
+	ibValueMetaObject* catalog = cfg.CreateMetaObject(g_metaCatalogCLSID, root, false);
+	ASSERT_NE(catalog, nullptr);
+	ibValueMetaObject* attribute = cfg.CreateMetaObject(g_metaAttributeCLSID, catalog, false);
+	ASSERT_NE(attribute, nullptr);
+	ibValueMetaObject* table = cfg.CreateMetaObject(g_metaTableCLSID, catalog, false);
+	ASSERT_NE(table, nullptr);
+	ibValueMetaObject* column = cfg.CreateMetaObject(g_metaAttributeCLSID, table, false);
+	ASSERT_NE(column, nullptr);
+
+	const std::vector<wxString> lines = ibMetaDiffWalker::AppliedAccount(nullptr, root);
+	ibRestructureInfo ledger;
+	for (const wxString& line : lines)
+		ledger.AppendInfo(line);
+
+	EXPECT_EQ(ledger.Count(), lines.size());
+	EXPECT_GT(ledger.Count(), 0u);
+
+	bool sawObject = false;
+	bool sawAttribute = false;
+	bool sawColumn = false;
+	for (const wxString& line : lines) {
+		if (line.Contains(wxT("Add ")) && line.Contains(catalog->GetName()) && !line.Contains(wxT("attribute ")) && !line.Contains(wxT("column ")))
+			sawObject = true;
+		if (line.Contains(wxT("attribute ")) && line.Contains(attribute->GetName()) && line.Contains(catalog->GetName()))
+			sawAttribute = true;
+		if (line.Contains(wxT("column ")) && line.Contains(column->GetName()) && line.Contains(table->GetName()))
+			sawColumn = true;
+	}
+	EXPECT_TRUE(sawObject);
+	EXPECT_TRUE(sawAttribute);
+	EXPECT_TRUE(sawColumn);
+
+	EXPECT_TRUE(ibMetaDiffWalker::AppliedAccount(root, root).empty());
 }
