@@ -4370,12 +4370,33 @@ enum
 
 bool ibValueRecordKeyObject::SetPropVal(const long lPropNum, const ibValue& varPropVal)
 {
+	const ibMetaID id = m_members.GetPropData(lPropNum);
+	if (id == wxNOT_FOUND || m_metaObject == nullptr)
+		return false;
+	for (const auto* attr : m_metaObject->GetGenericDimensionArrayObject()) {
+		if (attr != nullptr && attr->GetMetaID() == id) {
+			m_keyValues.insert_or_assign(id, varPropVal);
+			return true;
+		}
+	}
 	return false;
 }
 
 bool ibValueRecordKeyObject::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 {
-	return false;
+	const ibMetaID id = m_members.GetPropData(lPropNum);
+	if (id == wxNOT_FOUND || m_metaObject == nullptr)
+		return false;
+	const auto held = m_keyValues.find(id);
+	if (held != m_keyValues.end()) {
+		pvarPropVal = held->second;
+		return true;
+	}
+	const ibValueMetaObjectAttributeBase* attribute = m_metaObject->FindAnyAttributeObjectByFilter(id);
+	if (attribute == nullptr)
+		return false;
+	pvarPropVal = attribute->CreateValue();
+	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////
