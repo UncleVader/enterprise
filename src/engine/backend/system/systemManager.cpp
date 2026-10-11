@@ -129,7 +129,9 @@ enum
 	enCurrentLanguage,
 	enPrivilegedMode,
 	enSetPrivilegedMode,
-	enPredefinedValue
+	enPredefinedValue,
+	enLockDataForEdit,
+	enUnlockDataForEdit
 };
 
 void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -260,6 +262,8 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	helper.AppendFunc(wxT("PrivilegedMode"), wxT("PrivilegedMode()"));
 	helper.AppendProc(wxT("SetPrivilegedMode"), 1, wxT("SetPrivilegedMode(on : boolean)"));
 	helper.AppendFunc(wxT("PredefinedValue"), 1, wxT("PredefinedValue(path : string)"));
+	helper.AppendProc(wxT("LockDataForEdit"), 3, wxT("LockDataForEdit(data, version, formId)"));
+	helper.AppendProc(wxT("UnlockDataForEdit"), 2, wxT("UnlockDataForEdit(data, formId)"));
 };
 
 #include "backend/compiler/enumUnit.h"
@@ -513,6 +517,20 @@ bool ibValueSystemFunction::CallAsProc(const long lMethodNum, ibValue** paParams
 			if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
 				ibBackendCoreException::Error(_("SetPrivilegedMode: on or off is not given"));
 			SetPrivilegedMode(paParams[0]->GetBoolean());
+			return true;
+		case enLockDataForEdit:
+			if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+				ibBackendCoreException::Error(_("LockDataForEdit: the data is not given"));
+			LockDataForEdit(*paParams[0],
+				lSizeArray > 1 && paParams[1] != nullptr ? *paParams[1] : ibValue(),
+				lSizeArray > 2 && paParams[2] != nullptr ? *paParams[2] : ibValue());
+			return true;
+		case enUnlockDataForEdit:
+			if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
+				ibBackendCoreException::Error(_("UnlockDataForEdit: the data is not given"));
+			UnlockDataForEdit(*paParams[0],
+				lSizeArray > 1 && paParams[1] != nullptr ? *paParams[1] : ibValue(),
+				lSizeArray > 1);
 			return true;
 		case enEndJob: EndJob(paParams[0]->GetInteger()); return true;
 		case enUserInterruptProcessing: UserInterruptProcessing(); return true;

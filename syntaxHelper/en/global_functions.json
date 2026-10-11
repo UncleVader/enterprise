@@ -2019,6 +2019,38 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.CurrentLanguage"],
       "reviewed": true
+    },
+    {
+      "id": "fn.LockDataForEdit",
+      "name_local": "LockDataForEdit",
+      "name_en": "LockDataForEdit",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "LockDataForEdit(data, version, formId)",
+      "description": "Locks a reference for this session so another session cannot edit that row. version is accepted and is not compared with the stored row. formId names which form holds the lock; locking the same reference again keeps one lock. No session, an empty reference, or no lock manager: the call is refused and names that.",
+      "syntax_block": "LockDataForEdit(data, version, formId)",
+      "parameters": "data — a reference. version — accepted, not compared. formId — which form holds the lock; omit it to hold the reference with no form.",
+      "return_descr": "None.",
+      "example": "LockDataForEdit(Ref);\nUnlockDataForEdit(Ref);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.UnlockDataForEdit"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.UnlockDataForEdit",
+      "name_local": "UnlockDataForEdit",
+      "name_en": "UnlockDataForEdit",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "UnlockDataForEdit(data, formId)",
+      "description": "Releases the lock LockDataForEdit took. With no formId, every hold on that reference in this session is released. A reference this session does not hold is left as it is.",
+      "syntax_block": "UnlockDataForEdit(data, formId)",
+      "parameters": "data — the reference that was locked. formId — omit it to release every hold on that reference in this session.",
+      "return_descr": "None.",
+      "example": "UnlockDataForEdit(Ref);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.LockDataForEdit"],
+      "reviewed": true
     }
   ]
 }

@@ -171,6 +171,62 @@ TEST(PlatformPredefined, ACatalogPredefinedItemAndEmptyRefResolve) {
     }
 }
 
+TEST(PlatformLock, AReferenceIsNamedBeforeTheSession) {
+    try {
+        ibValueSystemFunction::LockDataForEdit(ibValue(wxT("not-a-ref")));
+        FAIL() << "a string must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("reference")));
+    }
+    try {
+        ibValueSystemFunction::UnlockDataForEdit(ibValue(wxT("not-a-ref")));
+        FAIL() << "a string must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("reference")));
+    }
+
+    ibMetaDataConfigurationFile cfg;
+    ibValueMetaObject* root = cfg.GetCommonMetaObject();
+    ibValueMetaObject* created = cfg.CreateMetaObject(g_metaCatalogCLSID, root, false);
+    ASSERT_NE(created, nullptr);
+    created->SetName(wxT("Warehouses"));
+    auto* catalog = dynamic_cast<ibValueMetaObjectRecordDataHierarchyMutableRef*>(created);
+    ASSERT_NE(catalog, nullptr);
+    catalog->AppendPredefinedValue(wxT("Main"), wxT(""), wxT("Main warehouse"));
+
+    ibValue empty = ibValueSystemFunction::PredefinedValue(&cfg, wxT("Catalog.Warehouses.EmptyRef"));
+    try {
+        ibValueSystemFunction::LockDataForEdit(empty);
+        FAIL() << "an empty reference must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("empty")));
+    }
+
+    ibValue found = ibValueSystemFunction::PredefinedValue(&cfg, wxT("Catalog.Warehouses.Main"));
+    try {
+        ibValueSystemFunction::LockDataForEdit(found);
+        FAIL() << "a reference with no session must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("session")));
+    }
+}
+
+TEST(PlatformLock, TheNamesCompile) {
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    ibValueSystemFunction valueSystem;
+    cc.AddContextVariable(wxT("System"), &valueSystem, true);
+    const wxString src =
+        wxT("Procedure Check()\n")
+        wxT("    LockDataForEdit(Undefined);\n")
+        wxT("    UnlockDataForEdit(Undefined);\n")
+        wxT("EndProcedure\n");
+    try {
+        ASSERT_TRUE(cc.Compile(src));
+    } catch (const ibBackendException& err) {
+        FAIL() << err.GetErrorDescription().ToStdString();
+    }
+}
+
 TEST(SessionDbLayer, ThrowsWhenNoCurrentSession) {
     // No SessionScope active on this thread → ibSession::Current() is
     // null → DatabaseLayer() throws an explicit error rather than

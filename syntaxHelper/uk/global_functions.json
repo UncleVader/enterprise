@@ -2015,6 +2015,38 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.CurrentLanguage"],
       "reviewed": true
+    },
+    {
+      "id": "fn.LockDataForEdit",
+      "name_local": "LockDataForEdit",
+      "name_en": "LockDataForEdit",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "LockDataForEdit(data, version, formId)",
+      "description": "Блокує посилання для цієї сесії, щоб інша сесія не змінювала цей рядок. version приймається і з рядком не порівнюється. formId називає форму, яка тримає блокування; повторне блокування того ж посилання лишається одним. Немає сесії, порожнє посилання або немає менеджера блокувань — виклик відмовляє і називає це.",
+      "syntax_block": "LockDataForEdit(data, version, formId)",
+      "parameters": "data — посилання. version — приймається, не порівнюється. formId — яка форма тримає блокування.",
+      "return_descr": "Немає.",
+      "example": "LockDataForEdit(Ref);\nUnlockDataForEdit(Ref);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.UnlockDataForEdit"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.UnlockDataForEdit",
+      "name_local": "UnlockDataForEdit",
+      "name_en": "UnlockDataForEdit",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "UnlockDataForEdit(data, formId)",
+      "description": "Знімає блокування, яке взяв LockDataForEdit. Без formId знімаються всі утримання цього посилання в сесії. Посилання, якого сесія не тримає, лишається як є.",
+      "syntax_block": "UnlockDataForEdit(data, formId)",
+      "parameters": "data — посилання, яке блокували. formId — без нього знімаються всі утримання цього посилання в сесії.",
+      "return_descr": "Немає.",
+      "example": "UnlockDataForEdit(Ref);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.LockDataForEdit"],
+      "reviewed": true
     }
   ]
 }

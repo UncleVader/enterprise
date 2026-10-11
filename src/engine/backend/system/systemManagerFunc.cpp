@@ -26,7 +26,13 @@
 #include "backend/job/jobManager.h"                  // ibBackgroundRun — keeps what a windowless run says
 #include "backend/metaCollection/metaLanguageObject.h"  // CurrentLanguage answers a Language object
 #include "backend/metaCollection/genericData.h"          // ResolveQueryConstant — PredefinedValue
+#include "backend/metaCollection/partial/commonObject.h" // a reference's metadata, for the lock path
+#include "backend/lock/lockManager.h"                    // LockDataForEdit takes the same row the form does
 #include "core/stringUtils.h"
+
+#include <map>
+#include <mutex>
+#include <set>
 
 //--- Basic:
 bool ibValueSystemFunction::Boolean(const ibValue& cValue)
@@ -1201,4 +1207,117 @@ ibValue ibValueSystemFunction::RunBackground(const wxString& strProcedureName, i
 	// call lands here, on the caller's stack, with the script's try/except as the
 	// natural handling point.
 	return new ibValueBackgroundJob(manager->StartBackground(strProcedureName, args));
+}
+
+namespace {
+
+struct EditLockKey {
+	wxString session;
+	wxString object;
+	bool operator<(const EditLockKey& other) const {
+		if (session != other.session)
+			return session < other.session;
+		return object < other.object;
+	}
+};
+
+struct EditLockHold {
+	ibLockHandle handle;
+	std::set<wxString> forms;
+};
+
+std::mutex& EditLockGate()
+{
+	static std::mutex gate;
+	return gate;
+}
+
+std::map<EditLockKey, EditLockHold>& EditLocks()
+{
+	static std::map<EditLockKey, EditLockHold> held;
+	return held;
+}
+
+ibValueReferenceDataObject* AsReference(const ibValue& data)
+{
+	ibValueReferenceDataObject* ref = nullptr;
+	if (!data.ConvertToValue(ref))
+		return nullptr;
+	return ref;
+}
+
+// The reference is checked before the session, so a bad argument is named
+// even when no session is current.
+const ibValueReferenceDataObject* RequireReference(const ibValue& data, const wxString& verb)
+{
+	const ibValueReferenceDataObject* ref = AsReference(data);
+	if (ref == nullptr)
+		ibBackendCoreException::Error(_("%s: the data is not a reference"), verb);
+	if (!ref->GetGuid().isValid())
+		ibBackendCoreException::Error(_("%s: the reference is empty"), verb);
+	return ref;
+}
+
+} // namespace
+
+void ibValueSystemFunction::LockDataForEdit(const ibValue& data, const ibValue& version, const ibValue& formId)
+{
+	// version is part of the call so existing code compiles. Comparing it
+	// with the stored row needs a read this path does not do.
+	(void)version;
+
+	const ibValueReferenceDataObject* ref = RequireReference(data, wxT("LockDataForEdit"));
+	ibSession* session = ibSession::Current();
+	if (session == nullptr)
+		ibBackendCoreException::Error(_("LockDataForEdit: there is no session"));
+	const ibValueMetaObjectRecordData* meta = ref->GetMetaObject();
+	if (meta == nullptr)
+		ibBackendCoreException::Error(_("LockDataForEdit: the reference has no metadata"));
+	ibLockManager* locks = ibApplicationInstance::GetLockManager();
+	if (locks == nullptr)
+		ibBackendCoreException::Error(_("LockDataForEdit: the lock manager is not initialised"));
+
+	const EditLockKey key{ session->GetId(), wxString(ref->GetGuid()) };
+	const wxString form = formId.GetString();
+	std::lock_guard<std::mutex> gate(EditLockGate());
+	auto& held = EditLocks();
+	auto it = held.find(key);
+	if (it != held.end() && it->second.handle.IsValid()) {
+		it->second.forms.insert(form);
+		return;
+	}
+
+	// Same-owner re-entry (a form already holds the row) answers with an
+	// empty handle and does not insert a second row. Keep that handle only
+	// when it owns a row, so Unlock cannot release a lock it did not take.
+	ibLockHandle handle = locks->Acquire({
+		ibLockItem::ForRef(meta->GetDocPath(), ibGuid(ref->GetGuid()))
+	});
+	EditLockHold created;
+	created.handle = std::move(handle);
+	created.forms.insert(form);
+	held.insert_or_assign(key, std::move(created));
+}
+
+void ibValueSystemFunction::UnlockDataForEdit(const ibValue& data, const ibValue& formId, bool formGiven)
+{
+	const ibValueReferenceDataObject* ref = RequireReference(data, wxT("UnlockDataForEdit"));
+	ibSession* session = ibSession::Current();
+	if (session == nullptr)
+		ibBackendCoreException::Error(_("UnlockDataForEdit: there is no session"));
+
+	const EditLockKey key{ session->GetId(), wxString(ref->GetGuid()) };
+	std::lock_guard<std::mutex> gate(EditLockGate());
+	auto& held = EditLocks();
+	auto it = held.find(key);
+	if (it == held.end())
+		return;
+	if (formGiven)
+		it->second.forms.erase(formId.GetString());
+	else
+		it->second.forms.clear();
+	if (!it->second.forms.empty())
+		return;
+	it->second.handle.Release();
+	held.erase(it);
 }
