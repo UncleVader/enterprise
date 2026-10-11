@@ -121,6 +121,11 @@ public:
 	virtual void OnCreateFormObject(ibValueMetaObjectFormBase* metaForm);
 	virtual void OnRemoveMetaForm(ibValueMetaObjectFormBase* metaForm);
 
+	// A common attribute's column belongs here the way it belongs on a catalog: the register has a
+	// table to put it on, and a declaration that is used everywhere includes this family. The other
+	// register families have not taken that decision, so they still answer no.
+	virtual bool IsCompositionAllowed() const override { return true; }
+
 	//has record manager 
 	virtual bool HasRecordManager() const { return GetWriteRegisterMode() == ibWriteRegisterMode::eIndependent; }
 

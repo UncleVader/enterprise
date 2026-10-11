@@ -941,10 +941,10 @@ public:
 		| ibMetaFeature_Object | ibMetaFeature_Selection;
 
 	// COMMON ATTRIBUTES LAND HERE — on the line a catalog and a document share, which is
-	// the line that has stored, editable rows to put a column on. Registers and the
-	// unstored kinds (processors, reports) are deliberately left out: for a register it is
-	// a decision about data separation that has not been taken, and an unstored object has
-	// no table at all.
+	// the line that has stored, editable rows to put a column on. An information register
+	// opts in on its own line (it has that table too). The other register families, and the
+	// unstored kinds (processors, reports), stay out: their composition has not been decided,
+	// and an unstored object has no table at all.
 	virtual bool IsCompositionAllowed() const override { return true; }
 
 	public:
@@ -1821,7 +1821,7 @@ public:
 		// The copies come along: the designer tree lists what an object HAS, and a common
 		// attribute it carries is one of those — visible where it lives, and edited only
 		// where it was declared.
-		FillArrayObjectByFilter<ibValueMetaObjectAttributeBase>(array, { g_metaAttributeCLSID });
+		FillArrayObjectByFilter<ibValueMetaObjectAttributeBase>(array, { g_metaAttributeCLSID, g_metaCommonAttributeColumnCLSID });
 		return array;
 	}
 
@@ -1941,6 +1941,10 @@ public:
 		if (clsid == g_metaDimensionCLSID ||
 			clsid == g_metaResourceCLSID ||
 			clsid == g_metaAttributeCLSID)
+			return clsid;
+		// A common attribute's copy, asked of the register the way a catalog is asked: only a
+		// family that has opted in (an information register) has a column to put it on.
+		if (clsid == g_metaCommonAttributeColumnCLSID && IsCompositionAllowed())
 			return clsid;
 		return ibValueMetaObjectGenericData::ResolveChild(clsid);
 	}
