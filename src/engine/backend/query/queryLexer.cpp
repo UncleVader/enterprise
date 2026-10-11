@@ -212,6 +212,10 @@ std::map<wxString, ibQueryKeyword>& KeywordByText()
 		std::map<wxString, ibQueryKeyword> m;
 		for (const ibQueryKeyWordEntry& e : s_queryKeyWordsEN)
 			m[e.m_text] = e.m_kw;
+		// 1C writes ПО for both ON and BY (ЛЕВОЕ СОЕДИНЕНИЕ … ПО, УПОРЯДОЧИТЬ ПО).
+		// Recorded as On; AcceptKw(By) accepts that same token. Kept OUT of the
+		// English table so rendering still spells the keyword ON / BY.
+		m[wxT("ПО")] = ibQueryKeyword::On;
 		return m;
 	}();
 	return s_map;
