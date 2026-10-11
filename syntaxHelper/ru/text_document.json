@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.TextDocument",
+      "name_local": "TextDocument",
+      "name_en": "TextDocument",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime", "text_files"],
+      "signature": "New TextDocument()",
+      "description": "Строки текста в памяти (ТекстовыйДокумент). New TextDocument() создаёт пустой документ.\n\nSetText заменяет весь текст. Перевод строки — LF, CRLF или CR; перевод в самом конце завершает последнюю строку и не открывает за ней пустую. GetText соединяет строки символом LF и не добавляет его после последней.\n\nAddLine добавляет строку в конец; без аргумента строка пустая. InsertLine(number, line) вставляет строку под этим номером и сдвигает остальные вниз; номер LineCount + 1 дописывает в конец. DeleteLine, ReplaceLine и GetLine обращаются к строке, считая с 1. Номер вне 1..LineCount (для InsertLine — вне 1..LineCount+1) — отказ: «TextDocument: line N is outside 1..M». LineCount — сколько строк. Clear удаляет их все.",
+      "parameters": "Нет.",
+      "return_descr": "TextDocument.",
+      "example": "Doc = New TextDocument;\nDoc.AddLine(\"Hello\");\nDoc.AddLine(\"World\");\nMessage(Doc.GetLine(1));\nMessage(Doc.GetText());",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.TextReader", "cls.TextWriter"],
+      "reviewed": false
+    }
+  ]
+}
