@@ -4387,16 +4387,14 @@ bool ibValueRecordKeyObject::GetPropVal(const long lPropNum, ibValue& pvarPropVa
 	const ibMetaID id = m_members.GetPropData(lPropNum);
 	if (id == wxNOT_FOUND || m_metaObject == nullptr)
 		return false;
-	const auto held = m_keyValues.find(id);
-	if (held != m_keyValues.end()) {
-		pvarPropVal = held->second;
+	for (const auto* attr : m_metaObject->GetGenericDimensionArrayObject()) {
+		if (attr == nullptr || attr->GetMetaID() != id)
+			continue;
+		const auto held = m_keyValues.find(id);
+		pvarPropVal = held != m_keyValues.end() ? held->second : attr->CreateValue();
 		return true;
 	}
-	const ibValueMetaObjectAttributeBase* attribute = m_metaObject->FindAnyAttributeObjectByFilter(id);
-	if (attribute == nullptr)
-		return false;
-	pvarPropVal = attribute->CreateValue();
-	return true;
+	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////
