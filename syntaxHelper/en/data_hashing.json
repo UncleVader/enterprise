@@ -1,0 +1,71 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "enum.HashFunction",
+      "name_local": "HashFunction",
+      "name_en": "HashFunction",
+      "kind": "enum_type",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "HashFunction.MD5 | HashFunction.SHA1 | HashFunction.SHA256",
+      "description": "Which digest DataHashing computes. MD5 and SHA-1 are the weak ones a signature from an older service still asks for. SHA-256 is the one to use when the choice is open.",
+      "syntax_block": "HashFunction.MD5\nHashFunction.SHA1\nHashFunction.SHA256",
+      "parameters": "",
+      "return_descr": "HashFunction.",
+      "example": "hash = New DataHashing(HashFunction.SHA256);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing",
+      "name_local": "DataHashing",
+      "name_en": "DataHashing",
+      "kind": "collection",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "New DataHashing(algorithm : HashFunction [, key : BinaryData | string])",
+      "description": "A digest built from the bytes handed to Append. Without a key it is MD5, SHA-1 or SHA-256. With a key it is the HMAC of that algorithm: the key is a BinaryData, or a string read as UTF-8.\n\nAppend takes a BinaryData, or a string read as UTF-8. An empty piece adds nothing. HashSum is the digest as a BinaryData. Reading it finishes the calculation: a second read returns the same bytes, and a further Append is refused. New DataHashing() with no algorithm is refused.",
+      "syntax_block": "hash = New DataHashing(HashFunction.SHA256);\nhash.Append(data);\nsum = hash.HashSum;\n\nsigned = New DataHashing(HashFunction.SHA256, key);\nsigned.Append(text);",
+      "parameters": "algorithm — a HashFunction value.\nkey — optional. Present, the sum is an HMAC.",
+      "return_descr": "DataHashing.",
+      "example": "hash = New DataHashing(HashFunction.SHA256);\nhash.Append(\"abc\");\nMessage(Base64String(hash.HashSum));",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["enum.HashFunction", "fn.Base64String", "cls.BinaryData"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing.Append",
+      "name_local": "Append",
+      "name_en": "Append",
+      "kind": "procedure",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "Append(data : BinaryData | string)",
+      "description": "Adds bytes to the digest. A string is read as UTF-8. A BinaryData is taken as it is. After HashSum has been read, Append is refused.",
+      "syntax_block": "hash.Append(data);",
+      "parameters": "data — a BinaryData, or a string.",
+      "return_descr": "",
+      "example": "hash.Append(\"abc\");",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing.HashSum"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing.HashSum",
+      "name_local": "HashSum",
+      "name_en": "HashSum",
+      "kind": "property",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "HashSum : BinaryData",
+      "description": "The digest. Reading it finishes the calculation. A second read returns the same bytes. Nothing can be appended after it.",
+      "syntax_block": "sum = hash.HashSum;",
+      "parameters": "",
+      "return_descr": "BinaryData.",
+      "example": "sum = hash.HashSum;",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing.Append"],
+      "reviewed": true
+    }
+  ]
+}

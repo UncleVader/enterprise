@@ -1,0 +1,71 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "enum.HashFunction",
+      "name_local": "ХешФункция",
+      "name_en": "HashFunction",
+      "kind": "enum_type",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "HashFunction.MD5 | HashFunction.SHA1 | HashFunction.SHA256",
+      "description": "Какую сумму считает ХешированиеДанных. MD5 и SHA-1 — слабые, их просит подпись старого сервиса. SHA-256 — тот, который стоит брать, когда выбор открыт.",
+      "syntax_block": "HashFunction.MD5\nHashFunction.SHA1\nHashFunction.SHA256",
+      "parameters": "",
+      "return_descr": "HashFunction.",
+      "example": "hash = New DataHashing(HashFunction.SHA256);",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing",
+      "name_local": "ХешированиеДанных",
+      "name_en": "DataHashing",
+      "kind": "collection",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "New DataHashing(algorithm : HashFunction [, key : BinaryData | string])",
+      "description": "Сумма из байтов, переданных в Append. Без ключа это MD5, SHA-1 или SHA-256. С ключом это HMAC того же алгоритма: ключ — BinaryData или строка, прочитанная как UTF-8.\n\nAppend принимает BinaryData или строку в UTF-8. Пустой кусок ничего не добавляет. HashSum — сумма как BinaryData. Чтение завершает расчёт: повторное чтение возвращает те же байты, а следующий Append отвергается. New DataHashing() без алгоритма отвергается.",
+      "syntax_block": "hash = New DataHashing(HashFunction.SHA256);\nhash.Append(data);\nsum = hash.HashSum;\n\nsigned = New DataHashing(HashFunction.SHA256, key);\nsigned.Append(text);",
+      "parameters": "algorithm — значение HashFunction.\nkey — необязательный. Если он есть, сумма считается как HMAC.",
+      "return_descr": "DataHashing.",
+      "example": "hash = New DataHashing(HashFunction.SHA256);\nhash.Append(\"abc\");\nMessage(Base64String(hash.HashSum));",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["enum.HashFunction", "fn.Base64String", "cls.BinaryData"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing.Append",
+      "name_local": "Добавить",
+      "name_en": "Append",
+      "kind": "procedure",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "Append(data : BinaryData | string)",
+      "description": "Добавляет байты к сумме. Строка читается как UTF-8. BinaryData берётся как есть. После чтения HashSum процедура Append отвергается.",
+      "syntax_block": "hash.Append(data);",
+      "parameters": "data — BinaryData или строка.",
+      "return_descr": "",
+      "example": "hash.Append(\"abc\");",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing.HashSum"],
+      "reviewed": true
+    },
+    {
+      "id": "cls.DataHashing.HashSum",
+      "name_local": "ХешСумма",
+      "name_en": "HashSum",
+      "kind": "property",
+      "category_keys": ["value_types", "text_files"],
+      "signature": "HashSum : BinaryData",
+      "description": "Сумма. Чтение завершает расчёт. Повторное чтение возвращает те же байты. После этого добавить уже нельзя.",
+      "syntax_block": "sum = hash.HashSum;",
+      "parameters": "",
+      "return_descr": "BinaryData.",
+      "example": "sum = hash.HashSum;",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.DataHashing.Append"],
+      "reviewed": true
+    }
+  ]
+}

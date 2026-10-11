@@ -395,11 +395,13 @@
     <ClInclude Include="functionalOptionHelper.h" />
     <ClInclude Include="system\systemEnum.h" />
     <ClInclude Include="system\systemManager.h" />
+    <ClInclude Include="system\hashFunction.h" />
     <ClInclude Include="system\systemManagerEnum.h" />
     <ClInclude Include="system\value\valueArray.h" />
     <ClInclude Include="system\value\valueColour.h" />
     <ClInclude Include="system\value\valueEvent.h" />
     <ClInclude Include="system\value\valueBinaryData.h" />
+    <ClInclude Include="system\value\valueDataHashing.h" />
     <ClInclude Include="system\value\valueTextFile.h" />
     <ClInclude Include="system\value\valueHttp.h" />
     <ClInclude Include="system\value\valueSecureConnection.h" />
@@ -957,6 +959,7 @@
     <ClCompile Include="functionalOptionHelper.cpp" />
     <ClCompile Include="system\systemManager.cpp" />
     <ClCompile Include="system\systemManagerEnum.cpp" />
+    <ClCompile Include="system\hashFunction.cpp" />
     <ClCompile Include="system\systemManagerFunc.cpp" />
     <ClCompile Include="system\value\valueArray.cpp" />
     <ClCompile Include="system\value\valueColour.cpp" />
@@ -964,6 +967,7 @@
     <ClCompile Include="system\value\valueDatabaseResultSet.cpp" />
     <ClCompile Include="system\value\valueEvent.cpp" />
     <ClCompile Include="system\value\valueBinaryData.cpp" />
+    <ClCompile Include="system\value\valueDataHashing.cpp" />
     <ClCompile Include="system\value\valueTextFile.cpp" />
     <ClCompile Include="system\value\valueHttp.cpp" />
     <ClCompile Include="system\value\valueSecureConnection.cpp" />
