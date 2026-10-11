@@ -19,9 +19,15 @@ TEST(ByteOrderMarkUsage, UseAutoAndDontUseAreMembers) {
 }
 
 TEST(ByteOrderMarkUsage, TheNameCompiles) {
+	// A host binds EnumManager as a transparent scope (moduleManager.cpp). That is
+	// the road a script takes to ByteOrderMarkUsage.Use; the name is not a global.
+	const ibValue enums = ibValue::CreateObject(wxT("EnumManager"));
+	ASSERT_GE(enums.FindProp(wxT("ByteOrderMarkUsage")), 0);
+
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	ibValueSystemFunction valueSystem;
 	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	cc.AddContextVariable(wxT("EnumManager"), enums, true);
 	try {
 		ASSERT_TRUE(cc.Compile(
 			wxT("Procedure Check()\n")
