@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "cls.WSDefinitions",
+      "name_local": "WSDefinitions",
+      "name_en": "WSDefinitions",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New WSDefinitions(location : string [, user : string [, password : string [, proxy [, timeout : number [, secureConnection [, useOSAuthentication : boolean]]]]]]) ",
+      "description": "Документ WSDL, який читається в мить створення значення (WSОпределения). Місце — шлях до файлу або адреса http:// чи https://, і його завантажують одразу. Location читає цю адресу назад. Services — масив структур, по одній на wsdl:service: Name, NamespaceURI (targetNamespace документа) і Ports, масив структур з Name та Location (soap:address).\n\nІм'я і пароль ідуть як Basic-автентифікація. Таймаут — число секунд від 1 до 120; якщо опущений, це 30. InternetProxy, об'єкт захищеного з'єднання і автентифікація Windows відхиляються — їх не застосовують: «WSDefinitions: an InternetProxy is not used from here», і так само для двох інших. Немає файлу, документ не WSDL, відповідь HTTP не успішна — відмова з цим місцем.",
+      "parameters": "location — шлях до файлу або адреса http(s).\nuser, password — необов'язкова Basic-автентифікація.\ntimeout — секунди, від 1 до 120. Якщо опущене, 30.",
+      "return_descr": "WSDefinitions.",
+      "example": "Definitions = New WSDefinitions(\"goods.wsdl\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}

@@ -648,6 +648,9 @@
     <ClInclude Include="system\value\valueSecureConnection.h">
       <Filter>system\value</Filter>
     </ClInclude>
+    <ClInclude Include="system\value\valueWSDefinitions.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
     <ClInclude Include="system\value\valueGuid.h">
       <Filter>system\value</Filter>
     </ClInclude>
@@ -2015,6 +2018,9 @@
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueSecureConnection.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
+    <ClCompile Include="system\value\valueWSDefinitions.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueGuid.cpp">
