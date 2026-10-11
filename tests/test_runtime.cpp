@@ -21,6 +21,7 @@
 #include "backend/compiler/procUnitState.h"   // m_errorPlace — which opcode raised
 #include "backend/session/session.h"
 #include "backend/appData.h"                // the built-in dispatcher reads appData on entry
+#include "backend/userInfo.h"
 
 #include <wx/init.h>
 #include <wx/image.h>  // wxInitAllImageHandlers — wx decodes nothing until registered
@@ -2935,4 +2936,37 @@ TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 
 	// The frame goes here, with both arrays in it. That is the moment the nightly
 	// caught: passing under a sanitiser is the whole assertion.
+}
+
+TEST_F(BuiltInRuntime, InfoBaseUsersNamesTheSessionUser) {
+	auto session = std::make_shared<ibSession>();
+	const ibSessionScope bound(session.get());
+	ibUserInfo info;
+	info.m_strUserGuid = wxT("11111111-1111-1111-1111-111111111111");
+	info.m_strUserName = wxT("anna");
+	info.m_strUserFullName = wxT("Anna Berg");
+	session->SetUserInfo(info);
+
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.AddContextVariable(wxT("InfoBaseUsers"), ibInfoBaseUsers(), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var name public; var full public; var count public;\n")
+		wxT("var user; var users;\n")
+		wxT("user = InfoBaseUsers.CurrentUser();\n")
+		wxT("name = user.Name;\n")
+		wxT("full = user.FullName;\n")
+		wxT("users = InfoBaseUsers.GetUsers();\n")
+		wxT("count = users.Count();\n")));
+	ibProcUnit pu;
+	wxString err;
+	ASSERT_TRUE(RunBound(cc, pu, err)) << err.ToStdString();
+	ibValue name;
+	ibValue full;
+	ibValue count;
+	ASSERT_TRUE(pu.GetPropVal(wxT("name"), name));
+	ASSERT_TRUE(pu.GetPropVal(wxT("full"), full));
+	ASSERT_TRUE(pu.GetPropVal(wxT("count"), count));
+	EXPECT_EQ(name.GetString(), wxString(wxT("anna")));
+	EXPECT_EQ(full.GetString(), wxString(wxT("Anna Berg")));
+	EXPECT_GE(count.GetInteger(), 0);
 }

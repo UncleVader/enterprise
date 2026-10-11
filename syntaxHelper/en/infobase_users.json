@@ -1,0 +1,52 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.InfoBaseUsers",
+      "name_local": "InfoBaseUsers",
+      "name_en": "InfoBaseUsers",
+      "kind": "collection",
+      "category_keys": ["global_context"],
+      "signature": "InfoBaseUsers",
+      "description": "The users of this information base. CurrentUser is the user of this session. GetUsers is every user stored in the base, or an empty array when the base has no user table. A user has Name, FullName and UUID. This is the 1C ПользователиИнформационнойБазы reading.",
+      "parameters": "None.",
+      "return_descr": "The InfoBaseUsers object.",
+      "example": "user = InfoBaseUsers.CurrentUser();\nname = user.Name;",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["mth.InfoBaseUsers.CurrentUser", "mth.InfoBaseUsers.GetUsers"],
+      "reviewed": false
+    },
+    {
+      "id": "mth.InfoBaseUsers.CurrentUser",
+      "name_local": "CurrentUser",
+      "name_en": "CurrentUser",
+      "kind": "method",
+      "category_keys": ["global_context"],
+      "signature": "CurrentUser()",
+      "description": "The user of this session. With no session user, Name, FullName and UUID are empty.",
+      "parameters": "None.",
+      "return_descr": "A user (Name, FullName, UUID).",
+      "example": "name = InfoBaseUsers.CurrentUser().Name;",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.InfoBaseUsers"],
+      "reviewed": false
+    },
+    {
+      "id": "mth.InfoBaseUsers.GetUsers",
+      "name_local": "GetUsers",
+      "name_en": "GetUsers",
+      "kind": "method",
+      "category_keys": ["global_context"],
+      "signature": "GetUsers()",
+      "description": "Every user stored in this base. An empty array when the base has no user table.",
+      "parameters": "None.",
+      "return_descr": "Array of users.",
+      "example": "users = InfoBaseUsers.GetUsers();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.InfoBaseUsers"],
+      "reviewed": false
+    }
+  ]
+}

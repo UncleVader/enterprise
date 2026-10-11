@@ -91,4 +91,8 @@ struct BACKEND_API ibUserInfo {
 	static ibUserInfo Deserialize(ibReaderMemory& reader);
 };
 
+class ibValue;
+// The named global InfoBaseUsers. One process-wide object.
+BACKEND_API ibValue* ibInfoBaseUsers();
+
 #endif
