@@ -289,16 +289,18 @@ void ibValueMetaObjectAccumulationRegister::ContributeTables(ibSchemaSnapshot& o
 		// the rebuild and the trigger now count the same movement on the same side.
 		const ibValue receipt = ibValue::CreateEnumObject<ibValueEnumAccumulationRegisterRecordType>(ibRecordType::eReceipt);
 
-		m.Accumulate(cIn,  wxT("CASE WHEN {row}.") + recField + wxT(" = ") + receiptTagText + wxT(" THEN {row}.") + resField + wxT(" ELSE 0 END"),
+		const wxString arm = ibRegNumericArm(resField);
+		const ibQueryColumnExprPtr armExpr = ibRegNumericExpr(res->GetQueryColumn(), resField);
+		m.Accumulate(cIn,  wxT("CASE WHEN {row}.") + recField + wxT(" = ") + receiptTagText + wxT(" THEN ") + arm + wxT(" ELSE 0 END"),
 			ibQueryColumnExpr::Case(
 				{ { ibQueryPredicate::Leaf(ibQueryCondition{ GetRegisterRecordType()->GetQueryColumn(), ibQueryFilterOp::Equal, receipt }),
-				    ibQueryColumnExpr::Col(res->GetQueryColumn()) } },
+				    armExpr } },
 				ibQueryColumnExpr::Const(ibValue(0.0))));
-		m.Accumulate(cOut, wxT("CASE WHEN {row}.") + recField + wxT(" = ") + receiptTagText + wxT(" THEN 0 ELSE {row}.") + resField + wxT(" END"),
+		m.Accumulate(cOut, wxT("CASE WHEN {row}.") + recField + wxT(" = ") + receiptTagText + wxT(" THEN 0 ELSE ") + arm + wxT(" END"),
 			ibQueryColumnExpr::Case(
 				{ { ibQueryPredicate::Leaf(ibQueryCondition{ GetRegisterRecordType()->GetQueryColumn(), ibQueryFilterOp::Equal, receipt }),
 				    ibQueryColumnExpr::Const(ibValue(0.0)) } },
-				ibQueryColumnExpr::Col(res->GetQueryColumn())));
+				armExpr));
 
 		pairs.push_back({ inName, outName, resField });   // physical base — see the note above
 	}

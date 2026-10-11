@@ -2077,12 +2077,18 @@ ibQueryExprPtr ibMetaIRBuilder::BuildColumnExpr(const ibBackendQueryable* querya
 	if (!expr)
 		return nullptr;
 	switch (expr->m_kind) {
-	case ibQueryColumnExprKind::Column:
+	case ibQueryColumnExprKind::Column: {
 		// A NAMED field wins over the first one: a composite column read field by field is the only way
 		// a value spread across several of them survives an expression (see ibQueryColumnExpr::ColField).
-		return expr->m_col != nullptr
-			? ibColQ(mainQual, expr->m_field.IsEmpty() ? FirstSqlFieldOfColumn(expr->m_col) : expr->m_field)
-			: nullptr;
+		if (expr->m_col == nullptr)
+			return nullptr;
+		ibQueryExprPtr field = ibColQ(mainQual, expr->m_field.IsEmpty() ? FirstSqlFieldOfColumn(expr->m_col) : expr->m_field);
+		// A string slot landing in a numeric CASE. The cast is the SQL type;
+		// the value is still the column.
+		if (expr->m_sqlNumeric)
+			field = ibCast(field, ibTypeNumber(18, 6));
+		return field;
+	}
 
 	case ibQueryColumnExprKind::Const:
 		// CAST the placeholder so a bare projected constant carries a type (FB -804 otherwise). Harmless

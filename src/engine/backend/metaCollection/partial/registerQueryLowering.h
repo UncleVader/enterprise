@@ -1556,16 +1556,39 @@ inline bool ibRegSplitIntoKey(ibSchemaTable& t, const ibValueMetaObjectRegisterT
 // and the day one forgot, an inactive entry would show up in exactly one report.
 //
 // ⚠ IT IS AN EXPRESSION, AND IT HAS TO BE A BOOLEAN ONE. A "boolean" attribute is stored as a
-// SMALLINT, so `WHERE NEW.fld…_B` is a field where a condition is required — Firebird answers
-// "invalid usage of boolean expression" and the whole CREATE TRIGGER fails, taking the restructuring
-// that emitted it down with it. The cost is asymmetric: nothing READS wrong, the APPLY does not
-// finish. This was written twice and one copy shipped without the ` <> 0`.
+// SMALLINT on Firebird and SQLite, and as a real BOOLEAN on PostgreSQL. A bare `WHERE NEW.fld…_B`
+// is a field where a condition is required — Firebird answers "invalid usage of boolean expression"
+// and the whole CREATE TRIGGER fails. `<> 0` is that condition for a SMALLINT, and PostgreSQL
+// refuses it: boolean <> integer. CAST to INTEGER is the same test on every engine (a BOOLEAN
+// becomes 1 or 0, a SMALLINT stays a number). The cost is asymmetric: nothing READS wrong, the
+// APPLY does not finish. This was written twice and one copy shipped without the ` <> 0`.
 inline void ibRegGuardInForce(ibSchemaMaterialize& m, const ibValueMetaObjectAttributeBase* active)
 {
 	if (active == nullptr)
 		return;
-	m.Guard(wxT("{row}.") + ibRegValueField(active) + wxT(" <> 0"),
+	m.Guard(wxT("CAST({row}.") + ibRegValueField(active) + wxT(" AS INTEGER) <> 0"),
 		ibQueryPredicate::Leaf(ibQueryCondition{ active->GetQueryColumn(), ibQueryFilterOp::Equal, ibValue(true) }));
+}
+
+// The movement arm of a receipt/expense CASE. The accumulator is a number. A number
+// column meets 0 as it is. A string column has to be cast: PostgreSQL refuses a CASE
+// whose arms are varchar and integer.
+inline wxString ibRegNumericArm(const wxString& field)
+{
+	if (field.EndsWith(wxT("_S")))
+		return wxT("CAST({row}.") + field + wxT(" AS NUMERIC)");
+	return wxT("{row}.") + field;
+}
+
+// The rebuild's arm of the same CASE. The SQL fragment above is the trigger.
+// The expression is what a regeneration sends, and a string column has to
+// arrive as a number there too.
+inline ibQueryColumnExprPtr ibRegNumericExpr(const ibBackendQueryColumn* col, const wxString& field)
+{
+	ibQueryColumnExprPtr arm = ibQueryColumnExpr::Col(col);
+	if (arm && field.EndsWith(wxT("_S")))
+		arm->m_sqlNumeric = true;
+	return arm;
 }
 
 // ⭐⭐ AN ACCUMULATING COLUMN, IN THE RESOURCE'S OWN PRECISION. Declared flat it came out

@@ -418,18 +418,20 @@ void ibValueMetaObjectAccountingRegister::ContributeTables(ibSchemaSnapshot& out
 			const wxString movDrField = ibRegValueField(movDr);
 			const wxString movCrField = ibRegValueField(movCr);
 
+			const wxString drArm = ibRegNumericArm(movDrField);
+			const wxString crArm = ibRegNumericArm(movCrField);
 			m.Accumulate(cDr,
-				wxT("CASE WHEN {row}.") + recField + wxT(" = ") + debitTagText + wxT(" THEN {row}.") + movDrField + wxT(" ELSE 0 END"),
+				wxT("CASE WHEN {row}.") + recField + wxT(" = ") + debitTagText + wxT(" THEN ") + drArm + wxT(" ELSE 0 END"),
 				ibQueryColumnExpr::Case(
 					{ { ibQueryPredicate::Leaf(ibQueryCondition{ recordType->GetQueryColumn(), ibQueryFilterOp::Equal, debit }),
-					    ibQueryColumnExpr::Col(movDr) } },
+					    ibRegNumericExpr(movDr, movDrField) } },
 					ibQueryColumnExpr::Const(ibValue(0.0))));
 			m.Accumulate(cCr,
-				wxT("CASE WHEN {row}.") + recField + wxT(" = ") + debitTagText + wxT(" THEN 0 ELSE {row}.") + movCrField + wxT(" END"),
+				wxT("CASE WHEN {row}.") + recField + wxT(" = ") + debitTagText + wxT(" THEN 0 ELSE ") + crArm + wxT(" END"),
 				ibQueryColumnExpr::Case(
 					{ { ibQueryPredicate::Leaf(ibQueryCondition{ recordType->GetQueryColumn(), ibQueryFilterOp::Equal, debit }),
 					    ibQueryColumnExpr::Const(ibValue(0.0)) } },
-					ibQueryColumnExpr::Col(movCr)));
+					ibRegNumericExpr(movCr, movCrField)));
 		}
 
 		// --- the totals table AS A SOURCE -----------------------------------------------------------
