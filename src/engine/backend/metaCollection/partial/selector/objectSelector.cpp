@@ -109,7 +109,10 @@ void ibValueSelectorRecordDataObject::FillMembers(ibMemberTable& helper) const
 	//set object name
 	wxString objectName;
 
-	for (const auto object : m_metaObject->GetAttributeArrayObject()) {
+	// Predefined attributes are members too. Date, Number, Code and a characteristic's Type live
+	// there; a selection that listed only the custom ones answered "Date is a global function"
+	// for a field the row actually has.
+	for (const auto object : m_metaObject->GetGenericAttributeArrayObject()) {
 		if (object->IsDeleted())
 			continue;
 		if (!object->GetObjectNameAsString(objectName))
