@@ -98,9 +98,9 @@ void ibValueForm::OnUpdate(ibDataNode& state, ibVisualHost* host)
 
 	state.SetValue(wxT("Title"), GetControlTitle());
 	state.SetValue(wxT("Enabled"), IsFormEnabled());
-	state.SetValue(wxT("Width"), (long)GetFormWidth());
-	state.SetValue(wxT("Height"), (long)GetFormHeight());
-	state.SetValue(wxT("WindowOpeningMode"), (long)GetWindowOpeningMode());
+	state.SetValue(wxT("Width"), (s32)GetFormWidth());
+	state.SetValue(wxT("Height"), (s32)GetFormHeight());
+	state.SetValue(wxT("WindowOpeningMode"), (s32)GetWindowOpeningMode());
 	state.SetValue(wxT("Scroll"), FormScrolls());
 	state.SetValue(wxT("ViewOnly"), IsViewOnly());
 	state.SetValue(wxT("Modified"), IsModified());
