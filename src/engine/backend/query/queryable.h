@@ -484,6 +484,10 @@ struct ibQueryColumnExpr
 
 	const ibBackendQueryColumn* m_col = nullptr;          // Column — the source column (its FIRST sql field)
 	wxString                    m_field;                  // Column — ONE named physical field of it (empty = the first)
+	// Column — the SQL renderer casts the field to NUMERIC. A string slot
+	// contributed to a numeric accumulator: PostgreSQL will not match
+	// varchar with numeric inside one CASE. The RAM reading is unchanged.
+	bool                        m_sqlNumeric = false;
 	ibValue                     m_const;                  // Const — a literal value
 
 	ibQueryColumnArithOp        m_arith = ibQueryColumnArithOp::Add;   // Arith

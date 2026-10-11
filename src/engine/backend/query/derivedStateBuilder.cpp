@@ -136,6 +136,27 @@ bool NeedsRegeneration(const ibSchemaTable* old, const ibSchemaTable& cur)
 	// still exists. Rebuild.
 	if (a.m_deltas.size() != b.m_deltas.size()) return true;
 
+	// A figure that keeps its id and changes its physical name. A resource moving
+	// from a string to a number is still one accumulator, and the id does not move,
+	// but the stored column stops being `…_S_In` and becomes `…_N_In`. An in-place
+	// alter leaves the old name, and the view — written from the new declaration —
+	// names a column the table does not have. PostgreSQL refuses that view.
+	// Dropping the derived table and regenerating it is the same answer a re-keyed
+	// dimension already gets.
+	for (const ibSchemaDelta& was : a.m_deltas) {
+		if (was.m_column == nullptr)
+			return true;
+		const ibSchemaDelta* found = nullptr;
+		for (const ibSchemaDelta& now : b.m_deltas) {
+			if (now.m_column != nullptr && now.m_column->GetColumnId() == was.m_column->GetColumnId()) {
+				found = &now;
+				break;
+			}
+		}
+		if (found == nullptr || found->m_column->GetPhysicalName() != was.m_column->GetPhysicalName())
+			return true;
+	}
+
 	// Only additions left — provably no effect on what is already accumulated.
 	return false;
 }
