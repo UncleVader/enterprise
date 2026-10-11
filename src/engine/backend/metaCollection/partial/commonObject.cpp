@@ -3833,6 +3833,7 @@ bool ibValueRecordSetObject::InitializeObject(const ibValueRecordSetObject* sour
 	ibRuntimeModuleDataObject::SetParent(moduleManager);
 	BindContextVariable(thisObject, this);                   // contextual
 	BindExportVariable(wxT("Filter"), m_recordSetKeyValue);  // exported — register filter/key
+	BindExportVariable(wxT("Отбор"), m_recordSetKeyValue);   // the same filter under its 1C name
 
 	try {
 		Compile();
