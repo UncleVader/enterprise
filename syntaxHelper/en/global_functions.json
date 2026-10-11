@@ -1955,6 +1955,20 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.RunJob", "fn.RunScheduledJobs"],
       "reviewed": true
+    },
+    {
+      "id": "fn.GetFunctionalOption",
+      "name_local": "GetFunctionalOption",
+      "name_en": "GetFunctionalOption",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "GetFunctionalOption(name : string, parameters : structure) : boolean",
+      "description": "The value of a functional option (ПолучитьФункциональнуюОпцию). Functional options are not a metadata kind, so every name reads as False: a guard written `If GetFunctionalOption(\"…\")` takes the off branch. The name is required. A second argument, the option's parameters, is accepted and ignored.",
+      "parameters": "name — the option's name.\nparameters — optional. Accepted and ignored.",
+      "return_descr": "Boolean. False until functional options exist as metadata.",
+      "example": "If GetFunctionalOption(\"UseWarehouses\") Then\n    Message(\"warehouses are on\");\nEndIf;",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
     }
   ]
 }
