@@ -242,17 +242,23 @@ TEST_F(FrontendRuntimeFix, AFormAttributeKeepsTheNameAndTheType)
 	EXPECT_EQ(attr->GetName(), wxT("Flag"));
 	EXPECT_EQ(attr->GetTypeDesc().GetFirstClsid(), g_valueStringCLSID);
 
+	const short savedStyle = ibCompileCode::GetCodeStyle();
+	ibCompileCode::SetCodeStyle(CODE_VES);
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	const wxString src =
 		wxT("Procedure Check()\n")
-		wxT("    var attr;\n")
-		wxT("    attr = New FormAttribute(\"Flag\", New TypeDescription(\"String\"));\n")
+		wxT("    var attr = New FormAttribute(\"Flag\", New TypeDescription(\"String\"));\n")
 		wxT("EndProcedure\n");
+	bool compiled = false;
+	wxString why;
 	try {
-		ASSERT_TRUE(cc.Compile(src));
+		compiled = cc.Compile(src);
 	} catch (const ibBackendException& err) {
-		FAIL() << err.GetErrorDescription().ToStdString();
+		why = err.GetErrorDescription();
 	}
+	ibCompileCode::SetCodeStyle(savedStyle);
+	if (!compiled)
+		FAIL() << why.ToStdString();
 }
 
 // ------------------------------ clsid kind-typing ----------------------------
