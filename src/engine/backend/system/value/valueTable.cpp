@@ -125,7 +125,7 @@ void ibValueModelTable::FillMembers(ibMemberTable& helper) const
 	helper.AppendFunc(wxT("Find"), 2, wxT("Find(value : any, column : string)"));
 	helper.AppendFunc(wxT("Delete"), 1, wxT("Delete(row : tableRow)"));
 	helper.AppendFunc(wxT("Clear"), wxT("Clear()"));
-	helper.AppendFunc(wxT("Sort"), 2, wxT("Sort(column : string, ascending = true : boolean)"));
+	helper.AppendFunc(wxT("Sort"), 2, wxT("Sort(columns : string, ascending = true : boolean)"));
 	helper.AppendFunc(wxT("UnloadColumn"), 1, wxT("UnloadColumn(column : string) : array"));
 	helper.AppendFunc(wxT("Total"), 1, wxT("Total(column : string) : number"));
 	helper.AppendFunc(wxT("FindRows"), 1, wxT("FindRows(filter : structure) : array"));
@@ -144,6 +144,68 @@ bool ibValueModelTable::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 
 	return false;
 }
+
+namespace {
+
+// A direction word after a column name. ASCII folds; the Russian abbreviations are the
+// three spellings a port writes (Возр / возр / ВОЗР, and the same for Убыв).
+bool ibTableSortWord(const wxString& word, bool& ascending)
+{
+	if (word.IsSameAs(wxT("Asc"), false) || word.IsSameAs(wxT("Ascending"), false)
+		|| word.IsSameAs(wxT("Возр")) || word.IsSameAs(wxT("возр")) || word.IsSameAs(wxT("ВОЗР"))) {
+		ascending = true;
+		return true;
+	}
+	if (word.IsSameAs(wxT("Desc"), false) || word.IsSameAs(wxT("Descending"), false)
+		|| word.IsSameAs(wxT("Убыв")) || word.IsSameAs(wxT("убыв")) || word.IsSameAs(wxT("УБЫВ"))) {
+		ascending = false;
+		return true;
+	}
+	return false;
+}
+
+// "A,B" and "A Asc, B Desc": commas separate columns, and the last word of a column is its
+// way when it is one of those words. Anything else stays part of the name, so a column
+// called Desc is still that column.
+std::vector<std::pair<wxString, bool>> ibTableSortKeys(const wxString& text, bool defaultAscending)
+{
+	std::vector<std::pair<wxString, bool>> keys;
+	wxString rest = text;
+	for (;;) {
+		wxString part;
+		const int comma = rest.Find(wxT(','));
+		if (comma == wxNOT_FOUND) {
+			part = rest;
+		}
+		else {
+			part = rest.Left(comma);
+			rest = rest.Mid(comma + 1);
+		}
+		part.Trim(true).Trim(false);
+		if (!part.IsEmpty()) {
+			wxString name = part;
+			bool ascending = defaultAscending;
+			const int gap = part.Find(wxT(' '), /*fromEnd*/ true);
+			if (gap != wxNOT_FOUND) {
+				wxString last = part.Mid(gap + 1);
+				last.Trim(true).Trim(false);
+				bool way = true;
+				if (ibTableSortWord(last, way)) {
+					ascending = way;
+					name = part.Left(gap);
+					name.Trim(true).Trim(false);
+				}
+			}
+			if (!name.IsEmpty())
+				keys.emplace_back(name, ascending);
+		}
+		if (comma == wxNOT_FOUND)
+			break;
+	}
+	return keys;
+}
+
+} // namespace
 
 bool ibValueModelTable::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
@@ -209,14 +271,25 @@ bool ibValueModelTable::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 		// ONE MEANING OF "SORT" for this table: the script's Sort() re-seats the rows, exactly as the two
 		// order commands do. A script that sorts a table and then walks it must walk it sorted.
 		//
-		// 🛑 ONE COLUMN. An order over several keys is a query's to say - `from r in t orderby r.A, r.B` - and not
-		// a second, smaller query language parsed out of a string argument here.
-		ibDataViewColumnItem column;
-		column.m_name = paParams[0]->GetString();
-		if (m_tableColumnCollection->GetColumnByName(column.m_name) == nullptr)
-			ibBackendCoreException::Error(_("Table column '%s' not found"), column.m_name);
+		// The string is the list a table-of-values language writes: "A, B", "A Asc, B Desc", "Тип, Дата".
+		// A column that does not name its way takes the second argument (ascending when it is left out).
 		// (⚠ It read paParams[1] whenever there was ANY argument - `Sort("A")` looked one past what was given.)
-		SortValue(column, lSizeArray > 1 ? paParams[1]->GetBoolean() : true);
+		const bool defaultAscending = lSizeArray > 1 ? paParams[1]->GetBoolean() : true;
+		const std::vector<std::pair<wxString, bool>> keys =
+			ibTableSortKeys(paParams[0]->GetString(), defaultAscending);
+		if (keys.empty())
+			ibBackendCoreException::Error(_("Table column '%s' not found"), paParams[0]->GetString());
+		for (const auto& key : keys) {
+			if (m_tableColumnCollection == nullptr || m_tableColumnCollection->GetColumnByName(key.first) == nullptr)
+				ibBackendCoreException::Error(_("Table column '%s' not found"), key.first);
+		}
+		// Least significant key first. Each pass is stable, so the first key is the one that wins
+		// and rows that agree on it keep the order the later keys gave them.
+		for (size_t i = keys.size(); i-- > 0;) {
+			ibDataViewColumnItem column;
+			column.m_name = keys[i].first;
+			SortValue(column, keys[i].second);
+		}
 		return true;
 	}
 
