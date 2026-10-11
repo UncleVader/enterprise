@@ -1885,8 +1885,9 @@ bool PredicateIsRamFilterable(const ibQueryPredicate* p)
 {
 	if (p == nullptr) return true;
 	switch (p->m_kind) {
-		case ibQueryPredicateKind::Leaf:   return p->m_leaf.m_path.empty() && p->m_leaf.m_col != nullptr;
-		case ibQueryPredicateKind::IsNull: return p->m_path.empty()        && p->m_col != nullptr;
+		// An expression leaf (Qty * Price > N) has no column of its own; the row evaluates it.
+		case ibQueryPredicateKind::Leaf:   return p->m_leaf.m_path.empty() && (p->m_leaf.m_col != nullptr || p->m_leaf.m_expr);
+		case ibQueryPredicateKind::IsNull: return p->m_path.empty()        && (p->m_col != nullptr || p->m_expr);
 		// The type test reads one cell and its class — nothing a RAM row cannot answer, as long as the
 		// column is this table's own (a dot-walk path would need the joined target, same as above).
 		case ibQueryPredicateKind::RefType: return p->m_path.empty()       && p->m_col != nullptr;
@@ -1897,12 +1898,21 @@ bool PredicateIsRamFilterable(const ibQueryPredicate* p)
 	return false;
 }
 
+void GatherColumnExprColumns(const ibQueryColumnExpr* e, const std::function<void(const ibBackendQueryColumn*)>& add);
+
 void GatherPredicateColumns(const ibQueryPredicate* p, const std::function<void(const ibBackendQueryColumn*)>& add)
 {
 	if (p == nullptr) return;
 	switch (p->m_kind) {
-		case ibQueryPredicateKind::Leaf:   add(p->m_leaf.m_col); break;
-		case ibQueryPredicateKind::IsNull: add(p->m_col);        break;
+		case ibQueryPredicateKind::Leaf:
+			add(p->m_leaf.m_col);
+			GatherColumnExprColumns(p->m_leaf.m_expr.get(), add);
+			GatherColumnExprColumns(p->m_leaf.m_valueExpr.get(), add);
+			break;
+		case ibQueryPredicateKind::IsNull:
+			add(p->m_col);
+			GatherColumnExprColumns(p->m_expr.get(), add);
+			break;
 		case ibQueryPredicateKind::RefType: add(p->m_col);       break;
 		case ibQueryPredicateKind::And:
 		case ibQueryPredicateKind::Or:     for (const auto& c : p->m_children) GatherPredicateColumns(c.get(), add); break;
@@ -2333,8 +2343,15 @@ std::vector<const ibBackendQueryColumn*> ReferencedColumns(const ibDataQuerySpec
 		cols.push_back(c);
 	};
 	for (const auto& s : *spec.m_selectCols)             add(s.first);
-	for (const ibQuerySortItem& s : *spec.m_sorts)       add(s.m_col);   // ORDER BY cols ride too (sorted post-compose)
-	for (const ibQueryCondition& c : *spec.m_conditions) add(c.m_col);
+	for (const ibQuerySortItem& s : *spec.m_sorts) {
+		add(s.m_col);   // ORDER BY cols ride too (sorted post-compose)
+		GatherColumnExprColumns(s.m_expr.get(), add);   // …and the columns an expression sort reads
+	}
+	for (const ibQueryCondition& c : *spec.m_conditions) {
+		add(c.m_col);
+		GatherColumnExprColumns(c.m_expr.get(), add);
+		GatherColumnExprColumns(c.m_valueExpr.get(), add);
+	}
 	GatherPredicateColumns(spec.m_predicate.get(), add);   // a boolean WHERE-tree leaf rides too (RAM post-filter)
 	if (spec.m_selectExprs != nullptr)
 		for (const ibQueryColumnSelect& sc : *spec.m_selectExprs) GatherColumnExprColumns(sc.m_expr.get(), add);   // computed cols ride too
@@ -2704,9 +2721,10 @@ ibDataQueryResult ProjectToAliases(ibQueryRamTable&& TC, const ibDataQuerySpec& 
 	if (!spec.m_sorts->empty())
 		std::stable_sort(order.begin(), order.end(), [&](long a, long b) {
 			for (const ibQuerySortItem& s : *spec.m_sorts) {
-				if (s.m_col == nullptr) continue;
-				const ibValue va = RamCell(TC, a, s.m_col);
-				const ibValue vb = RamCell(TC, b, s.m_col);
+				// An expression sort (ORDER BY Qty * Price) has no column. Evaluate it on the composed row.
+				if (s.m_expr == nullptr && s.m_col == nullptr) continue;
+				const ibValue va = s.m_expr ? EvalColumnExprRow(s.m_expr.get(), TC, a) : RamCell(TC, a, s.m_col);
+				const ibValue vb = s.m_expr ? EvalColumnExprRow(s.m_expr.get(), TC, b) : RamCell(TC, b, s.m_col);
 				const int c = ibQueryComposer::RamSortCompareKey(va, vb, s.m_ascending);
 				if (c != 0) return c < 0;
 			}
@@ -2990,6 +3008,7 @@ std::vector<const ibBackendQueryColumn*> AggregateRefCols(const ibDataQuerySpec&
 			if (e) GatherColumnExprColumns(e.get(), add);
 	for (const auto& a : *spec.m_aggregates) {
 		add(a.m_col);
+		GatherColumnExprColumns(a.m_expr.get(), add);   // SUM(Qty * Price) reads both, neither of which is a.m_col
 		// A balance reads its moment and its keys off every row — carried like the figure itself.
 		if (a.m_balance != ibBalanceRole::None) {
 			for (const ibBackendQueryColumn* period : a.m_balanceMoments)
@@ -2998,9 +3017,25 @@ std::vector<const ibBackendQueryColumn*> AggregateRefCols(const ibDataQuerySpec&
 				add(key);
 		}
 	}
-	for (const ibQueryCondition& c : *spec.m_conditions)         add(c.m_col);
+	for (const ibQueryCondition& c : *spec.m_conditions) {
+		add(c.m_col);
+		GatherColumnExprColumns(c.m_expr.get(), add);
+		GatherColumnExprColumns(c.m_valueExpr.get(), add);
+	}
 	CollectJoinKeys(spec.m_root, cols);
 	return cols;
+}
+
+// A comparison whose left side is an expression (Qty * Price > N) names no column, so no leaf is asked
+// to apply it. Filter it here, over the joined row, once.
+ibQueryRamTable FilterExprConditions(ibQueryRamTable rows, const ibDataQuerySpec& spec)
+{
+	if (spec.m_conditions == nullptr)
+		return rows;
+	for (const ibQueryCondition& c : *spec.m_conditions)
+		if (c.m_expr && c.m_col == nullptr)
+			rows = RamFilter(rows, ibQueryPredicate::Leaf(c).get());
+	return rows;
 }
 
 // A LEVEL'S KEY — the values of its fields, in the level's own order. One field is the ordinary
@@ -3981,7 +4016,7 @@ ibDataQueryResult ComposeMultiSource(const ibDataQuerySpec& spec, const ibReadPa
 	ibJournalInfo(wxT("query.road"), wxT("RAM: %s stitched in memory"),
 	              root->m_kind == ibQueryNode::Kind::Union ? wxT("union") : wxT("join"));
 
-	ibQueryRamTable composed = Compose(spec, ReferencedColumns(spec));
+	ibQueryRamTable composed = FilterExprConditions(Compose(spec, ReferencedColumns(spec)), spec);
 	if (spec.m_predicate) {
 		// The tree is answered over the stitched rows, so a hierarchy named in it is resolved through the
 		// leaves those rows came from — database tables included: none of them sees this filter.
@@ -4264,7 +4299,7 @@ ibDataQueryResult ibQueryComposer::ExecuteAggregate(const ibDataQuerySpec& given
 	if (!ok)
 		RamCompositionNotYet();
 
-	return RamAggregate(Compose(spec, AggregateRefCols(spec)), spec);
+	return RamAggregate(FilterExprConditions(Compose(spec, AggregateRefCols(spec)), spec), spec);
 }
 
 namespace {

@@ -813,9 +813,9 @@ public:
 	// with any verb conditions / row-key filters. (docs/private/query-language-arc.md §23 — door Where via L2.)
 	ibDataQueryBuilder& Where(const ibQueryPredicatePtr& predicate);
 	// COMPUTED-expression WHERE — `expr <op> value` (WHERE Qty * Price > 100, a CASE …). A single DB
-	// source lowers it server-side via BuildColumnExpr; a COMPUTED source / RAM-filterable predicate
-	// evaluates it per row (RamEvalLeaf -> EvalColumnExprRow). Only a multi-source JOIN is gated at L4
-	// (GateComputedExpr — the stitch has no cross-leaf expression evaluator).
+	// source lowers it server-side via BuildColumnExpr; a computed source and a joined row evaluate it
+	// per row (RamEvalLeaf -> EvalColumnExprRow). A co-located join cannot qualify that expression per
+	// leaf, so it stays on the RAM stitch and the filter runs after the join.
 	ibDataQueryBuilder& WhereExpr(const ibQueryColumnExprPtr& expr,
 	                              ibQueryFilterOp comparison, const ibValue& value);   // = / <> (Equal/NotEqual)
 	ibDataQueryBuilder& WhereExprCompare(const ibQueryColumnExprPtr& expr,

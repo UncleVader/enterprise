@@ -213,8 +213,8 @@ struct ibQueryCondition
 
 	// COMPUTED left-hand side (WHERE Qty * Price > value, a CASE …): when set, the provider lowers
 	// the expression via BuildColumnExpr and compares it to m_value — m_col stays null, m_path empty.
-	// Single-source DB reads / aggregates only (the lowering gates it); the RAM stitch and computed
-	// sources do not evaluate it. Declared after m_path so the flat struct stays POD-ordered.
+	// A single DB source sends it to SQL. A computed source and a joined row evaluate it in RAM
+	// (RamEvalLeaf). Declared after m_path so the flat struct stays POD-ordered.
 	std::shared_ptr<struct ibQueryColumnExpr> m_expr;
 
 	// …AND A COMPUTED RIGHT-HAND SIDE, when the other side is not a constant either: `WHERE
@@ -241,7 +241,7 @@ struct ibQuerySortItem
 
 	// COMPUTED sort (ORDER BY <expression> — a CASE, arithmetic, or a bare value/&parameter): when set, the
 	// provider lowers it via BuildColumnExpr and sorts on the resulting expression — m_col stays null, m_path
-	// empty. Single-source DB reads only (the L4 lowering gates it), like the computed WHERE side; a computed
+	// empty. A single DB source sends it to SQL; a joined row is sorted by evaluating it. A computed
 	// sort cannot be a keyset key, so a paged read cannot page by it (the text-query full read is the user).
 	std::shared_ptr<struct ibQueryColumnExpr> m_expr;
 
