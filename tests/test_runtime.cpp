@@ -2936,3 +2936,19 @@ TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 	// The frame goes here, with both arrays in it. That is the moment the nightly
 	// caught: passing under a sanitiser is the whole assertion.
 }
+
+// A file base answers with the file the open stored. This environment opened no
+// server, so the string is that file (empty, until a base is opened).
+TEST_F(BuiltInRuntime, InfoBaseConnectionStringIsTheFileTheBaseWasOpenedWith) {
+	ibApplicationInstance* const application = ibApplicationInstance::Get(false);
+	ASSERT_NE(application, nullptr);
+	EXPECT_TRUE(application->GetDatabaseDescription() == application->GetFile());
+	EXPECT_EQ(ibValueSystemFunction::InfoBaseConnectionString(), application->GetFile());
+
+	ibValueSystemFunction system;
+	const long method = system.FindMethod(wxT("InfoBaseConnectionString"));
+	ASSERT_NE(method, wxNOT_FOUND);
+	ibValue result;
+	ASSERT_TRUE(system.CallAsFunc(method, result, nullptr, 0));
+	EXPECT_EQ(result.GetString(), wxString(application->GetFile()));
+}
