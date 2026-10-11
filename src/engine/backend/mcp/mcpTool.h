@@ -644,6 +644,12 @@ BACKEND_API wxString ibMcpBusyWith();
 BACKEND_API void ibMcpRememberStartedApplication(long pid);
 BACKEND_API long ibMcpStartedApplication();   // 0 when app_run has started nothing
 
+// End the process app_run started. A debug detach asks the client to stop and then closes the
+// socket, so the process can stay up and the designer stays on its debug port. This makes it go:
+// true when that process is no longer running (including when it had already exited). A pid of 0
+// is nothing this designer started, and the answer is false.
+BACKEND_API bool ibMcpEndStartedApplication(long pid);
+
 // The refusal for a wait that expired: `usual` while the application's process is there (or unknown —
 // started by somebody else), and "it is gone" when the process this designer started has exited.
 BACKEND_API wxString ibMcpNoAnswer(const wxString& usual);

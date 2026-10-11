@@ -40,10 +40,17 @@
 #include <wx/file.h>
 #include <wx/filename.h>
 
+#include <chrono>
 #include <map>
 #include <set>
 #include <string>
 #include <algorithm>   // the refusal must name one of the tool's OWN required arguments
+
+#include <wx/init.h>       // wxInitializer — wxProcess needs wxBase
+#include <wx/process.h>    // wxExecute / wxProcess::Exists
+#if defined(__UNIX__)
+#include <sys/wait.h>      // the child is a zombie until something reaps it
+#endif
 
 namespace {
 
@@ -850,4 +857,32 @@ TEST(McpClipboard, OnlyFilledSlots_AreListed)
 
 	EXPECT_NE(std::find(slots.begin(), slots.end(), wxT("test.listed")), slots.end());
 	EXPECT_EQ(std::find(slots.begin(), slots.end(), wxT("test.notlisted")), slots.end());
+}
+
+// app_run restart ends the process it started. A debug detach closes the socket in the same
+// breath, so the client can stay up and the designer stays on its debug port.
+TEST(AppRunRestart, ThePreviousProcessIsEnded)
+{
+	wxInitializer wxInit;
+	ASSERT_TRUE(wxInit.IsOk());
+
+	EXPECT_FALSE(ibMcpEndStartedApplication(0));
+
+	const long pid = wxExecute(wxT("sleep 60"), wxEXEC_ASYNC);
+	ASSERT_GT(pid, 0);
+	ASSERT_TRUE(wxProcess::Exists(static_cast<int>(pid)));
+
+	const auto started = std::chrono::steady_clock::now();
+	EXPECT_TRUE(ibMcpEndStartedApplication(pid));
+	EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5));
+
+	// wxProcess::Exists is kill(pid, 0), true for a zombie. Reap, then the pid is gone.
+#if defined(__UNIX__)
+	int status = 0;
+	const pid_t reaped = ::waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+	EXPECT_EQ(reaped, static_cast<pid_t>(pid));
+#endif
+	EXPECT_FALSE(wxProcess::Exists(static_cast<int>(pid)));
+
+	EXPECT_TRUE(ibMcpEndStartedApplication(pid)) << "a process that has already gone is ended";
 }
