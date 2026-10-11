@@ -35,9 +35,9 @@ TEST(FindByAttribute, AnUnknownNameAndAnEmptyValueAreEmptyReferences)
 	// The factory that builds a manager is protected. The public door is the same one
 	// the runtime uses when a script writes Catalogs.<Name>: the manager type constructor.
 	ibCtorMetaValueTypeManager door(catalog);
-	ibValue created = door.CreateObject();
+	ibValue managerValue = door.CreateObject();
 	ibValueManagerDataObject* manager = nullptr;
-	ASSERT_TRUE(created.ConvertToValue(manager));
+	ASSERT_TRUE(managerValue.ConvertToValue(manager));
 
 	const long method = manager->FindMethod(wxT("FindByAttribute"));
 	ASSERT_GE(method, 0);
