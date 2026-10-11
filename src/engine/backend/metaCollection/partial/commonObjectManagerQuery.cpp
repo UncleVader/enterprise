@@ -47,7 +47,7 @@
 // all along. And a `_` or `%` in a code matched as a wildcard, so the lookup was not even exact. A LIKE is what a
 // lookup that is NOT exact asks — the first item whose value begins with the one given.
 static ibValue ibFindRefByAttribute(const ibValueMetaObjectRecordDataHierarchyMutableRef* meta,
-                                    ibValueMetaObjectAttributePredefined* attribute, const ibValue& value, bool exact)
+                                    ibValueMetaObjectAttributeBase* attribute, const ibValue& value, bool exact)
 {
 	if (meta == nullptr)
 		return ibValue();
@@ -91,6 +91,27 @@ ibValue ibValueManagerDataObjectPredefined::FindByDescription(const ibValue& des
 	// exactly the one answer that must not read as "not given".
 	const bool isExact = exact.GetType() == ibValueTypes::TYPE_EMPTY || exact.GetBoolean();
 	return ibFindRefByAttribute(meta, meta != nullptr ? meta->GetDataDescription() : nullptr, description, isExact);
+}
+
+ibValue ibValueManagerDataObjectPredefined::FindByAttribute(const ibValue& name, const ibValue& value) const
+{
+	const ibValueMetaObjectRecordDataHierarchyMutableRef* meta = GetMetaObject();
+	if (meta == nullptr)
+		return ibValue();
+
+	const wxString asked = name.GetString();
+	ibValueMetaObjectAttributeBase* attribute = meta->FindAttributeObjectByFilter(asked);
+	// Code and Description are attributes, and they are not in the custom-attribute list.
+	if (attribute == nullptr) {
+		const auto named = [&](ibValueMetaObjectAttributeBase* one) {
+			return one != nullptr && one->GetName().IsSameAs(asked, false);
+		};
+		if (named(meta->GetDataCode()))
+			attribute = meta->GetDataCode();
+		else if (named(meta->GetDataDescription()))
+			attribute = meta->GetDataDescription();
+	}
+	return ibFindRefByAttribute(meta, attribute, value, /*exact=*/true);
 }
 
 bool ibValueRecordManagerObject::ExistData()

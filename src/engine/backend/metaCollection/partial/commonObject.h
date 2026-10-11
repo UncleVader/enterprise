@@ -2131,6 +2131,9 @@ class BACKEND_API ibValueManagerDataObjectPredefined : public ibValueManagerData
 	// A VALUE, not a pointer — the reference found is held by the value that carries it out.
 	ibValue FindByCode(const ibValue& code) const;
 	ibValue FindByDescription(const ibValue& description, const ibValue& exact) const;
+	// THE FIRST ITEM WHOSE ATTRIBUTE EQUALS THE VALUE, as a reference — empty when none does, and empty
+	// when the name is not an attribute of this object. Code and Description are attributes too.
+	ibValue FindByAttribute(const ibValue& name, const ibValue& value) const;
 
 	void FillPredefined(ibMemberTable& helper) const;    // predefined-value props (composes onto FillMembers)
 
