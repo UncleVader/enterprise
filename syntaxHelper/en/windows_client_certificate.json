@@ -1,0 +1,30 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "en.WindowsCertificateSelectMode",
+      "name_local": "WindowsCertificateSelectMode",
+      "name_en": "WindowsCertificateSelectMode",
+      "kind": "enum_type",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "WindowsCertificateSelectMode.Auto",
+      "description": "How a client certificate would be picked from the Windows store (СпособВыбораСертификатаWindows): Auto, or Choose when more than one certificate fits and a person should pick."
+    },
+    {
+      "id": "cls.WindowsClientCertificate",
+      "name_local": "WindowsClientCertificate",
+      "name_en": "WindowsClientCertificate",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New WindowsClientCertificate([selection : WindowsCertificateSelectMode = Auto])",
+      "description": "A request for a client certificate from the Windows store (СертификатКлиентаWindows). New WindowsClientCertificate() asks for Auto. New WindowsClientCertificate(WindowsCertificateSelectMode.Choose) asks for the system dialog.\n\nSelectionMode reads that request back. The Windows store is not opened, and no certificate bytes are loaded: this value records the selection and nothing more. A secure connection still takes a CertificateFile.",
+      "parameters": "selection — WindowsCertificateSelectMode.Auto or WindowsCertificateSelectMode.Choose. Left out, it is Auto. A number or another type is a refusal: \"WindowsClientCertificate: the selection is a WindowsCertificateSelectMode value\".",
+      "return_descr": "WindowsClientCertificate.",
+      "example": "Cert = New WindowsClientCertificate(WindowsCertificateSelectMode.Auto);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
