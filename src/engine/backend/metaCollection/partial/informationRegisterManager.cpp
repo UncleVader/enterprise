@@ -47,6 +47,9 @@ void ibValueManagerDataObjectInformationRegister::FillManagerMethods(ibMemberTab
 	helper.AppendFunc(wxT("GetRecordForm"), 3, wxT("GetRecordForm(string, owner, guid)"));
 	helper.AppendFunc(wxT("GetListForm"), 3, wxT("GetListForm(string, owner, guid)"));
 	helper.AppendFunc(wxT("GetTemplate"), 1, wxT("GetTemplate(string)"));
+	// 1C's name for the same verb. Stored as that verb's own number and appended
+	// last, so the English methods keep the ordinals BuiltinMethodNum counts.
+	helper.AppendFunc(wxT("СоздатьКлючЗаписи"), 1, wxT("СоздатьКлючЗаписи(KeyValues)"), eCreateRecordKey, wxNOT_FOUND);
 }
 
 #include "selector/objectSelector.h"
@@ -92,7 +95,10 @@ static ibValue RecordKeyFromStructure(const ibValueMetaObjectInformationRegister
 bool ibValueManagerDataObjectInformationRegister::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
 	// Our own ordinal, not the table index — ibValueManagerDataObject::BuiltinMethodNum says why.
-	switch (BuiltinMethodNum(lMethodNum))
+	// A second spelling (СоздатьКлючЗаписи) stores that ordinal in the entry, because counting
+	// it as one more built-in would make it the verb that follows the last English one.
+	const long stored = m_members.GetMethodData(lMethodNum);
+	switch (stored != wxNOT_FOUND ? stored : BuiltinMethodNum(lMethodNum))
 	{
 	case eCreateRecordSet:
 		pvarRetValue = m_metaObject->CreateRecordSetObjectValue();
