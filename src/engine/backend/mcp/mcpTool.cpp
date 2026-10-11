@@ -30,6 +30,7 @@
 #include <set>      // one link per id — the same object named twice is one fact
 #include <atomic>   // how deep the host is in modal dialogs — read from any thread
 #include <wx/process.h>   // wxProcess::Exists — is the application app_run started still there
+#include <wx/utils.h>     // wxMilliSleep — waiting for that process to go
 #include <mutex>
 
 #include <map>   // property name -> the category it was declared into
@@ -337,6 +338,25 @@ void ibMcpRememberStartedApplication(long pid)
 long ibMcpStartedApplication()
 {
 	return StartedApplication().load();
+}
+
+bool ibMcpEndStartedApplication(long pid)
+{
+	if (pid == 0)
+		return false;
+	if (!wxProcess::Exists((int)pid))
+		return true;
+
+	// Ask, then insist. SIGTERM lets it close its session; a client that does not
+	// go still holds the debug port, and the designer reconnects to that port.
+	wxProcess::Kill((int)pid, wxSIGTERM, wxKILL_CHILDREN);
+	for (int waited = 0; waited < 100 && wxProcess::Exists((int)pid); ++waited)
+		wxMilliSleep(50);
+	if (wxProcess::Exists((int)pid))
+		wxProcess::Kill((int)pid, wxSIGKILL, wxKILL_CHILDREN);
+	for (int waited = 0; waited < 100 && wxProcess::Exists((int)pid); ++waited)
+		wxMilliSleep(50);
+	return !wxProcess::Exists((int)pid);
 }
 
 wxString ibMcpNoAnswer(const wxString& usual)

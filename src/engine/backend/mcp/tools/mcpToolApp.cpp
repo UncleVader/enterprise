@@ -184,39 +184,25 @@ public:
 				// ⭐ THE PLATFORM'S OWN ENDING, asked of every connection rather than of a chosen
 				// one: DetachConnection is a no-op on a connection that is not attached, so the
 				// filtering that would otherwise be written here is already inside it.
+				// The socket is closed in the same breath, so the stop may never land. The process
+				// is ended below by its pid, which is what frees the debug port the designer holds.
 				for (auto* connection : debugClient->GetListConnection())
 					if (connection != nullptr)
 						connection->DetachConnection(/*kill=*/true);
 
 				ended = true;
 
-				// ⚠ AND WAIT FOR IT TO ACTUALLY GO. The command travels to another process, which
-				// then unwinds, closes its session and lets go of the base; starting the
-				// replacement before that is two processes on one file base — Firebird gives the
-				// second one a lock error that reads like a corrupt installation.
-				if (lastStarted != 0) {
-					for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-						wxMilliSleep(50);
-				}
-				else {
+				if (lastStarted == 0)
 					wxMilliSleep(1000);   // started by somebody else - there is no pid to watch
-				}
 			}
 		}
-		// ⚠ …AND A RUN STARTED WITHOUT THE DEBUGGER HAS NO CONNECTION TO END, so the branch above never
-		// saw it: `restart` then started a SECOND application beside the first — two processes on one
-		// file base — and the old one had to be killed from outside (2026-09-10). A run THIS designer
-		// started has its pid, so it is asked to close, and then made to.
-		else if (restart && lastStarted != 0 && wxProcess::Exists((int)lastStarted)) {
-			wxProcess::Kill((int)lastStarted, wxSIGTERM, wxKILL_CHILDREN);
-			for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-				wxMilliSleep(50);
-			if (wxProcess::Exists((int)lastStarted))
-				wxProcess::Kill((int)lastStarted, wxSIGKILL, wxKILL_CHILDREN);
-			for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-				wxMilliSleep(50);
-			ended = true;
-		}
+
+		// ⚠ A RUN THIS DESIGNER STARTED IS ENDED BY ITS PID, debug session or not. The detach above
+		// asks and then drops the socket, and the client can stay up on the old debug port; a run
+		// with no debugger has no connection to ask at all. Either way the pid is what makes it go,
+		// before the replacement is started — two processes on one file base is a lock fight.
+		if (restart && lastStarted != 0)
+			ended = ibMcpEndStartedApplication(lastStarted) || ended;
 
 		const wxString useWeb = application.Lower();
 		const bool manifest = useWeb.IsSameAs(wxT("wenterprise-server"));
