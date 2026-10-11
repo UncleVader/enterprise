@@ -2939,7 +2939,7 @@ TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 }
 
 TEST_F(BuiltInRuntime, InfoBaseUsersNamesTheSessionUser) {
-	auto session = std::make_shared<ibSession>();
+	auto session = std::make_shared<ibSession>(wxT("infobase-users"), ibSessionKind::Enterprise);
 	const ibSessionScope bound(session.get());
 	ibUserInfo info;
 	info.m_strUserGuid = wxT("11111111-1111-1111-1111-111111111111");
