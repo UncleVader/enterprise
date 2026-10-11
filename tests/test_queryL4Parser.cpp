@@ -6,7 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "backend/query/queryParser.h"
@@ -232,10 +234,34 @@ TEST(QueryL4Parser, JoinInnerAndLeft)
 	EXPECT_EQ(sel->m_joins[1].m_kind, ibQueryJoinKindAst::Left);
 }
 
+// A Cyrillic word is a word only once the character type is a UTF-8 locale. The
+// process starts in "C", where iswalpha refuses П, so this test sets the type
+// for its own body and puts the previous one back.
+struct QueryCTypeLocale
+{
+	std::string m_previous;
+	QueryCTypeLocale()
+	{
+		const char* cur = std::setlocale(LC_CTYPE, nullptr);
+		if (cur != nullptr)
+			m_previous = cur;
+		std::setlocale(LC_CTYPE, "en_US.UTF-8");
+	}
+	~QueryCTypeLocale()
+	{
+		if (!m_previous.empty())
+			std::setlocale(LC_CTYPE, m_previous.c_str());
+	}
+};
+
 // 1C writes ПО where this language writes ON, and the same word where it writes BY.
 // A parenthesised condition after either word is an ordinary predicate.
 TEST(QueryL4Parser, JoinOnParenthesisedAndRussianPo)
 {
+	const QueryCTypeLocale ctype;
+	ASSERT_NE(std::setlocale(LC_CTYPE, nullptr), nullptr);
+	ASSERT_STRNE(std::setlocale(LC_CTYPE, nullptr), "C");
+
 	auto sel = Parse(wxT("SELECT * FROM Document.Orders AS o\n")
 	                 wxT("LEFT JOIN Catalog.Stores AS s\n")
 	                 wxT("ON (o.Store = s.Ref AND o.Posted = TRUE)"));
@@ -259,6 +285,13 @@ TEST(QueryL4Parser, JoinOnParenthesisedAndRussianPo)
 	auto grouped = Parse(wxT("SELECT Code FROM Catalog.Products GROUP ПО Code"));
 	ASSERT_EQ(grouped->m_groupBy.size(), 1u);
 	EXPECT_EQ(grouped->m_groupBy[0]->m_path[0], wxT("Code"));
+
+	auto lower = Parse(wxT("SELECT Code FROM Catalog.Products ORDER по Code"));
+	ASSERT_EQ(lower->m_orderBy.size(), 1u);
+	EXPECT_EQ(lower->m_orderBy[0].m_expr->m_path[0], wxT("Code"));
+
+	// English ON is still only ON. A BY position does not take it.
+	EXPECT_THROW(Parse(wxT("SELECT Code FROM Catalog.Products ORDER ON Code")), ibBackendException);
 
 	// Rendering keeps the English spelling: ПО is an accepted writing, not the one written back.
 	const wxString written = ibRenderQuery(*po);
