@@ -13,6 +13,7 @@
 #include "frontendFormFix.h"                      // FrontendFormFix + NewForm()
 
 #include "frontend/visualView/ctrl/tableBox.h"   // ibValueModelTableBox + g_controlTableBox*CLSID
+#include "frontend/visualView/ctrl/widgets.h"    // ibValueRadioButton
 #include "frontend/visualView/ctrl/textBox.h"    // ibValueTextBox
 #include "frontend/visualView/ctrl/gridBox.h"    // ibValueGridBox
 #include "frontend/visualView/ctrl/notebook.h"   // ibValueNotebook + g_controlNotebook*CLSID
@@ -242,10 +243,12 @@ TEST_F(FrontendFormFix, ARadioButtonKeepsASourceAndAChoiceValue)
 	ASSERT_NE(text, nullptr);
 	text->SetValue(wxT("Ship"));
 
+	auto* button = dynamic_cast<ibValueRadioButton*>(radio);
+	ASSERT_NE(button, nullptr);
 	ibDataNode saved;
-	ASSERT_TRUE(radio->WriteData(saved));
+	ASSERT_TRUE(button->WriteData(saved));
 	text->SetValue(wxT(""));
-	ASSERT_TRUE(radio->ReadData(saved));
+	ASSERT_TRUE(button->ReadData(saved));
 	EXPECT_EQ(text->GetValueAsString(), wxT("Ship"));
 }
 
