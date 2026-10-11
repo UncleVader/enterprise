@@ -734,7 +734,7 @@ public:
 				? wxALIGN_RIGHT : wxALIGN_LEFT;
 			break;
 		}
-		return horizontal | wxALIGN_CENTRE_VERTICAL;
+		return static_cast<wxAlignment>(horizontal | wxALIGN_CENTRE_VERTICAL);
 	}
 
 private:
