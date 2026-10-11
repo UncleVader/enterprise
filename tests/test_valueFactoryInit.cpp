@@ -123,7 +123,9 @@ TEST(NotifyDescription, AMissingModuleAndAnUnknownProcedureAreNamed) {
 TEST(NotifyDescription, TheNameAndQuestionCompile) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	ibValueSystemFunction valueSystem;
+	ibValue enums = ibValue::CreateObject(wxT("EnumManager"));
 	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	cc.AddContextVariable(wxT("EnumManager"), enums, true);
 	const wxString src =
 		wxT("Procedure Check()\n")
 		wxT("    var notify;\n")
