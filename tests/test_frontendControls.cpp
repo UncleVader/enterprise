@@ -223,6 +223,32 @@ TEST_F(FrontendFormFix, FormSerializeRoundTripPreservesControls)
 		<< "the round-tripped form owns the same controls";
 }
 
+// A radio button writes one shared attribute. ChoiceValue is the value of this button.
+TEST_F(FrontendFormFix, ARadioButtonKeepsASourceAndAChoiceValue)
+{
+	if (!frameReady)
+		GTEST_SKIP();
+
+	ibValueForm* form = NewForm();
+	ASSERT_NE(form, nullptr);
+	ibValueFrame* radio = form->NewObject(control_to_clsid("CT_RDBT"), form);
+	ASSERT_NE(radio, nullptr);
+	EXPECT_NE(radio->GetProperty(wxT("Source")), nullptr);
+	EXPECT_NE(radio->GetProperty(wxT("Selected")), nullptr);
+	ibProperty* choice = radio->GetProperty(wxT("ChoiceValue"));
+	ASSERT_NE(choice, nullptr);
+
+	ibPropertyString* text = dynamic_cast<ibPropertyString*>(choice);
+	ASSERT_NE(text, nullptr);
+	text->SetValue(wxT("Ship"));
+
+	ibDataNode saved;
+	ASSERT_TRUE(radio->WriteData(saved));
+	text->SetValue(wxT(""));
+	ASSERT_TRUE(radio->ReadData(saved));
+	EXPECT_EQ(text->GetValueAsString(), wxT("Ship"));
+}
+
 // ------------------------------ clsid kind-typing ----------------------------
 // Pure classification helpers (clsid.h) — no fixture, no wxApp: they read the
 // high byte of the id. Control identity is by kind, never by C++ RTTI.
