@@ -173,8 +173,10 @@ TEST(InternetMail, LogonSendsTheMessage) {
 	message.SetPropVal(message.FindProp(wxT("Subject")), ibValue(wxT("Hello")));
 	ibValue from = Prop(message, wxT("From"));
 	from.SetPropVal(from.FindProp(wxT("Address")), ibValue(wxT("ada@example.com")));
-	Add(Prop(message, wxT("To")), ibValue(wxT("bob@example.com")));
-	Add(Prop(message, wxT("Texts")), ibValue(wxT("one line")));
+	ibValue recipients = Prop(message, wxT("To"));
+	Add(recipients, ibValue(wxT("bob@example.com")));
+	ibValue texts = Prop(message, wxT("Texts"));
+	Add(texts, ibValue(wxT("one line")));
 
 	ibValue mail = ibValue::CreateObject(wxT("InternetMail"));
 	ibValue* logonArg = &profile;
