@@ -88,8 +88,8 @@ public:
 			"paints for sections - a different store, because 'which sections am I in' and 'whose "
 			"column do I carry' have to stay tellable apart. Role rights are the third of the family "
 			"and are role_grant. WHO MAY BE CHECKED IN is asked of the object and never listed here, "
-			"so a metatype that arrives later answers for itself: today the catalog / document line "
-			"says yes and registers say no. Omit `into` to READ what this object already carries.");
+			"so a metatype that arrives later answers for itself: a catalog, a document and an "
+			"information register say yes. Omit `into` to READ what this object already carries.");
 	}
 
 	wxString GetSearchText() const override
@@ -130,8 +130,8 @@ public:
 		if (composition == nullptr || !composition->IsCompositionAllowed()) {
 			refusal = wxString::Format(
 				ibMcpText("'%s' cannot be part of a composition - it says so itself. A common attribute "
-					  "needs somewhere to put the column it produces, so the catalog / document "
-					  "line accepts one and a register does not."), carrier->GetName());
+					  "needs a column on a stored row, which a catalog, a document and an "
+					  "information register have."), carrier->GetName());
 			return false;
 		}
 
