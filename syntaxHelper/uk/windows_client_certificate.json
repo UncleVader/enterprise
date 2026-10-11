@@ -1,0 +1,30 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "en.WindowsCertificateSelectMode",
+      "name_local": "WindowsCertificateSelectMode",
+      "name_en": "WindowsCertificateSelectMode",
+      "kind": "enum_type",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "WindowsCertificateSelectMode.Auto",
+      "description": "Як клієнтський сертифікат обирався б зі сховища Windows (СпособВыбораСертификатаWindows): Auto — автоматично, Choose — діалог системи, коли пасує більше ніж один сертифікат."
+    },
+    {
+      "id": "cls.WindowsClientCertificate",
+      "name_local": "WindowsClientCertificate",
+      "name_en": "WindowsClientCertificate",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New WindowsClientCertificate([selection : WindowsCertificateSelectMode = Auto])",
+      "description": "Запит клієнтського сертифіката зі сховища Windows (СертификатКлиентаWindows). New WindowsClientCertificate() просить Auto. New WindowsClientCertificate(WindowsCertificateSelectMode.Choose) просить системний діалог.\n\nSelectionMode читає цей запит назад. Сховище Windows не відкривається, і байти сертифіката не завантажуються: значення тримає лише спосіб вибору. Захищене з'єднання й далі приймає CertificateFile.",
+      "parameters": "selection — WindowsCertificateSelectMode.Auto або WindowsCertificateSelectMode.Choose. Якщо опущене, це Auto. Число або інший тип — відмова: «WindowsClientCertificate: the selection is a WindowsCertificateSelectMode value».",
+      "return_descr": "WindowsClientCertificate.",
+      "example": "Cert = New WindowsClientCertificate(WindowsCertificateSelectMode.Auto);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}

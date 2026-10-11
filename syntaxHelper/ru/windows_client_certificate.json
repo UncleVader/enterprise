@@ -1,0 +1,30 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "en.WindowsCertificateSelectMode",
+      "name_local": "WindowsCertificateSelectMode",
+      "name_en": "WindowsCertificateSelectMode",
+      "kind": "enum_type",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "WindowsCertificateSelectMode.Auto",
+      "description": "Как клиентский сертификат выбирался бы из хранилища Windows (СпособВыбораСертификатаWindows): Auto — автоматически, Choose — диалог системы, когда подходит больше одного сертификата."
+    },
+    {
+      "id": "cls.WindowsClientCertificate",
+      "name_local": "WindowsClientCertificate",
+      "name_en": "WindowsClientCertificate",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New WindowsClientCertificate([selection : WindowsCertificateSelectMode = Auto])",
+      "description": "Запрос клиентского сертификата из хранилища Windows (СертификатКлиентаWindows). New WindowsClientCertificate() просит Auto. New WindowsClientCertificate(WindowsCertificateSelectMode.Choose) просит системный диалог.\n\nSelectionMode читает этот запрос обратно. Хранилище Windows не открывается, и байты сертификата не загружаются: значение хранит только способ выбора. Защищённое соединение по-прежнему принимает CertificateFile.",
+      "parameters": "selection — WindowsCertificateSelectMode.Auto или WindowsCertificateSelectMode.Choose. Если опущено, это Auto. Число или другой тип — отказ: «WindowsClientCertificate: the selection is a WindowsCertificateSelectMode value».",
+      "return_descr": "WindowsClientCertificate.",
+      "example": "Cert = New WindowsClientCertificate(WindowsCertificateSelectMode.Auto);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
