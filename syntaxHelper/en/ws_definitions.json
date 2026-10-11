@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.WSDefinitions",
+      "name_local": "WSDefinitions",
+      "name_en": "WSDefinitions",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New WSDefinitions(location : string [, user : string [, password : string [, proxy [, timeout : number [, secureConnection [, useOSAuthentication : boolean]]]]]]) ",
+      "description": "A WSDL document, read when the value is made (WSОпределения). The location is a file path, or an http:// or https:// address, and it is loaded immediately. Location reads that address back. Services is an array of structures, one per wsdl:service: Name, NamespaceURI (the document's targetNamespace), and Ports, an array of structures with Name and Location (the soap:address).\n\nA user and password are sent as Basic authentication. The timeout is a number of seconds from 1 to 120; left out, it is 30. An InternetProxy, a secure-connection object, and Windows authentication are refused — they are not applied: \"WSDefinitions: an InternetProxy is not used from here\", and the same shape for the other two. A missing file, a document that is not WSDL, and an HTTP answer other than success are refused by the location.",
+      "parameters": "location — a file path or an http(s) URL.\nuser, password — optional Basic authentication.\ntimeout — seconds, 1 to 120. Left out, 30.",
+      "return_descr": "WSDefinitions.",
+      "example": "Definitions = New WSDefinitions(\"goods.wsdl\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
