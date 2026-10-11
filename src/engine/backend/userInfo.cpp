@@ -278,3 +278,79 @@ ibUserInfo ibUserInfo::Deserialize(ibReaderMemory& reader)
 	chunk.SetDataLen(0); if (reader.r_chunk(eBlockLang, chunk)) ReadLanguageChunk(chunk, info);
 	return info;
 }
+
+#include "compiler/value.h"
+#include "system/value/valueArray.h"
+#include "session/session.h"
+
+namespace {
+class ibValueInfoBaseUser : public ibValueDynamicMembers {
+public:
+	ibValueInfoBaseUser(const wxString& name, const wxString& fullName, const wxString& guid)
+		: ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, true), m_name(name), m_fullName(fullName), m_guid(guid)
+	{
+		m_members.Bind(this, &ibValueInfoBaseUser::Fill);
+	}
+	virtual ibClassID GetClassType() const override { return 0; }
+	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override {
+		if (lPropNum == 0) { pvarPropVal = m_name; return true; }
+		if (lPropNum == 1) { pvarPropVal = m_fullName; return true; }
+		if (lPropNum == 2) { pvarPropVal = m_guid; return true; }
+		return false;
+	}
+private:
+	void Fill(ibMemberTable& helper) const {
+		helper.AppendProp(wxT("Name"), true, false, wxNOT_FOUND);
+		helper.AppendProp(wxT("FullName"), true, false, wxNOT_FOUND);
+		helper.AppendProp(wxT("UUID"), true, false, wxNOT_FOUND);
+	}
+	wxString m_name;
+	wxString m_fullName;
+	wxString m_guid;
+};
+class ibValueInfoBaseUsers : public ibValueDynamicMembers {
+public:
+	ibValueInfoBaseUsers() : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, true) {
+		m_members.Bind(this, &ibValueInfoBaseUsers::Fill);
+	}
+	// Not a creatable type. PrepareModuleData asks GetClassType, and an unregistered
+	// type asserts in a debug run. Zero is the answer for a process object bound by name.
+	virtual ibClassID GetClassType() const override { return 0; }
+	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override {
+		(void)paParams;
+		(void)lSizeArray;
+		if (lMethodNum == 0) { pvarRetValue = Users(); return true; }
+		if (lMethodNum == 1) { pvarRetValue = Current(); return true; }
+		return false;
+	}
+private:
+	void Fill(ibMemberTable& helper) const {
+		helper.AppendFunc(wxT("GetUsers"), 0, wxT("GetUsers()"));
+		helper.AppendFunc(wxT("CurrentUser"), 0, wxT("CurrentUser()"));
+	}
+	static ibValue UserOf(const wxString& name, const wxString& fullName, const wxString& guid) {
+		return new ibValueInfoBaseUser(name, fullName, guid);
+	}
+	ibValue Users() const {
+		ibValueArray* const list = new ibValueArray();
+		for (const ibUserInfo::Brief& brief : ibUserInfo::ListAll())
+			list->Add(UserOf(brief.m_strUserName, brief.m_strUserFullName, brief.m_strUserGuid));
+		return list;
+	}
+	ibValue Current() const {
+		const ibSession* const session = ibSession::Current();
+		if (session == nullptr || !session->GetUserInfo().IsOk())
+			return UserOf(wxEmptyString, wxEmptyString, wxEmptyString);
+		const ibUserInfo& info = session->GetUserInfo();
+		return UserOf(info.m_strUserName, info.m_strUserFullName, info.m_strUserGuid);
+	}
+};
+}
+ibValue* ibInfoBaseUsers()
+{
+	static ibValueInfoBaseUsers users;
+	static struct Hold {
+		Hold() { users.IncrRef(); }
+	} hold;
+	return &users;
+}

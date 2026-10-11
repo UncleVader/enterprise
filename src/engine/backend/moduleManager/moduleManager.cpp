@@ -10,6 +10,7 @@
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/metadataConfiguration.h"
+#include "backend/userInfo.h"
 
 #define objectManager wxT("Manager")
 #define objectMetadataManager wxT("Metadata")
@@ -370,6 +371,9 @@ bool ibValueModuleManagerRuntimeConfiguration::CreateMainModule()
 		BindScopeVariable(ctor->GetClassName(), created.GetRef());
 	}
 
+	// Named, after the ctor contexts, so earlier slot numbers stay where the cache left them.
+	BindContextVariable(wxT("InfoBaseUsers"), ibInfoBaseUsers());
+
 	// Compile only — runtime (ibProcUnit) is created per session by
 	// AttachRuntime(ctx). The manager itself no longer carries
 	// a ProcUnit field.
@@ -424,6 +428,7 @@ bool ibValueModuleManagerRuntimeConfiguration::DestroyMainModule()
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		UnbindVariable(ctor->GetClassName());
 	}
+	UnbindVariable(wxT("InfoBaseUsers"));
 
 	//reset global module
 	m_compileModule->Reset();
@@ -546,6 +551,7 @@ bool ibValueModuleManagerDesigner::CreateMainModule()
 		const ibValue created = ctor->CreateObject();
 		BindScopeVariable(ctor->GetClassName(), created.GetRef());
 	}
+	BindContextVariable(wxT("InfoBaseUsers"), ibInfoBaseUsers());
 
 	// No unit compilation here — see AddCommonModule. The editor parses common
 	// modules' text for exports; the designer never executes script.
@@ -571,6 +577,7 @@ bool ibValueModuleManagerDesigner::DestroyMainModule()
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		UnbindVariable(ctor->GetClassName());
 	}
+	UnbindVariable(wxT("InfoBaseUsers"));
 
 	m_compileModule->Reset();
 
