@@ -12,7 +12,7 @@
 
 namespace {
 
-int LevelOf(const ibValue& made)
+int LevelOf(ibValue& made)
 {
 	ibValue level;
 	EXPECT_TRUE(made.GetPropVal(made.FindProp(wxT("CompressionLevel")), level));
@@ -22,18 +22,19 @@ int LevelOf(const ibValue& made)
 } // namespace
 
 TEST(DataCompression, TheLevelIsMinusOneUnlessItIsSaid) {
-	const ibValue plain = ibValue::CreateObject(wxT("DataCompression"));
+	ibValue plain = ibValue::CreateObject(wxT("DataCompression"));
 	ASSERT_TRUE(plain.IsReference());
 	EXPECT_EQ(LevelOf(plain), -1);
 
 	ibValue nine(ibNumber(9));
 	ibValue* params = &nine;
-	const ibValue tight = ibValue::CreateObject(wxT("DataCompression"), &params, 1);
+	ibValue tight = ibValue::CreateObject(wxT("DataCompression"), &params, 1);
 	EXPECT_EQ(LevelOf(tight), 9);
 
 	ibValue zero(ibNumber(0));
 	params = &zero;
-	EXPECT_EQ(LevelOf(ibValue::CreateObject(wxT("DataCompression"), &params, 1)), 0);
+	ibValue stored = ibValue::CreateObject(wxT("DataCompression"), &params, 1);
+	EXPECT_EQ(LevelOf(stored), 0);
 
 	ibValue bad(ibNumber(10));
 	params = &bad;
