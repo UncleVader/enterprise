@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.InternetMail",
+      "name_local": "InternetMail",
+      "name_en": "InternetMail",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New InternetMail()",
+      "description": "Сеанс SMTP (ИнтернетПочта). Logon(profile) соединяется с SMTPServerAddress на SMTPPort (25, если порт не задан), говорит EHLO и AUTH LOGIN, когда задан SMTPUser. SMTPUseSSL — отказ: этот сеанс говорит открытым SMTP. Send(message) отправляет одно InternetMailMessage: From.Address — отправитель, каждый элемент To — получатель, Subject и Texts — письмо. Logoff говорит QUIT. Отправка до входа — отказ.",
+      "parameters": "Нет.",
+      "return_descr": "InternetMail.",
+      "example": "Mail = New InternetMail;\nMail.Logon(Profile);\nMessage = New InternetMailMessage;\nMessage.From.Address = \"ada@example.com\";\nMessage.To.Add(\"bob@example.com\");\nMessage.Subject = \"Hello\";\nMessage.Texts.Add(\"one line\");\nMail.Send(Message);\nMail.Logoff();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.InternetMailProfile", "cls.InternetMailMessage"],
+      "reviewed": false
+    }
+  ]
+}

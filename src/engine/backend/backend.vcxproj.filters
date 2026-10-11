@@ -642,6 +642,9 @@
     <ClInclude Include="system\value\valueTextFile.h">
       <Filter>system\value</Filter>
     </ClInclude>
+    <ClInclude Include="system\value\valueInternetMailSession.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
     <ClInclude Include="system\value\valueHttp.h">
       <Filter>system\value</Filter>
     </ClInclude>
@@ -2009,6 +2012,9 @@
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueTextFile.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
+    <ClCompile Include="system\value\valueInternetMailSession.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valueHttp.cpp">

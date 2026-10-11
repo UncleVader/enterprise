@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.InternetMail",
+      "name_local": "InternetMail",
+      "name_en": "InternetMail",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New InternetMail()",
+      "description": "An SMTP session (ИнтернетПочта). Logon(profile) connects to SMTPServerAddress on SMTPPort (25 when left out), says EHLO, and AUTH LOGIN when SMTPUser is set. SMTPUseSSL is refused: this session speaks plain SMTP. Send(message) delivers one InternetMailMessage: From.Address is the sender, each To entry is a recipient, Subject and Texts are the letter. Logoff says QUIT. A send before logon is refused.",
+      "parameters": "None.",
+      "return_descr": "InternetMail.",
+      "example": "Mail = New InternetMail;\nMail.Logon(Profile);\nMessage = New InternetMailMessage;\nMessage.From.Address = \"ada@example.com\";\nMessage.To.Add(\"bob@example.com\");\nMessage.Subject = \"Hello\";\nMessage.Texts.Add(\"one line\");\nMail.Send(Message);\nMail.Logoff();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.InternetMailProfile", "cls.InternetMailMessage"],
+      "reviewed": false
+    }
+  ]
+}
