@@ -5,6 +5,7 @@
 
 #include "systemManager.h"
 #include "backend/backend_form.h"
+#include "backend/system/value/valueNotifyDescription.h"
 
 enum
 {
@@ -208,7 +209,7 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	helper.AppendProc(wxT("WriteJournalEvent"), 4,
 		wxT("WriteJournalEvent(message : string, statusMessage : statusMessage, category : string, object)"));
 	helper.AppendFunc(wxT("Alert"), 1, wxT("Alert(message : string)"));
-	helper.AppendFunc(wxT("Question"), 2, wxT("Question(message : string, questionMode)"));
+	helper.AppendFunc(wxT("Question"), 3, wxT("Question(message : string, questionMode, notify)"));
 	helper.AppendFunc(wxT("SetStatus"), 1, wxT("SetStatus(text : string)"));
 	helper.AppendFunc(wxT("ClearMessages"), wxT("ClearMessages()"));
 	helper.AppendFunc(wxT("SetError"), 1, wxT("SetError(string)"));
@@ -377,8 +378,15 @@ bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetVa
 				lSizeArray > 3 ? *paParams[3] : ibValue());
 			return true;
 		case enAlert: Alert(paParams[0]->GetString()); return true;
-		case enQuestion: pvarRetValue = Question(paParams[0]->GetString(),
-			lSizeArray > 1 ? paParams[1]->ConvertToEnumValue<ibQuestionMode>() : ibQuestionMode::ibQuestionMode_OK);
+		case enQuestion:
+			pvarRetValue = Question(paParams[0]->GetString(),
+				lSizeArray > 1 ? paParams[1]->ConvertToEnumValue<ibQuestionMode>() : ibQuestionMode::ibQuestionMode_OK);
+			if (lSizeArray > 2 && paParams[2] != nullptr && !paParams[2]->IsEmpty()) {
+				ibValueNotifyDescription* notify = nullptr;
+				if (!paParams[2]->ConvertToValue(notify) || notify == nullptr)
+					ibBackendCoreException::Error(_("Question: the callback is not a NotifyDescription"));
+				notify->Call(pvarRetValue);
+			}
 			return true;
 		case enSetStatus: SetStatus(paParams[0]->GetString()); return true;
 		case enClearMessage: ClearMessage(); return true;

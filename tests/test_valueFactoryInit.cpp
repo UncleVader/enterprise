@@ -9,7 +9,10 @@
 #include <string>
 
 #include "backend/backend_exception.h"
+#include "backend/compiler/compileCode.h"
 #include "backend/compiler/value.h"
+#include "backend/system/systemManager.h"
+#include "backend/system/value/valueNotifyDescription.h"
 
 namespace {
 
@@ -45,6 +48,93 @@ TEST(ValueFactory, AnInitThatRaisesDoesNotLeakTheObject) {
 		EXPECT_NE(std::string(e.what()).find("this is why"), std::string::npos) << "the type's own words, not a generic sentence";
 	}
 	EXPECT_EQ(g_alive, 0) << "an object whose Init raised is nobody's - the factory lets go of it";
+}
+
+namespace {
+
+int g_notifyCalls = 0;
+wxString g_notifyResult;
+wxString g_notifyExtra;
+
+void BindNotifyProbe(ibValue::ibMemberTable& helper, const ibValue*)
+{
+	helper.AppendProc(wxT("Handler"), 2, wxT("Handler(result, extra)"));
+}
+
+class ibValueNotifyProbe : public ibValueStaticMembers<&BindNotifyProbe> {
+public:
+	ibValueNotifyProbe() : ibValueStaticMembers(ibValueTypes::TYPE_VALUE) {}
+	bool CallAsProc(const long, ibValue** paParams, const long lSizeArray) override {
+		++g_notifyCalls;
+		if (lSizeArray > 0 && paParams != nullptr && paParams[0] != nullptr)
+			g_notifyResult = paParams[0]->GetString();
+		if (lSizeArray > 1 && paParams[1] != nullptr)
+			g_notifyExtra = paParams[1]->GetString();
+		return true;
+	}
+};
+
+} // namespace
+
+VALUE_TYPE_REGISTER(ibValueNotifyProbe, "NotifyProbe", value_to_clsid("VL_NTPR"));
+
+TEST(NotifyDescription, ACallReachesTheNamedProcedure) {
+	g_notifyCalls = 0;
+	ibValue module = ibValue::CreateObject(wxT("NotifyProbe"));
+	ibValue procedure(wxT("Handler"));
+	ibValue extra(wxT("more"));
+	ibValue* params[] = { &procedure, &module, &extra };
+	ibValue notify = ibValue::CreateObject(wxT("NotifyDescription"), params, 3);
+
+	ibValueNotifyDescription* asNotify = nullptr;
+	ASSERT_TRUE(notify.ConvertToValue(asNotify));
+	asNotify->Call(ibValue(wxT("Yes")));
+	EXPECT_EQ(g_notifyCalls, 1);
+	EXPECT_EQ(g_notifyResult, wxT("Yes"));
+	EXPECT_EQ(g_notifyExtra, wxT("more"));
+}
+
+TEST(NotifyDescription, AMissingModuleAndAnUnknownProcedureAreNamed) {
+	ibValue procedure(wxT("Handler"));
+	ibValue* params[] = { &procedure };
+	ibValue notify = ibValue::CreateObject(wxT("NotifyDescription"), params, 1);
+	ibValueNotifyDescription* asNotify = nullptr;
+	ASSERT_TRUE(notify.ConvertToValue(asNotify));
+	try {
+		asNotify->Call(ibValue(wxT("Yes")));
+		FAIL() << "a description with no module must be refused";
+	} catch (const ibBackendException& err) {
+		EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("module")));
+	}
+
+	ibValue module = ibValue::CreateObject(wxT("NotifyProbe"));
+	ibValue missing(wxT("Missing"));
+	ibValue* bad[] = { &missing, &module };
+	ibValue unknown = ibValue::CreateObject(wxT("NotifyDescription"), bad, 2);
+	ASSERT_TRUE(unknown.ConvertToValue(asNotify));
+	try {
+		asNotify->Call(ibValue());
+		FAIL() << "an unknown procedure must be refused";
+	} catch (const ibBackendException& err) {
+		EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("Missing")));
+	}
+}
+
+TEST(NotifyDescription, TheNameAndQuestionCompile) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ibValueSystemFunction valueSystem;
+	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	const wxString src =
+		wxT("Procedure Check()\n")
+		wxT("    var notify;\n")
+		wxT("    notify = New NotifyDescription(\"Handler\", Undefined, 1);\n")
+		wxT("    Question(\"Save?\", QuestionMode.Ok, notify);\n")
+		wxT("EndProcedure\n");
+	try {
+		ASSERT_TRUE(cc.Compile(src));
+	} catch (const ibBackendException& err) {
+		FAIL() << err.GetErrorDescription().ToStdString();
+	}
 }
 
 TEST(ValueFactory, AnInitThatAnswersFalseIsStillCleanedUpAfter) {

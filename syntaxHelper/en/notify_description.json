@@ -1,0 +1,23 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.NotifyDescription",
+      "name_local": "NotifyDescription",
+      "name_en": "NotifyDescription",
+      "kind": "class",
+      "category_keys": ["value_types"],
+      "signature": "New NotifyDescription(procedureName, module, additionalParameters)",
+      "description": "A procedure to call when a dialog has an answer. Question passes the answer and the additional value to that procedure on the module. OpenForm does not take one: a form is not closed back into the caller.",
+      "syntax_block": "New NotifyDescription(procedureName, module, additionalParameters)",
+      "parameters": "procedureName — the procedure. module — the object that has it. additionalParameters — passed after the answer. The module and the extra value may be omitted.",
+      "return_descr": "NotifyDescription.",
+      "example": "notify = New NotifyDescription(\"Handler\", ThisObject);\nQuestion(\"Save?\", QuestionMode.YesNo, notify);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.Question"],
+      "reviewed": true
+    }
+  ]
+}

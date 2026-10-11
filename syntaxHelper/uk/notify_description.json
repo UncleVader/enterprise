@@ -1,0 +1,23 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "cls.NotifyDescription",
+      "name_local": "NotifyDescription",
+      "name_en": "NotifyDescription",
+      "kind": "class",
+      "category_keys": ["value_types"],
+      "signature": "New NotifyDescription(procedureName, module, additionalParameters)",
+      "description": "Процедура, яку викликають, коли в діалога є відповідь. Question передає відповідь і додаткове значення цій процедурі модуля. OpenForm його не приймає: закриття форми не повертається у викликаючий код.",
+      "syntax_block": "New NotifyDescription(procedureName, module, additionalParameters)",
+      "parameters": "procedureName — процедура. module — об'єкт, у якого вона є. additionalParameters — передається після відповіді. Модуль і додаткове значення можна не вказувати.",
+      "return_descr": "NotifyDescription.",
+      "example": "notify = New NotifyDescription(\"Handler\", ThisObject);\nQuestion(\"Save?\", QuestionMode.YesNo, notify);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.Question"],
+      "reviewed": true
+    }
+  ]
+}
