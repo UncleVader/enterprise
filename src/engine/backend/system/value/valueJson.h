@@ -88,14 +88,16 @@ public:
 	// are taken one at a time with no exception for a stop sign:
 	//     reader.Read();                                                   // [
 	//     while (reader.Read() And reader.CurrentValueType <> JSONValueType.ArrayEnd) { item = reader.ReadValue(); }
-	ibValue ReadValue();
+	// asMap: an object becomes a Map, whose keys keep case, instead of a Structure.
+	// Nested objects follow the same choice. The reader's own ReadValue() leaves it false.
+	ibValue ReadValue(bool asMap = false);
 	void Close();
 
 	ibJsonValueType CurrentType() const;
 	ibValue CurrentValue() const;
 
 private:
-	ibValue BuildValue(int depth);             // from the current token to the end of the value it opens
+	ibValue BuildValue(int depth, bool asMap); // from the current token to the end of the value it opens
 
 	// What CurrentValueType answers, made once per kind: a fresh enumeration object per token is dozens of
 	// allocations in the loop a walk IS (`while (reader.Read()) { if (reader.CurrentValueType = ...`).
