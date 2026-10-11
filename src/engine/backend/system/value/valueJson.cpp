@@ -280,7 +280,7 @@ void ibValueJsonReader::Skip()
 // asked again it refuses again (it used to step first and check after - so the same call, repeated, SUCCEEDED
 // on the token it had been refused for), and a value refused for its depth does not leave the walk standing
 // in the middle of it.
-ibValue ibValueJsonReader::ReadValue()
+ibValue ibValueJsonReader::ReadValue(bool asMap)
 {
 	if (!m_loaded)
 		ibBackendCoreException::Error(_("JSONReader: no text is set"));
@@ -310,7 +310,7 @@ ibValue ibValueJsonReader::ReadValue()
 	m_started = true;
 	m_at = from;
 	try {
-		const ibValue value = BuildValue(0);
+		const ibValue value = BuildValue(0, asMap);
 		m_taken = true;
 		return value;
 	}
@@ -324,7 +324,7 @@ ibValue ibValueJsonReader::ReadValue()
 
 // The tokens are well-formed - the parser refused anything else - so every start has its end and every name
 // its value; what is checked here is only how deep it goes.
-ibValue ibValueJsonReader::BuildValue(int depth)
+ibValue ibValueJsonReader::BuildValue(int depth, bool asMap)
 {
 	const ibToken& token = m_tokens[m_at];
 
@@ -333,16 +333,18 @@ ibValue ibValueJsonReader::BuildValue(int depth)
 			ibBackendCoreException::Error(_("JSONReader: the value nests deeper than %d levels"), kMaxDepth);
 
 		// Born held (development.md, "A new value is born owned") - and let go of by itself, whatever is raised below.
-		const ibValuePtr<ibValueStructure> object(new ibValueStructure());
+		// A Map keeps every key, including two that differ only in case. A Structure cannot, and says so.
+		const ibValuePtr<ibValueContainer> object(asMap ? new ibValueContainer() : new ibValueStructure());
 		for (++m_at; m_tokens[m_at].m_type != ibJsonValueType_ObjectEnd; ++m_at) {
 			const ibValue name = m_tokens[m_at].m_value;
 			++m_at;
-			const ibValue member = BuildValue(depth + 1);
+			const ibValue member = BuildValue(depth + 1, asMap);
 
 			// A name met twice keeps its LAST value - what every other reader of JSON answers, and what SetAt
 			// does (overwrite, else create). 🛑 But a Structure's keys FOLD CASE and JSON's do not: `ab12` and
 			// `AB12` are two members there and one here, so the second would silently overwrite the first - a
-			// dictionary keyed by codes losing entries without a word. That is refused, by both names.
+			// dictionary keyed by codes losing entries without a word. That is refused, by both names. A Map
+			// does not fold, so both keys stay.
 			//
 			// WHICH entry the Structure itself matched is asked of the Structure (FindProp answers its index):
 			// one lookup, and ITS fold - a second opinion on what "the same key" means is a collision it would
@@ -351,13 +353,15 @@ ibValue ibValueJsonReader::BuildValue(int depth)
 			//
 			// The name stays the runtime string it is: FindProp takes one, and a wxString in between was two
 			// allocations per key for nothing.
-			const ibString spelled = name.GetString();
-			const long matched = object->FindProp(spelled);
-			if (matched >= 0) {
-				const ibString held = object->Entries()[static_cast<size_t>(matched)].key.GetString();
-				if (held != spelled)
-					ibBackendCoreException::Error(_("JSONReader: the object has the keys '%s' and '%s', which differ only in case - a Structure cannot hold both; walk it with Read() instead"),
-						held, spelled);
+			if (!asMap) {
+				const ibString spelled = name.GetString();
+				const long matched = object->FindProp(spelled);
+				if (matched >= 0) {
+					const ibString held = object->Entries()[static_cast<size_t>(matched)].key.GetString();
+					if (held != spelled)
+						ibBackendCoreException::Error(_("JSONReader: the object has the keys '%s' and '%s', which differ only in case - a Structure cannot hold both; walk it with Read() instead"),
+							held, spelled);
+				}
 			}
 			object->SetAt(name, member);
 		}
@@ -370,7 +374,7 @@ ibValue ibValueJsonReader::BuildValue(int depth)
 
 		const ibValuePtr<ibValueArray> list(new ibValueArray());   // born held
 		for (++m_at; m_tokens[m_at].m_type != ibJsonValueType_ArrayEnd; ++m_at)
-			list->Add(BuildValue(depth + 1));
+			list->Add(BuildValue(depth + 1, asMap));
 		return list;
 	}
 

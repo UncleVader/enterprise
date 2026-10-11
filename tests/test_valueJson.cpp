@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "backend/backend_exception.h"
+#include "backend/system/systemManager.h"
 #include "backend/system/value/valueJson.h"
 #include "backend/system/value/valueArray.h"
 #include "backend/system/value/valueMap.h"
@@ -194,6 +195,36 @@ TEST(JsonReader, KeysThatDifferOnlyInCaseAreRefusedNotMerged) {
 	while (walker.Read())
 		if (walker.CurrentType() == ibJsonValueType_PropertyName) names++;
 	EXPECT_EQ(names, 3);
+}
+
+// ReadJSON's second argument (ПрочитатьВСоответствие): an object becomes a Map, so two keys
+// that differ only in case both stay, and a nested object is a Map too. Issue #306.
+TEST(JsonReader, ReadToMapKeepsKeysThatDifferOnlyInCase) {
+	ibValueJsonReader reader;
+	reader.SetText(wxT("{\"ab12\":1,\"AB12\":{\"n\":2}}"));
+	const ibValue value = reader.ReadValue(true);
+	EXPECT_EQ(AsStructure(value), nullptr);
+	const ibValueContainer* map = value.IsReference()
+		? dynamic_cast<const ibValueContainer*>(value.GetRef()) : nullptr;
+	ASSERT_NE(map, nullptr);
+	ASSERT_EQ(map->Entries().size(), 2u);
+	EXPECT_EQ(map->Entries()[0].key.GetString(), wxString(wxT("ab12")));
+	EXPECT_EQ(map->Entries()[1].key.GetString(), wxString(wxT("AB12")));
+	EXPECT_TRUE(map->Entries()[0].value.GetNumber() == ibNumber(1));
+
+	const ibValue& nested = map->Entries()[1].value;
+	EXPECT_EQ(AsStructure(nested), nullptr);
+	const ibValueContainer* inner = nested.IsReference()
+		? dynamic_cast<const ibValueContainer*>(nested.GetRef()) : nullptr;
+	ASSERT_NE(inner, nullptr);
+	ASSERT_EQ(inner->Entries().size(), 1u);
+	EXPECT_EQ(inner->Entries()[0].key.GetString(), wxString(wxT("n")));
+	EXPECT_TRUE(inner->Entries()[0].value.GetNumber() == ibNumber(2));
+
+	ibValueSystemFunction system;
+	const long method = system.FindMethod(wxT("ReadJSON"));
+	ASSERT_GE(method, 0);
+	EXPECT_EQ(system.GetNParams(method), 2);
 }
 
 TEST(JsonReader, NullIsNullAndTheScalarsAreThemselves) {

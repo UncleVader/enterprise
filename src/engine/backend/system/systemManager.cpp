@@ -196,7 +196,7 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	helper.AppendFunc(wxT("GetTempFileName"), wxT("GetTempFileName()"));
 	//--- JSON: the reference system's spelling of JSONReader.ReadValue() / JSONWriter.WriteValue(value).
 	// Order MUST match enReadJSON..enWriteJSON above.
-	helper.AppendFunc(wxT("ReadJSON"), 1, wxT("ReadJSON(reader : JSONReader)"));
+	helper.AppendFunc(wxT("ReadJSON"), 2, wxT("ReadJSON(reader : JSONReader, readToMap = false : boolean)"));
 	helper.AppendFunc(wxT("WriteJSON"), 2, wxT("WriteJSON(writer : JSONWriter, value : any)"));
 	//--- Window operations: 
 	helper.AppendFunc(wxT("ActiveWindow"), wxT("ActiveWindow()"));
@@ -353,7 +353,9 @@ bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetVa
 			ibValueJsonReader* const reader = lSizeArray > 0 ? dynamic_cast<ibValueJsonReader*>(paParams[0]->GetRef()) : nullptr;
 			if (reader == nullptr)
 				ibBackendCoreException::Error(_("ReadJSON: the argument is a JSONReader"));
-			pvarRetValue = reader->ReadValue();
+			// The second argument is ПрочитатьВСоответствие: True makes each object a Map.
+			const bool asMap = lSizeArray > 1 && paParams[1] != nullptr && paParams[1]->GetBoolean();
+			pvarRetValue = reader->ReadValue(asMap);
 			return true;
 		}
 		case enWriteJSON: {
