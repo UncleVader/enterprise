@@ -19,7 +19,6 @@
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/compiler/compileCode.h"
 
-#include <memory>
 #include <type_traits>
 
 // ---------------------------------------------------------------------------
@@ -82,30 +81,30 @@ TEST(PlatformLanguage, CurrentLanguageFindsTheLanguageByCode) {
 }
 
 TEST(PlatformPrivilege, ScriptModeDoesNotClearATrustScope) {
-    // Current() is the session a shared_ptr owns. A stack session's
-    // weak_from_this() is empty, so the call would see no session.
-    const auto sess = std::make_shared<ibSession>(wxT("priv"), ibSessionKind::Designer);
-    ibSessionScope scope(sess.get());
-    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+    // The two flags are OR'd on the session. Current() stays null until a
+    // host exists, so this talks to the session itself; the global function
+    // is that answer, and it refuses when there is no session.
+    ibSession sess(wxT("priv"), ibSessionKind::Designer);
+    EXPECT_FALSE(sess.PrivilegedMode());
 
-    ibValueSystemFunction::SetPrivilegedMode(true);
-    EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
+    sess.SetPrivilegedMode(true);
+    EXPECT_TRUE(sess.PrivilegedMode());
     {
         // A trust scope is still privileged after script turns its own flag off.
-        ibAccessTrustScope trust(sess.get());
-        ibValueSystemFunction::SetPrivilegedMode(false);
-        EXPECT_TRUE(sess->PrivilegedMode());
+        ibAccessTrustScope trust(&sess);
+        sess.SetPrivilegedMode(false);
+        EXPECT_TRUE(sess.PrivilegedMode());
     }
-    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+    EXPECT_FALSE(sess.PrivilegedMode());
 
     // And a trust scope ending does not clear a mode script turned on.
-    ibValueSystemFunction::SetPrivilegedMode(true);
+    sess.SetPrivilegedMode(true);
     {
-        ibAccessTrustScope trust(sess.get());
+        ibAccessTrustScope trust(&sess);
     }
-    EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
-    ibValueSystemFunction::SetPrivilegedMode(false);
-    EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
+    EXPECT_TRUE(sess.PrivilegedMode());
+    sess.SetPrivilegedMode(false);
+    EXPECT_FALSE(sess.PrivilegedMode());
 }
 
 TEST(PlatformPrivilege, SetPrivilegedModeWithoutASessionIsNamed) {
