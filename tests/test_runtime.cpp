@@ -2945,7 +2945,12 @@ TEST_F(BuiltInRuntime, InfoBaseUsersNamesTheSessionUser) {
 	info.m_strUserGuid = wxT("11111111-1111-1111-1111-111111111111");
 	info.m_strUserName = wxT("anna");
 	info.m_strUserFullName = wxT("Anna Berg");
-	session->SetUserInfo(info);
+	// SetUserInfo belongs to the registry. InstallUser is the door a login uses,
+	// and it writes the session this thread is bound to.
+	ibApplicationInstance* const application = ibApplicationInstance::Get(false);
+	ASSERT_NE(application, nullptr);
+	application->InstallUser(info, wxEmptyString);
+	ASSERT_EQ(session->GetUserInfo().m_strUserName, wxString(wxT("anna")));
 
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	cc.AddContextVariable(wxT("InfoBaseUsers"), ibInfoBaseUsers(), false);
