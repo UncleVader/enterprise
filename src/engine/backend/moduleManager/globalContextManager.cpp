@@ -111,7 +111,8 @@ enum
 	enSequences,
 	enScheduledJobs,
 	enSessionParameters,
-	enFunctionalOptions
+	enFunctionalOptions,
+	enExchangePlans
 };
 
 void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
@@ -142,8 +143,11 @@ void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
 	// Whether a part of the configuration is used in this base — `FunctionalOptions.<Name>.Get()`. Each
 	// option IS a constant, so the manager a name yields is the constant's own (metaFunctionalOptionObject.h).
 	helper.AppendProp(wxT("FunctionalOptions"));
+	// ПланыОбмена. Nodes are not stored. MasterNode is remembered for this configuration.
+	helper.AppendProp(wxT("ExchangePlans"));
 }
 
+#include "backend/metaCollection/metaExchangePlanObject.h"
 #include "backend/metaCollection/metaSessionParameterObject.h"   // the metatype AND the value it yields
 #include "backend/metaCollection/partial/dataProcessorManager.h"
 #include "backend/metaCollection/partial/dataReportManager.h"
@@ -208,6 +212,9 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 		return true;
 	case enFunctionalOptions:
 		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaFunctionalOptionCLSID, m_metaData);
+		return true;
+	case enExchangePlans:
+		pvarPropVal = ibExchangePlans(m_metaData);
 		return true;
 	}
 

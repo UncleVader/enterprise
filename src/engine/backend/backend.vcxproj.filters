@@ -360,6 +360,9 @@
     <ClInclude Include="metaCollection\metaObject.h">
       <Filter>metaCollection</Filter>
     </ClInclude>
+    <ClInclude Include="metaCollection\metaExchangePlanObject.h">
+      <Filter>metaCollection</Filter>
+    </ClInclude>
     <ClInclude Include="metaCollection\metaObjectMetadata.h">
       <Filter>metaCollection</Filter>
     </ClInclude>
@@ -1425,6 +1428,9 @@
       <Filter>metaCollection</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\metaGroups.cpp">
+      <Filter>metaCollection</Filter>
+    </ClCompile>
+    <ClCompile Include="metaCollection\metaExchangePlanObject.cpp">
       <Filter>metaCollection</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\metaObject.cpp">
