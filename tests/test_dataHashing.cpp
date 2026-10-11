@@ -132,13 +132,13 @@ TEST(DataHashing, TheNameCompiles) {
 	cc.AddContextVariable(wxT("EnumManager"), &enums, true);
 	try {
 		ASSERT_TRUE(cc.Compile(
-			wxT("Procedure Check() {\n")
+			wxT("Procedure Check()\n")
 			wxT("    var hash;\n")
 			wxT("    var sum;\n")
 			wxT("    hash = New DataHashing(HashFunction.SHA256);\n")
 			wxT("    hash.Append(\"abc\");\n")
 			wxT("    sum = hash.HashSum;\n")
-			wxT("}\n")));
+			wxT("EndProcedure\n")));
 	}
 	catch (const ibBackendException& err) {
 		FAIL() << err.GetErrorDescription().ToStdString();
