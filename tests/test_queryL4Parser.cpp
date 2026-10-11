@@ -295,7 +295,8 @@ TEST(QueryL4Parser, JoinOnParenthesisedAndRussianPo)
 
 	// Rendering keeps the English spelling: ПО is an accepted writing, not the one written back.
 	const wxString written = ibRenderQuery(*po);
-	EXPECT_TRUE(written.Contains(wxT(" ON "))) << written.ToStdString();
+	// The join keyword is indented with a tab, so it is "ON" and not " ON ".
+	EXPECT_TRUE(written.Contains(wxT("ON "))) << written.ToStdString();
 	EXPECT_FALSE(written.Contains(wxT("ПО"))) << written.ToStdString();
 }
 
