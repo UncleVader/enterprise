@@ -88,3 +88,48 @@ TEST(CompositionField, TheNamesCompile) {
 		FAIL() << err.GetErrorDescription().ToStdString();
 	}
 }
+
+TEST(FormScriptEnums, TheMembersAreNamed) {
+	const wxString pairs[][2] = {
+		{ wxT("FormFieldType"), wxT("InputField") },
+		{ wxT("FormFieldType"), wxT("RadioButtonField") },
+		{ wxT("FormFieldType"), wxT("PDFDocumentField") },
+		{ wxT("ButtonRepresentation"), wxT("PictureAndText") },
+		{ wxT("ColumnsGroup"), wxT("InCell") },
+		{ wxT("StandardPeriodVariant"), wxT("Today") },
+		{ wxT("StandardPeriodVariant"), wxT("FromBeginningOfThisYear") },
+		{ wxT("StandardPeriodVariant"), wxT("Last7Days") },
+		{ wxT("StandardPeriodVariant"), wxT("Month") },
+	};
+	for (const auto& pair : pairs) {
+		ibValue en = ibValue::CreateObject(pair[0]);
+		EXPECT_NE(en.FindProp(pair[1]), wxNOT_FOUND)
+			<< pair[0].ToStdString() << "." << pair[1].ToStdString();
+	}
+	ibValue kind = ibValue::CreateObject(wxT("FormFieldType"));
+	EXPECT_EQ(kind.FindProp(wxT("NotAField")), wxNOT_FOUND);
+}
+
+TEST(FormScriptEnums, TheNamesCompile) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ibValueSystemFunction valueSystem;
+	ibValue enums = ibValue::CreateObject(wxT("EnumManager"));
+	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	cc.AddContextVariable(wxT("EnumManager"), enums, true);
+	const wxString src =
+		wxT("Procedure Check()\n")
+		wxT("    var kind;\n")
+		wxT("    var picture;\n")
+		wxT("    var group;\n")
+		wxT("    var period;\n")
+		wxT("    kind = FormFieldType.InputField;\n")
+		wxT("    picture = ButtonRepresentation.PictureAndText;\n")
+		wxT("    group = ColumnsGroup.InCell;\n")
+		wxT("    period = StandardPeriodVariant.Today;\n")
+		wxT("EndProcedure\n");
+	try {
+		ASSERT_TRUE(cc.Compile(src));
+	} catch (const ibBackendException& err) {
+		FAIL() << err.GetErrorDescription().ToStdString();
+	}
+}
