@@ -223,7 +223,7 @@ ibValueXmlReader::ibValueXmlReader()
 {
 }
 
-void ibValueXmlReader::SetString(const wxString& text)
+void ibValueXmlReader::LoadString(const wxString& text)
 {
 	m_tokens.clear();
 	m_index = 0;
@@ -286,7 +286,7 @@ bool ibValueXmlReader::CallAsProc(const long lMethodNum, ibValue** paParams, con
 		return false;
 	if (lSizeArray < 1 || paParams == nullptr || paParams[0] == nullptr)
 		ibBackendCoreException::Error(_("XMLReader: the text is not given"));
-	SetString(paParams[0]->GetString());
+	LoadString(paParams[0]->GetString());
 	return true;
 }
 

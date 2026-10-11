@@ -56,7 +56,7 @@ public:
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
 
-	void SetString(const wxString& text);
+	void LoadString(const wxString& text);
 	bool Read();
 	wxString GetAttribute(const wxString& name) const;
 
