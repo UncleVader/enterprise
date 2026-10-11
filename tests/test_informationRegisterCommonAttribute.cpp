@@ -83,7 +83,10 @@ TEST(InformationRegisterCommonAttribute, ItIsAColumnARecordFieldAndAQueryAttribu
 	EXPECT_TRUE(inAttributes);
 
 	ibSchemaSnapshot snapshot;
-	f.reg->ContributeTables(snapshot);
+	// ContributeTables on the register is protected. The declaration on the metaobject
+	// base is public, and the call still lands on the register's own table.
+	ibValueMetaObject* const asMeta = f.reg;
+	asMeta->ContributeTables(snapshot);
 	bool inSchema = false;
 	for (const ibSchemaTable& table : snapshot.Tables()) {
 		if (table.m_derived)
