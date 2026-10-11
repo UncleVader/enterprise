@@ -41,6 +41,7 @@ add_executable(oes_tests
     test_blockSyntaxLINQ.cpp
     test_byteCodeAOT.cpp
     test_byteCodeFormat.cpp
+    test_byteOrderMark.cpp
     test_compiler.cpp
     test_lexerComments.cpp
     test_runtime.cpp
