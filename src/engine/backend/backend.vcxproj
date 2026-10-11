@@ -957,6 +957,7 @@
     <ClCompile Include="functionalOptionHelper.cpp" />
     <ClCompile Include="system\systemManager.cpp" />
     <ClCompile Include="system\systemManagerEnum.cpp" />
+    <ClCompile Include="system\platformType.cpp" />
     <ClCompile Include="system\systemManagerFunc.cpp" />
     <ClCompile Include="system\value\valueArray.cpp" />
     <ClCompile Include="system\value\valueColour.cpp" />

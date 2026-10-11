@@ -1,0 +1,16 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "en.PlatformType",
+      "name_local": "PlatformType",
+      "name_en": "PlatformType",
+      "kind": "enum_type",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "PlatformType.Windows_x86_64",
+      "description": "Платформа, на якій виконується програма (ТипПлатформы): Linux_x86, Linux_x86_64, Linux_ARM64, Linux_E2K, MacOS_x86, MacOS_x86_64, MacOS_ARM64, Windows_x86, Windows_x86_64 і варіанти Android, iOS та WinRT."
+    }
+  ]
+}
