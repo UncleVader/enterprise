@@ -22,6 +22,8 @@
 #include <vector>
 
 #include "backend/query/dataQueryBuilder.h"   // ibDataQueryBuilder / ibDataQueryResult / ibReadPageRequest / AggregateFn
+#include "backend/query/queryLowering.h"       // ibQueryLowering::Execute — the door a JOIN's dot-walk goes through
+#include "backend/query/queryParser.h"         // ibQueryParser
 #include "backend/query/queryProvider.h"       // ibComputedProviderInstance + ibQueryRamTable
 #include "backend/query/queryable.h"           // ibBackendQueryable / ibQueryCondition / ibQueryFilterOp
 #include "backend/query/queryColumn.h"         // ibBackendQueryColumn / ibTypeDescription
@@ -53,6 +55,7 @@ class ComputedQ;   // fwd — the fake provider reads the reference map off it
 class FakeComputedProvider : public ibComputedProvider {
 public:
 	const ibBackendQueryable* ResolveReferenceTarget(const ibBackendQueryable* q, const ibBackendQueryColumn* col) const override;   // out-of-line: needs ComputedQ complete
+	std::vector<const ibBackendQueryable*> ResolveReferenceTargets(const ibBackendQueryable* q, const ibBackendQueryColumn* col) const override;
 };
 
 // A COMPUTED (RAM) queryable. ComputeRows rebuilds its rows from a BUILDER each call (ibQueryRamTable is
@@ -66,6 +69,10 @@ public:
 	void AddCol(const ibBackendQueryColumn* c) { m_cols.push_back(c); }
 	void SetBuilder(std::function<ibQueryRamTable()> b) { m_build = std::move(b); }
 	void SetRefTarget(const ibBackendQueryColumn* refCol, const ibBackendQueryable* tgt) { m_refs[refCol] = tgt; }
+	// Several types — a composite reference. ResolveReferenceTarget stays null; the walk forks.
+	void SetRefTargets(const ibBackendQueryColumn* refCol, std::vector<const ibBackendQueryable*> tgts) {
+		m_many[refCol] = std::move(tgts);
+	}
 	void SetPrimaryKey(const ibBackendQueryColumn* k) { m_pk = k; }
 
 	ibBackendQueryProvider& GetProvider() const override { static FakeComputedProvider s_fake; return s_fake; }
@@ -91,6 +98,10 @@ public:
 		auto it = m_refs.find(c);
 		return it != m_refs.end() ? it->second : nullptr;
 	}
+	std::vector<const ibBackendQueryable*> RefTargets(const ibBackendQueryColumn* c) const {
+		auto it = m_many.find(c);
+		return it != m_many.end() ? it->second : std::vector<const ibBackendQueryable*>{};
+	}
 	wxString GetQueryTableName() const override { return m_name; }
 	ibMetaID GetQueryTableId()   const override { return m_id; }
 	const ibUniqueKey& GetQueryTableGuid() const override { return m_key; }
@@ -102,6 +113,7 @@ private:
 	std::vector<const ibBackendQueryColumn*> m_cols;
 	std::function<ibQueryRamTable()> m_build;
 	std::map<const ibBackendQueryColumn*, const ibBackendQueryable*> m_refs;
+	std::map<const ibBackendQueryColumn*, std::vector<const ibBackendQueryable*>> m_many;
 	const ibBackendQueryColumn* m_pk = nullptr;
 };
 
@@ -109,6 +121,16 @@ private:
 const ibBackendQueryable* FakeComputedProvider::ResolveReferenceTarget(const ibBackendQueryable* q, const ibBackendQueryColumn* col) const {
 	const ComputedQ* cq = dynamic_cast<const ComputedQ*>(q);
 	return cq != nullptr ? cq->RefTarget(col) : nullptr;
+}
+
+std::vector<const ibBackendQueryable*> FakeComputedProvider::ResolveReferenceTargets(const ibBackendQueryable* q, const ibBackendQueryColumn* col) const {
+	const ComputedQ* cq = dynamic_cast<const ComputedQ*>(q);
+	if (cq != nullptr) {
+		const std::vector<const ibBackendQueryable*> many = cq->RefTargets(col);
+		if (!many.empty())
+			return many;
+	}
+	return ibBackendQueryProvider::ResolveReferenceTargets(q, col);
 }
 
 // Column ids for the shared scenario.
@@ -438,4 +460,159 @@ TEST(NestedQueryAvailability, PresentationOfAnAvailableFieldIsOffered)
 	const ibBackendQueryColumn* shown = nested.Column(wxT("Shown"));
 	ASSERT_NE(shown, nullptr);
 	EXPECT_TRUE(shown->IsAvailable());
+}
+
+namespace {
+
+const ibMetaID MV_NOTE = 101, MV_PARTY = 102, MV_ITEM = 103, MV_QTY = 104;
+const ibMetaID NT_REF = 201, NT_TEXT = 202;
+const ibMetaID GD_KEY = 301, GD_NAME = 302, GD_COLOUR = 303;
+const ibMetaID PT_KEY = 401, PT_NAME = 402;
+
+ibQueryRamTable BuildGoodsRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(GD_KEY, wxT("Key"), kNoType);
+	t.AddColumn(GD_NAME, wxT("Name"), kNoType);
+	t.AddColumn(GD_COLOUR, wxT("Colour"), kNoType);
+	auto add = [&](const wxString& k, const wxString& n, const wxString& c) {
+		const long r = t.AppendRow();
+		t.SetCell(r, GD_KEY, ibValue(k));
+		t.SetCell(r, GD_NAME, ibValue(n));
+		t.SetCell(r, GD_COLOUR, ibValue(c));
+	};
+	add(wxT("K1"), wxT("Apple"), wxT("red"));
+	add(wxT("K2"), wxT("Pear"), wxT("green"));
+	return t;
+}
+
+ibQueryRamTable BuildPartnerRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(PT_KEY, wxT("Key"), kNoType);
+	t.AddColumn(PT_NAME, wxT("Name"), kNoType);
+	const long r = t.AppendRow();
+	t.SetCell(r, PT_KEY, ibValue(wxT("P1")));
+	t.SetCell(r, PT_NAME, ibValue(wxT("Ann")));
+	return t;
+}
+
+ibQueryRamTable BuildNoteRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(NT_REF, wxT("Ref"), kNoType);
+	t.AddColumn(NT_TEXT, wxT("Text"), kNoType);
+	const long r = t.AppendRow();
+	t.SetCell(r, NT_REF, ibValue(wxT("N1")));
+	t.SetCell(r, NT_TEXT, ibValue(wxT("hello")));
+	return t;
+}
+
+ibQueryRamTable BuildMoveRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(MV_NOTE, wxT("Note"), kNoType);
+	t.AddColumn(MV_PARTY, wxT("Party"), kNoType);
+	t.AddColumn(MV_ITEM, wxT("Item"), kNoType);
+	t.AddColumn(MV_QTY, wxT("Qty"), kNoType);
+	auto add = [&](const wxString& party, const wxString& item, long qty) {
+		const long r = t.AppendRow();
+		t.SetCell(r, MV_NOTE, ibValue(wxT("N1")));
+		t.SetCell(r, MV_PARTY, ibValue(party));
+		t.SetCell(r, MV_ITEM, ibValue(item));
+		t.SetCell(r, MV_QTY, ibValue(ibNumber(qty)));
+	};
+	add(wxT("K1"), wxT("K1"), 10);
+	add(wxT("P1"), wxT("K2"), 20);
+	add(wxT("K2"), wxT("K1"), 5);
+	return t;
+}
+
+// Moves.Party is a good OR a partner. Moves.Item is only a good. Notes is joined so the
+// walk is the multi-source door (ExpandDotWalkJoins), not the single-source SQL chain.
+struct CompositeJoin : ::testing::Test {
+	TestCol note{ wxT("Note"), MV_NOTE };
+	TestCol party{ wxT("Party"), MV_PARTY };
+	TestCol item{ wxT("Item"), MV_ITEM };
+	TestCol qty{ wxT("Qty"), MV_QTY };
+	TestCol noteRef{ wxT("Ref"), NT_REF };
+	TestCol noteText{ wxT("Text"), NT_TEXT };
+	TestCol goodsKey{ wxT("Key"), GD_KEY };
+	TestCol goodsName{ wxT("Name"), GD_NAME };
+	TestCol goodsColour{ wxT("Colour"), GD_COLOUR };
+	TestCol partnerKey{ wxT("Key"), PT_KEY };
+	TestCol partnerName{ wxT("Name"), PT_NAME };
+	ComputedQ moves{ wxT("Moves"), 1 };
+	ComputedQ notes{ wxT("Notes"), 2 };
+	ComputedQ goods{ wxT("Goods"), 3 };
+	ComputedQ partners{ wxT("Partners"), 4 };
+
+	void SetUp() override {
+		goods.AddCol(&goodsKey); goods.AddCol(&goodsName); goods.AddCol(&goodsColour);
+		goods.SetPrimaryKey(&goodsKey);
+		goods.SetBuilder(&BuildGoodsRows);
+
+		partners.AddCol(&partnerKey); partners.AddCol(&partnerName);
+		partners.SetPrimaryKey(&partnerKey);
+		partners.SetBuilder(&BuildPartnerRows);
+
+		notes.AddCol(&noteRef); notes.AddCol(&noteText);
+		notes.SetPrimaryKey(&noteRef);
+		notes.SetBuilder(&BuildNoteRows);
+
+		moves.AddCol(&note); moves.AddCol(&party); moves.AddCol(&item); moves.AddCol(&qty);
+		moves.SetRefTargets(&party, { &goods, &partners });
+		moves.SetRefTarget(&item, &goods);
+		moves.SetBuilder(&BuildMoveRows);
+	}
+
+	ibDataQueryResult Run(const wxString& sql, std::vector<ibQueryLowering::OutputColumn>& schema) {
+		const std::map<wxString, const ibBackendQueryable*> reg{ { wxT("Moves"), &moves }, { wxT("Notes"), &notes } };
+		const ibTempSourceScope scope(reg);
+		const ibQuerySelectPtr sel = ibQueryParser().Parse(sql);
+		return ibQueryLowering::Execute(*sel, {}, schema);
+	}
+};
+
+} // namespace
+
+// Party.Name is on both kinds; Party.Colour only on goods (Ann's row is NULL); Item.Name is a
+// single-target walk beside the composite one, over the same JOIN.
+TEST_F(CompositeJoin, DotWalk_CompositeRefOverJoin)
+{
+	std::vector<ibQueryLowering::OutputColumn> schema;
+	ibDataQueryResult res = Run(
+		wxT("SELECT M.Party.Name AS PartyName, M.Item.Name AS ItemName, M.Party.Colour AS Colour, M.Qty AS Qty ")
+		wxT("FROM Moves AS M LEFT JOIN Notes AS N ON M.Note = N.Ref"),
+		schema);
+
+	std::vector<std::string> parties, items, colours;
+	std::vector<long> qtys;
+	while (res.Next()) {
+		parties.push_back(res.GetColumn(wxT("PartyName")).GetString().ToStdString());
+		items.push_back(res.GetColumn(wxT("ItemName")).GetString().ToStdString());
+		const ibValue colour = res.GetColumn(wxT("Colour"));
+		colours.push_back(colour.GetType() == ibValueTypes::TYPE_NULL ? std::string("*")
+		                                                               : colour.GetString().ToStdString());
+		qtys.push_back(res.GetColumn(wxT("Qty")).GetInteger());
+	}
+	EXPECT_EQ(parties, (std::vector<std::string>{ "Apple", "Ann", "Pear" }));
+	EXPECT_EQ(items,   (std::vector<std::string>{ "Apple", "Pear", "Apple" }));
+	EXPECT_EQ(colours, (std::vector<std::string>{ "red", "*", "green" }));
+	EXPECT_EQ(qtys,    (std::vector<long>{ 10, 20, 5 }));
+}
+
+// ORDER BY the composite leaf — the same column the projection walks, sorted by the stitch.
+TEST_F(CompositeJoin, DotWalk_OrderByCompositeLeaf)
+{
+	std::vector<ibQueryLowering::OutputColumn> schema;
+	ibDataQueryResult res = Run(
+		wxT("SELECT M.Qty AS Qty FROM Moves AS M LEFT JOIN Notes AS N ON M.Note = N.Ref ")
+		wxT("ORDER BY M.Party.Name"),
+		schema);
+
+	std::vector<long> qtys;
+	while (res.Next())
+		qtys.push_back(res.GetColumn(wxT("Qty")).GetInteger());
+	EXPECT_EQ(qtys, (std::vector<long>{ 20, 10, 5 }));   // Ann, Apple, Pear
 }

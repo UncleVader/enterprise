@@ -1154,13 +1154,192 @@ const ibBackendQueryable* OwnerOfPathLeaf(const std::vector<ibSourceBinding>& so
 	return cur;
 }
 
+namespace {
+
+// ⭐⭐ A COMPOSITE HOP OVER A JOIN, FILED AS ONE TABLE.
+//
+// A reference of several types (a recorder that is an order or a payment) has no single target, so the
+// stitch cannot LEFT-join one catalog and read its column. Each type that has the field is read, and the
+// rows are laid under ONE key — the reference value, which carries its own type, so a row meets only its
+// own kind. The leaf the walk asked for is one column of that table, whichever kind held it; a kind
+// without the field contributes NULL. Sibling fields of the same hop (`Party.Name`, `Party.Code`) share
+// the table: it mints a column the first time a name is asked. A hop in the MIDDLE of a longer walk is
+// not this — the chain would have to fork per kind — and stays refused.
+ibMetaID NextCompositeWalkId()
+{
+	static int s_n = 1000001;
+	return ibBackendQueryColumn::SyntheticId(ibBackendQueryColumn::SyntheticKind::Stitch, s_n++);
+}
+
+class ibCompositeWalkSource : public ibBackendQueryable
+{
+public:
+	explicit ibCompositeWalkSource(std::vector<const ibBackendQueryable*> targets)
+		: m_targets(std::move(targets))
+		, m_key(std::make_shared<ibTempColumn>(wxT("#ref"), ibTypeDescription(), NextCompositeWalkId()))
+	{}
+
+	const ibBackendQueryColumn* Key() const { return m_key.get(); }
+
+	ibBackendQueryProvider& GetProvider() const override;
+	bool IsComputedInRam() const override { return true; }
+	wxString GetQueryTableName() const override { return wxT("compositeWalk"); }
+
+	const ibBackendQueryColumn* ResolveColumnByName(const wxString& name) const override
+	{
+		if (m_key->GetName().IsSameAs(name, false))
+			return m_key.get();
+		for (const std::shared_ptr<ibTempColumn>& leaf : m_leaves)
+			if (leaf->GetName().IsSameAs(name, false))
+				return leaf.get();
+		for (const ibBackendQueryable* target : m_targets) {
+			if (target == nullptr)
+				continue;
+			const ibBackendQueryColumn* col = target->ResolveColumnByName(name);
+			if (col == nullptr)
+				continue;
+			m_leaves.push_back(std::make_shared<ibTempColumn>(col->GetName(), col->GetTypeDesc(), NextCompositeWalkId()));
+			return m_leaves.back().get();
+		}
+		return nullptr;
+	}
+
+	std::vector<const ibBackendQueryColumn*> GetColumns() const override
+	{
+		std::vector<const ibBackendQueryColumn*> cols{ m_key.get() };
+		for (const std::shared_ptr<ibTempColumn>& leaf : m_leaves)
+			cols.push_back(leaf.get());
+		return cols;
+	}
+
+	std::vector<const ibBackendQueryColumn*> GetPrimaryKeyColumns() const override { return { m_key.get() }; }
+
+	ibQueryRamTable Read(ibDatabaseConnectionHolder* holder, const std::vector<ibQueryCondition>* conds) const
+	{
+		ibValue absent;
+		absent.SetType(ibValueTypes::TYPE_NULL);
+
+		bool limited = false;
+		std::vector<ibValue> only;
+		if (conds != nullptr)
+			for (const ibQueryCondition& c : *conds)
+				if (c.m_col == m_key.get() && c.m_op == ibQueryFilterOp::In) {
+					limited = true;
+					only = c.m_values;
+				}
+		auto wanted = [&](const ibValue& key) {
+			if (!limited)
+				return true;
+			for (const ibValue& k : only)
+				if (k.CompareValueEQ(key))
+					return true;
+			return false;
+		};
+
+		ibQueryRamTable out;
+		out.AddColumn(m_key->GetColumnId(), m_key->GetName(), m_key->GetTypeDesc());
+		for (const std::shared_ptr<ibTempColumn>& leaf : m_leaves)
+			out.AddColumn(leaf->GetColumnId(), leaf->GetName(), leaf->GetTypeDesc());
+
+		for (const ibBackendQueryable* target : m_targets) {
+			if (target == nullptr)
+				continue;
+			const std::vector<const ibBackendQueryColumn*> pks = target->GetPrimaryKeyColumns();
+			if (pks.empty() || pks.front() == nullptr)
+				continue;
+			const ibBackendQueryColumn* pk = pks.front();
+
+			auto emit = [&](const ibValue& key, const std::function<ibValue(const ibTempColumn&)>& leafOf) {
+				if (!wanted(key))
+					return;
+				const long row = out.AppendRow();
+				out.SetCell(row, m_key->GetColumnId(), key);
+				for (const std::shared_ptr<ibTempColumn>& leaf : m_leaves) {
+					const ibBackendQueryColumn* src = target->ResolveColumnByName(leaf->GetName());
+					out.SetCell(row, leaf->GetColumnId(), src != nullptr ? leafOf(*leaf) : absent);
+				}
+			};
+
+			if (target->IsComputedInRam()) {
+				ibQueryRamTable part = target->ComputeRows({});
+				for (long r = 0; r < part.RowCount(); ++r)
+					emit(part.GetCell(r, pk->GetColumnId()), [&](const ibTempColumn& leaf) {
+						const ibBackendQueryColumn* src = target->ResolveColumnByName(leaf.GetName());
+						return src != nullptr ? part.GetCell(r, src->GetColumnId()) : absent;
+					});
+				continue;
+			}
+			if (holder == nullptr)
+				continue;
+			ibDataQueryBuilder q(holder);
+			q.From(target);
+			q.Select(pk, wxEmptyString);
+			for (const std::shared_ptr<ibTempColumn>& leaf : m_leaves)
+				if (const ibBackendQueryColumn* src = target->ResolveColumnByName(leaf->GetName()))
+					q.Select(src, wxEmptyString);
+			if (limited) {
+				ibQueryCondition c;
+				c.m_col = pk;
+				c.m_op = ibQueryFilterOp::In;
+				c.m_values = only;
+				q.Where(c);
+			}
+			ibReadPageRequest page;
+			page.m_count = 0;
+			ibDataQueryResult sel = q.Execute(page);
+			if (ibQueryRamTable* whole = sel.GetTable()) {
+				for (long r = 0; r < whole->RowCount(); ++r)
+					emit(whole->GetCell(r, pk->GetColumnId()), [&](const ibTempColumn& leaf) {
+						const ibBackendQueryColumn* src = target->ResolveColumnByName(leaf.GetName());
+						return src != nullptr ? whole->GetCell(r, src->GetColumnId()) : absent;
+					});
+			}
+			else {
+				while (sel.Next())
+					emit(sel.GetValue(pk), [&](const ibTempColumn& leaf) {
+						const ibBackendQueryColumn* src = target->ResolveColumnByName(leaf.GetName());
+						return src != nullptr ? sel.GetValue(src) : absent;
+					});
+			}
+		}
+		return out;
+	}
+
+private:
+	std::vector<const ibBackendQueryable*> m_targets;
+	std::shared_ptr<ibTempColumn> m_key;
+	mutable std::vector<std::shared_ptr<ibTempColumn>> m_leaves;
+};
+
+class ibCompositeWalkProvider : public ibBackendQueryProvider
+{
+public:
+	ibDataQueryResult ExecuteRead(const ibDataQuerySpec& spec, const ibReadPageRequest&) override
+	{
+		const ibBackendQueryable* origin = ibOriginQueryable(spec.m_queryable);
+		const ibCompositeWalkSource* src = dynamic_cast<const ibCompositeWalkSource*>(origin);
+		ibQueryRamTable table = src != nullptr ? src->Read(spec.m_holder, spec.m_conditions) : ibQueryRamTable();
+		return ibDataQueryResult(std::move(table), spec.m_queryable);
+	}
+};
+
+ibBackendQueryProvider& ibCompositeWalkSource::GetProvider() const
+{
+	static ibCompositeWalkProvider s_provider;
+	return s_provider;
+}
+
+} // namespace
+
 // Expand a reference dot-walk path (size > 1) over a MULTI-SOURCE builder. `ibRefJoinChain` builds
 // SQL joins for the single-source door; the RAM stitch has none, so here each NON-leaf segment's
 // reference target becomes an explicit LEFT-join leaf, keyed EXACTLY on (segment ref column, target
 // self-reference = GetPrimaryKeyColumns().front()) — no `ReferenceColumnTo` ambiguity when a leaf has
 // two references to the same target. Joins are deduped by path prefix (`joined`: prefix-key -> target),
-// so `c.Owner.Region` and `c.Owner.Code` share ONE Owner join. Returns the leaf column (pathCols.back(),
-// owned by the final target) to group / project by — a plain qualified column in the composed snapshot.
+// so `c.Owner.Region` and `c.Owner.Code` share ONE Owner join. A COMPOSITE hop whose next segment is
+// the leaf joins every type that has that field as ONE table (ibCompositeWalkSource) and the leaf is
+// that table's column of the same name. Returns the leaf column (pathCols.back(), owned by the final
+// target) to group / project by — a plain qualified column in the composed snapshot.
 const ibBackendQueryColumn* ExpandDotWalkJoins(
 	ibDataQueryBuilder& b, const std::vector<ibSourceBinding>& sources, const ibBackendQueryable* rootQ,
 	const std::vector<const ibBackendQueryColumn*>& pathCols,
@@ -1196,6 +1375,45 @@ const ibBackendQueryColumn* ExpandDotWalkJoins(
 		const ibBackendQueryable* tgtQ = (curQ != nullptr) ? curQ->GetProvider().ResolveReferenceTarget(curQ, refCol) : nullptr;
 		if (tgtQ == nullptr)
 			tgtQ = ibDbTableProvider::CastTarget(pathCols[i + 1]);   // several types, narrowed to one by a CAST
+		// ⭐⭐ THE FIELD ITSELF, THROUGH A REFERENCE OF SEVERAL TYPES. One catalog cannot answer
+		// `Party.Name` when Party is a good or a partner: each kind that has Name is read into one
+		// table and the stitch joins that (ibCompositeWalkSource). A further hop (`Party.Owner.Name`)
+		// still has no single table to continue from, and is refused below as it always was.
+		if (tgtQ == nullptr && curQ != nullptr && i + 2 == pathCols.size()) {
+			std::vector<const ibBackendQueryable*> reach;
+			for (const ibBackendQueryable* target : curQ->GetProvider().ResolveReferenceTargets(curQ, refCol)) {
+				if (target == nullptr || target->GetPrimaryKeyColumns().empty())
+					continue;
+				if (target->ResolveColumnByName(pathCols[i + 1]->GetName()) == nullptr)
+					continue;
+				if (!ibDbTableProvider::WalkEnters(target, pathCols[i + 1]))
+					continue;
+				reach.push_back(target);
+			}
+			if (!reach.empty()) {
+				prefixKey += wxString::Format(wxT("%p|"), (const void*)refCol);
+				const auto known = joined.find(prefixKey);
+				if (known == joined.end()) {
+					const wxString alias = wxString::Format(wxT("wj%d"), aliasSeq++);
+					const ibBackendQueryable* reading =
+						b.AdoptOwnedSource(std::make_shared<ibCompositeWalkSource>(std::move(reach)));
+					while (taken(reading)) {
+						RequireAnotherReadingFits(*reading, alias, e.m_line, e.m_col);
+						reading = b.AdoptOwnedSource(std::make_shared<ibAliasQueryable>(reading, alias));
+					}
+					const std::vector<const ibBackendQueryColumn*> keys = reading->GetPrimaryKeyColumns();
+					if (keys.empty())
+						ThrowQueryException(e.m_line, e.m_col,
+							_("a dot-walk segment over a JOIN/UNION must be a single-target catalog/document reference"));
+					b.Join(reading, refCol, keys.front(), ibQueryJoinKind::Left, alias);
+					joined[prefixKey] = reading;
+					curQ = reading;
+				}
+				else
+					curQ = known->second;
+				continue;
+			}
+		}
 		const std::vector<const ibBackendQueryColumn*> tgtKeys = (tgtQ != nullptr) ? tgtQ->GetPrimaryKeyColumns()
 		                                                                           : std::vector<const ibBackendQueryColumn*>{};
 		if (tgtQ == nullptr || tgtKeys.empty())
