@@ -133,6 +133,20 @@ wxString ibValueMetaObjectRegisterData::GetPhysicalTableName() const
 // the queryable owns the query-interface logic, reaching the concrete leaf through the
 // metaobject's virtual primitives. (decouple §22.4e)
 
+const ibValueMetaObjectAttributeBase* ibHierarchyPredefinedColumn(
+	const ibValueMetaObject* meta, const wxString& name)
+{
+	if (meta == nullptr || !name.IsSameAs(wxT("Predefined"), false))
+		return nullptr;
+	const auto* hierarchy = dynamic_cast<const ibValueMetaObjectRecordDataHierarchyMutableRef*>(meta);
+	if (hierarchy == nullptr)
+		return nullptr;
+	ibValueMetaObjectAttributeBase* attribute = hierarchy->GetDataPredefinedName();
+	if (attribute == nullptr || !attribute->IsAllowed())
+		return nullptr;
+	return attribute;
+}
+
 // catalog / document / charts / enums — identity = the row-key column (guidName);
 // the reference attribute is the row's own key.
 // (ibRecordQueryable's bodies are in commonObject.h, at the end — a template's definitions belong
