@@ -19,6 +19,7 @@
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/compiler/compileCode.h"
 
+#include <memory>
 #include <type_traits>
 
 // ---------------------------------------------------------------------------
@@ -81,24 +82,26 @@ TEST(PlatformLanguage, CurrentLanguageFindsTheLanguageByCode) {
 }
 
 TEST(PlatformPrivilege, ScriptModeDoesNotClearATrustScope) {
-    ibSession sess(wxT("priv"), ibSessionKind::Designer);
-    ibSessionScope scope(&sess);
+    // Current() is the session a shared_ptr owns. A stack session's
+    // weak_from_this() is empty, so the call would see no session.
+    const auto sess = std::make_shared<ibSession>(wxT("priv"), ibSessionKind::Designer);
+    ibSessionScope scope(sess.get());
     EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
 
     ibValueSystemFunction::SetPrivilegedMode(true);
     EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
     {
         // A trust scope is still privileged after script turns its own flag off.
-        ibAccessTrustScope trust(&sess);
+        ibAccessTrustScope trust(sess.get());
         ibValueSystemFunction::SetPrivilegedMode(false);
-        EXPECT_TRUE(sess.PrivilegedMode());
+        EXPECT_TRUE(sess->PrivilegedMode());
     }
     EXPECT_FALSE(ibValueSystemFunction::PrivilegedMode());
 
     // And a trust scope ending does not clear a mode script turned on.
     ibValueSystemFunction::SetPrivilegedMode(true);
     {
-        ibAccessTrustScope trust(&sess);
+        ibAccessTrustScope trust(sess.get());
     }
     EXPECT_TRUE(ibValueSystemFunction::PrivilegedMode());
     ibValueSystemFunction::SetPrivilegedMode(false);
@@ -116,6 +119,9 @@ TEST(PlatformPrivilege, SetPrivilegedModeWithoutASessionIsNamed) {
 
 TEST(PlatformPrivilege, TheNamesCompile) {
     ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    // Globals are the methods of the system context the host installs.
+    ibValueSystemFunction valueSystem;
+    cc.AddContextVariable(wxT("System"), &valueSystem, true);
     const wxString src =
         wxT("Procedure Check()\n")
         wxT("    var lang;\n")
