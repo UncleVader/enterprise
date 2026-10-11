@@ -107,9 +107,13 @@ bool ibValueTextDocument::CallAsFunc(const long lMethodNum, ibValue& pvarRetValu
 			return false;
 		SetText(paParams[0]->GetString());
 		return true;
-	case enAddLine:
-		AddLine(lSizeArray > 0 && paParams[0] != nullptr ? paParams[0]->GetString() : wxString());
+	case enAddLine: {
+		wxString line;
+		if (lSizeArray > 0 && paParams[0] != nullptr)
+			line = paParams[0]->GetString();
+		AddLine(line);
 		return true;
+	}
 	case enInsertLine:
 		if (lSizeArray < 2)
 			return false;
