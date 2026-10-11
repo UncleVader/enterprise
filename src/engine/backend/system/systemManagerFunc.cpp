@@ -913,6 +913,18 @@ void ibValueSystemFunction::EndJob(bool force) //EndJob
 		session->Close(force);
 }
 
+void ibValueSystemFunction::AttachIdleHandler(const wxString& name, double seconds)
+{
+	if (ibSession* const session = ibSession::Current())
+		session->AttachIdleHandler(name, seconds);
+}
+
+void ibValueSystemFunction::DetachIdleHandler(const wxString& name)
+{
+	if (ibSession* const session = ibSession::Current())
+		session->DetachIdleHandler(name);
+}
+
 void ibValueSystemFunction::UserInterruptProcessing()
 {
 	if (wxGetKeyState(WXK_CONTROL) && wxGetKeyState(WXK_CANCEL))

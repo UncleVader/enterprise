@@ -1,0 +1,37 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "fn.AttachIdleHandler",
+      "name_local": "AttachIdleHandler",
+      "name_en": "AttachIdleHandler",
+      "kind": "system_procedure",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "AttachIdleHandler(name : string, seconds : number)",
+      "description": "Просить сеанс викликати процедуру свого кореневого модуля із заданим періодом. name — ця процедура. seconds — період. Повторне підключення того самого імені замінює період. Сеанс зберігає реєстрацію. Хост просить сеанс виконати те, що вже час. У бекенда немає свого таймера, тож хост, який не питає, нічого не запускає.",
+      "parameters": "name — процедура кореневого модуля сеансу.\nseconds — період у секундах.",
+      "return_descr": "None.",
+      "example": "AttachIdleHandler(\"Tick\", 5);",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.DetachIdleHandler"],
+      "reviewed": false
+    },
+    {
+      "id": "fn.DetachIdleHandler",
+      "name_local": "DetachIdleHandler",
+      "name_en": "DetachIdleHandler",
+      "kind": "system_procedure",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "DetachIdleHandler(name : string)",
+      "description": "Знімає реєстрацію простою з цим іменем. Ім'я, яке не підключали, лишається як було.",
+      "parameters": "name — процедура, яку підключали.",
+      "return_descr": "None.",
+      "example": "DetachIdleHandler(\"Tick\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.AttachIdleHandler"],
+      "reviewed": false
+    }
+  ]
+}

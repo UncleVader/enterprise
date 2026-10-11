@@ -373,6 +373,16 @@ public:
 	// window never has to notify the session — the release says it.
 	bool Close(bool force = false);
 
+	// A procedure of this session's root module, run when a host asks and the period is due.
+	// The backend does not own a timer. A second attach of the same name replaces the period.
+	void AttachIdleHandler(const wxString& name, double seconds);
+	void DetachIdleHandler(const wxString& name);
+	bool HasIdleHandler(const wxString& name) const;
+	// The period in seconds, or -1 when the name is not registered.
+	double IdleHandlerPeriod(const wxString& name) const;
+	// nowMs is wxGetUTCTimeMillis(). Returns how many procedures ran.
+	int RunDueIdleHandlers(long long nowMs);
+
 	// Drop the user identity bound to this session. Auth axis transitions
 	// back to Anonymous; the session itself stays Added so the caller can
 	// retry Authenticate. Best-effort with a soft timeout.
@@ -1051,6 +1061,13 @@ private:
 	// a configuration author certain the value was set, and the row filter says
 	// otherwise somewhere far away.
 	bool m_sessionParametersOpen = false;
+
+	struct IdleHandler {
+		wxString m_name;
+		double m_seconds = 0;
+		long long m_nextMs = 0;
+	};
+	std::vector<IdleHandler> m_idleHandlers;
 
 public:
 

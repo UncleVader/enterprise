@@ -21,8 +21,11 @@
 #include "backend/compiler/procUnitState.h"   // m_errorPlace — which opcode raised
 #include "backend/session/session.h"
 #include "backend/appData.h"                // the built-in dispatcher reads appData on entry
+#include "backend/metadataConfiguration.h"
+#include "backend/metaCollection/metaModuleObject.h"
 
 #include <wx/init.h>
+#include <wx/utils.h>
 #include <wx/image.h>  // wxInitAllImageHandlers — wx decodes nothing until registered
 #include <wx/log.h>    // wxLogStderr — a wx warning must not become a modal box                        // wxInitializer — wxBase before appData
 
@@ -2935,4 +2938,56 @@ TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 
 	// The frame goes here, with both arrays in it. That is the moment the nightly
 	// caught: passing under a sanitiser is the whole assertion.
+}
+
+// The session keeps the registration. A second attach replaces the period.
+// With no root module, asking runs nothing.
+TEST_F(BuiltInRuntime, IdleHandlerReplacesThePeriodAndRunsNothingUntilAsked) {
+	auto session = std::make_shared<ibSession>(wxT("idle-keep"), ibSessionKind::Enterprise);
+	const ibSessionScope bound(session.get());
+	ibValueSystemFunction system;
+	ASSERT_NE(system.FindMethod(wxT("AttachIdleHandler")), wxNOT_FOUND);
+	ibValue name(wxT("Tick"));
+	ibValue seconds(5);
+	ibValue* attach[] = { &name, &seconds };
+	ASSERT_TRUE(system.CallAsProc(system.FindMethod(wxT("AttachIdleHandler")), attach, 2));
+	EXPECT_TRUE(session->HasIdleHandler(wxT("tick")));
+	EXPECT_DOUBLE_EQ(session->IdleHandlerPeriod(wxT("Tick")), 5.0);
+
+	ibValue shorter(2);
+	ibValue* again[] = { &name, &shorter };
+	ASSERT_TRUE(system.CallAsProc(system.FindMethod(wxT("AttachIdleHandler")), again, 2));
+	EXPECT_DOUBLE_EQ(session->IdleHandlerPeriod(wxT("Tick")), 2.0);
+
+	const long long now = static_cast<long long>(wxGetUTCTimeMillis().GetValue());
+	EXPECT_EQ(session->RunDueIdleHandlers(now), 0);
+	EXPECT_EQ(session->RunDueIdleHandlers(now + 60000), 0);
+	EXPECT_TRUE(session->HasIdleHandler(wxT("Tick")));
+
+	ibValue* detach[] = { &name };
+	ASSERT_TRUE(system.CallAsProc(system.FindMethod(wxT("DetachIdleHandler")), detach, 1));
+	EXPECT_FALSE(session->HasIdleHandler(wxT("Tick")));
+}
+
+// Asking the session runs the named procedure of its root module, once per period.
+TEST_F(BuiltInRuntime, IdleHandlerRunsTheRootProcedureWhenItIsDue) {
+	ibMetaDataConfigurationFile cfg;
+	ibValueMetaObjectConfiguration* const rootMeta = cfg.GetCommonMetaObject();
+	ASSERT_NE(rootMeta, nullptr);
+	ibValueMetaObjectModule* const module = const_cast<ibValueMetaObjectModule*>(rootMeta->GetObjectModule());
+	ASSERT_NE(module, nullptr);
+	module->SetModuleText(wxT("Procedure Tick() Public {\n}\n"));
+
+	auto session = std::make_shared<ibSession>(wxT("idle-run"), ibSessionKind::Enterprise);
+	const ibSessionScope bound(session.get());
+	ASSERT_NE(session->CreateRoot(&cfg), nullptr);
+	try {
+		ASSERT_TRUE(session->CompileRoot());
+	} catch (const ibBackendException& err) {
+		FAIL() << err.GetErrorDescription().ToStdString();
+	}
+	session->AttachIdleHandler(wxT("Tick"), 10);
+	const long long later = static_cast<long long>(wxGetUTCTimeMillis().GetValue()) + 60000;
+	EXPECT_EQ(session->RunDueIdleHandlers(later), 1);
+	EXPECT_EQ(session->RunDueIdleHandlers(later), 0);
 }
