@@ -633,6 +633,9 @@ bool ibValueForm::CloseForm(bool force)
 	if (!force && ownerDocForm != nullptr && ownerDocForm->IsEmbedded())
 		return false;
 
+	// An accepted close. A refusal returned above and does not call the notify.
+	RunCloseNotify(ibValue());
+
 	if (ownerDocForm != nullptr) {
 #ifdef OES_USE_WEB
 		// Defer the ibDocument::DeleteAllViews — it would delete the

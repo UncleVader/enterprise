@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "fn.OpenForm",
+      "name_local": "OpenForm",
+      "name_en": "OpenForm",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "OpenForm(name, params, owner, uniqueKey, notify, windowMode)",
+      "description": "Opens a form and returns it. name is the form GetCommonForm already takes; empty means the object's own form. params is a Structure written into the form request. owner is the form or the frame, or empty. uniqueKey keeps one open form: a second open with the same key returns that form; empty means one form per call. notify is a NotifyDescription or empty. When the close is accepted, the form calls notify with the close result and the description's additional parameters. A refused close does not call it. windowMode is recorded on the request for the frame. The backend does not create a window and does not wait for the close.",
+      "parameters": "name — the form name.\nparams — a Structure of opening parameters, or empty.\nowner — the owning form or frame, or empty.\nuniqueKey — the key of an already open form, or empty.\nnotify — a NotifyDescription called on an accepted close, or empty.\nwindowMode — how the frame shows the window, or empty.",
+      "return_descr": "The form.",
+      "example": "notify = New NotifyDescription(\"AfterClose\", ThisObject);\nform = OpenForm(\"Sales\", params, , \"sales\", notify, \"Modal\");",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.NotifyDescription"],
+      "reviewed": false
+    }
+  ]
+}
