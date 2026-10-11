@@ -2003,6 +2003,22 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.PrivilegedMode"],
       "reviewed": true
+    },
+    {
+      "id": "fn.PredefinedValue",
+      "name_local": "PredefinedValue",
+      "name_en": "PredefinedValue",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "PredefinedValue(path : string)",
+      "description": "A predefined item, an enumeration value, or an empty reference, named as Kind.Object.Name. An unknown word is refused and the refusal names it.",
+      "syntax_block": "PredefinedValue(path : string)",
+      "parameters": "path — Catalog.Warehouses.Main, Enumeration.VAT.Rate20, or Catalog.Warehouses.EmptyRef.",
+      "return_descr": "The reference, or the enumeration value.",
+      "example": "main = PredefinedValue(\"Catalog.Warehouses.Main\");",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.CurrentLanguage"],
+      "reviewed": true
     }
   ]
 }

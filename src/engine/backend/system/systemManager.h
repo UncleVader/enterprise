@@ -175,6 +175,8 @@ public:
 	static ibValue LanguageObject(class ibMetaData* meta, const wxString& code);
 	static bool PrivilegedMode();
 	static void SetPrivilegedMode(bool on);
+	static ibValue PredefinedValue(const wxString& path);
+	static ibValue PredefinedValue(class ibMetaData* meta, const wxString& path);
 	static void EndJob(bool force = false);
 
 	static void UserInterruptProcessing();

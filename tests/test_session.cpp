@@ -15,6 +15,8 @@
 #include "backend/system/systemManager.h"
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaLanguageObject.h"
+#include "backend/metaCollection/partial/commonObject.h"
+#include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/compiler/compileCode.h"
 
 #include <type_traits>
@@ -126,6 +128,41 @@ TEST(PlatformPrivilege, TheNamesCompile) {
         ASSERT_TRUE(cc.Compile(src));
     } catch (const ibBackendException& err) {
         FAIL() << err.GetErrorDescription().ToStdString();
+    }
+}
+
+TEST(PlatformPredefined, ACatalogPredefinedItemAndEmptyRefResolve) {
+    ibMetaDataConfigurationFile cfg;
+    ibValueMetaObject* root = cfg.GetCommonMetaObject();
+    ibValueMetaObject* created = cfg.CreateMetaObject(g_metaCatalogCLSID, root, false);
+    ASSERT_NE(created, nullptr);
+    created->SetName(wxT("Warehouses"));
+    auto* catalog = dynamic_cast<ibValueMetaObjectRecordDataHierarchyMutableRef*>(created);
+    ASSERT_NE(catalog, nullptr);
+    catalog->AppendPredefinedValue(wxT("Main"), wxT(""), wxT("Main warehouse"));
+    const ibGuid guid = catalog->FindPredefinedValue(wxT("Main"))->GetPredefinedGuid();
+
+    ibValue found = ibValueSystemFunction::PredefinedValue(&cfg, wxT("Catalog.Warehouses.Main"));
+    ibValueReferenceDataObject* ref = nullptr;
+    ASSERT_TRUE(found.ConvertToValue(ref));
+    EXPECT_EQ(ref->GetGuid(), guid);
+
+    ibValue empty = ibValueSystemFunction::PredefinedValue(&cfg, wxT("Catalog.Warehouses.EmptyRef"));
+    ibValueReferenceDataObject* emptyRef = nullptr;
+    ASSERT_TRUE(empty.ConvertToValue(emptyRef));
+    EXPECT_FALSE(emptyRef->GetGuid().isValid());
+
+    try {
+        ibValueSystemFunction::PredefinedValue(&cfg, wxT("Catalog.Warehouses.Missing"));
+        FAIL() << "an unknown predefined name must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("Missing")));
+    }
+    try {
+        ibValueSystemFunction::PredefinedValue(&cfg, wxT("NotAKind.Warehouses.Main"));
+        FAIL() << "an unknown kind must be refused";
+    } catch (const ibBackendException& err) {
+        EXPECT_TRUE(err.GetErrorDescription().Contains(wxT("NotAKind")));
     }
 }
 

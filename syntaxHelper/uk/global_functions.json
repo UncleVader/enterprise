@@ -1999,6 +1999,22 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.PrivilegedMode"],
       "reviewed": true
+    },
+    {
+      "id": "fn.PredefinedValue",
+      "name_local": "PredefinedValue",
+      "name_en": "PredefinedValue",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "PredefinedValue(path : string)",
+      "description": "Напередвизначений елемент, значення переліку або порожнє посилання за іменем Вид.Об'єкт.Ім'я. Невідоме слово відмовляється і називається у відмові.",
+      "syntax_block": "PredefinedValue(path : string)",
+      "parameters": "path — Catalog.Warehouses.Main, Enumeration.VAT.Rate20 або Catalog.Warehouses.EmptyRef.",
+      "return_descr": "Посилання або значення переліку.",
+      "example": "main = PredefinedValue(\"Catalog.Warehouses.Main\");",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.CurrentLanguage"],
+      "reviewed": true
     }
   ]
 }

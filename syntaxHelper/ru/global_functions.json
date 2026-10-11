@@ -1999,6 +1999,22 @@
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": ["fn.PrivilegedMode"],
       "reviewed": true
+    },
+    {
+      "id": "fn.PredefinedValue",
+      "name_local": "PredefinedValue",
+      "name_en": "PredefinedValue",
+      "kind": "system_function",
+      "category_keys": ["global_context", "global_functions"],
+      "signature": "PredefinedValue(path : string)",
+      "description": "Предопределённый элемент, значение перечисления или пустая ссылка по имени Вид.Объект.Имя. Неизвестное слово отказывается и называется в отказе.",
+      "syntax_block": "PredefinedValue(path : string)",
+      "parameters": "path — Catalog.Warehouses.Main, Enumeration.VAT.Rate20 или Catalog.Warehouses.EmptyRef.",
+      "return_descr": "Ссылка или значение перечисления.",
+      "example": "main = PredefinedValue(\"Catalog.Warehouses.Main\");",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": ["fn.CurrentLanguage"],
+      "reviewed": true
     }
   ]
 }
