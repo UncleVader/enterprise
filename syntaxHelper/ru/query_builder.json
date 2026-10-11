@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.QueryBuilder",
+      "name_local": "QueryBuilder",
+      "name_en": "QueryBuilder",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime", "queries"],
+      "signature": "New QueryBuilder([text : string])",
+      "description": "Запрос, который модуль собирает перед выполнением (ПостроительЗапроса). Text — текст запроса. Parameters — структура; Execute переносит каждое имя в запрос и выполняет его, ответом служит QueryResult. GetQuery возвращает этот запрос, не выполняя его. FillSettings принимается и не строит отбор или порядок: таких настроек здесь нет.",
+      "parameters": "text — текст запроса. Если опущен, построитель пуст.",
+      "return_descr": "QueryBuilder.",
+      "example": "Builder = New QueryBuilder;\nBuilder.Text = \"SELECT Ref FROM Catalog.Goods\";\nBuilder.Parameters.Insert(\"Code\", \"001\");\nResult = Builder.Execute();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.Query"],
+      "reviewed": false
+    }
+  ]
+}
