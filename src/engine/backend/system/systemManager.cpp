@@ -124,7 +124,8 @@ enum
 	// everything else — the ordinal IS the method index, so a new name goes at the END or every
 	// later case answers to the wrong verb.
 	enSerializeValue,
-	enDeserializeValue
+	enDeserializeValue,
+	enExit
 };
 
 void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -251,6 +252,7 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	//--- …and value-as-text last, matching the enSerializeValue / enDeserializeValue tail above.
 	helper.AppendFunc(wxT("SerializeValue"), 1, wxT("SerializeValue(value : any)"));
 	helper.AppendFunc(wxT("DeserializeValue"), 1, wxT("DeserializeValue(json : string)"));
+	helper.AppendProc(wxT("Exit"), 1, wxT("Exit(code : number)"));
 };
 
 #include "backend/compiler/enumUnit.h"
@@ -494,6 +496,9 @@ bool ibValueSystemFunction::CallAsProc(const long lMethodNum, ibValue** paParams
 		case enSetAppTitle: SetAppTitle(paParams[0]->GetString()); return true;
 		case enSetExclusive: SetExclusive(paParams[0]->GetBoolean()); return true;
 		case enEndJob: EndJob(paParams[0]->GetInteger()); return true;
+		case enExit:
+			Exit(lSizeArray > 0 && paParams[0] != nullptr ? paParams[0]->GetInteger() : 0);
+			return true;
 		case enUserInterruptProcessing: UserInterruptProcessing(); return true;
 		case enShowCommonForm: ShowCommonForm(
 			ibFormRequest(paParams[0]->GetString()),
@@ -511,6 +516,9 @@ bool ibValueSystemFunction::CallAsProc(const long lMethodNum, ibValue** paParams
 		switch (lMethodNum)
 		{
 			//--- Special:
+		case enExit:
+			Exit(lSizeArray > 0 && paParams[0] != nullptr ? paParams[0]->GetInteger() : 0);
+			return true;
 		case enShowCommonForm:
 			ShowCommonForm(ibFormRequest(paParams[0]->GetString()),
 				lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr,

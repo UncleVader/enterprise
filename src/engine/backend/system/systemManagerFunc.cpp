@@ -913,6 +913,16 @@ void ibValueSystemFunction::EndJob(bool force) //EndJob
 		session->Close(force);
 }
 
+void ibValueSystemFunction::Exit(int code)
+{
+	ibSession* const session = ibSession::Current();
+	if (session == nullptr)
+		return;
+	session->SetExitCode(code);
+	if (!session->Close(false))
+		session->ClearExitCode();
+}
+
 void ibValueSystemFunction::UserInterruptProcessing()
 {
 	if (wxGetKeyState(WXK_CONTROL) && wxGetKeyState(WXK_CANCEL))

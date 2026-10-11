@@ -2936,3 +2936,41 @@ TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 	// The frame goes here, with both arrays in it. That is the moment the nightly
 	// caught: passing under a sanitiser is the whole assertion.
 }
+
+namespace {
+
+struct RefusingSession : ibSession {
+	RefusingSession() : ibSession(wxT("refuse-exit"), ibSessionKind::Enterprise) {}
+	bool OnClose(bool) override { return false; }
+};
+
+} // namespace
+
+// Exit ends the session and keeps the code. It does not terminate the process.
+TEST_F(BuiltInRuntime, ExitKeepsTheCodeWhenTheSessionCloses) {
+	EXPECT_EQ(ibSession::Current(), nullptr);
+	ibValueSystemFunction::Exit(3);
+
+	auto session = std::make_shared<ibSession>(wxT("exit-code"), ibSessionKind::Enterprise);
+	const ibSessionScope bound(session.get());
+	ibValueSystemFunction system;
+	const long method = system.FindMethod(wxT("Exit"));
+	ASSERT_NE(method, wxNOT_FOUND);
+	ibValue code(7);
+	ibValue* args[] = { &code };
+	ASSERT_TRUE(system.CallAsProc(method, args, 1));
+	EXPECT_TRUE(session->HasExitCode());
+	EXPECT_EQ(session->ExitCode(), 7);
+}
+
+// A session that refuses the close stays up, and the code stays unset.
+TEST_F(BuiltInRuntime, ExitLeavesTheCodeUnsetWhenTheSessionRefuses) {
+	auto session = std::make_shared<RefusingSession>();
+	const ibSessionScope bound(session.get());
+	ibValue code(4);
+	ibValue* args[] = { &code };
+	ibValueSystemFunction system;
+	ASSERT_TRUE(system.CallAsProc(system.FindMethod(wxT("Exit")), args, 1));
+	EXPECT_FALSE(session->HasExitCode());
+	EXPECT_EQ(session->State(), ibSessionState::Created);
+}
