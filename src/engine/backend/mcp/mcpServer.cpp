@@ -117,6 +117,8 @@ bool ibMcpOriginAllowed(const wxString& origin)
 		else {
 			host = rest.Left(colon);
 			port = rest.Mid(colon + 1);
+			if (port.IsEmpty())
+				return false;
 		}
 	}
 
