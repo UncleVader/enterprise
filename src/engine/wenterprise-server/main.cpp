@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
 #include "backend/session/webStreamGate.h"
+#include "backend/session/webSessionCookie.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -557,8 +558,9 @@ int main(int argc, char** argv)
 			id = wfrontendCreateSessionWithId(id);
 		}
 
-		// No HttpOnly: harmless here and makes DevTools inspection easier.
-		res.set_header("Set-Cookie", "oes_session=" + id + "; Path=/");
+		// HttpOnly so script cannot read the id. SameSite=Strict so a
+		// cross-site request does not send it. Secure waits for TLS.
+		res.set_header("Set-Cookie", ibWebSessionCookie(id));
 		// HTML is generated in-binary; force the browser to pick up
 		// freshly rebuilt server output instead of serving a stale
 		// cached copy (common when iterating on the inline JS).
@@ -941,7 +943,7 @@ int main(int argc, char** argv)
 		const std::string id = SessionIdFromReq(req);
 		if (!id.empty())
 			wfrontendDestroySession(id);
-		res.set_header("Set-Cookie", "oes_session=; Path=/; Max-Age=0");
+		res.set_header("Set-Cookie", ibWebSessionCookie(std::string()));
 		res.set_content("bye\n", "text/plain");
 	});
 
