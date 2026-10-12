@@ -29,7 +29,9 @@
 #include "backend/mcp/mcpTool.h"
 
 #include "backend/appData.h"
+#include "backend/databaseLayer/firebird/firebirdLeaderMode.h" // standalone: this process holds the file
 #include "backend/debugger/debugClient.h"     // one debug session at a time — the menu's own guard
+#include "backend/fileBaseSecondProcess.h"    // a second process on a local file cannot open it
 #include "backend/metadataConfiguration.h"    // …and the configuration must already be in the base
 
 #include <wx/process.h>                       // wxProcess::Exists — has the previous run actually gone
@@ -104,7 +106,10 @@ public:
 			"a change of structure: config_apply them first, because a launch must never write to a base "
 			"as a side effect (database_diff lists only the structure).\n\n"
 			"After changing a module: config_apply, then restart: true - a running application keeps the "
-			"bytecode it came up with, so the new code is invisible until it is started again.");
+			"bytecode it came up with, so the new code is invisible until it is started again.\n\n"
+			"Firebird Super mode keeps a local file to itself, and a launch beside this process is refused. "
+			"SuperClassic, which is what the shipped engine uses, shares that file, so the thick client "
+			"starts on the same base. A server base and a network share do too.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -163,6 +168,17 @@ public:
 				"lists only the structure, so it shows nothing for code), then app_run again.");
 			return false;
 		}
+
+		// ASKED BEFORE ANYTHING IS ENDED. Super mode keeps a local file to itself, and a restart
+		// that closed the previous run first would have spent that run on a launch that cannot
+		// succeed. SuperClassic shares the file: the designer's thick client is that case, and
+		// an unreadable conf is not treated as Super.
+		const bool heldStandalone = ibFirebirdLeaderMode::CurrentRole()
+			== ibFirebirdLeaderMode::Role::Standalone;
+		refusal = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone,
+			ibConfiguredFirebirdServerMode());
+		if (!refusal.IsEmpty())
+			return false;
 
 		// ONE DEBUGGER AT A TIME — the same guard the menu keeps. A second debug launch attaches
 		// nothing and leaves the caller waiting at a breakpoint that will never be hit.
