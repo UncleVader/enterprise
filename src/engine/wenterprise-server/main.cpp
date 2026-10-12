@@ -27,6 +27,7 @@
 #include "wfrontend.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/webGuardHeaders.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -500,6 +501,36 @@ int main(int argc, char** argv)
 		}
 		res.status = 500;
 		res.set_content(body, "application/json; charset=utf-8");
+	});
+
+	// After the route has filled the body. An HTML document gets a nonce
+	// on every inline style and script so the policy below can refuse
+	// every other inline script. httplib has already stored
+	// Content-Length from the body it had then; the nonce attributes
+	// make the body longer, and a client that stops at the old length
+	// loses the end of the document (the client script's </script>).
+	// A response that already named Cache-Control (the icon, the event
+	// stream, the page) keeps it.
+	svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
+		std::string nonce;
+		const std::string contentType = res.get_header_value("Content-Type");
+		if (contentType.find("text/html") != std::string::npos && !res.body.empty()) {
+			nonce = ibWebNonce();
+			res.body = ibWebDocumentWithNonce(res.body, nonce);
+			// set_header appends. A second Content-Length would leave
+			// the short one in front, which is the length a client uses.
+			const auto stale = res.headers.equal_range("Content-Length");
+			res.headers.erase(stale.first, stale.second);
+			res.content_length_ = res.body.size();
+			res.set_header("Content-Length", std::to_string(res.content_length_));
+		}
+		const ibWebGuardHeaders guard = ibWebGuardHeadersFor(nonce);
+		res.set_header("Content-Security-Policy", guard.contentSecurityPolicy);
+		res.set_header("X-Content-Type-Options", guard.contentTypeOptions);
+		res.set_header("Referrer-Policy", guard.referrerPolicy);
+		res.set_header("Cross-Origin-Opener-Policy", guard.openerPolicy);
+		if (ibWebUseDefaultCacheControl(res.has_header("Cache-Control")))
+			res.set_header("Cache-Control", guard.cacheControl);
 	});
 
 	svr.Get(prefix + "/", [prefix](const httplib::Request& req, httplib::Response& res) {
