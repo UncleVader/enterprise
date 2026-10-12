@@ -437,6 +437,8 @@
     <ClInclude Include="utils\md5.hpp" />
     <ClInclude Include="utils\sha256.hpp" />
     <ClInclude Include="utils\passwordHash.hpp" />
+    <ClInclude Include="utils\constTime.h" />
+    <ClInclude Include="mcp\mcpAuth.h" />
     <ClInclude Include="utils\dataVersion.hpp" />
     <ClInclude Include="valueInfo.h" />
     <ClInclude Include="value_cast.h" />

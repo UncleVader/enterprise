@@ -34,6 +34,8 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "backend/mcp/mcpServer.h"
+#include "backend/mcp/mcpAuth.h"
+#include "backend/utils/constTime.h"
 
 #include "backend/appData.h"                        // GetSettingsStorage — where a person's settings live
 #include "backend/logger/logger.h"                  // …and ibLog — the registration journal
@@ -141,6 +143,20 @@ ibDataNode SupportedVersions(const wxString& asked)
 const unsigned long kMaxRequestBytes = 8ul * 1024ul * 1024ul;
 
 } // namespace
+
+bool ibMcpBearerAuthorised(const wxString& authorizationHeader, const wxString& expectedToken)
+{
+	// Blank is not "checking off". The settings mint a token; a missing one is a fault.
+	if (expectedToken.IsEmpty() || authorizationHeader.IsEmpty())
+		return false;
+
+	// The scheme is part of the header. A bare token is a different mistake from a wrong one.
+	if (!authorizationHeader.StartsWith(wxT("Bearer ")))
+		return false;
+
+	const wxString given = authorizationHeader.Mid(7).Trim(true).Trim(false);
+	return ibConstTimeEqual(given, expectedToken);
+}
 
 //---------------------------------------------------------------------------
 // the listener
@@ -291,10 +307,7 @@ private:
 
 		// The scheme is part of it: a client that sends the bare token is misconfigured in a way
 		// worth telling apart from one that sends the wrong one.
-		if (!given.StartsWith(wxT("Bearer ")))
-			return false;
-
-		return given.Mid(7).Trim(true).Trim(false) == expected;
+		return ibMcpBearerAuthorised(given, expected);
 	}
 
 	// ⭐⭐ THE REFUSAL SAYS WHAT IS MISSING AND WHERE IT LIVES — because this is the FIRST thing a

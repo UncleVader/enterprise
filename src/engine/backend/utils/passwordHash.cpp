@@ -3,6 +3,7 @@
 /////////////////////////////////////////////////////////////////////////////
 
 #include "passwordHash.hpp"
+#include "backend/utils/constTime.h"
 #include "sha256.hpp"
 #include "md5.hpp"
 
@@ -132,14 +133,6 @@ void Pbkdf2HmacSha256(const uint8_t* password, size_t passwordLen,
 	}
 }
 
-// Constant-time byte compare — avoids a timing leak of the hash prefix match.
-bool ConstTimeEqual(const uint8_t* a, const uint8_t* b, size_t len)
-{
-	uint8_t diff = 0;
-	for (size_t i = 0; i < len; ++i) diff |= uint8_t(a[i] ^ b[i]);
-	return diff == 0;
-}
-
 } // namespace
 
 bool ibPasswordHash::IsLegacy(const wxString& storedHash)
@@ -228,5 +221,5 @@ bool ibPasswordHash::Verify(const wxString& password, const wxString& storedHash
 	                 uint32_t(iterations),
 	                 derived.data(), derived.size());
 
-	return ConstTimeEqual(derived.data(), static_cast<const uint8_t*>(stored.GetData()), derived.size());
+	return ibConstTimeEqual(derived.data(), static_cast<const uint8_t*>(stored.GetData()), derived.size());
 }
