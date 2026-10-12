@@ -176,6 +176,17 @@ public:
 		return m_sessions.find(id) != m_sessions.end();
 	}
 
+	// A copy of the map entry. The caller keeps the session alive for a
+	// wait even if the sweep erases the map row.
+	std::shared_ptr<ibWebSession> Pin(const std::string& id)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end())
+			return std::shared_ptr<ibWebSession>();
+		return it->second;
+	}
+
 	void Destroy(const std::string& id)
 	{
 		std::shared_ptr<ibWebSession> dying;
@@ -1116,6 +1127,12 @@ WFRONTEND_API bool wfrontendSessionExists(const std::string& sessionId)
 	return Sessions().Exists(sessionId);
 }
 
+WFRONTEND_API bool wfrontendSessionLive(const std::string& sessionId)
+{
+	const std::shared_ptr<ibWebSession> session = Sessions().Pin(sessionId);
+	return session != nullptr && session->IsAuthenticated();
+}
+
 WFRONTEND_API void wfrontendDestroySession(const std::string& sessionId)
 {
 	Sessions().Destroy(sessionId);
@@ -1823,28 +1840,37 @@ WFRONTEND_API std::string wfrontendActiveHostJSON(const std::string& sessionId)
 WFRONTEND_API WfrontendLiveUpdate wfrontendLiveWait(
 	const std::string& sessionId, std::uint64_t lastSeen, int timeoutMs)
 {
-	// Pin the session in scope so it can't be swept out from under the
-	// waiter. `Sessions().m_mutex` only guards the map — the session
-	// object itself is owned by the unique_ptr in the map, which the
-	// idle-sweep may erase. Take the mutex briefly, grab the raw ptr,
-	// drop the mutex, wait on the app's CV. If the session dies mid-wait
-	// the CV won't fire from our side — rely on the timeout to release.
-	// Future hardening: shared_ptr<ibWebSession> so the waiter pins
-	// lifetime. For today's synchronous flow the timeout is acceptable.
-	Sessions().Touch(sessionId);
+	// An anonymous, unknown or logged-out session has nothing to wait
+	// on. Returning immediately with live=false lets the stream close
+	// instead of writing a ping and calling this again.
+	WfrontendLiveUpdate r;
+	r.seq  = lastSeen;
+	r.json = "{}";
+	r.live = false;
 
-	ibWebApplication* app = Sessions().FindApp(sessionId);
-	if (app == nullptr) {
-		WfrontendLiveUpdate r;
-		r.seq  = lastSeen;
-		r.json = "{}";
+	const std::shared_ptr<ibWebSession> keeper = Sessions().Pin(sessionId);
+	if (keeper == nullptr || !keeper->IsAuthenticated())
 		return r;
-	}
+	keeper->Touch();
+
+	ibWebApplication* app = keeper->App();
+	if (app == nullptr || !app->BeginLiveWait())
+		return r;
+
+	struct Leave {
+		ibWebApplication* app;
+		~Leave() { app->EndLiveWait(); }
+	} leave{ app };
+
+	if (app->LiveClosed())
+		return r;
 
 	const std::uint64_t newSeq = app->WaitForChange(lastSeen, timeoutMs);
+	if (app->LiveClosed() || !keeper->IsAuthenticated())
+		return r;
 
-	WfrontendLiveUpdate r;
 	r.seq  = newSeq;
+	r.live = true;
 	r.json = Sessions().ActiveHostJSON(sessionId);
 	return r;
 }

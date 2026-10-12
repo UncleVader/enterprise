@@ -916,6 +916,9 @@
     <ClInclude Include="session\workerPool.h">
       <Filter>session</Filter>
     </ClInclude>
+    <ClInclude Include="session\webStreamGate.h">
+      <Filter>session</Filter>
+    </ClInclude>
     <ClInclude Include="session\workerPoolHeadless.h">
       <Filter>session</Filter>
     </ClInclude>
@@ -2342,6 +2345,9 @@
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\workerPoolHeadless.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\webStreamGate.cpp">
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="lock\lockHandle.cpp">

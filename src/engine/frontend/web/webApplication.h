@@ -90,6 +90,14 @@ public:
 	uint64_t CurrentSeq() const { return m_seq.load(); }
 	uint64_t WaitForChange(uint64_t lastSeen, int timeoutMs);
 
+	// A stream pins itself with Begin/End around the wait. CloseLiveWait
+	// wakes those waiters and does not return until they have left, so
+	// teardown does not delete this object under them.
+	bool BeginLiveWait();
+	void EndLiveWait();
+	bool LiveClosed();
+	void CloseLiveWait();
+
 	// Session dispatcher — single generic entry. HTTP handlers hand off
 	// here: given a controlId + kind ("click" | "text" | "toggle" | …)
 	// + value, the dispatcher resolves the ibValueFrame in the active
@@ -150,6 +158,8 @@ private:
 	std::atomic<uint64_t>                         m_seq { 1 };
 	std::mutex                                    m_seqMtx;
 	std::condition_variable                       m_seqCv;
+	bool                                          m_liveClosed = false;
+	int                                           m_liveWaiters = 0;
 };
 
 // Reach the current session's ibWebApplication from arbitrary web

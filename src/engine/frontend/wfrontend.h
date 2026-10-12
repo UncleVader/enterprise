@@ -151,6 +151,10 @@ WFRONTEND_API std::string wfrontendCreateSessionWithId(const std::string& id);
 WFRONTEND_API bool        wfrontendLogin(const std::string& sessionId,
 	const std::string& user, const std::string& password);
 WFRONTEND_API bool        wfrontendSessionExists(const std::string& sessionId);
+// Signed in: the session is in the map and has its application. An
+// anonymous row from GET /, an unknown id, and a session that was
+// logged out are not live.
+WFRONTEND_API bool        wfrontendSessionLive(const std::string& sessionId);
 WFRONTEND_API void        wfrontendDestroySession(const std::string& sessionId);
 WFRONTEND_API std::size_t wfrontendSessionCount();
 
@@ -321,6 +325,9 @@ WFRONTEND_API std::string wfrontendActiveHostJSON(const std::string& sessionId);
 struct WfrontendLiveUpdate {
     std::uint64_t seq;
     std::string   json;
+    // False when the session is missing or no longer signed in. The
+    // stream must close; the unchanged seq is not an idle timeout.
+    bool          live = false;
 };
 WFRONTEND_API WfrontendLiveUpdate wfrontendLiveWait(
     const std::string& sessionId, std::uint64_t lastSeen, int timeoutMs);
