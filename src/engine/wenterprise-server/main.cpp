@@ -35,6 +35,7 @@
 #include "backend/webSessionId.h"
 #include "backend/webSessionTrace.h"
 #include "backend/webIssuedBearer.h"
+#include "backend/webCatalogRoute.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -250,6 +251,23 @@ bool RequireSessionId(const httplib::Request& req, httplib::Response& res, std::
 		return true;
 	res.status = 401;
 	res.set_content(id.empty() ? "no session\n" : "session lost\n", "text/plain");
+	return false;
+}
+
+// A configuration list. An unknown id and a session that has not signed
+// in are 401. A path that is not one of those lists fails closed.
+bool RequireSignedIn(const httplib::Request& req, httplib::Response& res, std::string& id)
+{
+	if (!ibWebPathNamesConfiguration(req.path)) {
+		res.status = 401;
+		res.set_content("not signed in\n", "text/plain");
+		return false;
+	}
+	id = SessionIdFromReq(req);
+	if (!id.empty() && wfrontendSessionAuthenticated(id))
+		return true;
+	res.status = 401;
+	res.set_content(id.empty() ? "no session\n" : "not signed in\n", "text/plain");
 	return false;
 }
 
@@ -582,15 +600,21 @@ int main(int argc, char** argv)
 		res.set_content("pong", "text/plain");
 	});
 
-	svr.Get(prefix + "/menu", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/menu", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendMenuJSON(), "application/json; charset=utf-8");
 	});
 
-	svr.Get(prefix + "/forms", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/forms", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendFormsJSON(), "application/json; charset=utf-8");
 	});
 
-	svr.Get(prefix + "/diag/ctors", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/diag/ctors", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendCtorsJSON(), "application/json; charset=utf-8");
 	});
 
@@ -679,15 +703,12 @@ int main(int argc, char** argv)
 		res.set_content(ok ? "1" : "0", "text/plain");
 	});
 
-	// GET /functions — returns the "All functions" tree (groups of
-	// metadata objects). Mirrors desktop's ibDialogFunctionAll content.
-	// Process-wide, no session needed (metadata is shared) — but the
-	// access check inside uses activeMetaData->AccessRight_ModeAllFunction
-	// which routes through the current user's roles. Requires session
-	// for the role context.
+	// GET /functions — the "All functions" tree. The right is asked on
+	// the session's worker (wfrontendAllFunctionsJSON). A session that
+	// has not signed in is 401, not the service account's tree.
 	svr.Get(prefix + "/functions", [](const httplib::Request& req, httplib::Response& res) {
 		std::string id;
-		if (!RequireSessionId(req, res, id)) return;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendAllFunctionsJSON(id),
 			"application/json; charset=utf-8");
 	});
@@ -698,8 +719,8 @@ int main(int argc, char** argv)
 	// has no interfaces (sidebar stays with the plain FORMS list).
 	svr.Get(prefix + "/interfaces", [](const httplib::Request& req, httplib::Response& res) {
 		std::string id;
-		if (!RequireSessionId(req, res, id)) return;
-		res.set_content(wfrontendInterfacesJSON(),
+		if (!RequireSignedIn(req, res, id)) return;
+		res.set_content(wfrontendInterfacesJSON(id),
 			"application/json; charset=utf-8");
 	});
 

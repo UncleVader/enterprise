@@ -152,6 +152,8 @@ WFRONTEND_API bool        wfrontendSessionExists(const std::string& sessionId);
 // anonymous row from GET /, an unknown id, and a session that was
 // logged out are not live.
 WFRONTEND_API bool        wfrontendSessionLive(const std::string& sessionId);
+// True after Login has built this session's application.
+WFRONTEND_API bool        wfrontendSessionAuthenticated(const std::string& sessionId);
 WFRONTEND_API void        wfrontendDestroySession(const std::string& sessionId);
 WFRONTEND_API std::size_t wfrontendSessionCount();
 
@@ -303,7 +305,9 @@ WFRONTEND_API std::string wfrontendOpenMetaObject(const std::string& sessionId,
 // section. Returns {"allowed":false} when configuration has no
 // interfaces / role denies use, otherwise {"interfaces":[…]}.
 // Mirrors desktop's ibSubSystemWindow content (enterprise's sidebar).
-WFRONTEND_API std::string wfrontendInterfacesJSON();
+// Built on the session's worker, so AccessRight_Use reads that user's
+// roles. Empty when the session is missing or not signed in.
+WFRONTEND_API std::string wfrontendInterfacesJSON(const std::string& sessionId);
 
 // Read-only snapshot of the active tab's visual host tree. Unlike
 // POST /tab/<i> (which activates + rebuilds), this just serialises
