@@ -973,6 +973,12 @@
     <ClInclude Include="utils\passwordHash.hpp">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\constTime.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="mcp\mcpAuth.h">
+      <Filter>mcp</Filter>
+    </ClInclude>
     <ClInclude Include="utils\dataVersion.hpp">
       <Filter>utils</Filter>
     </ClInclude>
