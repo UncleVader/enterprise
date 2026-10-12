@@ -266,7 +266,9 @@ public:
 	// accepts.
 	// useManifest=true switches to wenterprise-server's bind-handshake
 	// protocol: --port=0 --manifest=<tempfile>, poll manifest for the
-	// real URL and open the default browser. Returns pid.
+	// real URL and open the default browser. Returns pid only once the
+	// server is accepting connections. A missing manifest is 0, and
+	// LastWebLaunchFailure() says why.
 	long RunApplication(const wxString& strAppName,
 		bool searchDebug = true,
 		bool useManifest = false) const;
@@ -276,12 +278,18 @@ public:
 		bool searchDebug = true,
 		bool useManifest = false) const;
 
-	// Append `--port=0 --manifest=<tempfile>` to cmd, spawn detached,
-	// poll the manifest for up to 5s and open the default browser at the
-	// reported URL. Returns pid on spawn-ok, 0 on failure. Exposed for
-	// callers that build the cmd from external connection data (e.g.
-	// launcher picks from a saved IB list, not the appData singleton).
+	// Append `--port=0 --manifest=<tempfile>` to cmd, spawn, and wait until
+	// the manifest carries a url or the process has had time to fail the
+	// 20-second sign-in. Opens the default browser at the reported URL.
+	// Returns the pid only when the server is accepting connections;
+	// otherwise 0, and LastWebLaunchFailure() is the sentence for the caller.
+	// Exposed for callers that build the cmd from external connection data
+	// (e.g. launcher picks from a saved IB list, not the appData singleton).
 	static long SpawnWebServerWithManifest(wxString cmd, bool searchDebug = false);
+
+	// Empty after a web launch that accepted a connection. After a failed
+	// one: exit status, the child's stderr, and the 20-second sign-in wait.
+	static wxString LastWebLaunchFailure();
 #pragma endregion
 
 	ibRunMode GetAppMode() const { return m_runMode; }

@@ -21,6 +21,7 @@
   <ItemGroup>
     <ClInclude Include="standardCommand.h" />
     <ClInclude Include="appData.h" />
+    <ClInclude Include="webLaunchReport.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h" />
@@ -444,6 +445,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="appData.cpp" />
+    <ClCompile Include="webLaunchReport.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp" />
     <ClCompile Include="appDataQuery.cpp" />
