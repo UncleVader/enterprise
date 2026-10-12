@@ -14,6 +14,7 @@
 #endif
 
 #include "backend/backend_exception.h"
+#include "backend/webDispatchGate.h"
 
 #include "backend/metadataConfiguration.h"
 #include "backend/moduleManager/moduleManager.h"
@@ -260,6 +261,8 @@ ibVisualHostClient* ibWebApplication::GetActiveHost() const
 
 bool ibWebApplication::Dispatch(int controlId, const wxString& kind, const wxString& value)
 {
+	m_dispatchRefused = false;
+
 	// A QUESTION IS OPEN — the client may only answer it. The asking script runs this session's tasks while it
 	// waits (ibWorkerPool::Await), so an event let through here would run a handler UNDER the one that asked, on
 	// a form it may be about to close: the server's half of what wx does to the windows behind a modal dialog.
@@ -286,6 +289,35 @@ bool ibWebApplication::Dispatch(int controlId, const wxString& kind, const wxStr
 	if (obj == nullptr)
 		return false;
 	ibWebWindow* web = static_cast<ibWebWindow*>(obj);
+
+	// Disabled or hidden, including a parent window: the browser can still
+	// name the id. A view-only form, a text field with edit mode off, or a
+	// read-only checkbox does not take a new value. Commands (click, open,
+	// select) stay.
+	bool reachable = true;
+	for (const ibWebWindow* window = web; window != nullptr; window = window->GetParent()) {
+		if (!window->IsEnabled() || !window->IsShown()) {
+			reachable = false;
+			break;
+		}
+	}
+	bool valueLocked = ctrl->IsReadOnly();
+	if (const auto* text = dynamic_cast<const ibWebTextCtrl*>(web)) {
+		if (!text->GetTextEditMode())
+			valueLocked = true;
+	}
+	if (const auto* box = dynamic_cast<const ibWebCheckBox*>(web)) {
+		if (box->IsReadOnly())
+			valueLocked = true;
+	}
+	const wxScopedCharBuffer kindBytes = kind.utf8_str();
+	const std::string kindUtf8 = kindBytes.data() != nullptr
+		? std::string(kindBytes.data(), kindBytes.length())
+		: std::string();
+	if (!ibWebDispatchAllowed(reachable, valueLocked, kindUtf8)) {
+		m_dispatchRefused = true;
+		return false;
+	}
 
 	if (!web->HandleRequest(kind, value))
 		return false;

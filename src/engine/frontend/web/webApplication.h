@@ -108,6 +108,16 @@ public:
 	// thread, rebuilds the visual tree. See docs/private/web/event-dispatcher.md.
 	bool Dispatch(int controlId, const wxString& kind, const wxString& value);
 
+	// True once, after Dispatch returned false because the control was
+	// disabled, hidden, or not accepting a value. Cleared by the read.
+	// Other false returns (no form, no such control) leave this false.
+	bool TakeDispatchRefused()
+	{
+		const bool refused = m_dispatchRefused;
+		m_dispatchRefused = false;
+		return refused;
+	}
+
 	// Legacy kind-specific entry points. Thin shims over Dispatch —
 	// kept so existing HTTP routes (/action, /change, /toggle) stay
 	// wired without the wfrontend shims knowing the new unified
@@ -153,6 +163,7 @@ private:
 	// m_moduleManager field removed — moduleManager is shared process-
 	// wide and lives on metadata; GetManagerModule() pulls from there.
 	bool                                          m_initialized   = false;
+	bool                                          m_dispatchRefused = false;
 
 	// Live-update state. See MarkDirty/WaitForChange docs above.
 	std::atomic<uint64_t>                         m_seq { 1 };

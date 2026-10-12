@@ -70,6 +70,7 @@
     <ClInclude Include="webSessionTrace.h" />
     <ClInclude Include="webIssuedBearer.h" />
     <ClInclude Include="webCatalogRoute.h" />
+    <ClInclude Include="webDispatchGate.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h">
@@ -1170,6 +1171,7 @@
     <ClCompile Include="webSessionTrace.cpp" />
     <ClCompile Include="webIssuedBearer.cpp" />
     <ClCompile Include="webCatalogRoute.cpp" />
+    <ClCompile Include="webDispatchGate.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp">
       <Filter>cipher</Filter>

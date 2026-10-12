@@ -26,6 +26,7 @@
 
 #include <cpp-httplib/httplib.h>
 #include "wfrontend.h"
+#include "backend/webDispatchGate.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
 #include "backend/session/webStreamGate.h"
@@ -652,8 +653,13 @@ int main(int argc, char** argv)
 		std::string id;
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
-		res.set_content(wfrontendFireAction(id, controlID),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireAction(id, controlID);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /fire/<controlID>/<kind> — generic kind-aware dispatch.
@@ -667,8 +673,13 @@ int main(int argc, char** argv)
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string kind = req.matches[2].str();
-		res.set_content(wfrontendFireKind(id, controlID, kind),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireKind(id, controlID, kind);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /change/<controlID> value=<utf8 text>  — commit a textctrl
@@ -680,8 +691,13 @@ int main(int argc, char** argv)
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string value = req.get_param_value("value");
-		res.set_content(wfrontendFireTextChange(id, controlID, value),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireTextChange(id, controlID, value);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /toggle/<controlID> checked=0|1  — toggle a checkbox. Fires
@@ -694,8 +710,13 @@ int main(int argc, char** argv)
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string checkedStr = req.get_param_value("checked");
 		const bool checked = (checkedStr == "1" || checkedStr == "true");
-		res.set_content(wfrontendFireToggle(id, controlID, checked),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireToggle(id, controlID, checked);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /modal-reply/<modalID> result=<int> — resolve a backend-side
