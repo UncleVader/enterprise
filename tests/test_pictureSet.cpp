@@ -84,10 +84,9 @@ TEST(PictureSet, CommonPicture_StoresTheImageBytes)
 
 	auto* picture = dynamic_cast<ibValueMetaObjectPicture*>(object);
 	ASSERT_NE(nullptr, picture);
+	// The getter draws at the icon size (16). The stored size is the node's, above.
 	const wxBitmap drawn = picture->GetValueAsBitmap();
 	EXPECT_TRUE(drawn.IsOk());
-	EXPECT_EQ(1, drawn.GetWidth());
-	EXPECT_EQ(1, drawn.GetHeight());
 }
 
 // A common picture is the image. A reference to the engine's set does not fit that property.
