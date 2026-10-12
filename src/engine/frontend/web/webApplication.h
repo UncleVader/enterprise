@@ -89,6 +89,10 @@ public:
 	void     MarkDirty();
 	uint64_t CurrentSeq() const { return m_seq.load(); }
 	uint64_t WaitForChange(uint64_t lastSeen, int timeoutMs);
+	// Unblock every WaitForChange. Session teardown calls this before
+	// it waits for handler pins, so an SSE subscriber does not hold its
+	// pin until the poll timeout.
+	void     RequestStopWait();
 
 	// Session dispatcher — single generic entry. HTTP handlers hand off
 	// here: given a controlId + kind ("click" | "text" | "toggle" | …)
@@ -150,6 +154,7 @@ private:
 	std::atomic<uint64_t>                         m_seq { 1 };
 	std::mutex                                    m_seqMtx;
 	std::condition_variable                       m_seqCv;
+	std::atomic<bool>                             m_waitStopped { false };
 };
 
 // Reach the current session's ibWebApplication from arbitrary web

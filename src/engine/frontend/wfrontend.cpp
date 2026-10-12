@@ -191,9 +191,10 @@ public:
 		// touch backend state) does not serialise every other request.
 		// Any concurrent handler thread that looked up this session
 		// before the erase still holds its own shared_ptr; `dying` here
-		// may be NOT the last reference — the real destruction happens
-		// once every borrower drops. That's safe because OnExit is
-		// idempotent-on-already-exited and the dtor handles the rest.
+		// may be NOT the last reference. OnExit waits until every
+		// ibWebAppPin taken from this session has released, and only
+		// then destroys the application. The session object itself
+		// lives until the last shared_ptr drops.
 		if (dying) dying->OnExit();
 	}
 
@@ -211,7 +212,8 @@ public:
 		std::lock_guard<std::mutex> lock(m_mutex);
 		auto it = m_sessions.find(id);
 		if (it == m_sessions.end()) return 0;
-		ibWebApplication* app = it->second->App();
+		ibWebAppPin pin = it->second->PinApp();
+		ibWebApplication* app = pin.get();
 		if (app == nullptr) return 0;
 		ibWebFrame* frame = app->GetFrame();
 		return frame != nullptr ? frame->TabCount() : 0;
@@ -225,13 +227,15 @@ public:
 		// shared_ptr keeper — see SessionManager::Login comment for why
 		// raw pointer outside the lock is unsafe.
 		std::shared_ptr<ibWebSession> keeper;
+		ibWebAppPin pin;
 		ibWebDocChildFrame* tab = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			auto it = m_sessions.find(id);
 			if (it == m_sessions.end()) return std::string();
 			keeper = it->second;
-			ibWebApplication* app = keeper->App();
+			pin = keeper->PinApp();
+			ibWebApplication* app = pin.get();
 			if (app == nullptr) return std::string();
 			ibWebFrame* frame = app->GetFrame();
 			if (frame == nullptr) return std::string();
@@ -240,6 +244,8 @@ public:
 				return std::string();
 			tab = frame->Tab(static_cast<std::size_t>(tabIndex));
 		}
+		// `pin` stays alive through the icon encode: the tab pointer
+		// belongs to the frame, and the frame belongs to the application.
 		if (tab == nullptr) return std::string();
 		const wxIcon& icon = tab->GetIcon();
 		if (!icon.IsOk()) return std::string();
@@ -267,12 +273,11 @@ public:
 	bool        ModalReply(const std::string& id, const std::string& modalId, int result);
 	std::string ActiveHostJSON(const std::string& id);
 
-	// Borrow the session's ibWebApplication for the duration of a
-	// blocking operation (SSE wait). Returns null if id is unknown or
-	// the session isn't authenticated. The pointer stays valid only
-	// while the session is in the map — idle-sweep may erase in the
-	// meantime; the caller's `wait_for` timeout is the safety net.
-	ibWebApplication* FindApp(const std::string& id);
+	// Pin the session's ibWebApplication for the caller. Empty if id is
+	// unknown, the session isn't authenticated, or teardown has started.
+	// The pin keeps the application alive until the caller drops it;
+	// OnExit waits for that before destroying the application.
+	ibWebAppPin FindApp(const std::string& id);
 
 	std::string SessionInfo(const std::string& id);
 	std::string ActivateTab(const std::string& id, int tabIndex);
@@ -1214,9 +1219,10 @@ std::string OpenFormInFrame(ibWebApplication* app, int metaID)
 // Open-form implementation, reached via the session manager's slot.
 std::string OpenFormInSession(ibWebSession* session, int metaID)
 {
-	if (session == nullptr || !session->IsAuthenticated() || activeMetaData == nullptr)
+	if (session == nullptr || activeMetaData == nullptr)
 		return "{}";
-	ibWebApplication* app = session->App();
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	// On the session's own worker, as every other request of this session — opening a form runs its script.
@@ -1333,8 +1339,9 @@ std::string FireActionInSession(ibWebSession* session, int controlID)
 	// The worker is the sole script-runner — HTTP threads never touch
 	// ibProcUnit directly, so concurrent requests on the same session
 	// serialise naturally through the worker queue.
-	if (session == nullptr || !session->IsAuthenticated()) return "{}";
-	ibWebApplication* app = session->App();
+	if (session == nullptr) return "{}";
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	return app->RunOnWorker([app, controlID]() -> std::string {
@@ -1379,8 +1386,9 @@ namespace {
 std::string FireKindInSession(ibWebSession* session, int controlID,
 	const std::string& kind)
 {
-	if (session == nullptr || !session->IsAuthenticated()) return "{}";
-	ibWebApplication* app = session->App();
+	if (session == nullptr) return "{}";
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	return app->RunOnWorker([app, controlID, kind]() -> std::string {
@@ -1427,8 +1435,9 @@ namespace {
 std::string FireTextChangeInSession(ibWebSession* session, int controlID,
 	const std::string& newValue)
 {
-	if (session == nullptr || !session->IsAuthenticated()) return "{}";
-	ibWebApplication* app = session->App();
+	if (session == nullptr) return "{}";
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	return app->RunOnWorker([app, controlID, newValue]() -> std::string {
@@ -1474,8 +1483,9 @@ WFRONTEND_API std::string wfrontendFireTextChange(const std::string& sessionId,
 namespace {
 std::string FireToggleInSession(ibWebSession* session, int controlID, bool checked)
 {
-	if (session == nullptr || !session->IsAuthenticated()) return "{}";
-	ibWebApplication* app = session->App();
+	if (session == nullptr) return "{}";
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	return app->RunOnWorker([app, controlID, checked]() -> std::string {
@@ -1540,7 +1550,8 @@ WFRONTEND_API std::string wfrontendAllFunctionsJSON(const std::string& sessionId
 	// ⚠ ASKED ON THE SESSION'S WORKER. The check used to run on the HTTP thread, where no session of
 	// the caller is bound — so the roles it folded were not the requesting user's. The right belongs
 	// to whoever asked, and only the session's own worker answers in that user's name.
-	ibWebApplication* app = Sessions().FindApp(sessionId);
+	ibWebAppPin pin = Sessions().FindApp(sessionId);
+	ibWebApplication* app = pin.get();
 	const bool allowed = app != nullptr
 		&& app->RunOnWorker([]() -> bool { return activeMetaData->AccessRight_ModeAllFunction(); }).get();
 	if (!allowed) {
@@ -1711,7 +1722,8 @@ WFRONTEND_API bool wfrontendSessionMayAdminister(const std::string& sessionId)
 	Sessions().Touch(sessionId);
 	if (!g_initialized.load() || activeMetaData == nullptr)
 		return false;
-	ibWebApplication* app = Sessions().FindApp(sessionId);
+	ibWebAppPin pin = Sessions().FindApp(sessionId);
+	ibWebApplication* app = pin.get();
 	if (app == nullptr)
 		return false;
 	return app->RunOnWorker([]() -> bool { return activeMetaData->AccessRight_DataAdministration(); }).get();
@@ -1728,7 +1740,8 @@ WFRONTEND_API std::string wfrontendOpenMetaObject(const std::string& sessionId,
 	// without the ModeAllFunction role. Keep the broader check loose
 	// (skip when ModeAllFunction denies — interface listing already
 	// pre-filtered, and the meta-object's own form rights gate further).
-	ibWebApplication* app = Sessions().FindApp(sessionId);
+	ibWebAppPin pin = Sessions().FindApp(sessionId);
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 	return app->RunOnWorker([app, metaID, cmdType]() -> std::string {
 		// A question is open (see ibWebApplication::Dispatch): nothing opens under it.
@@ -1752,13 +1765,13 @@ WFRONTEND_API std::string wfrontendOpenMetaObject(const std::string& sessionId,
 	}).get();
 }
 
-ibWebApplication* SessionManager::FindApp(const std::string& id)
+ibWebAppPin SessionManager::FindApp(const std::string& id)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	auto it = m_sessions.find(id);
-	if (it == m_sessions.end() || it->second == nullptr) return nullptr;
-	if (!it->second->IsAuthenticated()) return nullptr;
-	return it->second->App();
+	if (it == m_sessions.end() || it->second == nullptr)
+		return {};
+	return it->second->PinApp();
 }
 
 bool SessionManager::ModalReply(const std::string& id,
@@ -1775,8 +1788,9 @@ bool SessionManager::ModalReply(const std::string& id,
 		if (it == m_sessions.end()) return false;
 		keeper = it->second;
 	}
-	if (keeper == nullptr || !keeper->IsAuthenticated()) return false;
-	ibWebApplication* app = keeper->App();
+	if (keeper == nullptr) return false;
+	ibWebAppPin pin = keeper->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return false;
 	ibWebFrame* frame = app->GetFrame();
 	if (frame == nullptr) return false;
@@ -1800,8 +1814,9 @@ std::string SessionManager::ActiveHostJSON(const std::string& id)
 		keeper = it->second;
 		s = keeper.get();
 	}
-	if (s == nullptr || !s->IsAuthenticated()) return "{}";
-	ibWebApplication* app = s->App();
+	if (s == nullptr) return "{}";
+	ibWebAppPin pin = s->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 	return app->RunOnWorker([app]() -> std::string {
 		ibVisualHostClient* host = app->GetActiveHost();
@@ -1823,17 +1838,14 @@ WFRONTEND_API std::string wfrontendActiveHostJSON(const std::string& sessionId)
 WFRONTEND_API WfrontendLiveUpdate wfrontendLiveWait(
 	const std::string& sessionId, std::uint64_t lastSeen, int timeoutMs)
 {
-	// Pin the session in scope so it can't be swept out from under the
-	// waiter. `Sessions().m_mutex` only guards the map — the session
-	// object itself is owned by the unique_ptr in the map, which the
-	// idle-sweep may erase. Take the mutex briefly, grab the raw ptr,
-	// drop the mutex, wait on the app's CV. If the session dies mid-wait
-	// the CV won't fire from our side — rely on the timeout to release.
-	// Future hardening: shared_ptr<ibWebSession> so the waiter pins
-	// lifetime. For today's synchronous flow the timeout is acceptable.
+	// Pin the application for the wait. Idle-sweep calls OnExit, which
+	// unblocks WaitForChange and then waits until this pin drops before
+	// destroying the application. The timeout is no longer what keeps
+	// the pointer alive.
 	Sessions().Touch(sessionId);
 
-	ibWebApplication* app = Sessions().FindApp(sessionId);
+	ibWebAppPin pin = Sessions().FindApp(sessionId);
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) {
 		WfrontendLiveUpdate r;
 		r.seq  = lastSeen;
@@ -1851,16 +1863,13 @@ WFRONTEND_API WfrontendLiveUpdate wfrontendLiveWait(
 
 namespace {
 
-std::string SessionInfoFromSession(ibWebSession* s)
+std::string SessionInfoFromSession(ibWebSession* s, ibWebApplication* app)
 {
 	nlohmann::json j;
-	j["authenticated"] = s != nullptr && s->IsAuthenticated();
+	j["authenticated"] = app != nullptr;
 	j["tabs"] = nlohmann::json::array();
 	j["metaGeneration"] = g_metaGeneration.load(std::memory_order_relaxed);
-	if (s == nullptr || !s->IsAuthenticated()) return j.dump(2);
-
-	ibWebApplication* app = s->App();
-	if (app == nullptr) return j.dump(2);
+	if (s == nullptr || app == nullptr) return j.dump(2);
 	ibWebFrame* frame = app->GetFrame();
 	if (frame == nullptr) return j.dump(2);
 
@@ -1948,7 +1957,7 @@ std::string SessionInfoFromSession(ibWebSession* s)
 
 std::string SessionManager::SessionInfo(const std::string& id)
 {
-	ibWebSession* s = nullptr;
+	std::shared_ptr<ibWebSession> keeper;
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		auto it = m_sessions.find(id);
@@ -1959,7 +1968,7 @@ std::string SessionManager::SessionInfo(const std::string& id)
 			j["metaGeneration"] = g_metaGeneration.load(std::memory_order_relaxed);
 			return j.dump();
 		}());
-		s = it->second.get();
+		keeper = it->second;
 	}
 	// Route through the session worker: SessionInfoFromSession iterates
 	// tabs and calls ibValueForm::GetControlTitle → ibPropertyTString
@@ -1967,11 +1976,14 @@ std::string SessionManager::SessionInfo(const std::string& id)
 	// (locale cache, wxString internals). Worker may be mutating the same
 	// state concurrently — user saw a crash in CreateLocalizationArray
 	// from the /session HTTP thread (dump 2026-04-19 17:12). Same pattern
-	// as ActiveHostJSON.
-	ibWebApplication* app = s != nullptr ? s->App() : nullptr;
-	if (app == nullptr) return SessionInfoFromSession(s);
-	return app->RunOnWorker([s]() -> std::string {
-		try { return SessionInfoFromSession(s); }
+	// as ActiveHostJSON. The pin is held across that wait so OnExit cannot
+	// destroy the application underneath the worker.
+	ibWebAppPin pin = keeper->PinApp();
+	ibWebApplication* app = pin.get();
+	if (app == nullptr) return SessionInfoFromSession(nullptr, nullptr);
+	ibWebSession* s = keeper.get();
+	return app->RunOnWorker([s, app]() -> std::string {
+		try { return SessionInfoFromSession(s, app); }
 		catch (...) { return std::string(([]{
 			nlohmann::json j;
 			j["authenticated"] = false;
@@ -1995,9 +2007,10 @@ namespace {
 // the response body. "{}" on any precondition miss.
 std::string ActivateTabInSession(ibWebSession* session, int tabIndex)
 {
-	if (session == nullptr || !session->IsAuthenticated())
+	if (session == nullptr)
 		return "{}";
-	ibWebApplication* app = session->App();
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	// Route through the session worker — tab switching rebuilds the
@@ -2027,9 +2040,10 @@ std::string ActivateTabInSession(ibWebSession* session, int tabIndex)
 
 std::string CloseTabInSession(ibWebSession* session, int tabIndex)
 {
-	if (session == nullptr || !session->IsAuthenticated())
+	if (session == nullptr)
 		return "{}";
-	ibWebApplication* app = session->App();
+	ibWebAppPin pin = session->PinApp();
+	ibWebApplication* app = pin.get();
 	if (app == nullptr) return "{}";
 
 	// Worker-serialised: tab destruction tears down the control tree

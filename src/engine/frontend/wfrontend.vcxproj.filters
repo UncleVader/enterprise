@@ -117,6 +117,7 @@
     <ClInclude Include="wfrontend.h" />
     <ClInclude Include="frontendTypes.h" />
     <ClInclude Include="web\webSession.h">      <Filter>web</Filter></ClInclude>
+    <ClInclude Include="web\webAppBorrow.h">   <Filter>web</Filter></ClInclude>
     <ClInclude Include="web\webApplication.h">  <Filter>web</Filter></ClInclude>
     <ClInclude Include="web\webFrame.h">        <Filter>web</Filter></ClInclude>
     <ClInclude Include="web\webWindow.h">       <Filter>web</Filter></ClInclude>

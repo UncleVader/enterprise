@@ -68,7 +68,16 @@ ibWebSession::ibWebSession(wxString id, wxString user)
 	: m_id(std::move(id))
 	, m_user(std::move(user))
 	, m_lastActiveMs(NowMs())
+	, m_borrow(std::make_shared<ibWebAppBorrow>())
 {
+}
+
+ibWebAppPin ibWebSession::PinApp() const
+{
+	std::lock_guard<std::recursive_mutex> lifeLock(m_lifecycleMutex);
+	if (m_closing || !m_app)
+		return {};
+	return ibWebAppPin(m_app, m_borrow);
 }
 
 ibWebSession::~ibWebSession()
@@ -102,6 +111,10 @@ bool ibWebSession::Login(const wxString& user, const wxString& password)
 	// two raced over m_session / m_app and worker bring-up vs teardown.
 	std::lock_guard<std::recursive_mutex> lifeLock(m_lifecycleMutex);
 
+	// Teardown already started. A login that publishes a new application
+	// now would race the waiter in OnExit.
+	if (m_closing)
+		return false;
 	if (!m_initialized || appData == nullptr)
 		return false;
 	if (m_app)
@@ -205,10 +218,26 @@ void ibWebSession::OnExit()
 	// racing Login that wins the lock first sees a consistent state on
 	// its check, and Destroy's OnExit tears down a fully-initialized
 	// session rather than half-set-up state.
-	std::lock_guard<std::recursive_mutex> lifeLock(m_lifecycleMutex);
+	//
+	// The lock is dropped across the borrow wait. Handlers pin the
+	// application with PinApp(), which needs this same lock, and OnExit
+	// must not destroy the application until those pins release. Holding
+	// the lock for the wait would deadlock a handler that still has to
+	// take it. m_closing, set before the unlock, makes a late PinApp or
+	// Login return without taking a new borrow.
+	std::unique_lock<std::recursive_mutex> lifeLock(m_lifecycleMutex);
 
-	if (!m_initialized)
+	if (!m_initialized || m_closing)
 		return;
+	m_closing = true;
+
+	// Local copies only for the wait. Dropped before the locked teardown
+	// below, so m_app.reset() is what destroys the application — the same
+	// moment it did when m_app was a unique_ptr.
+	{
+		std::shared_ptr<ibSession> sessionPin = m_session.Share();
+		std::shared_ptr<ibWebApplication> app = m_app;
+		lifeLock.unlock();
 
 	// If the script worker is parked at a breakpoint, unpark it before
 	// touching the runtime — DetachRuntime below resets the
@@ -226,10 +255,22 @@ void ibWebSession::OnExit()
 	// And a script waiting for its client — a question (ibWorkerPool::Await) — is cancelled: it runs this
 	// session's tasks while it waits, so the drain below would run INSIDE its wait and the runtime and the tabs
 	// would go down under it. Cancelled, it unwinds first and the drain waits behind it.
-	if (auto s = m_session.Share()) {
-		s->WakeDebugLoop();
-		s->Cancel();
+	//
+	// Both happen BEFORE the borrow wait, so a handler blocked in the
+	// worker (or in WaitForChange) can finish and drop its pin.
+		if (sessionPin) {
+			sessionPin->WakeDebugLoop();
+			sessionPin->Cancel();
+		}
+		if (app)
+			app->RequestStopWait();
+		if (m_borrow)
+			m_borrow->WaitIdle();
 	}
+
+	lifeLock.lock();
+	if (!m_initialized)
+		return;
 
 	// Drain the worker before tearing down the runtime. Submit a no-op
 	// and wait — the per-session worker queue is FIFO, so by the time

@@ -28,8 +28,63 @@
 
 #include "backend/session/sessionHolder.h"
 
+#include "webAppBorrow.h"
+
 class ibWebApplication;
 class ibSession;
+
+// Keeps one ibWebApplication alive for the caller. Released in the
+// destructor, which is what lets ibWebSession::OnExit finish tearing
+// the application down. Move-only: the borrow count is acquired once,
+// in the constructing PinApp(), and released once.
+class ibWebAppPin {
+public:
+	ibWebAppPin() = default;
+	ibWebAppPin(ibWebAppPin&& other) noexcept
+		: m_app(std::move(other.m_app))
+		, m_borrow(std::move(other.m_borrow))
+	{
+	}
+	ibWebAppPin& operator=(ibWebAppPin&& other) noexcept
+	{
+		if (this != &other) {
+			Release();
+			m_app    = std::move(other.m_app);
+			m_borrow = std::move(other.m_borrow);
+		}
+		return *this;
+	}
+	ibWebAppPin(const ibWebAppPin&)            = delete;
+	ibWebAppPin& operator=(const ibWebAppPin&) = delete;
+	~ibWebAppPin() { Release(); }
+
+	ibWebApplication* get() const { return m_app.get(); }
+	explicit operator bool() const { return m_app != nullptr; }
+
+private:
+	friend class ibWebSession;
+
+	ibWebAppPin(std::shared_ptr<ibWebApplication> app,
+		std::shared_ptr<ibWebAppBorrow> borrow)
+		: m_app(std::move(app))
+		, m_borrow(std::move(borrow))
+	{
+		if (m_app && m_borrow)
+			m_borrow->Acquire();
+	}
+
+	void Release()
+	{
+		if (m_borrow) {
+			m_borrow->Release();
+			m_borrow.reset();
+		}
+		m_app.reset();
+	}
+
+	std::shared_ptr<ibWebApplication> m_app;
+	std::shared_ptr<ibWebAppBorrow>   m_borrow;
+};
 
 class ibWebSession {
 public:
@@ -54,7 +109,14 @@ public:
 	const wxString& Id()         const { return m_id; }
 	const wxString& User()       const { return m_user; }
 	const wxString& ConfigName() const { return m_configName; }
+	// Raw pointer. Valid only while the caller holds the ibWebAppPin from
+	// PinApp() (or while OnExit has not yet passed its borrow wait).
+	// Handing this out from under the session-map lock and using it after
+	// the lock is gone is a use-after-free: OnExit destroys the application.
 	ibWebApplication*  App()        const { return m_app.get(); }
+	// Copy of the application plus a borrow that OnExit waits on. Empty
+	// when the session is not logged in, or when teardown has started.
+	ibWebAppPin PinApp() const;
 	// Raw ibSession pointer from the ticket — for HTTP handlers that need
 	// to pin ibSessionScope on their worker thread so ibSession::Current()
 	// resolves for moduleManager->GetProcUnit() etc. Nullptr before Login.
@@ -88,8 +150,16 @@ private:
 
 	// Per-session "app" — owns the module manager, future frame, etc.
 	// Created lazily in OnInit so a failed authentication does not
-	// leave a half-initialised app behind.
-	std::unique_ptr<ibWebApplication> m_app;
+	// leave a half-initialised app behind. Shared so a handler can
+	// hold the object (via ibWebAppPin) across OnExit's wait; OnExit
+	// still destroys it, but only after every pin has released.
+	std::shared_ptr<ibWebApplication> m_app;
+	std::shared_ptr<ibWebAppBorrow>   m_borrow;
+
+	// Set at the start of OnExit. PinApp() and Login() refuse once this
+	// is set, so teardown does not gain new borrowers while it waits
+	// for the ones already in flight.
+	bool m_closing = false;
 
 	// Watch, not ownership. The web main window (ibWebFrame) owns this
 	// tab's session, exactly as the desktop main window owns its own —
