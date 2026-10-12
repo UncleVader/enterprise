@@ -27,6 +27,7 @@
 #include "wfrontend.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/webSessionId.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -218,40 +219,19 @@ std::string Field(const httplib::Request& req, const std::string& key)
 	return it != req.params.end() ? it->second : std::string();
 }
 
-// Extract the session id preferred by the client. Web tabs generate
-// their own random id in sessionStorage and forward it via the
-// `X-OES-Session` header, so every browser tab — even multiple in
-// the same browser — gets a distinct server session. Cookie lookup
-// is the legacy fallback for non-tab-aware clients.
+// The session id this request may name. Web tabs keep their id in
+// sessionStorage and send it as X-OES-Session. A state-changing method
+// accepts that header only. GET still falls back to ?sid= and the
+// cookie, for an image and an EventSource.
 std::string SessionIdFromReq(const httplib::Request& req)
 {
+	// POST, PUT, PATCH and DELETE take the header only. A cookie or
+	// ?sid= is enough for GET: an image and an EventSource cannot set
+	// X-OES-Session.
 	const std::string header = req.get_header_value("X-OES-Session");
-	if (!header.empty())
-		return header;
-
-	// <img src>, <script src>, <link href> and anchor navigations can't
-	// attach custom headers — they carry only cookies. When a per-tab
-	// endpoint (e.g. /tab/N/icon) is reachable via plain GET the client
-	// appends ?sid=<tabSid>; fall back to that when the header is absent.
-	if (req.has_param("sid")) {
-		const std::string sid = req.get_param_value("sid");
-		if (!sid.empty())
-			return sid;
-	}
-
+	const std::string querySid = req.has_param("sid") ? req.get_param_value("sid") : std::string();
 	const std::string cookie = req.get_header_value("Cookie");
-	const auto pos = cookie.find("oes_session=");
-	if (pos == std::string::npos)
-		return std::string();
-	// oes_session is a dashed UUID (36 chars: 8-4-4-4-12). Slice up to
-	// the next '; ' delimiter instead of assuming a fixed length — gives
-	// us one parser whether the cookie is the first or the tail entry
-	// and survives a future id-format change.
-	const std::size_t start = pos + 12;
-	const std::size_t end   = cookie.find(';', start);
-	return (end == std::string::npos)
-		? cookie.substr(start)
-		: cookie.substr(start, end - start);
+	return ibWebSessionId(header, querySid, cookie, ibWebMethodChangesState(req.method));
 }
 
 // Extract session id, or emit 401 "no session" and return false. Every
