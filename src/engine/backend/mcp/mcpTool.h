@@ -586,6 +586,11 @@ BACKEND_API void ibMcpDescribePlatform(const ibApplicationInstance* applicationI
 BACKEND_API void ibMcpPictureIdAsText(class ibDataValue& shape);
 BACKEND_API void ibMcpPictureIdAsNumber(class ibDataValue& shape);
 
+// picture_set, once the object is in hand. The tool looks it up; a caller that already holds it
+// (a test, above all) applies the same sources. False leaves the reason in refusal.
+BACKEND_API bool ibMcpApplyPicture(class ibValueMetaObject* object, const ibDataNode& params,
+	ibDataNode& result, wxString& refusal);
+
 BACKEND_API wxString ibMcpFencedExcerpt(const wxString& text, const wxString& language,
 	size_t maxLines = 40);
 

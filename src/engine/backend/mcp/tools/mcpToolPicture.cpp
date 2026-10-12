@@ -341,17 +341,22 @@ bool ImageFromBytes(const std::string& bytes, wxImage& image)
 }
 
 // THE IMAGE A CONFIGURATION'S PICTURE OBJECT HOLDS, asked of its properties like the picture of any object is.
-const ibPropertyExternalPicture* HeldImage(const ibPropertyObject* object)
+ibPropertyExternalPicture* HeldImage(ibPropertyObject* object)
 {
 	if (object == nullptr)
 		return nullptr;
 
 	for (unsigned int idx = 0; idx < object->GetPropertyCount(); idx++) {
-		if (const ibPropertyExternalPicture* image = dynamic_cast<const ibPropertyExternalPicture*>(object->GetProperty(idx)))
+		if (ibPropertyExternalPicture* image = dynamic_cast<ibPropertyExternalPicture*>(object->GetProperty(idx)))
 			return image;
 	}
 
 	return nullptr;
+}
+
+const ibPropertyExternalPicture* HeldImage(const ibPropertyObject* object)
+{
+	return HeldImage(const_cast<ibPropertyObject*>(object));
 }
 
 } // namespace
@@ -468,9 +473,9 @@ public:
 			"declares, `data` with base64 image bytes and a `name` for it, or `svg` with a `name` - an image "
 			"DRAWN as SVG text, turned into a PNG here (64 x 64 unless `width` / `height` say otherwise) and "
 			"kept as an image of its own. When no engine picture fits, draw one: flat, a few colours, in the "
-			"manner of the engine's set. Objects that carry "
-			"a picture are the ones that show one - commands, command groups and sections; an object with no "
-			"picture of its own is refused rather than quietly ignored.\n"
+			"manner of the engine's set. Objects that show a picture are commands, command groups and sections. "
+			"A common picture holds the image itself, so it takes `data` or `svg` and not a reference to another. "
+			"An object with no picture of its own is refused rather than quietly ignored.\n"
 			"The same picture can also be given through `value` of metadata_set or form_set in its OWN shape, "
 			"as metadata_properties / form_control read it - that is the road for a control on a form, and "
 			"picture_from_svg draws one in that shape.");
@@ -493,12 +498,25 @@ public:
 		ibValueMetaObject* object = ibMcpObjectNamed(params, refusal);
 		if (object == nullptr)
 			return false;
+		return ibMcpApplyPicture(object, params, result, refusal);
+	}
+};
+
+bool ibMcpApplyPicture(ibValueMetaObject* object, const ibDataNode& params,
+	ibDataNode& result, wxString& refusal)
+{
+		if (object == nullptr) {
+			refusal = ibMcpText("No object was given. Nothing was set.");
+			return false;
+		}
 
 		ibPropertyPicture* property = PictureProperty(object);
+		// A common picture stores the image itself (ibPropertyExternalPicture), not a reference to one.
+		ibPropertyExternalPicture* held = property == nullptr ? HeldImage(object) : nullptr;
 
 		// ⚠ NO PICTURE OF ITS OWN IS A REFUSAL. Setting nothing and answering true is how a caller
 		// comes to believe an icon was assigned to something that cannot show one.
-		if (property == nullptr) {
+		if (property == nullptr && held == nullptr) {
 			refusal = wxString::Format(
 				ibMcpText("'%s' has no picture of its own - commands, command groups and sections do. Nothing was set."),
 				object->GetName());
@@ -526,7 +544,15 @@ public:
 			return false;
 		}
 
+		// A common picture IS the image. Pointing it at the engine's set, or at another picture, would
+		// store a reference in a property that only holds bytes.
+		if (held != nullptr && (!fromEngine.IsEmpty() || !fromConfig.IsEmpty())) {
+			refusal = ibMcpText("A common picture holds the image itself. Pass `data` or `svg`. Nothing was set.");
+			return false;
+		}
+
 		ibPictureDescription description;
+		ibExternalPictureDescription external;
 
 		if (!fromEngine.IsEmpty()) {
 
@@ -572,8 +598,6 @@ public:
 				return false;
 			}
 
-			ibExternalPictureDescription external;
-
 			if (!fromSvg.IsEmpty()) {
 				wxSize side;
 				if (!AskedSide(params, side, refusal) || !DrawSvg(fromSvg, side, name, external, refusal))
@@ -614,32 +638,43 @@ public:
 			description = ibPictureDescription(external);
 		}
 
-		property->SetValue(description);
-		activeMetaData->Modify(true);
+		if (held != nullptr)
+			held->SetValue(external);
+		else
+			property->SetValue(description);
+		if (activeMetaData != nullptr)
+			activeMetaData->Modify(true);
 
 		result.SetValue(wxT("object"), object->GetName());
 		result.AddField(wxT("set"), ibDataValue::Bool(true));
 
 		// WHAT IT ENDED UP BEING, read back off the property rather than repeated from the
 		// argument: the same read a form does, so a value that did not take says so here.
-		// ⭐ SAID BY THE DESCRIPTION ITSELF — ibPictureDescriptionMemory::WriteNode, the one that
-		// writes a picture to a file. The two facts spelled here by hand (which of the three
-		// sources, and whether it is empty) were a reading of the tag; the description says the tag
-		// AND what it points at, which is the half a caller needs to ask for the same picture again.
-		const ibPictureDescription& stored = property->GetValueAsPictureDesc();
-
+		// A common picture reads back as the image it holds ({Name, Buffer, Width, Height}); a
+		// command or a section reads back as a reference ({Type, ...}).
 		ibDataValue described;
-		if (!ibPictureDescriptionMemory::WriteNode(described, stored)) {
+		bool empty = false;
+		bool wrote = false;
+		if (held != nullptr) {
+			wrote = held->WriteNodeValue(described);
+			empty = held->IsEmptyProperty();
+		}
+		else {
+			const ibPictureDescription& stored = property->GetValueAsPictureDesc();
+			wrote = ibPictureDescriptionMemory::WriteNode(described, stored);
+			empty = stored.IsEmptyPicture();
+			if (wrote)
+				ibMcpPictureIdAsText(described);   // the id crosses this door as digits — see mcpTool.h
+		}
+		if (!wrote) {
 			refusal = ibMcpText("The picture was set, but could not be read back to confirm it.");
 			return false;
 		}
-		ibMcpPictureIdAsText(described);   // the id crosses this door as digits — see mcpTool.h
 		result.AddField(wxT("picture"), described);
-		result.AddField(wxT("empty"), ibDataValue::Bool(stored.IsEmptyPicture()));
+		result.AddField(wxT("empty"), ibDataValue::Bool(empty));
 
 		return true;
-	}
-};
+}
 
 MCP_TOOL_REGISTER(ibMcpToolPictureSet);
 
