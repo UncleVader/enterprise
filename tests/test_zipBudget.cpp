@@ -309,6 +309,20 @@ TEST(ZipBudget, CorruptStreamIsRefused)
 	EXPECT_TRUE(entries.empty());
 }
 
+TEST(ZipBudget, DamagedDeflateIsRefused)
+{
+	WxReady wx;
+	auto bytes = ZipOf({ { "config", std::string(4096, 'A') } });
+	ASSERT_GT(bytes.size(), 40u);
+	bytes[30] ^= 0xff;
+	auto input = Open(bytes);
+	std::vector<ibZipEntryBytes> entries;
+	ibZipBudgetFault fault = ibZipBudgetFault::None;
+	EXPECT_FALSE(ibReadDatabaseArchive(input, ibZipBudgetForDatabase(), entries, fault));
+	EXPECT_TRUE(entries.empty());
+	EXPECT_NE(fault, ibZipBudgetFault::None);
+}
+
 TEST(ZipBudget, OrdinaryWorkbookStillReads)
 {
 	WxReady wx;
@@ -441,7 +455,7 @@ TEST(ZipBudget, TooManyXmlMarksLeavesTheDocument)
 TEST(ZipBudget, XmlCountersStopPastTheBudget)
 {
 	WxReady wx;
-	EXPECT_EQ(ibCountXmlMarks(wxT("<a></a><b>"), 3), 4u);
+	EXPECT_EQ(ibCountXmlMarks(wxT("<a></a><b><c>"), 3), 4u);
 	EXPECT_EQ(ibCountXmlItems(wxT("<c r=\"A1\"/><col/><c>"), wxT("c"), 1), 2u);
 	EXPECT_EQ(ibCountXmlItems(wxT("<si/><size/><si>"), wxT("si"), 5), 2u);
 }

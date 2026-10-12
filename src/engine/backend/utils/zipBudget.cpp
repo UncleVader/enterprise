@@ -100,6 +100,18 @@ bool ibCollectZipEntries(
 		return false;
 	}
 
+	// A stream that does not open with the ZIP signature is not an empty
+	// archive. wx reports that shape as a successful read of nothing.
+	const wxFileOffset start = input.TellI();
+	unsigned char signature[2] = {};
+	input.Read(signature, 2);
+	const size_t signatureBytes = input.LastRead();
+	if (start == wxInvalidOffset || input.SeekI(start) == wxInvalidOffset
+		|| signatureBytes < 2 || signature[0] != 'P' || signature[1] != 'K') {
+		fault = ibZipBudgetFault::Corrupt;
+		return false;
+	}
+
 	wxZipInputStream zip(input, conv);
 	if (!zip.IsOk()) {
 		fault = ibZipBudgetFault::Corrupt;
