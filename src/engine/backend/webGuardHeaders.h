@@ -10,8 +10,10 @@
 // HTML attribute.
 BACKEND_API std::string ibWebNonce();
 
-// The document with nonce="..." on the first <style and the first
-// <script that do not already carry one. Other text is left as it is.
+// The document with nonce="..." on every inline <style and <script>
+// that does not already carry one. The caption block is a script of
+// its own, ahead of the client, and a single stamp leaves the client
+// script anonymous under script-src. Other text is left as it is.
 BACKEND_API std::string ibWebDocumentWithNonce(const std::string& html,
 	const std::string& nonce);
 
