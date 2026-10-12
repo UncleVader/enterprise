@@ -104,7 +104,10 @@ public:
 			"a change of structure: config_apply them first, because a launch must never write to a base "
 			"as a side effect (database_diff lists only the structure).\n\n"
 			"After changing a module: config_apply, then restart: true - a running application keeps the "
-			"bytecode it came up with, so the new code is invisible until it is started again.");
+			"bytecode it came up with, so the new code is invisible until it is started again.\n\n"
+			"The web server is a refusal when it never accepts a connection. That refusal names its "
+			"exit status, what it wrote to the standard error, and the sign-in wait of 20 seconds "
+			"after which the process exits if sign-in does not finish.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -224,7 +227,12 @@ public:
 		const long pid = appData->RunApplication(useWeb, withDebug, manifest);
 
 		if (pid == 0) {
-			refusal = wxString::Format(ibMcpText("%s could not be started."), application);
+			// A thick client that wxExecute could not start has nothing else to say.
+			// A web server that was started and then never accepted a connection does:
+			// its status, its stderr, and the 20-second sign-in wait.
+			refusal = manifest ? ibApplicationInstance::LastWebLaunchFailure() : wxString();
+			if (refusal.IsEmpty())
+				refusal = wxString::Format(ibMcpText("%s could not be started."), application);
 			return false;
 		}
 

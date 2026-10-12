@@ -223,8 +223,10 @@ static void LaunchWebDebug(wxWindow* parent, bool withDebug)
 	// listens on defaultDebuggerPort+offset).
 	if (appData->RunApplication(wxT("wenterprise-server"),
 			/*searchDebug=*/withDebug, /*useManifest=*/true) == 0) {
-		wxMessageBox(_("Failed to start wenterprise-server"),
-			wxTheApp->GetAppDisplayName(), wxOK | wxICON_ERROR, parent);
+		wxString why = ibApplicationInstance::LastWebLaunchFailure();
+		if (why.IsEmpty())
+			why = _("Failed to start wenterprise-server");
+		wxMessageBox(why, wxTheApp->GetAppDisplayName(), wxOK | wxICON_ERROR, parent);
 	}
 }
 

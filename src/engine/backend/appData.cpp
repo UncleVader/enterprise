@@ -5,15 +5,21 @@
 
 #include "backend/appData.h"
 #include "backend/appHost.h"
+#include "backend/webLaunchReport.h"
 
+#include <atomic>
 #include <thread>
 #include <algorithm>
+#include <mutex>
 #include <sstream>
+#include <string>
 #include <utility>   // std::exchange — the active configuration handed over
+#include <vector>
 
 #include <wx/ffile.h>      // infobase.conf — written for a new base
 #include <wx/fileconf.h>   // infobase.conf — a base's own settings
 #include <wx/filename.h>
+#include <wx/process.h>    // redirected stderr of a spawned web server
 #include <wx/stdpaths.h>
 
 #include "core/programFolder.h"
@@ -1141,83 +1147,278 @@ long ibApplicationInstance::RunApplication(const wxString& strAppName, const wxS
 	return execute;
 }
 
+namespace {
+
+// Sign-in is given 20 seconds (ibSession::Open). The old 5-second poll
+// returned while that wait was still running and called it a success,
+// so the manifest — written only once the server is accepting connections —
+// was never seen, and neither was the exit that followed. 25 seconds covers
+// the wait and a little past it. A server that comes up sooner returns then.
+constexpr int kWebLaunchWaitMs = 25000;
+constexpr int kWebLaunchStepMs = 100;
+
+std::mutex g_webLaunchMu;
+wxString g_webLaunchFailure;
+
+void SetWebLaunchFailure(const wxString& text)
+{
+	std::lock_guard<std::mutex> lock(g_webLaunchMu);
+	g_webLaunchFailure = text;
+}
+
+wxString CurrentWebLaunchFailure()
+{
+	std::lock_guard<std::mutex> lock(g_webLaunchMu);
+	return g_webLaunchFailure;
+}
+
+// Owns the redirected pipes. Destroying it while the server is alive closes
+// stderr; the next write then raises SIGPIPE and the server dies. A launch
+// that succeeded keeps the object and drains the pipes until the process ends.
+class ibWebChild : public wxProcess {
+public:
+	ibWebChild() : wxProcess(wxPROCESS_REDIRECT) {}
+
+	void OnTerminate(int, int status) override
+	{
+		m_status = status;
+		m_exited.store(true, std::memory_order_release);
+	}
+
+	bool Exited() const { return m_exited.load(std::memory_order_acquire); }
+	int Status() const { return m_status; }
+
+	void Drain()
+	{
+		Discard(GetInputStream(), false);
+		Discard(GetErrorStream(), true);
+	}
+
+	wxString ErrorText() const
+	{
+		if (m_errorBytes.empty())
+			return wxEmptyString;
+		wxString text = wxString::FromUTF8(m_errorBytes.data(), m_errorBytes.size());
+		if (text.IsEmpty())
+			text = wxString(m_errorBytes.data(), wxConvISO8859_1, m_errorBytes.size());
+		return text;
+	}
+
+private:
+	void Discard(wxInputStream* stream, bool error)
+	{
+		if (stream == nullptr)
+			return;
+		while (error ? IsErrorAvailable() : IsInputAvailable()) {
+			char buf[1024];
+			stream->Read(buf, sizeof(buf));
+			const size_t n = stream->LastRead();
+			if (n == 0)
+				break;
+			if (!error)
+				continue;
+			m_errorBytes.append(buf, n);
+			if (m_errorBytes.size() > 8000)
+				m_errorBytes.erase(0, m_errorBytes.size() - 4000);
+		}
+	}
+
+	std::atomic<bool> m_exited{ false };
+	int m_status = 0;
+	std::string m_errorBytes;
+};
+
+struct ibLiveWebChild {
+	ibWebChild* proc = nullptr;
+	std::atomic<bool> drainDone{ false };
+};
+
+std::mutex g_liveMu;
+std::vector<ibLiveWebChild*> g_live;
+
+void SweepLiveWebChildren()
+{
+	std::lock_guard<std::mutex> lock(g_liveMu);
+	for (auto it = g_live.begin(); it != g_live.end(); ) {
+		ibLiveWebChild* live = *it;
+		if (live->proc->Exited() && live->drainDone.load(std::memory_order_acquire)) {
+			delete live->proc;
+			delete live;
+			it = g_live.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+}
+
+void HoldLiveWebChild(ibWebChild* proc)
+{
+	proc->Detach();
+	auto* live = new ibLiveWebChild();
+	live->proc = proc;
+	{
+		std::lock_guard<std::mutex> lock(g_liveMu);
+		g_live.push_back(live);
+	}
+	std::thread([live] {
+		while (!live->proc->Exited()) {
+			live->proc->Drain();
+			wxMilliSleep(50);
+		}
+		live->proc->Drain();
+		live->drainDone.store(true, std::memory_order_release);
+	}).detach();
+}
+
+wxString ReadManifestUrl(const wxString& path)
+{
+	wxFile file;
+	if (!file.Open(path, wxFile::read))
+		return wxEmptyString;
+	wxCharBuffer buf(static_cast<size_t>(file.Length()));
+	if (file.Read(buf.data(), file.Length()) <= 0) {
+		file.Close();
+		return wxEmptyString;
+	}
+	const wxString content = wxString::FromUTF8(buf.data(), file.Length());
+	file.Close();
+	return ibWebManifestUrl(content);
+}
+
+// The process was still inside its own startup when the watch ended.
+// Stop it so a server that never accepted a connection is not left running.
+void StopWebChild(ibWebChild* child, long pid)
+{
+	if (child->Exited())
+		return;
+	if (pid != 0 && wxProcess::Exists(static_cast<int>(pid)))
+		wxProcess::Kill(static_cast<int>(pid), wxSIGTERM, wxKILL_CHILDREN);
+	for (int waited = 0; waited < 2000 && !child->Exited(); waited += 100) {
+		wxMilliSleep(100);
+		wxYieldIfNeeded();
+		child->Drain();
+	}
+	if (!child->Exited() && pid != 0 && wxProcess::Exists(static_cast<int>(pid)))
+		wxProcess::Kill(static_cast<int>(pid), wxSIGKILL, wxKILL_CHILDREN);
+	for (int waited = 0; waited < 1000 && !child->Exited(); waited += 50) {
+		wxMilliSleep(50);
+		wxYieldIfNeeded();
+		child->Drain();
+	}
+	child->Drain();
+}
+
+} // namespace
+
+wxString ibApplicationInstance::LastWebLaunchFailure()
+{
+	return CurrentWebLaunchFailure();
+}
+
 long ibApplicationInstance::SpawnWebServerWithManifest(wxString cmd, bool searchDebug)
 {
+	SweepLiveWebChildren();
+	SetWebLaunchFailure(wxEmptyString);
+
 	// --port=0 → OS picks an ephemeral port. --manifest=<file> → wes writes
 	// host/port/prefix/url there once it is actually accepting connections.
 	const wxString manifestPath = wxFileName::CreateTempFileName(
 		wxT("oes-wes-"));
 	cmd += wxString::Format(wxT(" --port=0 --manifest=\"%s\""), manifestPath);
 
-	// Spawn detached so the caller can exit without killing the server.
-	const long pid = wxExecute(cmd, wxEXEC_ASYNC);
+	ibWebChild* child = new ibWebChild();
+	const long pid = wxExecute(cmd, wxEXEC_ASYNC, child);
 	if (pid == 0) {
+		delete child;
 		wxRemoveFile(manifestPath);
+		ibWebLaunchFacts facts;
+		SetWebLaunchFailure(ibWebLaunchFailure(facts));
 		return 0;
 	}
 
-	// Poll manifest up to 5s in the calling thread. wxYieldIfNeeded
-	// lets the GUI dispatch paint / mouse events so the window stays
-	// responsive while wes's InitBackend (metadata + DB connect) runs
-	// for ~1s. Detaching the poll to a worker thread was tried but
-	// raced with the caller's Close(true) / wxApp teardown — browser
-	// sometimes got launched after wx state was already half-torn-
-	// down, ending up on a URL the running wes wasn't yet serving.
-	// Synchronous poll keeps the caller alive long enough for
-	// wxLaunchDefaultBrowser to fully ShellExecute before return.
+	// Nothing is written to the child's stdin. Leaving the pipe open can
+	// stall a reader; closing it is an immediate end of file.
+	child->CloseOutput();
+
+	// Poll on the calling thread. wxYieldIfNeeded lets the GUI dispatch
+	// paint / mouse events so the window stays responsive, and it is also
+	// what delivers the child's termination. A worker poll was tried and
+	// raced with the caller's Close(true) / wxApp teardown — the browser
+	// sometimes opened after wx state was already half-torn-down.
 	wxString url;
-	for (int waited = 0; waited < 5000; waited += 100) {
-		wxMilliSleep(100);
+	for (int waited = 0; waited < kWebLaunchWaitMs; waited += kWebLaunchStepMs) {
+		wxMilliSleep(kWebLaunchStepMs);
 		wxYieldIfNeeded();
-		wxFile f;
-		if (!f.Open(manifestPath, wxFile::read))
-			continue;
-		wxCharBuffer buf(static_cast<size_t>(f.Length()));
-		if (f.Read(buf.data(), f.Length()) <= 0) {
-			f.Close();
-			continue;
+		child->Drain();
+		if (child->Exited() || !wxProcess::Exists(static_cast<int>(pid))) {
+			wxYieldIfNeeded();
+			child->Drain();
+			break;
 		}
-		const wxString content = wxString::FromUTF8(buf.data(), f.Length());
-		f.Close();
-		const int pos = content.Find(wxT("url="));
-		if (pos == wxNOT_FOUND)
-			continue;
-		url = content.Mid(pos + 4);
-		url = url.BeforeFirst(wxT('\n'));
-		url.Trim().Trim(false);
+		url = ReadManifestUrl(manifestPath);
 		if (!url.IsEmpty())
 			break;
 	}
 	wxRemoveFile(manifestPath);
-	if (!url.IsEmpty())
+
+	const bool exited = child->Exited() || !wxProcess::Exists(static_cast<int>(pid));
+	if (!url.IsEmpty() && !exited) {
+		// Keep the pipes open and drained for the life of the server.
+		HoldLiveWebChild(child);
 		wxLaunchDefaultBrowser(url);
 
-	// Web debug attach: wes is up with --debug, its in-process
-	// ibDebuggerServer is listening on defaultDebuggerPort..+diapason
-	// in non-blocking (wait=false) mode. SearchServer scans + verifies
-	// each port, but verified+Scanner stays Scanner — designer never
-	// auto-promotes to Debugger on a non-waiting server. We retry
-	// SearchServer in rounds because a single sweep can race with wes's
-	// metadataCreate (debug server still coming up) — first sweep's
-	// scan threads exit on connect-refused, leaving counter=-1, which
-	// lets the next SearchServer call create fresh threads. Once verify
-	// succeeds (m_connectionSuccess), AttachAllVerified pushes
-	// CommandId_StartSession so wes flips to Debugger mode.
-	if (searchDebug && pid != 0) {
-		const int kRounds      = 20;   // 20 rounds * 250ms = ~5s
-		const int kRoundSleepMs = 250;
-		for (int round = 0; round < kRounds; ++round) {
-			if (debugClient == nullptr) break;
-			debugClient->SearchServer(true);
-			wxMilliSleep(kRoundSleepMs);
-			if (debugClient->GetConnectionSuccess())
-				break;
+		// Web debug attach: wes is up with --debug, its in-process
+		// ibDebuggerServer is listening on defaultDebuggerPort..+diapason
+		// in non-blocking (wait=false) mode. SearchServer scans + verifies
+		// each port, but verified+Scanner stays Scanner — designer never
+		// auto-promotes to Debugger on a non-waiting server. We retry
+		// SearchServer in rounds because a single sweep can race with wes's
+		// metadataCreate (debug server still coming up) — first sweep's
+		// scan threads exit on connect-refused, leaving counter=-1, which
+		// lets the next SearchServer call create fresh threads. Once verify
+		// succeeds (m_connectionSuccess), AttachAllVerified pushes
+		// CommandId_StartSession so wes flips to Debugger mode.
+		if (searchDebug) {
+			const int kRounds      = 20;   // 20 rounds * 250ms = ~5s
+			const int kRoundSleepMs = 250;
+			for (int round = 0; round < kRounds; ++round) {
+				if (debugClient == nullptr) break;
+				debugClient->SearchServer(true);
+				wxMilliSleep(kRoundSleepMs);
+				if (debugClient->GetConnectionSuccess())
+					break;
+			}
+			if (debugClient != nullptr && debugClient->GetConnectionSuccess())
+				debugClient->AttachAllVerified();
 		}
-		if (debugClient != nullptr && debugClient->GetConnectionSuccess())
-			debugClient->AttachAllVerified();
+
+		return pid;
 	}
 
-	return pid;
+	// Record the state from before the stop. A kill we issue is not the
+	// reason the server failed to come up.
+	ibWebLaunchFacts facts;
+	facts.spawned = true;
+	facts.manifestReady = false;
+	facts.running = !exited;
+	if (!exited)
+		StopWebChild(child, pid);
+	else {
+		// The exit is noticed by the event loop. One more turn so the
+		// status set in OnTerminate is the one we report.
+		wxYieldIfNeeded();
+		child->Drain();
+		facts.exitStatus = child->Status();
+	}
+	facts.errText = child->ErrorText();
+
+	SetWebLaunchFailure(ibWebLaunchFailure(facts));
+	if (child->Exited())
+		delete child;
+	else
+		HoldLiveWebChild(child);
+	return 0;
 }
 
 #pragma endregion
