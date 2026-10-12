@@ -17,7 +17,8 @@
 #include <wx/file.h>
 #include <wx/filename.h>
 #include <wx/wfstream.h>
-#include <wx/zipstrm.h>
+
+#include "backend/utils/zipBudget.h"
 
 #include <nlohmann/json.hpp>
 
@@ -450,6 +451,13 @@ private:
 	wxString m_dir;
 };
 
+// Every file in the archive is a bucket. The collector already skipped
+// directories and the "./" prefix tar adds.
+wxString HelpEntryKey(const wxString& name, void*)
+{
+	return name;
+}
+
 // Zip source — reads `<root>/<locale>.hlk` (DEFLATE zip). Loads all
 // entries into memory at ctor; corpus is small (<1 MB compressed)
 // and an open zip stream is not random-access, so a one-shot load
@@ -464,32 +472,16 @@ public:
 		// flag bit 11 unset for ASCII-only paths, so wxConvLocal (cp1251)
 		// would mis-decode non-ASCII names and trip a wx DEBUG assert in
 		// the string iterator. UTF-8 is the safe superset.
-		wxZipInputStream zis(fis, wxConvUTF8);
-		std::unique_ptr<wxZipEntry> e;
-		while (true) {
-			e.reset(zis.GetNextEntry());
-			if (!e) break;
-			if (e->IsDir()) continue;
-			wxString name = e->GetName();
-			// Strip "./" prefix that `tar -C dir .` adds — otherwise
-			// "./_categories.json" would not match the leading-_ filter
-			// in ListBucketNames and would be loaded as a normal bucket.
-			if (name.StartsWith(wxT("./")) || name.StartsWith(wxT(".\\")))
-				name = name.Mid(2);
-			// Defensive: skip zero-length names (e.g. the bare "./" dir
-			// marker after strip) — wx would assert on empty iterator.
-			if (name.IsEmpty()) continue;
-			if (!zis.OpenEntry(*e)) continue;
-			const size_t sz = static_cast<size_t>(e->GetSize());
-			std::string buf;
-			buf.resize(sz);
-			if (sz > 0) zis.Read(&buf[0], sz);
-			// wxZipInputStream's Read may short-read on the last
-			// chunk; LastRead() gives actual byte count.
-			buf.resize(static_cast<size_t>(zis.LastRead()));
-			m_entries.emplace(name, std::move(buf));
-		}
-		m_ok = true;
+		//
+		// The declared size is not the allocation. A help file that expands
+		// past the budget, or claims to, is not loaded.
+		std::vector<ibZipEntryBytes> entries;
+		ibZipBudgetFault fault = ibZipBudgetFault::None;
+		if (!ibCollectZipEntries(fis, ibZipBudgetForHelp(), &HelpEntryKey, nullptr, entries, fault, wxConvUTF8))
+			return;
+		for (ibZipEntryBytes& entry : entries)
+			m_entries.emplace(std::move(entry.name), std::string(entry.bytes.begin(), entry.bytes.end()));
+		m_ok = !m_entries.empty();
 	}
 
 	bool Exists() const override { return m_ok && !m_entries.empty(); }

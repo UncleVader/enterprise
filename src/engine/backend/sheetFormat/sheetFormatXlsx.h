@@ -20,6 +20,7 @@
 /////////////////////////////////////////////////////////////////////////////
 
 #include "backend/sheetFormat/sheetFormat.h"
+#include "backend/utils/zipBudget.h"
 
 class BACKEND_API ibSheetFormatXlsx : public ibSheetFormat {
 public:
@@ -37,5 +38,30 @@ public:
 	// in three pages there too.
 	virtual bool Write(wxOutputStream& output, const ibSpreadsheetDescription& sheet) const override;
 };
+
+// How far a workbook may be parsed. The zip budget stops the decompressor;
+// the counts stop the XML that a budget-sized part can still hold.
+struct ibXlsxReadLimits {
+	ibZipBudget zip;
+	uint64_t maxXmlMarks = 0;
+	uint64_t maxCells = 0;
+	uint64_t maxSharedStrings = 0;
+};
+
+BACKEND_API ibXlsxReadLimits ibXlsxReadLimitsStandard();
+
+// Reads into `sheet` only when the whole workbook is within `limits`.
+// On failure `sheet` is left as the caller passed it.
+BACKEND_API bool ibSheetFormatXlsxRead(
+	wxInputStream& input,
+	ibSpreadsheetDescription& sheet,
+	const ibXlsxReadLimits& limits,
+	ibZipBudgetFault& fault);
+
+// '<' marks in `text`, stopping once the count passes `stopAfter`.
+BACKEND_API uint64_t ibCountXmlMarks(const wxString& text, uint64_t stopAfter);
+
+// Elements whose name is `tag` (`<tag` followed by space, '>', '/' or a line break).
+BACKEND_API uint64_t ibCountXmlItems(const wxString& text, const wxString& tag, uint64_t stopAfter);
 
 #endif // !__SHEET_FORMAT_XLSX_H__
