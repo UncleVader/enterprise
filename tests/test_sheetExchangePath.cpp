@@ -21,13 +21,15 @@ struct ExchangeDir {
 		wxFileName dir = wxFileName::DirName(wxFileName::GetTempDir());
 		dir.AppendDir(wxT("oes-exchange-path-test"));
 		path = dir.GetFullPath();
-		wxFileName::Rmdir(path);
+		if (wxFileName::DirExists(path))
+			wxFileName::Rmdir(path);
 		dir.Mkdir(wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
 	}
 
 	~ExchangeDir()
 	{
-		wxFileName::Rmdir(path);
+		if (wxFileName::DirExists(path))
+			wxFileName::Rmdir(path);
 	}
 };
 
