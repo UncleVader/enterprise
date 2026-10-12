@@ -313,8 +313,12 @@ TEST(ZipBudget, DamagedDeflateIsRefused)
 {
 	WxReady wx;
 	auto bytes = ZipOf({ { "config", std::string(4096, 'A') } });
+	// The local header is 30 bytes plus the name. The next byte is compressed
+	// data; changing it makes the inflater or the checksum fail.
 	ASSERT_GT(bytes.size(), 40u);
-	bytes[30] ^= 0xff;
+	const size_t data = 30 + std::string("config").size();
+	ASSERT_LT(data, bytes.size());
+	bytes[data] ^= 0xff;
 	auto input = Open(bytes);
 	std::vector<ibZipEntryBytes> entries;
 	ibZipBudgetFault fault = ibZipBudgetFault::None;
