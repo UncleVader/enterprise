@@ -843,6 +843,7 @@ bool ibMcpServer::LoadSettings(ibSession* session)
 	ibMcpSettings settings;
 	node.GetValue(wxT("enabled"), settings.m_enabled);
 	node.GetValue(wxT("address"), settings.m_address);
+	node.GetValue(wxT("exposeOnNetwork"), settings.m_exposeOnNetwork);
 
 	s32 port = settings.m_port;
 	node.GetValue(wxT("port"), port);
@@ -876,6 +877,7 @@ bool ibMcpServer::SaveSettings(ibSession* session) const
 	ibDataNode node;
 	node.SetValue(wxT("enabled"), m_settings.m_enabled);
 	node.SetValue(wxT("address"), m_settings.m_address);
+	node.SetValue(wxT("exposeOnNetwork"), m_settings.m_exposeOnNetwork);
 	node.SetValue(wxT("port"), (s32)m_settings.m_port);
 	node.SetValue(wxT("token"), m_settings.m_token);
 
@@ -901,6 +903,78 @@ void ibMcpServer::Configure(const ibMcpSettings& settings)
 		m_settings.m_token = wxNewUniqueGuid.str() + wxNewUniqueGuid.str();
 }
 
+namespace {
+
+// 127.0.0.0/8, the name localhost, or ::1. A lookalike (localhost.example, 127.0.0.1.example)
+// is a different host and is not this.
+bool IsLoopbackHost(const wxString& raw)
+{
+	wxString host = raw.Strip(wxString::both);
+	if (host.StartsWith(wxT("[")) && host.EndsWith(wxT("]")) && host.length() >= 2)
+		host = host.Mid(1, host.length() - 2);
+
+	if (host.IsSameAs(wxT("localhost"), false) || host.IsSameAs(wxT("::1"), false))
+		return true;
+
+	unsigned octets[4] = { 0, 0, 0, 0 };
+	wxString rest = host;
+	for (int i = 0; i < 4; ++i) {
+		wxString part = rest;
+		if (i < 3) {
+			const int dot = rest.Find(wxT('.'));
+			if (dot == wxNOT_FOUND)
+				return false;
+			part = rest.Left(dot);
+			rest = rest.Mid(dot + 1);
+		}
+		else if (rest.Find(wxT('.')) != wxNOT_FOUND) {
+			return false;
+		}
+
+		if (part.IsEmpty())
+			return false;
+		for (size_t n = 0; n < part.length(); ++n) {
+			const wxChar c = part[n];
+			if (c < wxT('0') || c > wxT('9'))
+				return false;
+		}
+		unsigned long value = 0;
+		if (!part.ToULong(&value) || value > 255)
+			return false;
+		octets[i] = (unsigned)value;
+	}
+
+	return octets[0] == 127;
+}
+
+} // namespace
+
+bool ibMcpSettings::ListenAllowed(wxString& refusal) const
+{
+	const wxString host = m_address.Strip(wxString::both);
+	if (host.IsEmpty()) {
+		refusal = _("The address is not set");
+		return false;
+	}
+
+	if (IsLoopbackHost(host))
+		return true;
+
+	// The switch records the ask. It does not bind: plain HTTP on a network
+	// address is the hole this check exists to close, and TLS is not spoken yet.
+	if (!m_exposeOnNetwork) {
+		refusal = wxString::Format(
+			_("'%s' is not this computer. The assistant listens only on 127.0.0.1, localhost or ::1."),
+			host);
+		return false;
+	}
+
+	refusal = wxString::Format(
+		_("'%s' would be reachable from the network, and this server has no TLS. Nothing was started."),
+		host);
+	return false;
+}
+
 bool ibMcpServer::Start(ibSession* session, wxString& refusal)
 {
 	if (IsRunning()) {
@@ -924,6 +998,9 @@ bool ibMcpServer::Start(ibSession* session, wxString& refusal)
 		refusal = _("The address or the port is not set");
 		return false;
 	}
+
+	if (!m_settings.ListenAllowed(refusal))
+		return false;
 
 	if (session == nullptr) {
 		refusal = _("There is no session to work in");

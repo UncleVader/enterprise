@@ -4,6 +4,7 @@
 
 wxBEGIN_EVENT_TABLE(ibPanelMcpSettings, wxPanel)
 	EVT_CHECKBOX(ID_McpEnabled,      ibPanelMcpSettings::OnEnabled)
+	EVT_CHECKBOX(ID_McpExpose,       ibPanelMcpSettings::OnExpose)
 	EVT_TEXT(    ID_McpAddress,      ibPanelMcpSettings::OnAddressChanged)
 	EVT_TEXT(    ID_McpPort,         ibPanelMcpSettings::OnPortChanged)
 	EVT_BUTTON(  ID_McpCopyCommand,  ibPanelMcpSettings::OnCopyCommand)
@@ -45,6 +46,9 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 
 	box->Add(grid, 0, wxEXPAND, 5);
 
+	m_expose = new wxCheckBox(this, ID_McpExpose, _("Expose on the network"));
+	box->Add(m_expose, 0, wxLEFT | wxRIGHT | wxBOTTOM, 5);
+
 	// ⭐ THE SWITCH AND THE BUTTON ARE DIFFERENT QUESTIONS, and both belong here. The checkbox is
 	// a STANDING answer — it decides whether this starts by itself next time. The button is NOW:
 	// stop it for the afternoon, start it again without closing anything. Somebody who only wants
@@ -76,9 +80,8 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 	// command below is one PRODUCT's spelling of it, and leading with that would quietly tell
 	// somebody using a different assistant that they were in the wrong place.
 	wxStaticText* howTo = new wxStaticText(this, wxID_ANY,
-		_("Any assistant that speaks MCP can connect, from this machine or another on the "
-		  "network. Put this into its server configuration - it is the standard form and needs "
-		  "nothing else:"));
+		_("Any assistant that speaks MCP can connect from this machine. Put this into its "
+		  "server configuration - it is the standard form and needs nothing else:"));
 	howTo->Wrap(420);
 	handout->Add(howTo, 0, wxALL, 5);
 
@@ -123,6 +126,8 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 void ibPanelMcpSettings::Initialize()
 {
 	m_enabled->SetValue(m_settings.m_enabled);
+	if (m_expose != nullptr)
+		m_expose->SetValue(m_settings.m_exposeOnNetwork);
 	m_addressCtrl->SetValue(m_settings.m_address);
 	m_portCtrl->SetValue(wxString::Format(wxT("%u"), (unsigned)m_settings.m_port));
 
@@ -299,6 +304,8 @@ void ibPanelMcpSettings::UpdateEnabledState()
 	const bool on = m_settings.m_enabled;
 	m_addressCtrl->Enable(on);
 	m_portCtrl->Enable(on);
+	if (m_expose != nullptr)
+		m_expose->Enable(on);
 
 	// ⚠ THE BUTTON IS NOT GREYED WITH THEM. Stopping a RUNNING server must stay possible even
 	// after somebody unticks the box — that combination is exactly "switch it off now and keep it
@@ -316,6 +323,12 @@ void ibPanelMcpSettings::OnEnabled(wxCommandEvent& event)
 void ibPanelMcpSettings::OnAddressChanged(wxCommandEvent& event)
 {
 	m_settings.m_address = m_addressCtrl->GetValue();
+	event.Skip();
+}
+
+void ibPanelMcpSettings::OnExpose(wxCommandEvent& event)
+{
+	m_settings.m_exposeOnNetwork = m_expose->GetValue();
 	event.Skip();
 }
 

@@ -55,9 +55,18 @@ struct BACKEND_API ibMcpSettings {
 	// configuration is not something a platform should acquire by upgrading.
 	bool           m_enabled = false;
 
-	// Loopback by default, and a person has to mean it to widen that.
+	// Loopback by default. A network address is refused: this server speaks
+	// plain HTTP, so binding 0.0.0.0 would put the designer's session on the
+	// wire behind the token alone. m_exposeOnNetwork records that a person
+	// asked for the network; it does not open the port, because TLS is not
+	// spoken here yet.
 	wxString       m_address = wxT("127.0.0.1");
 	unsigned short m_port    = 3737;
+	bool           m_exposeOnNetwork = false;
+
+	// True when Start may bind m_address. Loopback (127.0.0.0/8, localhost, ::1)
+	// may. Anything else is refused, switch or not.
+	bool ListenAllowed(wxString& refusal) const;
 
 	// ⭐ WHO IS ALLOWED TO SPEAK. Every request carries it as `Authorization: Bearer <token>`,
 	// and one without is refused before any tool is looked up.
