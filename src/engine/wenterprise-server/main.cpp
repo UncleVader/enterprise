@@ -5,6 +5,7 @@
 // smoke-test endpoints (/, /ping, /login, /logout) on top of a real
 // database connection.
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -25,8 +26,17 @@
 
 #include <cpp-httplib/httplib.h>
 #include "wfrontend.h"
+#include "backend/webDispatchGate.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/session/webStreamGate.h"
+#include "backend/session/webSessionCookie.h"
+#include "backend/webPublicError.h"
+#include "backend/webGuardHeaders.h"
+#include "backend/webSessionId.h"
+#include "backend/webSessionTrace.h"
+#include "backend/webIssuedBearer.h"
+#include "backend/webCatalogRoute.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -218,52 +228,47 @@ std::string Field(const httplib::Request& req, const std::string& key)
 	return it != req.params.end() ? it->second : std::string();
 }
 
-// Extract the session id preferred by the client. Web tabs generate
-// their own random id in sessionStorage and forward it via the
-// `X-OES-Session` header, so every browser tab — even multiple in
-// the same browser — gets a distinct server session. Cookie lookup
-// is the legacy fallback for non-tab-aware clients.
+// The session id this request may name. The server minted it. A
+// state-changing method accepts X-OES-Session only. GET uses that
+// header, then the cookie. ?sid= is not a session.
 std::string SessionIdFromReq(const httplib::Request& req)
 {
 	const std::string header = req.get_header_value("X-OES-Session");
-	if (!header.empty())
-		return header;
-
-	// <img src>, <script src>, <link href> and anchor navigations can't
-	// attach custom headers — they carry only cookies. When a per-tab
-	// endpoint (e.g. /tab/N/icon) is reachable via plain GET the client
-	// appends ?sid=<tabSid>; fall back to that when the header is absent.
-	if (req.has_param("sid")) {
-		const std::string sid = req.get_param_value("sid");
-		if (!sid.empty())
-			return sid;
-	}
-
+	const std::string querySid = req.has_param("sid") ? req.get_param_value("sid") : std::string();
 	const std::string cookie = req.get_header_value("Cookie");
-	const auto pos = cookie.find("oes_session=");
-	if (pos == std::string::npos)
-		return std::string();
-	// oes_session is a dashed UUID (36 chars: 8-4-4-4-12). Slice up to
-	// the next '; ' delimiter instead of assuming a fixed length — gives
-	// us one parser whether the cookie is the first or the tail entry
-	// and survives a future id-format change.
-	const std::size_t start = pos + 12;
-	const std::size_t end   = cookie.find(';', start);
-	return (end == std::string::npos)
-		? cookie.substr(start)
-		: cookie.substr(start, end - start);
+	if (ibWebMethodChangesState(req.method))
+		return header;
+	return ibWebPresentedSessionId(header, querySid, cookie);
 }
 
-// Extract session id, or emit 401 "no session" and return false. Every
-// session-bound endpoint does the same 2-line check; this factors it
-// into one inline guard so handlers read as `if (!RequireSessionId…) return;`.
+// Extract a live session id, or emit 401 and return false. An empty id
+// is "no session". An id this process did not mint, or one it already
+// destroyed, is "session lost" — copying a registry guid out of
+// /admin/locks does not name a session.
 bool RequireSessionId(const httplib::Request& req, httplib::Response& res, std::string& id)
 {
 	id = SessionIdFromReq(req);
-	if (!id.empty())
+	if (!id.empty() && wfrontendSessionExists(id))
 		return true;
 	res.status = 401;
-	res.set_content("no session\n", "text/plain");
+	res.set_content(id.empty() ? "no session\n" : "session lost\n", "text/plain");
+	return false;
+}
+
+// A configuration list. An unknown id and a session that has not signed
+// in are 401. A path that is not one of those lists fails closed.
+bool RequireSignedIn(const httplib::Request& req, httplib::Response& res, std::string& id)
+{
+	if (!ibWebPathNamesConfiguration(req.path)) {
+		res.status = 401;
+		res.set_content("not signed in\n", "text/plain");
+		return false;
+	}
+	id = SessionIdFromReq(req);
+	if (!id.empty() && wfrontendSessionAuthenticated(id))
+		return true;
+	res.status = 401;
+	res.set_content(id.empty() ? "no session\n" : "not signed in\n", "text/plain");
 	return false;
 }
 
@@ -341,7 +346,8 @@ bool InitBackend(const CmdArgs& args)
 class ServedTaskQueue final : public httplib::TaskQueue {
 public:
 	ServedTaskQueue()
-		: m_pool(CPPHTTPLIB_THREAD_POOL_COUNT, CPPHTTPLIB_THREAD_POOL_MAX_COUNT) {}
+		: m_pool(CPPHTTPLIB_THREAD_POOL_COUNT, CPPHTTPLIB_THREAD_POOL_MAX_COUNT,
+			ibWebStreamQueueLimit(CPPHTTPLIB_THREAD_POOL_MAX_COUNT)) {}
 
 	bool enqueue(std::function<void()> fn) override {
 		return m_pool.enqueue([fn = std::move(fn)]() { wfrontendServe(fn); });
@@ -462,28 +468,36 @@ int main(int argc, char** argv)
 	// swallows raw escapes but our session state is left half-torn).
 	// With ThrowDatabaseException now actually throwing, the surface
 	// of paths that can reach here grew — every DB call inside a
-	// handler can now produce a structured exception. We surface a
-	// JSON 500 with the most-specific kind/code we can extract so
-	// client diagnostics (and admin dashboards) see something useful
-	// instead of the generic empty cpp-httplib body.
+	// handler can now produce a structured exception. A database
+	// failure and a plain std::exception answer {"error":"internal",
+	// "id":"..."} : the driver text, including the rendered statement,
+	// is journalled under that id and is not sent to the browser. A
+	// script or backend exception still carries its own message.
 	svr.set_exception_handler([](const httplib::Request& /*req*/,
 	                              httplib::Response& res,
 	                              std::exception_ptr ep) {
 		std::string body;
 		try { std::rethrow_exception(ep); }
 		catch (const ibDatabaseLayerException& e) {
-			body = std::string("{\"error\":\"database\",\"code\":")
-				+ std::to_string(e.GetDriverErrorCode())
-				+ ",\"sqlstate\":\"" + e.GetSqlState().ToUTF8().data()
-				+ "\",\"retryable\":" + (e.IsRetryable() ? "true" : "false")
-				+ ",\"message\":" + nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
-				+ "}";
+			// The message includes the rendered statement. The browser
+			// gets an id; the statement stays in the journal.
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.GetErrorDescription().ToUTF8().data();
+			failure.sqlState = e.GetSqlState().ToUTF8().data();
+			failure.driverCode = e.GetDriverErrorCode();
+			failure.hasDriverCode = true;
+			failure.retryable = e.IsRetryable();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (const ibBackendDatabaseException& e) {
-			body = std::string("{\"error\":\"database\",\"retryable\":")
-				+ (e.IsRetryable() ? "true" : "false")
-				+ ",\"message\":" + nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
-				+ "}";
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.GetErrorDescription().ToUTF8().data();
+			failure.retryable = e.IsRetryable();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (const ibCoreException& e) {
 			body = std::string("{\"error\":\"backend\",\"message\":")
@@ -491,15 +505,47 @@ int main(int argc, char** argv)
 				+ "}";
 		}
 		catch (const std::exception& e) {
-			body = std::string("{\"error\":\"internal\",\"message\":")
-				+ nlohmann::json(e.what()).dump()
-				+ "}";
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.what();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (...) {
 			body = "{\"error\":\"unknown\"}";
 		}
 		res.status = 500;
 		res.set_content(body, "application/json; charset=utf-8");
+	});
+
+	// After the route has filled the body. An HTML document gets a nonce
+	// on every inline style and script so the policy below can refuse
+	// every other inline script. httplib has already stored
+	// Content-Length from the body it had then; the nonce attributes
+	// make the body longer, and a client that stops at the old length
+	// loses the end of the document (the client script's </script>).
+	// A response that already named Cache-Control (the icon, the event
+	// stream, the page) keeps it.
+	svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
+		std::string nonce;
+		const std::string contentType = res.get_header_value("Content-Type");
+		if (contentType.find("text/html") != std::string::npos && !res.body.empty()) {
+			nonce = ibWebNonce();
+			res.body = ibWebDocumentWithNonce(res.body, nonce);
+			// set_header appends. A second Content-Length would leave
+			// the short one in front, which is the length a client uses.
+			const auto stale = res.headers.equal_range("Content-Length");
+			res.headers.erase(stale.first, stale.second);
+			res.content_length_ = res.body.size();
+			res.set_header("Content-Length", std::to_string(res.content_length_));
+		}
+		const ibWebGuardHeaders guard = ibWebGuardHeadersFor(nonce);
+		res.set_header("Content-Security-Policy", guard.contentSecurityPolicy);
+		res.set_header("X-Content-Type-Options", guard.contentTypeOptions);
+		res.set_header("Referrer-Policy", guard.referrerPolicy);
+		res.set_header("Cross-Origin-Opener-Policy", guard.openerPolicy);
+		if (ibWebUseDefaultCacheControl(res.has_header("Cache-Control")))
+			res.set_header("Cache-Control", guard.cacheControl);
 	});
 
 	svr.Get(prefix + "/", [prefix](const httplib::Request& req, httplib::Response& res) {
@@ -529,33 +575,28 @@ int main(int argc, char** argv)
 		// fresh one so OnStart re-runs and default forms re-appear —
 		// otherwise F5 on an empty session just re-shows the placeholder
 		// forever.
-		// Tab-local id: client's X-OES-Session header (sessionStorage)
-		// wins, cookie is the legacy fallback. If the tab has a
-		// sessionStorage id that the server doesn't know yet (fresh
-		// tab opened in an existing browser), CreateSessionWithId
-		// registers it.
+		// The document request cannot send X-OES-Session. A cookie that
+		// names a live session is reused. Anything else — including an
+		// id the client invented — is discarded and a new bearer is minted.
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			id = wfrontendCreateSession();
-			std::cerr << "[GET /] created new session id=" << id << std::endl;
+			std::cerr << ibWebSessionTrace("created", id) << std::endl;
 		}
-		else if (wfrontendSessionExists(id)) {
+		else {
 			const std::size_t tc = wfrontendSessionTabCount(id);
-			std::cerr << "[GET /] reusing session id=" << id
-				<< " tabCount=" << tc << std::endl;
+			std::cerr << ibWebSessionTrace("reusing", id, static_cast<int>(tc)) << std::endl;
 			if (tc == 0) {
 				wfrontendDestroySession(id);
 				std::cerr << "[GET /] destroyed empty session, re-minting" << std::endl;
-				id = wfrontendCreateSessionWithId(id);
+				id = wfrontendCreateSession();
+				std::cerr << ibWebSessionTrace("created", id) << std::endl;
 			}
 		}
-		else {
-			std::cerr << "[GET /] session id=" << id << " unknown - creating" << std::endl;
-			id = wfrontendCreateSessionWithId(id);
-		}
 
-		// No HttpOnly: harmless here and makes DevTools inspection easier.
-		res.set_header("Set-Cookie", "oes_session=" + id + "; Path=/");
+		// HttpOnly so script cannot read the id. SameSite=Strict so a
+		// cross-site request does not send it. Secure waits for TLS.
+		res.set_header("Set-Cookie", ibWebSessionCookie(id));
 		// HTML is generated in-binary; force the browser to pick up
 		// freshly rebuilt server output instead of serving a stale
 		// cached copy (common when iterating on the inline JS).
@@ -563,22 +604,28 @@ int main(int argc, char** argv)
 
 		// Client HTML/CSS/JS lives in wfrontend.dll so Apache/IIS/CGI
 		// hosts can serve the same bytes from a single source of truth.
-		res.set_content(wfrontendClientHTML(), "text/html; charset=utf-8");
+		res.set_content(ibWebClientPage(wfrontendClientHTML(), id), "text/html; charset=utf-8");
 	});
 
 	svr.Get(prefix + "/ping", [](const httplib::Request&, httplib::Response& res) {
 		res.set_content("pong", "text/plain");
 	});
 
-	svr.Get(prefix + "/menu", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/menu", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendMenuJSON(), "application/json; charset=utf-8");
 	});
 
-	svr.Get(prefix + "/forms", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/forms", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendFormsJSON(), "application/json; charset=utf-8");
 	});
 
-	svr.Get(prefix + "/diag/ctors", [](const httplib::Request&, httplib::Response& res) {
+	svr.Get(prefix + "/diag/ctors", [](const httplib::Request& req, httplib::Response& res) {
+		std::string id;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendCtorsJSON(), "application/json; charset=utf-8");
 	});
 
@@ -587,6 +634,11 @@ int main(int argc, char** argv)
 		if (id.empty()) {
 			res.set_content(R"({"authenticated":false,"tabs":[]})",
 				"application/json; charset=utf-8");
+			return;
+		}
+		if (!wfrontendSessionExists(id)) {
+			res.status = 401;
+			res.set_content("session lost\n", "text/plain");
 			return;
 		}
 		res.set_content(wfrontendSessionInfoJSON(id),
@@ -601,8 +653,13 @@ int main(int argc, char** argv)
 		std::string id;
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
-		res.set_content(wfrontendFireAction(id, controlID),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireAction(id, controlID);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /fire/<controlID>/<kind> — generic kind-aware dispatch.
@@ -616,8 +673,13 @@ int main(int argc, char** argv)
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string kind = req.matches[2].str();
-		res.set_content(wfrontendFireKind(id, controlID, kind),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireKind(id, controlID, kind);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /change/<controlID> value=<utf8 text>  — commit a textctrl
@@ -629,8 +691,13 @@ int main(int argc, char** argv)
 		if (!RequireSessionId(req, res, id)) return;
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string value = req.get_param_value("value");
-		res.set_content(wfrontendFireTextChange(id, controlID, value),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireTextChange(id, controlID, value);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /toggle/<controlID> checked=0|1  — toggle a checkbox. Fires
@@ -643,8 +710,13 @@ int main(int argc, char** argv)
 		const int controlID = std::atoi(req.matches[1].str().c_str());
 		const std::string checkedStr = req.get_param_value("checked");
 		const bool checked = (checkedStr == "1" || checkedStr == "true");
-		res.set_content(wfrontendFireToggle(id, controlID, checked),
-			"application/json; charset=utf-8");
+		const std::string body = wfrontendFireToggle(id, controlID, checked);
+		if (body == ibWebDispatchRefusedBody()) {
+			res.status = 403;
+			res.set_content("refused\n", "text/plain");
+			return;
+		}
+		res.set_content(body, "application/json; charset=utf-8");
 	});
 
 	// POST /modal-reply/<modalID> result=<int> — resolve a backend-side
@@ -662,15 +734,12 @@ int main(int argc, char** argv)
 		res.set_content(ok ? "1" : "0", "text/plain");
 	});
 
-	// GET /functions — returns the "All functions" tree (groups of
-	// metadata objects). Mirrors desktop's ibDialogFunctionAll content.
-	// Process-wide, no session needed (metadata is shared) — but the
-	// access check inside uses activeMetaData->AccessRight_ModeAllFunction
-	// which routes through the current user's roles. Requires session
-	// for the role context.
+	// GET /functions — the "All functions" tree. The right is asked on
+	// the session's worker (wfrontendAllFunctionsJSON). A session that
+	// has not signed in is 401, not the service account's tree.
 	svr.Get(prefix + "/functions", [](const httplib::Request& req, httplib::Response& res) {
 		std::string id;
-		if (!RequireSessionId(req, res, id)) return;
+		if (!RequireSignedIn(req, res, id)) return;
 		res.set_content(wfrontendAllFunctionsJSON(id),
 			"application/json; charset=utf-8");
 	});
@@ -681,8 +750,8 @@ int main(int argc, char** argv)
 	// has no interfaces (sidebar stays with the plain FORMS list).
 	svr.Get(prefix + "/interfaces", [](const httplib::Request& req, httplib::Response& res) {
 		std::string id;
-		if (!RequireSessionId(req, res, id)) return;
-		res.set_content(wfrontendInterfacesJSON(),
+		if (!RequireSignedIn(req, res, id)) return;
+		res.set_content(wfrontendInterfacesJSON(id),
 			"application/json; charset=utf-8");
 	});
 
@@ -733,9 +802,39 @@ int main(int argc, char** argv)
 	// from collapsing the connection. The polling loop stays on the
 	// client as a fallback when EventSource is unavailable or the SSE
 	// connection errors.
-	svr.Get(prefix + "/stream", [](const httplib::Request& req, httplib::Response& res) {
+	static ibWebStreamGate streamGate(
+		ibWebStreamPerSessionCap,
+		ibWebStreamGlobalCap(CPPHTTPLIB_THREAD_POOL_MAX_COUNT));
+
+	svr.Get(prefix + "/stream", [&streamGate](const httplib::Request& req, httplib::Response& res) {
 		const std::string sid = SessionIdFromReq(req);
-		if (sid.empty()) { res.status = 401; res.set_content("no session\n","text/plain"); return; }
+		if (sid.empty() || !wfrontendSessionExists(sid)) {
+			res.status = 401;
+			res.set_content(sid.empty() ? "no session\n" : "session lost\n", "text/plain");
+			return;
+		}
+
+		const ibWebStreamGate::Answer admit = streamGate.TryOpen(sid, wfrontendSessionLive(sid));
+		if (admit == ibWebStreamGate::Answer::NotLive) {
+			res.status = 401;
+			res.set_content("session is not signed in\n", "text/plain");
+			return;
+		}
+		if (admit != ibWebStreamGate::Answer::Open) {
+			res.status = 503;
+			res.set_content("too many streams\n", "text/plain");
+			return;
+		}
+
+		// The slot is released once. httplib can copy the response, and
+		// each copy's destructor runs the releaser.
+		auto released = std::make_shared<std::atomic<bool>>(false);
+		struct Hold {
+			ibWebStreamGate& gate;
+			std::string sid;
+			bool armed = true;
+			~Hold() { if (armed) gate.Close(sid); }
+		} hold{ streamGate, sid };
 
 		// Proxy-buffering hints — nginx sees X-Accel-Buffering, Apache
 		// mod_proxy respects Cache-Control: no-cache plus the flushed
@@ -757,11 +856,14 @@ int main(int argc, char** argv)
 					return false;
 
 				// Block up to 25s for the session's seq to advance past
-				// lastSeen. Timeout = we send a heartbeat so the peer
-				// knows we're alive and intermediaries don't close us.
+				// lastSeen. Timeout on a live session sends a heartbeat.
+				// A session that is gone closes; the same seq is not a
+				// reason to ping again immediately.
 				const auto upd = wfrontendLiveWait(sid, *lastSeen, 25000);
-
-				if (upd.seq == *lastSeen) {
+				const ibWebStreamTick tick = ibWebStreamOnWait(upd.live, upd.seq, *lastSeen);
+				if (tick == ibWebStreamTick::Close)
+					return false;
+				if (tick == ibWebStreamTick::Ping) {
 					static const char kPing[] = ": ping\n\n";
 					return sink.write(kPing, sizeof(kPing) - 1);
 				}
@@ -779,7 +881,13 @@ int main(int argc, char** argv)
 				}
 				body += "\n\n";
 				return sink.write(body.data(), body.size());
+			},
+			[&streamGate, sid, released](bool) {
+				if (released->exchange(true))
+					return;
+				streamGate.Close(sid);
 			});
+		hold.armed = false;
 	});
 
 	// POST /tab/<i>: switch the session's active tab to index <i> and
@@ -813,8 +921,7 @@ int main(int argc, char** argv)
 		std::string id;
 		if (!RequireSessionId(req, res, id)) return;
 		const int tabIndex = std::atoi(req.matches[1].str().c_str());
-		std::cerr << "[HTTP] DELETE /tab/" << tabIndex
-			<< " session=" << id
+		std::cerr << ibWebSessionTrace("close-tab", id, tabIndex)
 			<< " UA=" << req.get_header_value("User-Agent").substr(0, 40)
 			<< std::endl;
 		res.set_content(wfrontendCloseTab(id, tabIndex),
@@ -828,9 +935,10 @@ int main(int argc, char** argv)
 	// module manager and touches appData state.
 	svr.Get(prefix + R"(/form/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
 		const std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
-			res.set_content("no session - GET / first\n", "text/plain");
+			res.set_content(id.empty() ? "no session - GET / first\n" : "session lost\n",
+				"text/plain");
 			return;
 		}
 		const int metaID = std::atoi(req.matches[1].str().c_str());
@@ -845,6 +953,11 @@ int main(int argc, char** argv)
 	svr.Get(prefix + "/debug-status",
 		[](const httplib::Request& req, httplib::Response& res) {
 			const std::string sid = SessionIdFromReq(req);
+			if (!sid.empty() && !wfrontendSessionExists(sid)) {
+				res.status = 401;
+				res.set_content("session lost\n", "text/plain");
+				return;
+			}
 			const bool dbg    = wfrontendDebugMode();
 			const bool paused = !sid.empty() && wfrontendSessionPaused(sid);
 			res.set_content(
@@ -878,32 +991,40 @@ int main(int argc, char** argv)
 		}
 
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
 			res.set_content("no session - GET / first to obtain one\n", "text/plain");
 			return;
 		}
-		// Tab's sessionStorage id (X-OES-Session header) is generated by
-		// JS independently from the server's cookie — on a fresh tab the
-		// first XHR can arrive with an id the server has never registered.
-		// Mirror GET /'s create-on-unknown behaviour so POST /login doesn't
-		// 401 just because the tab happened to beat GET / in registering.
-		if (!wfrontendSessionExists(id))
-			id = wfrontendCreateSessionWithId(id);
 
-		if (!wfrontendLogin(id, user, pass)) {
+		const std::string adopted = wfrontendLogin(id, user, pass);
+		if (adopted.empty()) {
 			res.status = 401;
 			res.set_content("login failed\n", "text/plain");
 			return;
 		}
-		res.set_content("ok (" + id + " / " + user + ")\n", "text/plain");
+		res.set_header("Set-Cookie", ibWebSessionCookie(adopted));
+		res.set_content(ibWebLoginAdopted(adopted), "application/json");
+	});
+
+	// A second tab asks for its own bearer. The id in the body is the
+	// one the server minted; the caller does not choose it.
+	svr.Post(prefix + "/session/mint", [](const httplib::Request&, httplib::Response& res) {
+		const std::string id = wfrontendCreateSession();
+		if (id.empty()) {
+			res.status = 500;
+			res.set_content("no session\n", "text/plain");
+			return;
+		}
+		res.set_header("Set-Cookie", ibWebSessionCookie(id));
+		res.set_content(ibWebLoginAdopted(id), "application/json");
 	});
 
 	svr.Post(prefix + "/logout", [](const httplib::Request& req, httplib::Response& res) {
 		const std::string id = SessionIdFromReq(req);
 		if (!id.empty())
 			wfrontendDestroySession(id);
-		res.set_header("Set-Cookie", "oes_session=; Path=/; Max-Age=0");
+		res.set_header("Set-Cookie", ibWebSessionCookie(std::string()));
 		res.set_content("bye\n", "text/plain");
 	});
 

@@ -21,6 +21,13 @@
   <ItemGroup>
     <ClInclude Include="standardCommand.h" />
     <ClInclude Include="appData.h" />
+    <ClInclude Include="webPublicError.h" />
+    <ClInclude Include="webGuardHeaders.h" />
+    <ClInclude Include="webSessionId.h" />
+    <ClInclude Include="webSessionTrace.h" />
+    <ClInclude Include="webIssuedBearer.h" />
+    <ClInclude Include="webCatalogRoute.h" />
+    <ClInclude Include="webDispatchGate.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h" />
@@ -54,7 +61,9 @@
     <ClInclude Include="session\sessionPolicy.h" />
     <ClInclude Include="session\sessionRegistry.h" />
     <ClInclude Include="session\sessionSnapshot.h" />
+    <ClInclude Include="session\webSessionCookie.h" />
     <ClInclude Include="session\workerPool.h" />
+    <ClInclude Include="session\webStreamGate.h" />
     <ClInclude Include="session\workerPoolHeadless.h" />
     <ClInclude Include="lock\lockTypes.h" />
     <ClInclude Include="lock\lockHandle.h" />
@@ -444,6 +453,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="appData.cpp" />
+    <ClCompile Include="webPublicError.cpp" />
+    <ClCompile Include="webGuardHeaders.cpp" />
+    <ClCompile Include="webSessionId.cpp" />
+    <ClCompile Include="webSessionTrace.cpp" />
+    <ClCompile Include="webIssuedBearer.cpp" />
+    <ClCompile Include="webCatalogRoute.cpp" />
+    <ClCompile Include="webDispatchGate.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp" />
     <ClCompile Include="appDataQuery.cpp" />
@@ -473,7 +489,9 @@
     <ClCompile Include="session\sessionHolder.cpp" />
     <ClCompile Include="session\sessionRegistry.cpp" />
     <ClCompile Include="session\sessionSnapshot.cpp" />
+    <ClCompile Include="session\webSessionCookie.cpp" />
     <ClCompile Include="session\workerPoolHeadless.cpp" />
+    <ClCompile Include="session\webStreamGate.cpp" />
     <ClCompile Include="lock\lockHandle.cpp" />
     <ClCompile Include="lock\lockHolder.cpp" />
     <ClCompile Include="lock\lockKeyHash.cpp" />

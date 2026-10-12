@@ -64,6 +64,13 @@
       <Filter>compiler</Filter>
     </ClInclude>
     <ClInclude Include="appData.h" />
+    <ClInclude Include="webPublicError.h" />
+    <ClInclude Include="webGuardHeaders.h" />
+    <ClInclude Include="webSessionId.h" />
+    <ClInclude Include="webSessionTrace.h" />
+    <ClInclude Include="webIssuedBearer.h" />
+    <ClInclude Include="webCatalogRoute.h" />
+    <ClInclude Include="webDispatchGate.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h">
@@ -907,6 +914,9 @@
     <ClInclude Include="session\sessionSnapshot.h">
       <Filter>session</Filter>
     </ClInclude>
+    <ClInclude Include="session\webSessionCookie.h">
+      <Filter>session</Filter>
+    </ClInclude>
     <ClInclude Include="session\designerExclusivePolicy.h">
       <Filter>session</Filter>
     </ClInclude>
@@ -914,6 +924,9 @@
       <Filter>session</Filter>
     </ClInclude>
     <ClInclude Include="session\workerPool.h">
+      <Filter>session</Filter>
+    </ClInclude>
+    <ClInclude Include="session\webStreamGate.h">
       <Filter>session</Filter>
     </ClInclude>
     <ClInclude Include="session\workerPoolHeadless.h">
@@ -1152,6 +1165,13 @@
       <Filter>compiler</Filter>
     </ClCompile>
     <ClCompile Include="appData.cpp" />
+    <ClCompile Include="webPublicError.cpp" />
+    <ClCompile Include="webGuardHeaders.cpp" />
+    <ClCompile Include="webSessionId.cpp" />
+    <ClCompile Include="webSessionTrace.cpp" />
+    <ClCompile Include="webIssuedBearer.cpp" />
+    <ClCompile Include="webCatalogRoute.cpp" />
+    <ClCompile Include="webDispatchGate.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp">
       <Filter>cipher</Filter>
@@ -2335,6 +2355,9 @@
     <ClCompile Include="session\sessionSnapshot.cpp">
       <Filter>session</Filter>
     </ClCompile>
+    <ClCompile Include="session\webSessionCookie.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
     <ClCompile Include="session\designerExclusivePolicy.cpp">
       <Filter>session</Filter>
     </ClCompile>
@@ -2342,6 +2365,9 @@
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\workerPoolHeadless.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\webStreamGate.cpp">
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="lock\lockHandle.cpp">

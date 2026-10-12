@@ -14,6 +14,7 @@
 #endif
 
 #include "backend/backend_exception.h"
+#include "backend/webDispatchGate.h"
 
 #include "backend/metadataConfiguration.h"
 #include "backend/moduleManager/moduleManager.h"
@@ -260,6 +261,8 @@ ibVisualHostClient* ibWebApplication::GetActiveHost() const
 
 bool ibWebApplication::Dispatch(int controlId, const wxString& kind, const wxString& value)
 {
+	m_dispatchRefused = false;
+
 	// A QUESTION IS OPEN — the client may only answer it. The asking script runs this session's tasks while it
 	// waits (ibWorkerPool::Await), so an event let through here would run a handler UNDER the one that asked, on
 	// a form it may be about to close: the server's half of what wx does to the windows behind a modal dialog.
@@ -286,6 +289,35 @@ bool ibWebApplication::Dispatch(int controlId, const wxString& kind, const wxStr
 	if (obj == nullptr)
 		return false;
 	ibWebWindow* web = static_cast<ibWebWindow*>(obj);
+
+	// Disabled or hidden, including a parent window: the browser can still
+	// name the id. A view-only form, a text field with edit mode off, or a
+	// read-only checkbox does not take a new value. Commands (click, open,
+	// select) stay.
+	bool reachable = true;
+	for (const ibWebWindow* window = web; window != nullptr; window = window->GetParent()) {
+		if (!window->IsEnabled() || !window->IsShown()) {
+			reachable = false;
+			break;
+		}
+	}
+	bool valueLocked = ctrl->IsReadOnly();
+	if (const auto* text = dynamic_cast<const ibWebTextCtrl*>(web)) {
+		if (!text->GetTextEditMode())
+			valueLocked = true;
+	}
+	if (const auto* box = dynamic_cast<const ibWebCheckBox*>(web)) {
+		if (box->IsReadOnly())
+			valueLocked = true;
+	}
+	const wxScopedCharBuffer kindBytes = kind.utf8_str();
+	const std::string kindUtf8 = kindBytes.data() != nullptr
+		? std::string(kindBytes.data(), kindBytes.length())
+		: std::string();
+	if (!ibWebDispatchAllowed(reachable, valueLocked, kindUtf8)) {
+		m_dispatchRefused = true;
+		return false;
+	}
 
 	if (!web->HandleRequest(kind, value))
 		return false;
@@ -320,13 +352,49 @@ void ibWebApplication::MarkDirty()
 uint64_t ibWebApplication::WaitForChange(uint64_t lastSeen, int timeoutMs)
 {
 	std::unique_lock<std::mutex> lk(m_seqMtx);
+	const auto changed = [this, lastSeen] {
+		return m_liveClosed || m_seq.load() != lastSeen;
+	};
 	if (timeoutMs <= 0) {
-		m_seqCv.wait(lk, [this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait(lk, changed);
 	} else {
-		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs),
-			[this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs), changed);
 	}
 	return m_seq.load();
+}
+
+bool ibWebApplication::BeginLiveWait()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	if (m_liveClosed)
+		return false;
+	++m_liveWaiters;
+	return true;
+}
+
+void ibWebApplication::EndLiveWait()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	if (m_liveWaiters > 0)
+		--m_liveWaiters;
+	m_seqCv.notify_all();
+}
+
+bool ibWebApplication::LiveClosed()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	return m_liveClosed;
+}
+
+void ibWebApplication::CloseLiveWait()
+{
+	{
+		std::lock_guard<std::mutex> lk(m_seqMtx);
+		m_liveClosed = true;
+	}
+	m_seqCv.notify_all();
+	std::unique_lock<std::mutex> lk(m_seqMtx);
+	m_seqCv.wait(lk, [this] { return m_liveWaiters == 0; });
 }
 
 void ibWebApplication::PostWork(std::function<void()> fn)
@@ -346,6 +414,10 @@ void ibWebApplication::PostWork(std::function<void()> fn)
 
 void ibWebApplication::OnExit()
 {
+	// Wake a stream blocked in WaitForChange and wait until it has left.
+	// The rest of this function deletes the frame the waiter was reading.
+	CloseLiveWait();
+
 	if (!m_initialized)
 		return;
 

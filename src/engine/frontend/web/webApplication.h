@@ -90,6 +90,14 @@ public:
 	uint64_t CurrentSeq() const { return m_seq.load(); }
 	uint64_t WaitForChange(uint64_t lastSeen, int timeoutMs);
 
+	// A stream pins itself with Begin/End around the wait. CloseLiveWait
+	// wakes those waiters and does not return until they have left, so
+	// teardown does not delete this object under them.
+	bool BeginLiveWait();
+	void EndLiveWait();
+	bool LiveClosed();
+	void CloseLiveWait();
+
 	// Session dispatcher — single generic entry. HTTP handlers hand off
 	// here: given a controlId + kind ("click" | "text" | "toggle" | …)
 	// + value, the dispatcher resolves the ibValueFrame in the active
@@ -99,6 +107,16 @@ public:
 	// ibWebXxx handles the kinds it understands. Drains on this
 	// thread, rebuilds the visual tree. See docs/private/web/event-dispatcher.md.
 	bool Dispatch(int controlId, const wxString& kind, const wxString& value);
+
+	// True once, after Dispatch returned false because the control was
+	// disabled, hidden, or not accepting a value. Cleared by the read.
+	// Other false returns (no form, no such control) leave this false.
+	bool TakeDispatchRefused()
+	{
+		const bool refused = m_dispatchRefused;
+		m_dispatchRefused = false;
+		return refused;
+	}
 
 	// Legacy kind-specific entry points. Thin shims over Dispatch —
 	// kept so existing HTTP routes (/action, /change, /toggle) stay
@@ -145,11 +163,14 @@ private:
 	// m_moduleManager field removed — moduleManager is shared process-
 	// wide and lives on metadata; GetManagerModule() pulls from there.
 	bool                                          m_initialized   = false;
+	bool                                          m_dispatchRefused = false;
 
 	// Live-update state. See MarkDirty/WaitForChange docs above.
 	std::atomic<uint64_t>                         m_seq { 1 };
 	std::mutex                                    m_seqMtx;
 	std::condition_variable                       m_seqCv;
+	bool                                          m_liveClosed = false;
+	int                                           m_liveWaiters = 0;
 };
 
 // Reach the current session's ibWebApplication from arbitrary web

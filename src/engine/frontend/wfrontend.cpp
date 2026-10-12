@@ -1,5 +1,7 @@
 #include "wfrontend.h"
 
+#include "backend/webDispatchGate.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -7,7 +9,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -20,10 +21,14 @@
 #include <wx/mstream.h>
 
 #include "backend/appData.h"
+#include "backend/webSessionTrace.h"
 #include "backend/appHost.h"   // ibApplicationInstanceScope — the HTTP and sweep threads work for the served base
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/backend_exception.h"
+#include "backend/databaseLayer/databaseLayerException.h"
+#include "backend/webPublicError.h"
+#include "backend/webIssuedBearer.h"
 #include "backend/databaseLayer/connectionHolder.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — the meta-watch sys_config read (ibQueryResult, no raw L1)
@@ -125,35 +130,48 @@ public:
 			it->second->Touch();
 	}
 
-	// Allocate a fresh unauthenticated session. The returned id is
-	// handed back as a cookie so subsequent requests (in particular
-	// POST /login) can identify the client.
+	// A fresh unauthenticated session. The id is minted here. A value
+	// the caller invented is not a session.
 	std::string Create()
 	{
-		return CreateWith(MakeRandomId());
-	}
-
-	// Same, but the caller supplies the id — used when the JS client
-	// minted a per-tab id in sessionStorage (so every browser tab
-	// gets its own ibWebSession instead of sharing one via cookie).
-	// If the id already exists, reuses; otherwise creates.
-	std::string CreateWith(const std::string& id)
-	{
+		std::string bearer;
+		std::string guid;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
-			if (m_sessions.find(id) != m_sessions.end())
-				return id;
+			bearer = m_bearers.Mint();
+			guid = m_bearers.RegistryGuid(bearer);
 		}
-		auto session = std::make_shared<ibWebSession>(wxString::FromUTF8(id.c_str()), wxString());
-		if (!session->OnInit())
+		auto session = std::make_shared<ibWebSession>(
+			wxString::FromUTF8(bearer.c_str()),
+			wxString::FromUTF8(guid.c_str()),
+			wxString());
+		if (!session->OnInit()) {
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_bearers.Revoke(bearer);
 			return std::string();
-
+		}
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_sessions.emplace(id, std::move(session));
+		m_sessions.emplace(bearer, std::move(session));
+		return bearer;
+	}
+
+	// An id this process did not mint does not become a session.
+	// An id it did mint is returned only when that session is still live.
+	std::string CreateWith(const std::string& id)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		if (!m_bearers.WasIssued(id))
+			return std::string();
+		if (m_sessions.find(id) == m_sessions.end())
+			return std::string();
 		return id;
 	}
 
-	bool Login(const std::string& id, const std::string& user, const std::string& password)
+	// Empty when the session is unknown or the password is refused.
+	// On success the previous bearer is dead and the returned one is
+	// the only id that still names this session. The registry guid
+	// stays the one Login already stored.
+	std::string Login(const std::string& id, const std::string& user, const std::string& password)
 	{
 		// shared_ptr copy under lock keeps the session alive for the
 		// whole Login — a racing Destroy (e.g. pagehide beacon on
@@ -163,17 +181,53 @@ public:
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			auto it = m_sessions.find(id);
-			if (it == m_sessions.end()) return false;
+			if (it == m_sessions.end()) return std::string();
 			s = it->second;
 		}
-		return s->Login(wxString::FromUTF8(user.c_str()),
-		                wxString::FromUTF8(password.c_str()));
+		if (!s->Login(wxString::FromUTF8(user.c_str()),
+		              wxString::FromUTF8(password.c_str())))
+			return std::string();
+
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end())
+			return std::string();
+		const std::string neu = m_bearers.Rotate(id);
+		if (neu.empty())
+			return std::string();
+		auto session = std::move(it->second);
+		m_sessions.erase(it);
+		session->SetId(wxString::FromUTF8(neu.c_str()));
+		m_sessions.emplace(neu, std::move(session));
+		return neu;
 	}
 
 	bool Exists(const std::string& id) const
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		return m_sessions.find(id) != m_sessions.end();
+	}
+
+	// A copy of the map entry. The caller keeps the session alive for a
+	// wait even if the sweep erases the map row.
+	std::shared_ptr<ibWebSession> Pin(const std::string& id)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end())
+			return std::shared_ptr<ibWebSession>();
+		return it->second;
+	}
+
+	// Login has built this session's application. A minted id that has
+	// not signed in is not enough for a configuration list.
+	bool Authenticated(const std::string& id) const
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end() || !it->second)
+			return false;
+		return it->second->IsAuthenticated();
 	}
 
 	void Destroy(const std::string& id)
@@ -186,6 +240,7 @@ public:
 				return;
 			dying = std::move(it->second);
 			m_sessions.erase(it);
+			m_bearers.Revoke(id);
 		}
 		// Run OnExit outside the lock so per-session teardown (which may
 		// touch backend state) does not serialise every other request.
@@ -283,6 +338,8 @@ public:
 		std::unordered_map<std::string, std::shared_ptr<ibWebSession>> dying;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
+			for (const auto& kv : m_sessions)
+				m_bearers.Revoke(kv.first);
 			dying.swap(m_sessions);
 		}
 		for (auto& kv : dying) {
@@ -291,18 +348,6 @@ public:
 	}
 
 private:
-	static std::string MakeRandomId()
-	{
-		// Shared format with ibGuid / sys_session.session — dashed UUID
-		// so browser cookie, X-OES-Session header, SessionManager map
-		// key, and the registry's session guid all read as the same
-		// string (no extra parse step when one crosses layers).
-		// Explicit wxString→std::string conversion: without ToStdString()
-		// MSVC chains two user-defined conversions (wxString → const char*
-		// → std::string) and warns C4927.
-		return ibGuid(ibGuid::newGuid()).str().ToStdString();
-	}
-
 	// Idle-session sweep + metadata-change watch. Wakes every sweep
 	// interval, collects session ids whose LastActiveMs is older than
 	// the idle cutoff, destroys them outside the map-lock (OnExit runs
@@ -364,7 +409,7 @@ private:
 			// off the requester's thread, so OnExit can drain the
 			// session's own worker without deadlocking against it.
 			for (const std::string& id : requested) {
-				std::cerr << "[sweep] destroying session on request " << id << std::endl;
+				std::cerr << ibWebSessionTrace("sweep-destroy", id) << std::endl;
 				Destroy(id);
 			}
 
@@ -391,8 +436,7 @@ private:
 				}
 			}
 			for (const std::string& id : victims) {
-				std::cerr << "[sweep] evicting idle session " << id
-					<< std::endl;
+				std::cerr << ibWebSessionTrace("sweep-idle", id) << std::endl;
 				Destroy(id);
 			}
 
@@ -537,6 +581,7 @@ private:
 	// in-flight Login / FireAction / OpenForm — the session survives
 	// until every borrower drops its copy.
 	std::unordered_map<std::string, std::shared_ptr<ibWebSession>> m_sessions;
+	ibWebIssuedBearers m_bearers;
 
 	// Sweep-thread plumbing. m_sweepCv lets the dtor unblock the
 	// in-flight `wait_for` instead of waiting the full interval; the same
@@ -1105,7 +1150,7 @@ WFRONTEND_API std::string wfrontendCreateSessionWithId(const std::string& id)
 	return Sessions().CreateWith(id);
 }
 
-WFRONTEND_API bool wfrontendLogin(const std::string& sessionId,
+WFRONTEND_API std::string wfrontendLogin(const std::string& sessionId,
 	const std::string& user, const std::string& password)
 {
 	return Sessions().Login(sessionId, user, password);
@@ -1114,6 +1159,17 @@ WFRONTEND_API bool wfrontendLogin(const std::string& sessionId,
 WFRONTEND_API bool wfrontendSessionExists(const std::string& sessionId)
 {
 	return Sessions().Exists(sessionId);
+}
+
+WFRONTEND_API bool wfrontendSessionLive(const std::string& sessionId)
+{
+	const std::shared_ptr<ibWebSession> session = Sessions().Pin(sessionId);
+	return session != nullptr && session->IsAuthenticated();
+}
+
+WFRONTEND_API bool wfrontendSessionAuthenticated(const std::string& sessionId)
+{
+	return Sessions().Authenticated(sessionId);
 }
 
 WFRONTEND_API void wfrontendDestroySession(const std::string& sessionId)
@@ -1274,6 +1330,22 @@ std::string ExceptionToJson(const ibCoreException& e)
 {
 	nlohmann::json j;
 
+	// A driver failure's message carries the rendered statement. That
+	// text stays in the journal. The browser gets an id.
+	if (auto* db = dynamic_cast<const ibBackendDatabaseException*>(&e)) {
+		ibWebDatabaseFailure failure;
+		failure.correlationId = ibWebCorrelationId();
+		failure.message = std::string(e.GetErrorDescription().utf8_str());
+		failure.retryable = db->IsRetryable();
+		if (auto* layer = dynamic_cast<const ibDatabaseLayerException*>(&e)) {
+			failure.hasDriverCode = true;
+			failure.driverCode = layer->GetDriverErrorCode();
+			failure.sqlState = std::string(layer->GetSqlState().utf8_str());
+		}
+		ibWebRecordDatabaseFailure(failure);
+		return ibWebPublicInternalError(failure.correlationId);
+	}
+
 	if (auto* lockEx = dynamic_cast<const ibBackendLockException*>(&e)) {
 		j["error"] = "lock_conflict";
 		j["kind"]  = (lockEx->GetKind() == ibBackendLockException::Kind::VersionChanged)
@@ -1340,7 +1412,8 @@ std::string FireActionInSession(ibWebSession* session, int controlID)
 	return app->RunOnWorker([app, controlID]() -> std::string {
 		try {
 			if (!app->DispatchControlAction(controlID))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1387,7 +1460,8 @@ std::string FireKindInSession(ibWebSession* session, int controlID,
 		try {
 			const wxString wkind(kind.c_str(), wxConvUTF8);
 			if (!app->Dispatch(controlID, wkind, wxString()))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1435,7 +1509,8 @@ std::string FireTextChangeInSession(ibWebSession* session, int controlID,
 		try {
 			const wxString w(newValue.c_str(), wxConvUTF8);
 			if (!app->DispatchTextChange(controlID, w))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1481,7 +1556,8 @@ std::string FireToggleInSession(ibWebSession* session, int controlID, bool check
 	return app->RunOnWorker([app, controlID, checked]() -> std::string {
 		try {
 			if (!app->DispatchToggle(controlID, checked))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1616,8 +1692,24 @@ WFRONTEND_API std::string wfrontendAllFunctionsJSON(const std::string& sessionId
 // objects assigned to it via the Default command section). Used by web
 // sidebar to surface section navigation parallel to desktop's
 // ibSubSystemWindow.
-WFRONTEND_API std::string wfrontendInterfacesJSON()
+WFRONTEND_API std::string wfrontendInterfacesJSON(const std::string& sessionId)
 {
+	Sessions().Touch(sessionId);
+	auto none = []() {
+		nlohmann::json j;
+		j["interfaces"] = nlohmann::json::array();
+		return j.dump();
+	};
+	if (!g_initialized.load() || activeMetaData == nullptr)
+		return none();
+	// AccessRight_Use reads appData->GetUserRoleArray() on the calling
+	// thread. The HTTP thread's current session is the service account,
+	// so the list is built on the caller's worker.
+	ibWebApplication* app = Sessions().FindApp(sessionId);
+	if (app == nullptr)
+		return none();
+	try {
+		return app->RunOnWorker([]() -> std::string {
 	if (!g_initialized.load() || activeMetaData == nullptr) {
 		nlohmann::json j;
 		j["interfaces"] = nlohmann::json::array();
@@ -1700,6 +1792,10 @@ WFRONTEND_API std::string wfrontendInterfacesJSON()
 	nlohmann::json j;
 	j["interfaces"] = std::move(arr);
 	return j.dump();
+		}).get();
+	} catch (...) {
+		return none();
+	}
 }
 
 // Mirrors desktop's ibDialogFunctionAll double-click handler which
@@ -1823,28 +1919,37 @@ WFRONTEND_API std::string wfrontendActiveHostJSON(const std::string& sessionId)
 WFRONTEND_API WfrontendLiveUpdate wfrontendLiveWait(
 	const std::string& sessionId, std::uint64_t lastSeen, int timeoutMs)
 {
-	// Pin the session in scope so it can't be swept out from under the
-	// waiter. `Sessions().m_mutex` only guards the map — the session
-	// object itself is owned by the unique_ptr in the map, which the
-	// idle-sweep may erase. Take the mutex briefly, grab the raw ptr,
-	// drop the mutex, wait on the app's CV. If the session dies mid-wait
-	// the CV won't fire from our side — rely on the timeout to release.
-	// Future hardening: shared_ptr<ibWebSession> so the waiter pins
-	// lifetime. For today's synchronous flow the timeout is acceptable.
-	Sessions().Touch(sessionId);
+	// An anonymous, unknown or logged-out session has nothing to wait
+	// on. Returning immediately with live=false lets the stream close
+	// instead of writing a ping and calling this again.
+	WfrontendLiveUpdate r;
+	r.seq  = lastSeen;
+	r.json = "{}";
+	r.live = false;
 
-	ibWebApplication* app = Sessions().FindApp(sessionId);
-	if (app == nullptr) {
-		WfrontendLiveUpdate r;
-		r.seq  = lastSeen;
-		r.json = "{}";
+	const std::shared_ptr<ibWebSession> keeper = Sessions().Pin(sessionId);
+	if (keeper == nullptr || !keeper->IsAuthenticated())
 		return r;
-	}
+	keeper->Touch();
+
+	ibWebApplication* app = keeper->App();
+	if (app == nullptr || !app->BeginLiveWait())
+		return r;
+
+	struct Leave {
+		ibWebApplication* app;
+		~Leave() { app->EndLiveWait(); }
+	} leave{ app };
+
+	if (app->LiveClosed())
+		return r;
 
 	const std::uint64_t newSeq = app->WaitForChange(lastSeen, timeoutMs);
+	if (app->LiveClosed() || !keeper->IsAuthenticated())
+		return r;
 
-	WfrontendLiveUpdate r;
 	r.seq  = newSeq;
+	r.live = true;
 	r.json = Sessions().ActiveHostJSON(sessionId);
 	return r;
 }
