@@ -1,5 +1,7 @@
 #include "wfrontend.h"
 
+#include "backend/webDispatchGate.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1340,7 +1342,8 @@ std::string FireActionInSession(ibWebSession* session, int controlID)
 	return app->RunOnWorker([app, controlID]() -> std::string {
 		try {
 			if (!app->DispatchControlAction(controlID))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1387,7 +1390,8 @@ std::string FireKindInSession(ibWebSession* session, int controlID,
 		try {
 			const wxString wkind(kind.c_str(), wxConvUTF8);
 			if (!app->Dispatch(controlID, wkind, wxString()))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1435,7 +1439,8 @@ std::string FireTextChangeInSession(ibWebSession* session, int controlID,
 		try {
 			const wxString w(newValue.c_str(), wxConvUTF8);
 			if (!app->DispatchTextChange(controlID, w))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
@@ -1481,7 +1486,8 @@ std::string FireToggleInSession(ibWebSession* session, int controlID, bool check
 	return app->RunOnWorker([app, controlID, checked]() -> std::string {
 		try {
 			if (!app->DispatchToggle(controlID, checked))
-				return "{}";
+				return app->TakeDispatchRefused()
+					? std::string(ibWebDispatchRefusedBody()) : std::string("{}");
 		}
 		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);

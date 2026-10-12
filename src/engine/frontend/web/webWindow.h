@@ -438,6 +438,7 @@ public:
 	// Mirror desktop ibControlTextEditor::SetTextEditMode — TextEditMode off = read-only: JSON carries the flag
 	// (browser <input> goes read-only) AND the value-changing side buttons (Select / Clear) lock; Open stays.
 	void SetTextEditMode(bool v)  { m_textEditMode = v; m_enableSelectButton = v; m_enableClearButton = v; }
+	bool GetTextEditMode() const { return m_textEditMode; }
 
 	// Side-button visibility — mirrors desktop's ibControlTextEditor
 	// ShowSelectButton / ShowOpenButton / ShowClearButton. Each renders
