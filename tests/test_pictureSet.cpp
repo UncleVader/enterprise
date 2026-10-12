@@ -63,7 +63,7 @@ TEST(PictureSet, CommonPicture_StoresTheImageBytes)
 
 	ibDataNode params;
 	params.SetValue(wxT("data"), wxString::FromUTF8(kOnePixelPng));
-	params.SetValue(wxT("name"), wxT("mark"));
+	params.SetValue(wxT("name"), wxString(wxT("mark")));
 
 	ibDataNode result;
 	wxString refusal;
@@ -101,7 +101,7 @@ TEST(PictureSet, CommonPicture_RefusesAnEngineOrConfigurationReference)
 	ASSERT_NE(nullptr, object);
 
 	ibDataNode params;
-	params.SetValue(wxT("engine"), wxT("Print"));
+	params.SetValue(wxT("engine"), wxString(wxT("Print")));
 
 	ibDataNode result;
 	wxString refusal;
@@ -109,7 +109,7 @@ TEST(PictureSet, CommonPicture_RefusesAnEngineOrConfigurationReference)
 	EXPECT_NE(wxNOT_FOUND, refusal.Find(wxT("holds the image itself")));
 
 	params.SetField(wxT("engine"), ibDataValue::String(wxEmptyString));
-	params.SetValue(wxT("configuration"), wxT("Other"));
+	params.SetValue(wxT("configuration"), wxString(wxT("Other")));
 	refusal.clear();
 	EXPECT_FALSE(ibMcpApplyPicture(object, params, result, refusal));
 	EXPECT_NE(wxNOT_FOUND, refusal.Find(wxT("holds the image itself")));
@@ -127,7 +127,7 @@ TEST(PictureSet, AnObjectWithoutAPicture_IsStillRefused)
 
 	ibDataNode params;
 	params.SetValue(wxT("data"), wxString::FromUTF8(kOnePixelPng));
-	params.SetValue(wxT("name"), wxT("mark"));
+	params.SetValue(wxT("name"), wxString(wxT("mark")));
 
 	ibDataNode result;
 	wxString refusal;
