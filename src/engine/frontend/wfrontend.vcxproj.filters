@@ -124,6 +124,7 @@
     <ClInclude Include="web\webTimer.h">        <Filter>web</Filter></ClInclude>
     <ClInclude Include="web\webChildFrame.h">   <Filter>web</Filter></ClInclude>
     <ClInclude Include="visualView\visualHost.h">       <Filter>visualView</Filter></ClInclude>
+    <ClInclude Include="visualView\pasteSlot.h">        <Filter>visualView</Filter></ClInclude>
     <ClInclude Include="visualView\visualHostClient.h"> <Filter>visualView</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>

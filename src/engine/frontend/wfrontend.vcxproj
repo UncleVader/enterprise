@@ -255,6 +255,7 @@
     <ClInclude Include="web\webChildFrame.h" />
     <ClInclude Include="frontendTypes.h" />
     <ClInclude Include="visualView\visualHost.h" />
+    <ClInclude Include="visualView\pasteSlot.h" />
     <ClInclude Include="visualView\visualHostClient.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

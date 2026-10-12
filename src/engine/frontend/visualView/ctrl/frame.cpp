@@ -5,6 +5,7 @@
 
 #include "control.h"
 #include "form.h"
+#include "frontend/visualView/pasteSlot.h"
 #include "backend/compiler/procUnit.h"
 #include "core/serialize/dataBuilder.h"   // ibDataNode / ibDataBuilder / ibBinaryProvider
 #include "backend/metaCollection/metaFormObject.h"   // ibValueMetaObjectFormBase — IsCopyMode / IsPasteMode mark
@@ -287,6 +288,34 @@ ibValueFrame* ibValueFrame::CreatePasteObject(const ibReaderMemory& reader,
 
 	readerHeaderMemory->r_s32();   // version — reserved; READ, because it advances the cursor
 	const ibClassID& clsid = readerHeaderMemory->r_u64();
+
+	// THE SAME SLOT form_add BUILDS. NewObject alone parents the pasted
+	// control directly, so a table copied out of its SizerItem and pasted
+	// onto the form arrived with no layout flags. CreateObject is what
+	// form_add calls: for a form, a sizer, a sizer item, or a notebook
+	// page it inserts a SizerItem and applies the default flags for the
+	// child's kind (a container expands). Paste then fills that child.
+	// A copied SizerItem is already the slot, and a table or a toolbar
+	// takes its own children bare — ibPastedControlNeedsSizerItem.
+	const ibCtorAbstractType* ctor = ibValue::GetAvailableCtor(clsid);
+	const wxString className = ctor != nullptr ? ctor->GetClassName() : wxString();
+	if (dstParent != nullptr && !className.IsEmpty()
+		&& ibPastedControlNeedsSizerItem(
+			dstParent->GetComponentType(),
+			dstParent->GetObjectTypeName(),
+			dstParent->GetClassName(),
+			className))
+	{
+		ibValueFrame* shell = dstForm->CreateObject(className, dstParent);
+		if (shell == nullptr)
+			return nullptr;
+		if (shell->GetComponentType() == COMPONENT_TYPE_SIZERITEM) {
+			if (shell->GetChildCount() == 0)
+				return nullptr;
+			return shell->GetChild(0);
+		}
+		return shell;
+	}
 
 	return dstForm->NewObject(clsid, dstParent);
 }
