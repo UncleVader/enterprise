@@ -27,6 +27,7 @@
 #include "wfrontend.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/webIssuedBearer.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -218,52 +219,28 @@ std::string Field(const httplib::Request& req, const std::string& key)
 	return it != req.params.end() ? it->second : std::string();
 }
 
-// Extract the session id preferred by the client. Web tabs generate
-// their own random id in sessionStorage and forward it via the
-// `X-OES-Session` header, so every browser tab — even multiple in
-// the same browser — gets a distinct server session. Cookie lookup
-// is the legacy fallback for non-tab-aware clients.
+// The session id this request may name. The server minted it. A ?sid=
+// on the query is not a session: an image and the event stream send
+// the cookie instead.
 std::string SessionIdFromReq(const httplib::Request& req)
 {
 	const std::string header = req.get_header_value("X-OES-Session");
-	if (!header.empty())
-		return header;
-
-	// <img src>, <script src>, <link href> and anchor navigations can't
-	// attach custom headers — they carry only cookies. When a per-tab
-	// endpoint (e.g. /tab/N/icon) is reachable via plain GET the client
-	// appends ?sid=<tabSid>; fall back to that when the header is absent.
-	if (req.has_param("sid")) {
-		const std::string sid = req.get_param_value("sid");
-		if (!sid.empty())
-			return sid;
-	}
-
+	const std::string querySid = req.has_param("sid") ? req.get_param_value("sid") : std::string();
 	const std::string cookie = req.get_header_value("Cookie");
-	const auto pos = cookie.find("oes_session=");
-	if (pos == std::string::npos)
-		return std::string();
-	// oes_session is a dashed UUID (36 chars: 8-4-4-4-12). Slice up to
-	// the next '; ' delimiter instead of assuming a fixed length — gives
-	// us one parser whether the cookie is the first or the tail entry
-	// and survives a future id-format change.
-	const std::size_t start = pos + 12;
-	const std::size_t end   = cookie.find(';', start);
-	return (end == std::string::npos)
-		? cookie.substr(start)
-		: cookie.substr(start, end - start);
+	return ibWebPresentedSessionId(header, querySid, cookie);
 }
 
-// Extract session id, or emit 401 "no session" and return false. Every
-// session-bound endpoint does the same 2-line check; this factors it
-// into one inline guard so handlers read as `if (!RequireSessionId…) return;`.
+// Extract a live session id, or emit 401 and return false. An empty id
+// is "no session". An id this process did not mint, or one it already
+// destroyed, is "session lost" — copying a registry guid out of
+// /admin/locks does not name a session.
 bool RequireSessionId(const httplib::Request& req, httplib::Response& res, std::string& id)
 {
 	id = SessionIdFromReq(req);
-	if (!id.empty())
+	if (!id.empty() && wfrontendSessionExists(id))
 		return true;
 	res.status = 401;
-	res.set_content("no session\n", "text/plain");
+	res.set_content(id.empty() ? "no session\n" : "session lost\n", "text/plain");
 	return false;
 }
 
@@ -529,29 +506,22 @@ int main(int argc, char** argv)
 		// fresh one so OnStart re-runs and default forms re-appear —
 		// otherwise F5 on an empty session just re-shows the placeholder
 		// forever.
-		// Tab-local id: client's X-OES-Session header (sessionStorage)
-		// wins, cookie is the legacy fallback. If the tab has a
-		// sessionStorage id that the server doesn't know yet (fresh
-		// tab opened in an existing browser), CreateSessionWithId
-		// registers it.
+		// The document request cannot send X-OES-Session. A cookie that
+		// names a live session is reused. Anything else — including an
+		// id the client invented — is discarded and a new bearer is minted.
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			id = wfrontendCreateSession();
-			std::cerr << "[GET /] created new session id=" << id << std::endl;
+			std::cerr << "[GET /] minted a session" << std::endl;
 		}
-		else if (wfrontendSessionExists(id)) {
+		else {
 			const std::size_t tc = wfrontendSessionTabCount(id);
-			std::cerr << "[GET /] reusing session id=" << id
-				<< " tabCount=" << tc << std::endl;
+			std::cerr << "[GET /] reusing a session tabCount=" << tc << std::endl;
 			if (tc == 0) {
 				wfrontendDestroySession(id);
 				std::cerr << "[GET /] destroyed empty session, re-minting" << std::endl;
-				id = wfrontendCreateSessionWithId(id);
+				id = wfrontendCreateSession();
 			}
-		}
-		else {
-			std::cerr << "[GET /] session id=" << id << " unknown - creating" << std::endl;
-			id = wfrontendCreateSessionWithId(id);
 		}
 
 		// No HttpOnly: harmless here and makes DevTools inspection easier.
@@ -563,7 +533,7 @@ int main(int argc, char** argv)
 
 		// Client HTML/CSS/JS lives in wfrontend.dll so Apache/IIS/CGI
 		// hosts can serve the same bytes from a single source of truth.
-		res.set_content(wfrontendClientHTML(), "text/html; charset=utf-8");
+		res.set_content(ibWebClientPage(wfrontendClientHTML(), id), "text/html; charset=utf-8");
 	});
 
 	svr.Get(prefix + "/ping", [](const httplib::Request&, httplib::Response& res) {
@@ -587,6 +557,11 @@ int main(int argc, char** argv)
 		if (id.empty()) {
 			res.set_content(R"({"authenticated":false,"tabs":[]})",
 				"application/json; charset=utf-8");
+			return;
+		}
+		if (!wfrontendSessionExists(id)) {
+			res.status = 401;
+			res.set_content("session lost\n", "text/plain");
 			return;
 		}
 		res.set_content(wfrontendSessionInfoJSON(id),
@@ -735,7 +710,11 @@ int main(int argc, char** argv)
 	// connection errors.
 	svr.Get(prefix + "/stream", [](const httplib::Request& req, httplib::Response& res) {
 		const std::string sid = SessionIdFromReq(req);
-		if (sid.empty()) { res.status = 401; res.set_content("no session\n","text/plain"); return; }
+		if (sid.empty() || !wfrontendSessionExists(sid)) {
+			res.status = 401;
+			res.set_content(sid.empty() ? "no session\n" : "session lost\n", "text/plain");
+			return;
+		}
 
 		// Proxy-buffering hints — nginx sees X-Accel-Buffering, Apache
 		// mod_proxy respects Cache-Control: no-cache plus the flushed
@@ -828,9 +807,10 @@ int main(int argc, char** argv)
 	// module manager and touches appData state.
 	svr.Get(prefix + R"(/form/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
 		const std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
-			res.set_content("no session - GET / first\n", "text/plain");
+			res.set_content(id.empty() ? "no session - GET / first\n" : "session lost\n",
+				"text/plain");
 			return;
 		}
 		const int metaID = std::atoi(req.matches[1].str().c_str());
@@ -845,6 +825,11 @@ int main(int argc, char** argv)
 	svr.Get(prefix + "/debug-status",
 		[](const httplib::Request& req, httplib::Response& res) {
 			const std::string sid = SessionIdFromReq(req);
+			if (!sid.empty() && !wfrontendSessionExists(sid)) {
+				res.status = 401;
+				res.set_content("session lost\n", "text/plain");
+				return;
+			}
 			const bool dbg    = wfrontendDebugMode();
 			const bool paused = !sid.empty() && wfrontendSessionPaused(sid);
 			res.set_content(
@@ -878,25 +863,33 @@ int main(int argc, char** argv)
 		}
 
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
 			res.set_content("no session - GET / first to obtain one\n", "text/plain");
 			return;
 		}
-		// Tab's sessionStorage id (X-OES-Session header) is generated by
-		// JS independently from the server's cookie — on a fresh tab the
-		// first XHR can arrive with an id the server has never registered.
-		// Mirror GET /'s create-on-unknown behaviour so POST /login doesn't
-		// 401 just because the tab happened to beat GET / in registering.
-		if (!wfrontendSessionExists(id))
-			id = wfrontendCreateSessionWithId(id);
 
-		if (!wfrontendLogin(id, user, pass)) {
+		const std::string adopted = wfrontendLogin(id, user, pass);
+		if (adopted.empty()) {
 			res.status = 401;
 			res.set_content("login failed\n", "text/plain");
 			return;
 		}
-		res.set_content("ok (" + id + " / " + user + ")\n", "text/plain");
+		res.set_header("Set-Cookie", "oes_session=" + adopted + "; Path=/");
+		res.set_content(ibWebLoginAdopted(adopted), "application/json");
+	});
+
+	// A second tab asks for its own bearer. The id in the body is the
+	// one the server minted; the caller does not choose it.
+	svr.Post(prefix + "/session/mint", [](const httplib::Request&, httplib::Response& res) {
+		const std::string id = wfrontendCreateSession();
+		if (id.empty()) {
+			res.status = 500;
+			res.set_content("no session\n", "text/plain");
+			return;
+		}
+		res.set_header("Set-Cookie", "oes_session=" + id + "; Path=/");
+		res.set_content(ibWebLoginAdopted(id), "application/json");
 	});
 
 	svr.Post(prefix + "/logout", [](const httplib::Request& req, httplib::Response& res) {
