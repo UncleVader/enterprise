@@ -130,6 +130,38 @@ ibZipBudget Tight()
 	return budget;
 }
 
+// Puts the two database-archive overrides back when the test ends.
+struct DatabaseBudgetEnv {
+	DatabaseBudgetEnv()
+	{
+		m_hadEntry = wxGetEnv(wxT("OES_ZIP_DATABASE_ENTRY_MB"), &m_entry);
+		m_hadTotal = wxGetEnv(wxT("OES_ZIP_DATABASE_TOTAL_MB"), &m_total);
+		wxUnsetEnv(wxT("OES_ZIP_DATABASE_ENTRY_MB"));
+		wxUnsetEnv(wxT("OES_ZIP_DATABASE_TOTAL_MB"));
+	}
+
+	~DatabaseBudgetEnv()
+	{
+		Restore(wxT("OES_ZIP_DATABASE_ENTRY_MB"), m_hadEntry, m_entry);
+		Restore(wxT("OES_ZIP_DATABASE_TOTAL_MB"), m_hadTotal, m_total);
+	}
+
+	static void Restore(const wxString& name, bool had, const wxString& value)
+	{
+		if (had)
+			wxSetEnv(name, value);
+		else
+			wxUnsetEnv(name);
+	}
+
+	bool m_hadEntry = false;
+	bool m_hadTotal = false;
+	wxString m_entry;
+	wxString m_total;
+};
+
+constexpr uint64_t kMb = 1024ull * 1024ull;
+
 } // namespace
 
 TEST(ZipBudget, OrdinaryArchiveKeepsConfigUserAndData)
@@ -219,6 +251,7 @@ TEST(ZipBudget, HighlyCompressibleEntryStopsWhenTheDeclaredSizeIsALie)
 TEST(ZipBudget, DeclaredSizePastTheProductionBudgetIsRefused)
 {
 	WxReady wx;
+	DatabaseBudgetEnv env;
 	auto bytes = ZipOf({ { "config", "CFG" } });
 	ASSERT_TRUE(PatchUncompressedSize(bytes, "config", 0x7fffffffu));
 	auto input = Open(bytes);
@@ -462,4 +495,45 @@ TEST(ZipBudget, XmlCountersStopPastTheBudget)
 	EXPECT_EQ(ibCountXmlMarks(wxT("<a></a><b><c>"), 3), 4u);
 	EXPECT_EQ(ibCountXmlItems(wxT("<c r=\"A1\"/><col/><c>"), wxT("c"), 1), 2u);
 	EXPECT_EQ(ibCountXmlItems(wxT("<si/><size/><si>"), wxT("si"), 5), 2u);
+}
+
+TEST(ZipBudget, DatabaseBudgetDefaultsWithoutAnOverride)
+{
+	WxReady wx;
+	DatabaseBudgetEnv env;
+	const ibZipBudget budget = ibZipBudgetForDatabase();
+	EXPECT_EQ(budget.maxEntryBytes, 512ull * kMb);
+	EXPECT_EQ(budget.maxTotalBytes, 1024ull * kMb);
+}
+
+TEST(ZipBudget, DatabaseBudgetFollowsMegabyteOverrides)
+{
+	WxReady wx;
+	DatabaseBudgetEnv env;
+	wxSetEnv(wxT("OES_ZIP_DATABASE_ENTRY_MB"), wxT("2048"));
+	wxSetEnv(wxT("OES_ZIP_DATABASE_TOTAL_MB"), wxT("8192"));
+	const ibZipBudget budget = ibZipBudgetForDatabase();
+	EXPECT_EQ(budget.maxEntryBytes, 2048ull * kMb);
+	EXPECT_EQ(budget.maxTotalBytes, 8192ull * kMb);
+}
+
+TEST(ZipBudget, DatabaseEntryOverrideRaisesTheTotalToFitIt)
+{
+	WxReady wx;
+	DatabaseBudgetEnv env;
+	wxSetEnv(wxT("OES_ZIP_DATABASE_ENTRY_MB"), wxT("4096"));
+	const ibZipBudget budget = ibZipBudgetForDatabase();
+	EXPECT_EQ(budget.maxEntryBytes, 4096ull * kMb);
+	EXPECT_EQ(budget.maxTotalBytes, 4096ull * kMb);
+}
+
+TEST(ZipBudget, DatabaseBudgetIgnoresABadOverride)
+{
+	WxReady wx;
+	DatabaseBudgetEnv env;
+	wxSetEnv(wxT("OES_ZIP_DATABASE_ENTRY_MB"), wxT("nope"));
+	wxSetEnv(wxT("OES_ZIP_DATABASE_TOTAL_MB"), wxT("0"));
+	const ibZipBudget budget = ibZipBudgetForDatabase();
+	EXPECT_EQ(budget.maxEntryBytes, 512ull * kMb);
+	EXPECT_EQ(budget.maxTotalBytes, 1024ull * kMb);
 }

@@ -29,6 +29,12 @@ struct ibZipBudget {
 // A workbook's parts, a database archive, and a help file are different sizes.
 // Each budget is large enough for a real file of that kind and small enough
 // that one entry cannot exhaust the process.
+//
+// The database defaults are 512 MB for one entry and 1 GB for the archive.
+// A larger base sets OES_ZIP_DATABASE_ENTRY_MB and OES_ZIP_DATABASE_TOTAL_MB
+// to whole megabytes. An empty or non-numeric value leaves the default.
+// When only the entry size is set and it is above the default total, the
+// total rises to that entry so the one data entry can be read.
 BACKEND_API ibZipBudget ibZipBudgetForWorkbook();
 BACKEND_API ibZipBudget ibZipBudgetForDatabase();
 BACKEND_API ibZipBudget ibZipBudgetForHelp();

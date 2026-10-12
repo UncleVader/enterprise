@@ -3,7 +3,10 @@
 #include <wx/log.h>
 #include <wx/zipstrm.h>
 
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -40,6 +43,37 @@ wxString DatabaseEntryKey(const wxString& name, void*)
 	return wxString();
 }
 
+// Whole megabytes from the environment. Zero, a sign, a suffix and anything
+// that does not fit in the byte counter are ignored so a bad value cannot
+// turn the budget off or wrap it.
+bool ReadMegabytes(const wxString& name, uint64_t& bytes)
+{
+	wxString raw;
+	if (!wxGetEnv(name, &raw))
+		return false;
+	raw.Trim(true).Trim(false);
+	if (raw.empty())
+		return false;
+
+	const wxScopedCharBuffer utf8 = raw.ToUTF8();
+	if (!utf8)
+		return false;
+
+	errno = 0;
+	char* end = nullptr;
+	const unsigned long long megabytes = std::strtoull(utf8.data(), &end, 10);
+	if (end == utf8.data() || *end != '\0' || errno == ERANGE || megabytes == 0)
+		return false;
+
+	constexpr unsigned long long kMaxMegabytes =
+		std::numeric_limits<uint64_t>::max() / (1024ull * 1024ull);
+	if (megabytes > kMaxMegabytes)
+		return false;
+
+	bytes = static_cast<uint64_t>(megabytes) * 1024ull * 1024ull;
+	return true;
+}
+
 } // namespace
 
 ibZipBudget ibZipBudgetForWorkbook()
@@ -59,6 +93,19 @@ ibZipBudget ibZipBudgetForDatabase()
 	budget.maxTotalBytes = 1024ull * 1024ull * 1024ull;
 	budget.maxEntries = 64;
 	budget.maxMillis = 120000;
+
+	uint64_t entryBytes = 0;
+	const bool hasEntry = ReadMegabytes(wxT("OES_ZIP_DATABASE_ENTRY_MB"), entryBytes);
+	if (hasEntry)
+		budget.maxEntryBytes = entryBytes;
+
+	uint64_t totalBytes = 0;
+	const bool hasTotal = ReadMegabytes(wxT("OES_ZIP_DATABASE_TOTAL_MB"), totalBytes);
+	if (hasTotal)
+		budget.maxTotalBytes = totalBytes;
+	else if (hasEntry && budget.maxTotalBytes < budget.maxEntryBytes)
+		budget.maxTotalBytes = budget.maxEntryBytes;
+
 	return budget;
 }
 
