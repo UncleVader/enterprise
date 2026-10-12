@@ -247,6 +247,7 @@
   <ItemGroup>
     <ClInclude Include="wfrontend.h" />
     <ClInclude Include="web\webSession.h" />
+    <ClInclude Include="web\webAppBorrow.h" />
     <ClInclude Include="web\webApplication.h" />
     <ClInclude Include="web\webFrame.h" />
     <ClInclude Include="web\webWindow.h" />

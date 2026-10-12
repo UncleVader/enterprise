@@ -1,5 +1,6 @@
 #include "webApplication.h"
 
+#include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <wx/log.h>
@@ -317,14 +318,24 @@ void ibWebApplication::MarkDirty()
 	m_seqCv.notify_all();
 }
 
+void ibWebApplication::RequestStopWait()
+{
+	m_waitStopped.store(true, std::memory_order_release);
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	m_seqCv.notify_all();
+}
+
 uint64_t ibWebApplication::WaitForChange(uint64_t lastSeen, int timeoutMs)
 {
 	std::unique_lock<std::mutex> lk(m_seqMtx);
+	const auto changed = [this, lastSeen] {
+		return m_waitStopped.load(std::memory_order_acquire)
+			|| m_seq.load() != lastSeen;
+	};
 	if (timeoutMs <= 0) {
-		m_seqCv.wait(lk, [this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait(lk, changed);
 	} else {
-		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs),
-			[this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs), changed);
 	}
 	return m_seq.load();
 }
