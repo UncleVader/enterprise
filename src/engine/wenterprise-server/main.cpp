@@ -5,6 +5,7 @@
 // smoke-test endpoints (/, /ping, /login, /logout) on top of a real
 // database connection.
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -27,6 +28,7 @@
 #include "wfrontend.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/session/webStreamGate.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -341,7 +343,8 @@ bool InitBackend(const CmdArgs& args)
 class ServedTaskQueue final : public httplib::TaskQueue {
 public:
 	ServedTaskQueue()
-		: m_pool(CPPHTTPLIB_THREAD_POOL_COUNT, CPPHTTPLIB_THREAD_POOL_MAX_COUNT) {}
+		: m_pool(CPPHTTPLIB_THREAD_POOL_COUNT, CPPHTTPLIB_THREAD_POOL_MAX_COUNT,
+			ibWebStreamQueueLimit(CPPHTTPLIB_THREAD_POOL_MAX_COUNT)) {}
 
 	bool enqueue(std::function<void()> fn) override {
 		return m_pool.enqueue([fn = std::move(fn)]() { wfrontendServe(fn); });
@@ -733,9 +736,35 @@ int main(int argc, char** argv)
 	// from collapsing the connection. The polling loop stays on the
 	// client as a fallback when EventSource is unavailable or the SSE
 	// connection errors.
-	svr.Get(prefix + "/stream", [](const httplib::Request& req, httplib::Response& res) {
+	static ibWebStreamGate streamGate(
+		ibWebStreamPerSessionCap,
+		ibWebStreamGlobalCap(CPPHTTPLIB_THREAD_POOL_MAX_COUNT));
+
+	svr.Get(prefix + "/stream", [&streamGate](const httplib::Request& req, httplib::Response& res) {
 		const std::string sid = SessionIdFromReq(req);
 		if (sid.empty()) { res.status = 401; res.set_content("no session\n","text/plain"); return; }
+
+		const ibWebStreamGate::Answer admit = streamGate.TryOpen(sid, wfrontendSessionLive(sid));
+		if (admit == ibWebStreamGate::Answer::NotLive) {
+			res.status = 401;
+			res.set_content("session is not signed in\n", "text/plain");
+			return;
+		}
+		if (admit != ibWebStreamGate::Answer::Open) {
+			res.status = 503;
+			res.set_content("too many streams\n", "text/plain");
+			return;
+		}
+
+		// The slot is released once. httplib can copy the response, and
+		// each copy's destructor runs the releaser.
+		auto released = std::make_shared<std::atomic<bool>>(false);
+		struct Hold {
+			ibWebStreamGate& gate;
+			std::string sid;
+			bool armed = true;
+			~Hold() { if (armed) gate.Close(sid); }
+		} hold{ streamGate, sid };
 
 		// Proxy-buffering hints — nginx sees X-Accel-Buffering, Apache
 		// mod_proxy respects Cache-Control: no-cache plus the flushed
@@ -757,11 +786,14 @@ int main(int argc, char** argv)
 					return false;
 
 				// Block up to 25s for the session's seq to advance past
-				// lastSeen. Timeout = we send a heartbeat so the peer
-				// knows we're alive and intermediaries don't close us.
+				// lastSeen. Timeout on a live session sends a heartbeat.
+				// A session that is gone closes; the same seq is not a
+				// reason to ping again immediately.
 				const auto upd = wfrontendLiveWait(sid, *lastSeen, 25000);
-
-				if (upd.seq == *lastSeen) {
+				const ibWebStreamTick tick = ibWebStreamOnWait(upd.live, upd.seq, *lastSeen);
+				if (tick == ibWebStreamTick::Close)
+					return false;
+				if (tick == ibWebStreamTick::Ping) {
 					static const char kPing[] = ": ping\n\n";
 					return sink.write(kPing, sizeof(kPing) - 1);
 				}
@@ -779,7 +811,13 @@ int main(int argc, char** argv)
 				}
 				body += "\n\n";
 				return sink.write(body.data(), body.size());
+			},
+			[&streamGate, sid, released](bool) {
+				if (released->exchange(true))
+					return;
+				streamGate.Close(sid);
 			});
+		hold.armed = false;
 	});
 
 	// POST /tab/<i>: switch the session's active tab to index <i> and

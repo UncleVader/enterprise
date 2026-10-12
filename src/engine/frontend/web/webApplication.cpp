@@ -320,13 +320,49 @@ void ibWebApplication::MarkDirty()
 uint64_t ibWebApplication::WaitForChange(uint64_t lastSeen, int timeoutMs)
 {
 	std::unique_lock<std::mutex> lk(m_seqMtx);
+	const auto changed = [this, lastSeen] {
+		return m_liveClosed || m_seq.load() != lastSeen;
+	};
 	if (timeoutMs <= 0) {
-		m_seqCv.wait(lk, [this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait(lk, changed);
 	} else {
-		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs),
-			[this, lastSeen]{ return m_seq.load() != lastSeen; });
+		m_seqCv.wait_for(lk, std::chrono::milliseconds(timeoutMs), changed);
 	}
 	return m_seq.load();
+}
+
+bool ibWebApplication::BeginLiveWait()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	if (m_liveClosed)
+		return false;
+	++m_liveWaiters;
+	return true;
+}
+
+void ibWebApplication::EndLiveWait()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	if (m_liveWaiters > 0)
+		--m_liveWaiters;
+	m_seqCv.notify_all();
+}
+
+bool ibWebApplication::LiveClosed()
+{
+	std::lock_guard<std::mutex> lk(m_seqMtx);
+	return m_liveClosed;
+}
+
+void ibWebApplication::CloseLiveWait()
+{
+	{
+		std::lock_guard<std::mutex> lk(m_seqMtx);
+		m_liveClosed = true;
+	}
+	m_seqCv.notify_all();
+	std::unique_lock<std::mutex> lk(m_seqMtx);
+	m_seqCv.wait(lk, [this] { return m_liveWaiters == 0; });
 }
 
 void ibWebApplication::PostWork(std::function<void()> fn)
@@ -346,6 +382,10 @@ void ibWebApplication::PostWork(std::function<void()> fn)
 
 void ibWebApplication::OnExit()
 {
+	// Wake a stream blocked in WaitForChange and wait until it has left.
+	// The rest of this function deletes the frame the waiter was reading.
+	CloseLiveWait();
+
 	if (!m_initialized)
 		return;
 
