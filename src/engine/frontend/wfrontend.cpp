@@ -176,6 +176,17 @@ public:
 		return m_sessions.find(id) != m_sessions.end();
 	}
 
+	// Login has built this session's application. A minted id that has
+	// not signed in is not enough for a configuration list.
+	bool Authenticated(const std::string& id) const
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end() || !it->second)
+			return false;
+		return it->second->IsAuthenticated();
+	}
+
 	void Destroy(const std::string& id)
 	{
 		std::shared_ptr<ibWebSession> dying;
@@ -1116,6 +1127,11 @@ WFRONTEND_API bool wfrontendSessionExists(const std::string& sessionId)
 	return Sessions().Exists(sessionId);
 }
 
+WFRONTEND_API bool wfrontendSessionAuthenticated(const std::string& sessionId)
+{
+	return Sessions().Authenticated(sessionId);
+}
+
 WFRONTEND_API void wfrontendDestroySession(const std::string& sessionId)
 {
 	Sessions().Destroy(sessionId);
@@ -1616,8 +1632,24 @@ WFRONTEND_API std::string wfrontendAllFunctionsJSON(const std::string& sessionId
 // objects assigned to it via the Default command section). Used by web
 // sidebar to surface section navigation parallel to desktop's
 // ibSubSystemWindow.
-WFRONTEND_API std::string wfrontendInterfacesJSON()
+WFRONTEND_API std::string wfrontendInterfacesJSON(const std::string& sessionId)
 {
+	Sessions().Touch(sessionId);
+	auto none = []() {
+		nlohmann::json j;
+		j["interfaces"] = nlohmann::json::array();
+		return j.dump();
+	};
+	if (!g_initialized.load() || activeMetaData == nullptr)
+		return none();
+	// AccessRight_Use reads appData->GetUserRoleArray() on the calling
+	// thread. The HTTP thread's current session is the service account,
+	// so the list is built on the caller's worker.
+	ibWebApplication* app = Sessions().FindApp(sessionId);
+	if (app == nullptr)
+		return none();
+	try {
+		return app->RunOnWorker([]() -> std::string {
 	if (!g_initialized.load() || activeMetaData == nullptr) {
 		nlohmann::json j;
 		j["interfaces"] = nlohmann::json::array();
@@ -1700,6 +1732,10 @@ WFRONTEND_API std::string wfrontendInterfacesJSON()
 	nlohmann::json j;
 	j["interfaces"] = std::move(arr);
 	return j.dump();
+		}).get();
+	} catch (...) {
+		return none();
+	}
 }
 
 // Mirrors desktop's ibDialogFunctionAll double-click handler which
