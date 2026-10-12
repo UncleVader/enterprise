@@ -22,6 +22,17 @@
 
 #include <wx/intl.h>
 
+// A failed wxLocale::Init does not refuse opening the base.
+//
+// wxLocale::DoInit sets m_initialized before setlocale returns. A second Init
+// asserts in a debug build and returns false. Neutral "en" is wxLANGUAGE_ENGLISH,
+// canonical name en_GB, so a machine with en_US and not en_GB fails the one
+// attempt. The open continues on the C locale.
+inline bool ibLocaleOpenContinues(bool /*initSucceeded*/)
+{
+	return true;
+}
+
 class ibPluginManager;
 class ibWorkerPool;
 
@@ -66,7 +77,8 @@ public:
 	wxString         GetLocaleName() const    { return m_locale.GetName(); }
 
 	// The platform locale, set once for the process: the first base to ask settles it, and a later base's
-	// wish is not a second locale — wxLocale is process state. False when no catalog could be set at all.
+	// wish is not a second locale — wxLocale is process state. A language the machine cannot set
+	// does not refuse the open; the process keeps the C locale. See ibLocaleOpenContinues.
 	bool InitLocale(const wxString& locale);
 
 	// A count from a settings file — backend.conf, a base's infobase.conf: left out or 0 means the default, and
