@@ -165,9 +165,9 @@ static bool SaveBeforeChildLaunch(wxWindow* parent)
 	return true;
 }
 
-// The designer stays open, so a child on this same local file cannot open it.
-// Said here, before the process is started: the child would otherwise exit at
-// once and the menu would have nothing to show.
+// Super mode keeps a local file to itself. SuperClassic, the shipped engine,
+// shares it, so the thick client is not stopped here. Said before the process
+// is started, and before a restart would have ended the previous run.
 static bool RefuseSecondProcessOnLocalFile(wxWindow* parent)
 {
 	if (appData == nullptr)
@@ -175,7 +175,8 @@ static bool RefuseSecondProcessOnLocalFile(wxWindow* parent)
 
 	const bool heldStandalone = ibFirebirdLeaderMode::CurrentRole()
 		== ibFirebirdLeaderMode::Role::Standalone;
-	const wxString why = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone);
+	const wxString why = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone,
+		ibConfiguredFirebirdServerMode());
 	if (why.IsEmpty())
 		return false;
 

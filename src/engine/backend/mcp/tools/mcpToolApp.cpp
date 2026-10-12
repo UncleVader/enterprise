@@ -107,9 +107,9 @@ public:
 			"as a side effect (database_diff lists only the structure).\n\n"
 			"After changing a module: config_apply, then restart: true - a running application keeps the "
 			"bytecode it came up with, so the new code is invisible until it is started again.\n\n"
-			"A local file base this process already holds cannot be opened by the application as well: "
-			"embedded Firebird on a local path is single-process, and the launch is refused rather than "
-			"started and lost. A server base, or a base on a network share, runs beside this one.");
+			"Firebird Super mode keeps a local file to itself, and a launch beside this process is refused. "
+			"SuperClassic, which is what the shipped engine uses, shares that file, so the thick client "
+			"starts on the same base. A server base and a network share do too.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -169,12 +169,14 @@ public:
 			return false;
 		}
 
-		// ASKED BEFORE ANYTHING IS ENDED. A local file this designer holds cannot be opened by the
-		// child at all — embedded Firebird is single-process there — and a restart that closed the
-		// previous run first would have spent that run on a launch that cannot succeed.
+		// ASKED BEFORE ANYTHING IS ENDED. Super mode keeps a local file to itself, and a restart
+		// that closed the previous run first would have spent that run on a launch that cannot
+		// succeed. SuperClassic shares the file: the designer's thick client is that case, and
+		// an unreadable conf is not treated as Super.
 		const bool heldStandalone = ibFirebirdLeaderMode::CurrentRole()
 			== ibFirebirdLeaderMode::Role::Standalone;
-		refusal = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone);
+		refusal = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone,
+			ibConfiguredFirebirdServerMode());
 		if (!refusal.IsEmpty())
 			return false;
 
