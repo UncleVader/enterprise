@@ -52,3 +52,29 @@ TEST(SchemaIndex, AWiderStringIsNotTheSameIndex)
     const ibBackendColumnRawDB wide = ibBackendColumnRawDB::String(wxT("D"), 7, 50);
     EXPECT_FALSE(ibSameSchemaIndex(IndexOver(&narrow), IndexOver(&wide)));
 }
+
+// A non-unique attribute index (<table>_<field>_IX), not the key index. Indexing = Index
+// on a register attribute builds this one. A type change keeps the model id, and Firebird
+// refuses ALTER while INFORMATIONREGISTER7295_7305_IX still stands on FLD7305_S. The same
+// predicate covers it: the name is not what the differ asks, the physical layout is.
+TEST(SchemaIndex, AnAttributeIndexIsNotTheSameAfterARetype)
+{
+    const ibBackendColumnRawDB text = ibBackendColumnRawDB::String(wxT("D"), 7305, 10);
+    const ibBackendColumnRawDB reference = ibBackendColumnRawDB::Reference(wxT("D"), 0, wxEmptyString, 7305);
+
+    ibSchemaIndex was;
+    was.m_name = wxT("INFORMATIONREGISTER7295_7305_IX");
+    was.m_unique = false;
+    was.m_columns.push_back(&text);
+
+    ibSchemaIndex standing = was;
+    const ibBackendColumnRawDB stillText = ibBackendColumnRawDB::String(wxT("D"), 7305, 10);
+    standing.m_columns.clear();
+    standing.m_columns.push_back(&stillText);
+    EXPECT_TRUE(ibSameSchemaIndex(was, standing));
+
+    ibSchemaIndex retyped = was;
+    retyped.m_columns.clear();
+    retyped.m_columns.push_back(&reference);
+    EXPECT_FALSE(ibSameSchemaIndex(was, retyped));
+}
