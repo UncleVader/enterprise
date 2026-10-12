@@ -33,7 +33,9 @@ class ibSession;
 
 class ibWebSession {
 public:
-	ibWebSession(wxString id, wxString user);
+	// `id` is the bearer the client sends. `registryGuid` is the
+	// sys_session key and is a different value.
+	ibWebSession(wxString id, wxString registryGuid, wxString user);
 	~ibWebSession();
 
 	// Lifecycle:
@@ -52,6 +54,7 @@ public:
 	bool IsAuthenticated() const { return m_app != nullptr; }
 
 	const wxString& Id()         const { return m_id; }
+	void SetId(wxString id)          { m_id = std::move(id); }
 	const wxString& User()       const { return m_user; }
 	const wxString& ConfigName() const { return m_configName; }
 	ibWebApplication*  App()        const { return m_app.get(); }
@@ -67,6 +70,7 @@ public:
 
 private:
 	wxString m_id;
+	wxString m_registryGuid;
 	wxString m_user;
 	wxString m_configName;
 

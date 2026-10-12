@@ -7,7 +7,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -24,6 +23,7 @@
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/backend_exception.h"
+#include "backend/webIssuedBearer.h"
 #include "backend/databaseLayer/connectionHolder.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — the meta-watch sys_config read (ibQueryResult, no raw L1)
@@ -125,35 +125,48 @@ public:
 			it->second->Touch();
 	}
 
-	// Allocate a fresh unauthenticated session. The returned id is
-	// handed back as a cookie so subsequent requests (in particular
-	// POST /login) can identify the client.
+	// A fresh unauthenticated session. The id is minted here. A value
+	// the caller invented is not a session.
 	std::string Create()
 	{
-		return CreateWith(MakeRandomId());
-	}
-
-	// Same, but the caller supplies the id — used when the JS client
-	// minted a per-tab id in sessionStorage (so every browser tab
-	// gets its own ibWebSession instead of sharing one via cookie).
-	// If the id already exists, reuses; otherwise creates.
-	std::string CreateWith(const std::string& id)
-	{
+		std::string bearer;
+		std::string guid;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
-			if (m_sessions.find(id) != m_sessions.end())
-				return id;
+			bearer = m_bearers.Mint();
+			guid = m_bearers.RegistryGuid(bearer);
 		}
-		auto session = std::make_shared<ibWebSession>(wxString::FromUTF8(id.c_str()), wxString());
-		if (!session->OnInit())
+		auto session = std::make_shared<ibWebSession>(
+			wxString::FromUTF8(bearer.c_str()),
+			wxString::FromUTF8(guid.c_str()),
+			wxString());
+		if (!session->OnInit()) {
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_bearers.Revoke(bearer);
 			return std::string();
-
+		}
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_sessions.emplace(id, std::move(session));
+		m_sessions.emplace(bearer, std::move(session));
+		return bearer;
+	}
+
+	// An id this process did not mint does not become a session.
+	// An id it did mint is returned only when that session is still live.
+	std::string CreateWith(const std::string& id)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		if (!m_bearers.WasIssued(id))
+			return std::string();
+		if (m_sessions.find(id) == m_sessions.end())
+			return std::string();
 		return id;
 	}
 
-	bool Login(const std::string& id, const std::string& user, const std::string& password)
+	// Empty when the session is unknown or the password is refused.
+	// On success the previous bearer is dead and the returned one is
+	// the only id that still names this session. The registry guid
+	// stays the one Login already stored.
+	std::string Login(const std::string& id, const std::string& user, const std::string& password)
 	{
 		// shared_ptr copy under lock keeps the session alive for the
 		// whole Login — a racing Destroy (e.g. pagehide beacon on
@@ -163,11 +176,25 @@ public:
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			auto it = m_sessions.find(id);
-			if (it == m_sessions.end()) return false;
+			if (it == m_sessions.end()) return std::string();
 			s = it->second;
 		}
-		return s->Login(wxString::FromUTF8(user.c_str()),
-		                wxString::FromUTF8(password.c_str()));
+		if (!s->Login(wxString::FromUTF8(user.c_str()),
+		              wxString::FromUTF8(password.c_str())))
+			return std::string();
+
+		std::lock_guard<std::mutex> lock(m_mutex);
+		auto it = m_sessions.find(id);
+		if (it == m_sessions.end())
+			return std::string();
+		const std::string neu = m_bearers.Rotate(id);
+		if (neu.empty())
+			return std::string();
+		auto session = std::move(it->second);
+		m_sessions.erase(it);
+		session->SetId(wxString::FromUTF8(neu.c_str()));
+		m_sessions.emplace(neu, std::move(session));
+		return neu;
 	}
 
 	bool Exists(const std::string& id) const
@@ -186,6 +213,7 @@ public:
 				return;
 			dying = std::move(it->second);
 			m_sessions.erase(it);
+			m_bearers.Revoke(id);
 		}
 		// Run OnExit outside the lock so per-session teardown (which may
 		// touch backend state) does not serialise every other request.
@@ -283,6 +311,8 @@ public:
 		std::unordered_map<std::string, std::shared_ptr<ibWebSession>> dying;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
+			for (const auto& kv : m_sessions)
+				m_bearers.Revoke(kv.first);
 			dying.swap(m_sessions);
 		}
 		for (auto& kv : dying) {
@@ -291,18 +321,6 @@ public:
 	}
 
 private:
-	static std::string MakeRandomId()
-	{
-		// Shared format with ibGuid / sys_session.session — dashed UUID
-		// so browser cookie, X-OES-Session header, SessionManager map
-		// key, and the registry's session guid all read as the same
-		// string (no extra parse step when one crosses layers).
-		// Explicit wxString→std::string conversion: without ToStdString()
-		// MSVC chains two user-defined conversions (wxString → const char*
-		// → std::string) and warns C4927.
-		return ibGuid(ibGuid::newGuid()).str().ToStdString();
-	}
-
 	// Idle-session sweep + metadata-change watch. Wakes every sweep
 	// interval, collects session ids whose LastActiveMs is older than
 	// the idle cutoff, destroys them outside the map-lock (OnExit runs
@@ -537,6 +555,7 @@ private:
 	// in-flight Login / FireAction / OpenForm — the session survives
 	// until every borrower drops its copy.
 	std::unordered_map<std::string, std::shared_ptr<ibWebSession>> m_sessions;
+	ibWebIssuedBearers m_bearers;
 
 	// Sweep-thread plumbing. m_sweepCv lets the dtor unblock the
 	// in-flight `wait_for` instead of waiting the full interval; the same
@@ -1105,7 +1124,7 @@ WFRONTEND_API std::string wfrontendCreateSessionWithId(const std::string& id)
 	return Sessions().CreateWith(id);
 }
 
-WFRONTEND_API bool wfrontendLogin(const std::string& sessionId,
+WFRONTEND_API std::string wfrontendLogin(const std::string& sessionId,
 	const std::string& user, const std::string& password)
 {
 	return Sessions().Login(sessionId, user, password);

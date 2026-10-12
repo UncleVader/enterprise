@@ -64,8 +64,9 @@ std::int64_t NowMs()
 
 } // namespace
 
-ibWebSession::ibWebSession(wxString id, wxString user)
+ibWebSession::ibWebSession(wxString id, wxString registryGuid, wxString user)
 	: m_id(std::move(id))
+	, m_registryGuid(std::move(registryGuid))
 	, m_user(std::move(user))
 	, m_lastActiveMs(NowMs())
 {
@@ -112,13 +113,12 @@ bool ibWebSession::Login(const wxString& user, const wxString& password)
 	// enterprise/mainApp.cpp). The anonymous row lands in sys_session
 	// immediately (empty userName + WebClient kind) so
 	// admin / Active-Users listings see "login in progress" between
-	// GET / (cookie mint) and POST /login settling. Reuse the tab's
-	// sessionStorage id as the registry's session guid — one identifier
-	// across cookie / SessionManager / sys_session.session column. Auth
-	// happens separately via session->Open below so a wrong password
-	// just rejects the Attach; the anonymous row can be retried with new
-	// creds without re-creating the ticket.
-	const wxString& presetGuid = m_id;
+	// GET / (cookie mint) and POST /login settling. The registry guid
+	// was minted with the session and is not the bearer the client
+	// sends. Auth happens separately via session->Open below so a wrong
+	// password just rejects the Attach; the anonymous row can be retried
+	// with new creds without re-creating the ticket.
+	const wxString& presetGuid = m_registryGuid;
 	const wxString  address    = wxString::FromUTF8(wfrontendServerAddress().c_str());
 	// CreateSession throws via ibBackendCoreException::Error on registry
 	// Connect failure; web HTTP handlers expect bool
