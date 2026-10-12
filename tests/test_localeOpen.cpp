@@ -12,7 +12,9 @@
 TEST(LocaleOpen, NeutralEnglishIsBritishAndAFailedInitDoesNotRefuseTheOpen) {
 	const wxLanguageInfo* info = wxLocale::FindLanguageInfo(wxT("en"));
 	ASSERT_NE(info, nullptr);
-	EXPECT_EQ(info->CanonicalName, wxT("en_GB"));
+	// The short name is "en". The name setlocale is given is the region
+	// reference, en_GB, which is why a machine with only en_US fails.
+	EXPECT_EQ(info->GetCanonicalWithRegion(), wxString(wxT("en_GB")));
 
 	wxLocale locale;
 	const bool set = locale.Init(info->Language);
