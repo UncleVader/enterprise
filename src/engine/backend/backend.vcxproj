@@ -22,6 +22,7 @@
     <ClInclude Include="standardCommand.h" />
     <ClInclude Include="appData.h" />
     <ClInclude Include="webPublicError.h" />
+    <ClInclude Include="webGuardHeaders.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h" />
@@ -448,6 +449,7 @@
   <ItemGroup>
     <ClCompile Include="appData.cpp" />
     <ClCompile Include="webPublicError.cpp" />
+    <ClCompile Include="webGuardHeaders.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp" />
     <ClCompile Include="appDataQuery.cpp" />
