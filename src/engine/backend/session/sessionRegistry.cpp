@@ -938,8 +938,7 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 			{ wxT("lastActive"),  ibConst(ibValue(id.m_started)) },
 			{ wxT("computer"),    ibConst(ibValue(id.m_computer)) },
 		}));
-		SESSION_LOG("[session INSERT] ok guid=" << s.GetId()
-		          << " user='" << (const char*)userName.ToUTF8().data() << "'"
+		SESSION_LOG("[session INSERT] ok user='" << (const char*)userName.ToUTF8().data() << "'"
 		          << " mode=" << int(id.m_appMode));
 	}
 	catch (const ibCoreException& err) {
@@ -1800,11 +1799,12 @@ size_t ibSessionRegistry::SettleSilentPeers(const std::vector<wxString>& peers)
 	// What is still watched here stood still for the whole silence by our own clock — no owner either.
 	silent.insert(still.begin(), still.end());
 
-	for (const wxString& row : silent) {
-		SESSION_LOG("[session settle] removing " << row.ToStdString()
-		          << " - its lastActive stood still for " << kSilentSeconds << " s");
-		DeleteSessionRow(m_writeHolder, row);
+	if (!silent.empty()) {
+		SESSION_LOG("[session settle] removing " << silent.size()
+		          << " row(s) whose lastActive stood still for " << kSilentSeconds << " s");
 	}
+	for (const wxString& row : silent)
+		DeleteSessionRow(m_writeHolder, row);
 	if (!silent.empty()) {
 		try { JobRefreshSnapshot(); } catch (...) { /* swallowed: the next tick refreshes; the caller re-reads either way */ }
 	}
@@ -1874,8 +1874,7 @@ void ibSessionRegistry::JobCheckSignal()
 	// per admin write. A failed clear (dead connection) leaves the signal in DB to be picked up
 	// next tick (or by a peer process) — acceptable for a one-shot kick / reload directive.
 	for (const auto& p : pending) {
-		SESSION_LOG("[session SIGNAL] guid=" << (const char*)p.guid.ToUTF8().data()
-		          << " value='" << (const char*)p.signal.ToUTF8().data() << "'");
+		SESSION_LOG("[session SIGNAL] value='" << (const char*)p.signal.ToUTF8().data() << "'");
 
 		if (p.signal == wxT("kick")) {
 			auto it = m_own.find(p.guid);

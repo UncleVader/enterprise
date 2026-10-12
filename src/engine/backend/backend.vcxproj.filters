@@ -64,6 +64,7 @@
       <Filter>compiler</Filter>
     </ClInclude>
     <ClInclude Include="appData.h" />
+    <ClInclude Include="webSessionTrace.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h">
@@ -1152,6 +1153,7 @@
       <Filter>compiler</Filter>
     </ClCompile>
     <ClCompile Include="appData.cpp" />
+    <ClCompile Include="webSessionTrace.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp">
       <Filter>cipher</Filter>

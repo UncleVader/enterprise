@@ -27,6 +27,7 @@
 #include "wfrontend.h"
 #include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
+#include "backend/webSessionTrace.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -537,12 +538,11 @@ int main(int argc, char** argv)
 		std::string id = SessionIdFromReq(req);
 		if (id.empty()) {
 			id = wfrontendCreateSession();
-			std::cerr << "[GET /] created new session id=" << id << std::endl;
+			std::cerr << ibWebSessionTrace("created", id) << std::endl;
 		}
 		else if (wfrontendSessionExists(id)) {
 			const std::size_t tc = wfrontendSessionTabCount(id);
-			std::cerr << "[GET /] reusing session id=" << id
-				<< " tabCount=" << tc << std::endl;
+			std::cerr << ibWebSessionTrace("reusing", id, static_cast<int>(tc)) << std::endl;
 			if (tc == 0) {
 				wfrontendDestroySession(id);
 				std::cerr << "[GET /] destroyed empty session, re-minting" << std::endl;
@@ -550,7 +550,7 @@ int main(int argc, char** argv)
 			}
 		}
 		else {
-			std::cerr << "[GET /] session id=" << id << " unknown - creating" << std::endl;
+			std::cerr << ibWebSessionTrace("unknown", id) << std::endl;
 			id = wfrontendCreateSessionWithId(id);
 		}
 
@@ -813,8 +813,7 @@ int main(int argc, char** argv)
 		std::string id;
 		if (!RequireSessionId(req, res, id)) return;
 		const int tabIndex = std::atoi(req.matches[1].str().c_str());
-		std::cerr << "[HTTP] DELETE /tab/" << tabIndex
-			<< " session=" << id
+		std::cerr << ibWebSessionTrace("close-tab", id, tabIndex)
 			<< " UA=" << req.get_header_value("User-Agent").substr(0, 40)
 			<< std::endl;
 		res.set_content(wfrontendCloseTab(id, tabIndex),
@@ -896,7 +895,7 @@ int main(int argc, char** argv)
 			res.set_content("login failed\n", "text/plain");
 			return;
 		}
-		res.set_content("ok (" + id + " / " + user + ")\n", "text/plain");
+		res.set_content(ibWebLoginOkBody(id, user), "text/plain");
 	});
 
 	svr.Post(prefix + "/logout", [](const httplib::Request& req, httplib::Response& res) {
