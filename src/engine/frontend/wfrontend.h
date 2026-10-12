@@ -137,18 +137,15 @@ WFRONTEND_API std::string wfrontendMenuJSON();
 //                          the oes_session cookie.
 //   Login(id, user, pw)  — authenticate the given session. On success
 //                          the session spins up its ibWebApplication
-//                          (main frame + CreateMainModule) and is ready
-//                          to serve form requests.
+//                          (main frame + CreateMainModule) and the
+//                          returned bearer replaces `id`. Empty on failure.
 //   SessionExists/Destroy/Count — bookkeeping.
 WFRONTEND_API std::string wfrontendCreateSession();
 
-// Create (or reuse) a session with a caller-supplied id. Used by the
-// web client: each browser tab mints its own random id in
-// sessionStorage and passes it via the `X-OES-Session` header, so
-// every tab has a distinct ibWebSession instead of sharing one
-// session across all tabs via the cookie jar.
+// The id of a session this process already minted, or empty. A caller
+// does not get to name a new session.
 WFRONTEND_API std::string wfrontendCreateSessionWithId(const std::string& id);
-WFRONTEND_API bool        wfrontendLogin(const std::string& sessionId,
+WFRONTEND_API std::string wfrontendLogin(const std::string& sessionId,
 	const std::string& user, const std::string& password);
 WFRONTEND_API bool        wfrontendSessionExists(const std::string& sessionId);
 // Signed in: the session is in the map and has its application. An

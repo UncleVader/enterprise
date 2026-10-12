@@ -90,6 +90,7 @@ add_executable(oes_tests
     test_webGuardHeaders.cpp
     test_webSessionId.cpp
     test_webSessionTrace.cpp
+    test_webIssuedBearer.cpp
     test_spreadsheetCompose.cpp
     test_spreadsheetDocument.cpp
     test_spreadsheetDescriptionNode.cpp

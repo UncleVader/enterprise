@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>OES Web</title>
+<html><head><meta charset="utf-8"><meta name="oes-session" content="OES_SID"><title>OES Web</title>
 <!-- OES_I18N — the server replaces this line with the caption dictionary run
      through the platform's gettext catalogs. Left as it is (a plain comment) the
      client falls back to the English defaults further down, so a client served
@@ -941,27 +941,16 @@ function endRequest(ok){
 }
 
 
-// Per-tab session id. Lives in sessionStorage, which is scoped to a
-// single browser tab — every new tab (or window) starts with its own
-// fresh id, so the server can back each tab with a distinct ibWebSession.
-// Cookie-only clients still work via the legacy fallback on the server,
-// but all fetches we make here attach X-OES-Session so the server routes
-// us correctly.
-function genTabSid(){
-  // Dashed UUID form — identical to ibGuid::str() on the server so
-  // this one string serves as X-OES-Session header, oes_session
-  // cookie, SessionManager map key, and sys_session.session PK.
-  // crypto.randomUUID is the modern path; the fallback hand-rolls
-  // a v4-ish layout so ancient browsers still produce a parsable
-  // UUID shape.
-  if (crypto && crypto.randomUUID) return crypto.randomUUID();
-  const hex = Array.from({length:32},()=>((Math.random()*16)|0).toString(16)).join('');
-  return hex.slice(0,8) + '-' + hex.slice(8,12) + '-4' + hex.slice(13,16)
-    + '-' + ((8 + ((Math.random()*4)|0)).toString(16)) + hex.slice(17,20)
-    + '-' + hex.slice(20,32);
+// The server minted this tab's id and wrote it into the page. A value
+// from sessionStorage is only a fallback when the page was not served
+// by the server (the marker is still the literal OES_SID).
+function sidFromDocument(){
+  const m = document.querySelector('meta[name="oes-session"]');
+  const v = m ? (m.getAttribute('content') || '') : '';
+  return /^[0-9a-f]{64}$/.test(v) ? v : '';
 }
-let tabSid = sessionStorage.getItem('oes_tab_sid') || genTabSid();
-sessionStorage.setItem('oes_tab_sid', tabSid);
+let tabSid = sidFromDocument() || sessionStorage.getItem('oes_tab_sid') || '';
+if (tabSid) sessionStorage.setItem('oes_tab_sid', tabSid);
 
 // "Duplicate tab" copies sessionStorage verbatim — both tabs boot
 // with the same oes_tab_sid, slam the same server-side ibWebSession,
@@ -983,13 +972,18 @@ if (typeof BroadcastChannel !== 'undefined') {
   };
   bc.postMessage({ type: 'ping', sid: tabSid });
   setTimeout(() => {
-    if (conflicted) {
-      tabSid = genTabSid();
-      sessionStorage.setItem('oes_tab_sid', tabSid);
-      // Clean reload — server mints a fresh session on the first hit
-      // with the new tabSid. The original tab keeps its session intact.
-      location.reload();
-    }
+    if (!conflicted) return;
+    // The other tab owns this bearer. Ask the server for a new one;
+    // the page reload then reads that id out of the document.
+    fetch(API + '/session/mint', { method:'POST', credentials:'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || !data.id) return;
+        tabSid = data.id;
+        sessionStorage.setItem('oes_tab_sid', tabSid);
+        location.reload();
+      })
+      .catch(() => {});
   }, 150);
 }
 
@@ -1012,8 +1006,7 @@ async function netFetch(url, opts){
 
 // Best-effort tab-close cleanup. pagehide fires on close and on
 // reload. fetch with keepalive survives the unload and can carry
-// X-OES-Session. POST /logout reads that header only, so a beacon
-// with ?sid= would no longer name the session.
+// X-OES-Session. POST /logout reads that header only.
 window.addEventListener('pagehide', () => {
   try {
     fetch(API + '/logout', {
@@ -1299,9 +1292,8 @@ async function refreshTabs(){
     if(t.hasIcon){
       const ico=document.createElement('img');
       ico.className='tab-icon';
-      // <img src> can't attach X-OES-Session, so pass the per-tab
-      // session id via query string — server prefers it over cookie.
-      ico.src=API+'/tab/'+i+'/icon?sid='+encodeURIComponent(tabSid);
+      // <img src> can't attach X-OES-Session. The cookie names the session.
+      ico.src=API+'/tab/'+i+'/icon';
       ico.alt='';
       body.appendChild(ico);
     }
@@ -1380,7 +1372,15 @@ async function login(user, password){
   const body = new URLSearchParams({user:user||'',password:password||''});
   const r = await netFetch(API+'/login',
     {method:'POST',body,credentials:'same-origin'});
-  return r.ok;
+  if (!r.ok) return false;
+  try {
+    const data = await r.json();
+    if (data && data.id) {
+      tabSid = data.id;
+      sessionStorage.setItem('oes_tab_sid', tabSid);
+    }
+  } catch (e) { /* a success without a body still counts */ }
+  return true;
 }
 // GET /auth-info. Decides between open-access auto-login (empty sys_user
 // → server's /login passes through empty creds) and a credentials form

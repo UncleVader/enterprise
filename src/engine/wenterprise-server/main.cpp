@@ -34,6 +34,7 @@
 #include "backend/webGuardHeaders.h"
 #include "backend/webSessionId.h"
 #include "backend/webSessionTrace.h"
+#include "backend/webIssuedBearer.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -225,31 +226,30 @@ std::string Field(const httplib::Request& req, const std::string& key)
 	return it != req.params.end() ? it->second : std::string();
 }
 
-// The session id this request may name. Web tabs keep their id in
-// sessionStorage and send it as X-OES-Session. A state-changing method
-// accepts that header only. GET still falls back to ?sid= and the
-// cookie, for an image and an EventSource.
+// The session id this request may name. The server minted it. A
+// state-changing method accepts X-OES-Session only. GET uses that
+// header, then the cookie. ?sid= is not a session.
 std::string SessionIdFromReq(const httplib::Request& req)
 {
-	// POST, PUT, PATCH and DELETE take the header only. A cookie or
-	// ?sid= is enough for GET: an image and an EventSource cannot set
-	// X-OES-Session.
 	const std::string header = req.get_header_value("X-OES-Session");
 	const std::string querySid = req.has_param("sid") ? req.get_param_value("sid") : std::string();
 	const std::string cookie = req.get_header_value("Cookie");
-	return ibWebSessionId(header, querySid, cookie, ibWebMethodChangesState(req.method));
+	if (ibWebMethodChangesState(req.method))
+		return header;
+	return ibWebPresentedSessionId(header, querySid, cookie);
 }
 
-// Extract session id, or emit 401 "no session" and return false. Every
-// session-bound endpoint does the same 2-line check; this factors it
-// into one inline guard so handlers read as `if (!RequireSessionId…) return;`.
+// Extract a live session id, or emit 401 and return false. An empty id
+// is "no session". An id this process did not mint, or one it already
+// destroyed, is "session lost" — copying a registry guid out of
+// /admin/locks does not name a session.
 bool RequireSessionId(const httplib::Request& req, httplib::Response& res, std::string& id)
 {
 	id = SessionIdFromReq(req);
-	if (!id.empty())
+	if (!id.empty() && wfrontendSessionExists(id))
 		return true;
 	res.status = 401;
-	res.set_content("no session\n", "text/plain");
+	res.set_content(id.empty() ? "no session\n" : "session lost\n", "text/plain");
 	return false;
 }
 
@@ -546,28 +546,23 @@ int main(int argc, char** argv)
 		// fresh one so OnStart re-runs and default forms re-appear —
 		// otherwise F5 on an empty session just re-shows the placeholder
 		// forever.
-		// Tab-local id: client's X-OES-Session header (sessionStorage)
-		// wins, cookie is the legacy fallback. If the tab has a
-		// sessionStorage id that the server doesn't know yet (fresh
-		// tab opened in an existing browser), CreateSessionWithId
-		// registers it.
+		// The document request cannot send X-OES-Session. A cookie that
+		// names a live session is reused. Anything else — including an
+		// id the client invented — is discarded and a new bearer is minted.
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			id = wfrontendCreateSession();
 			std::cerr << ibWebSessionTrace("created", id) << std::endl;
 		}
-		else if (wfrontendSessionExists(id)) {
+		else {
 			const std::size_t tc = wfrontendSessionTabCount(id);
 			std::cerr << ibWebSessionTrace("reusing", id, static_cast<int>(tc)) << std::endl;
 			if (tc == 0) {
 				wfrontendDestroySession(id);
 				std::cerr << "[GET /] destroyed empty session, re-minting" << std::endl;
-				id = wfrontendCreateSessionWithId(id);
+				id = wfrontendCreateSession();
+				std::cerr << ibWebSessionTrace("created", id) << std::endl;
 			}
-		}
-		else {
-			std::cerr << ibWebSessionTrace("unknown", id) << std::endl;
-			id = wfrontendCreateSessionWithId(id);
 		}
 
 		// HttpOnly so script cannot read the id. SameSite=Strict so a
@@ -580,7 +575,7 @@ int main(int argc, char** argv)
 
 		// Client HTML/CSS/JS lives in wfrontend.dll so Apache/IIS/CGI
 		// hosts can serve the same bytes from a single source of truth.
-		res.set_content(wfrontendClientHTML(), "text/html; charset=utf-8");
+		res.set_content(ibWebClientPage(wfrontendClientHTML(), id), "text/html; charset=utf-8");
 	});
 
 	svr.Get(prefix + "/ping", [](const httplib::Request&, httplib::Response& res) {
@@ -604,6 +599,11 @@ int main(int argc, char** argv)
 		if (id.empty()) {
 			res.set_content(R"({"authenticated":false,"tabs":[]})",
 				"application/json; charset=utf-8");
+			return;
+		}
+		if (!wfrontendSessionExists(id)) {
+			res.status = 401;
+			res.set_content("session lost\n", "text/plain");
 			return;
 		}
 		res.set_content(wfrontendSessionInfoJSON(id),
@@ -756,7 +756,11 @@ int main(int argc, char** argv)
 
 	svr.Get(prefix + "/stream", [&streamGate](const httplib::Request& req, httplib::Response& res) {
 		const std::string sid = SessionIdFromReq(req);
-		if (sid.empty()) { res.status = 401; res.set_content("no session\n","text/plain"); return; }
+		if (sid.empty() || !wfrontendSessionExists(sid)) {
+			res.status = 401;
+			res.set_content(sid.empty() ? "no session\n" : "session lost\n", "text/plain");
+			return;
+		}
 
 		const ibWebStreamGate::Answer admit = streamGate.TryOpen(sid, wfrontendSessionLive(sid));
 		if (admit == ibWebStreamGate::Answer::NotLive) {
@@ -879,9 +883,10 @@ int main(int argc, char** argv)
 	// module manager and touches appData state.
 	svr.Get(prefix + R"(/form/(\d+))", [](const httplib::Request& req, httplib::Response& res) {
 		const std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
-			res.set_content("no session - GET / first\n", "text/plain");
+			res.set_content(id.empty() ? "no session - GET / first\n" : "session lost\n",
+				"text/plain");
 			return;
 		}
 		const int metaID = std::atoi(req.matches[1].str().c_str());
@@ -896,6 +901,11 @@ int main(int argc, char** argv)
 	svr.Get(prefix + "/debug-status",
 		[](const httplib::Request& req, httplib::Response& res) {
 			const std::string sid = SessionIdFromReq(req);
+			if (!sid.empty() && !wfrontendSessionExists(sid)) {
+				res.status = 401;
+				res.set_content("session lost\n", "text/plain");
+				return;
+			}
 			const bool dbg    = wfrontendDebugMode();
 			const bool paused = !sid.empty() && wfrontendSessionPaused(sid);
 			res.set_content(
@@ -929,25 +939,33 @@ int main(int argc, char** argv)
 		}
 
 		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
+		if (id.empty() || !wfrontendSessionExists(id)) {
 			res.status = 401;
 			res.set_content("no session - GET / first to obtain one\n", "text/plain");
 			return;
 		}
-		// Tab's sessionStorage id (X-OES-Session header) is generated by
-		// JS independently from the server's cookie — on a fresh tab the
-		// first XHR can arrive with an id the server has never registered.
-		// Mirror GET /'s create-on-unknown behaviour so POST /login doesn't
-		// 401 just because the tab happened to beat GET / in registering.
-		if (!wfrontendSessionExists(id))
-			id = wfrontendCreateSessionWithId(id);
 
-		if (!wfrontendLogin(id, user, pass)) {
+		const std::string adopted = wfrontendLogin(id, user, pass);
+		if (adopted.empty()) {
 			res.status = 401;
 			res.set_content("login failed\n", "text/plain");
 			return;
 		}
-		res.set_content(ibWebLoginOkBody(id, user), "text/plain");
+		res.set_header("Set-Cookie", ibWebSessionCookie(adopted));
+		res.set_content(ibWebLoginAdopted(adopted), "application/json");
+	});
+
+	// A second tab asks for its own bearer. The id in the body is the
+	// one the server minted; the caller does not choose it.
+	svr.Post(prefix + "/session/mint", [](const httplib::Request&, httplib::Response& res) {
+		const std::string id = wfrontendCreateSession();
+		if (id.empty()) {
+			res.status = 500;
+			res.set_content("no session\n", "text/plain");
+			return;
+		}
+		res.set_header("Set-Cookie", ibWebSessionCookie(id));
+		res.set_content(ibWebLoginAdopted(id), "application/json");
 	});
 
 	svr.Post(prefix + "/logout", [](const httplib::Request& req, httplib::Response& res) {

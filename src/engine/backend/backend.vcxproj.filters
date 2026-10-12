@@ -68,6 +68,7 @@
     <ClInclude Include="webGuardHeaders.h" />
     <ClInclude Include="webSessionId.h" />
     <ClInclude Include="webSessionTrace.h" />
+    <ClInclude Include="webIssuedBearer.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h">
@@ -1166,6 +1167,7 @@
     <ClCompile Include="webGuardHeaders.cpp" />
     <ClCompile Include="webSessionId.cpp" />
     <ClCompile Include="webSessionTrace.cpp" />
+    <ClCompile Include="webIssuedBearer.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp">
       <Filter>cipher</Filter>
