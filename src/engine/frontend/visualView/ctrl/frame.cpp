@@ -5,7 +5,7 @@
 
 #include "control.h"
 #include "form.h"
-#include "frontend/visualView/pasteSlot.h"
+#include "visualView/pasteSlot.h"
 #include "backend/compiler/procUnit.h"
 #include "core/serialize/dataBuilder.h"   // ibDataNode / ibDataBuilder / ibBinaryProvider
 #include "backend/metaCollection/metaFormObject.h"   // ibValueMetaObjectFormBase — IsCopyMode / IsPasteMode mark
