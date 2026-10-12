@@ -29,6 +29,7 @@
 #include "backend/metaCollection/metaSpreadsheetObject.h"
 #include "backend/metadataConfiguration.h"
 #include "backend/sheetFormat/sheetFormat.h"   // a format registers itself and says what it reads
+#include "backend/mcp/mcpSheetPath.h"          // import and export stay inside the base's exchange folder
 #include "backend/spreadsheetDescription.h"
 #include "backend/typeconv.h"   // a colour from its name
 
@@ -400,7 +401,8 @@ const ibArg& ArgEnd()
 const ibArg& ArgFile()
 {
 	static const ibArg s_a(wxT("file"), ibArg::Kind::Text,
-		ibMcpText("Full path to the file. The format is decided by its extension."), /*required*/ true);
+		ibMcpText("A file inside this base's exchange folder. The format is decided by its extension."),
+			/*required*/ true);
 	return s_a;
 }
 
@@ -1343,6 +1345,9 @@ public:
 
 		const wxString fileName = ArgFile().Text(params);
 
+		if (!ibMcpSheetPathAllowed(fileName, ibMcpSheetExchangeDir(), refusal))
+			return false;
+
 		if (!wxFileExists(fileName)) {
 			refusal = wxString::Format(ibMcpText("There is no file at '%s'."), fileName);
 			return false;
@@ -2073,6 +2078,9 @@ public:
 			refusal = ibMcpText("Say where to write it - the extension decides the format.");
 			return false;
 		}
+
+		if (!ibMcpSheetPathAllowed(fileName, ibMcpSheetExchangeDir(), refusal))
+			return false;
 
 		const ibSheetFormat* format = ibSheetFormatFor(fileName);
 

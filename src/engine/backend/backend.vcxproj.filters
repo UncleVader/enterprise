@@ -22,6 +22,9 @@
     <ClInclude Include="mcp\mcpTool.h">
       <Filter>mcp</Filter>
     </ClInclude>
+    <ClInclude Include="mcp\mcpSheetPath.h">
+      <Filter>mcp</Filter>
+    </ClInclude>
     <ClInclude Include="metaCollection\metaIntrospect.h">
       <Filter>metaCollection</Filter>
     </ClInclude>
@@ -997,6 +1000,9 @@
       <Filter>rpc</Filter>
     </ClCompile>
     <ClCompile Include="mcp\mcpServer.cpp">
+      <Filter>mcp</Filter>
+    </ClCompile>
+    <ClCompile Include="mcp\mcpSheetPath.cpp">
       <Filter>mcp</Filter>
     </ClCompile>
     <ClCompile Include="mcp\mcpTool.cpp">

@@ -68,6 +68,7 @@
     <ClInclude Include="mcp\mcpServer.h" />
     <ClInclude Include="mcp\mcpDebugBridge.h" />
     <ClInclude Include="mcp\mcpTool.h" />
+    <ClInclude Include="mcp\mcpSheetPath.h" />
     <ClInclude Include="job\platformJobs.h" />
     <ClInclude Include="job\jobSchedule.h" />
     <ClInclude Include="settings\settingsStorage.h" />
@@ -482,6 +483,7 @@
     <ClCompile Include="mcp\mcpClipboard.cpp" />
     <ClCompile Include="rpc\rpcMessage.cpp" />
     <ClCompile Include="mcp\mcpServer.cpp" />
+    <ClCompile Include="mcp\mcpSheetPath.cpp" />
     <ClCompile Include="mcp\mcpTool.cpp" />
     <ClCompile Include="mcp\tools\mcpToolChat.cpp" />
     <ClCompile Include="mcp\tools\mcpToolComplete.cpp" />
