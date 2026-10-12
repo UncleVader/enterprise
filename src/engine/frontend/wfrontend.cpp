@@ -20,6 +20,7 @@
 #include <wx/mstream.h>
 
 #include "backend/appData.h"
+#include "backend/webSessionTrace.h"
 #include "backend/appHost.h"   // ibApplicationInstanceScope — the HTTP and sweep threads work for the served base
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
@@ -377,7 +378,7 @@ private:
 			// off the requester's thread, so OnExit can drain the
 			// session's own worker without deadlocking against it.
 			for (const std::string& id : requested) {
-				std::cerr << "[sweep] destroying session on request " << id << std::endl;
+				std::cerr << ibWebSessionTrace("sweep-destroy", id) << std::endl;
 				Destroy(id);
 			}
 
@@ -404,8 +405,7 @@ private:
 				}
 			}
 			for (const std::string& id : victims) {
-				std::cerr << "[sweep] evicting idle session " << id
-					<< std::endl;
+				std::cerr << ibWebSessionTrace("sweep-idle", id) << std::endl;
 				Destroy(id);
 			}
 

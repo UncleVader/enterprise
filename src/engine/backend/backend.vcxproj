@@ -24,6 +24,7 @@
     <ClInclude Include="webPublicError.h" />
     <ClInclude Include="webGuardHeaders.h" />
     <ClInclude Include="webSessionId.h" />
+    <ClInclude Include="webSessionTrace.h" />
     <ClInclude Include="appDataCtorToken.h" />
     <ClInclude Include="appHost.h" />
     <ClInclude Include="cipher\fieldCipher.h" />
@@ -452,6 +453,7 @@
     <ClCompile Include="webPublicError.cpp" />
     <ClCompile Include="webGuardHeaders.cpp" />
     <ClCompile Include="webSessionId.cpp" />
+    <ClCompile Include="webSessionTrace.cpp" />
     <ClCompile Include="appHost.cpp" />
     <ClCompile Include="cipher\fieldCipher.cpp" />
     <ClCompile Include="appDataQuery.cpp" />
