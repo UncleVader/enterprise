@@ -18,18 +18,25 @@ namespace {
 std::string WithNonceOnTag(const std::string& html, const char* tag,
 	const std::string& nonce)
 {
-	const auto pos = html.find(tag);
-	if (pos == std::string::npos)
-		return html;
-	const auto end = html.find('>', pos);
-	if (end == std::string::npos)
-		return html;
-	const auto nonceAt = html.find("nonce=", pos);
-	if (nonceAt != std::string::npos && nonceAt < end)
-		return html;
+	const std::string insert = " nonce=\"" + nonce + "\"";
+	const std::size_t tagLen = std::char_traits<char>::length(tag);
 	std::string out = html;
-	out.insert(pos + std::char_traits<char>::length(tag),
-		" nonce=\"" + nonce + "\"");
+	std::size_t search = 0;
+	while (search < out.size()) {
+		const auto pos = out.find(tag, search);
+		if (pos == std::string::npos)
+			return out;
+		const auto end = out.find('>', pos);
+		if (end == std::string::npos)
+			return out;
+		const auto nonceAt = out.find("nonce=", pos);
+		if (nonceAt != std::string::npos && nonceAt < end) {
+			search = end + 1;
+			continue;
+		}
+		out.insert(pos + tagLen, insert);
+		search = end + 1 + insert.size();
+	}
 	return out;
 }
 

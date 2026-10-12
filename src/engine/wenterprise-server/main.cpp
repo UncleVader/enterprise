@@ -504,15 +504,25 @@ int main(int argc, char** argv)
 	});
 
 	// After the route has filled the body. An HTML document gets a nonce
-	// on its inline style and script so the policy below can refuse
-	// every other inline script. A response that already named
-	// Cache-Control (the icon, the event stream, the page) keeps it.
+	// on every inline style and script so the policy below can refuse
+	// every other inline script. httplib has already stored
+	// Content-Length from the body it had then; the nonce attributes
+	// make the body longer, and a client that stops at the old length
+	// loses the end of the document (the client script's </script>).
+	// A response that already named Cache-Control (the icon, the event
+	// stream, the page) keeps it.
 	svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
 		std::string nonce;
 		const std::string contentType = res.get_header_value("Content-Type");
 		if (contentType.find("text/html") != std::string::npos && !res.body.empty()) {
 			nonce = ibWebNonce();
 			res.body = ibWebDocumentWithNonce(res.body, nonce);
+			// set_header appends. A second Content-Length would leave
+			// the short one in front, which is the length a client uses.
+			const auto stale = res.headers.equal_range("Content-Length");
+			res.headers.erase(stale.first, stale.second);
+			res.content_length_ = res.body.size();
+			res.set_header("Content-Length", std::to_string(res.content_length_));
 		}
 		const ibWebGuardHeaders guard = ibWebGuardHeadersFor(nonce);
 		res.set_header("Content-Security-Policy", guard.contentSecurityPolicy);

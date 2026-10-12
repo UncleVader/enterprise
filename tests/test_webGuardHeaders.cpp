@@ -25,6 +25,24 @@ TEST(WebGuardHeaders, ATagThatAlreadyHasANonceIsLeftAlone)
 	EXPECT_EQ(ibWebDocumentWithNonce(html, "abc"), html);
 }
 
+TEST(WebGuardHeaders, ALeadingScriptDoesNotKeepTheRestAnonymous)
+{
+	// The caption dictionary is its own <script>, ahead of the client.
+	// Stamping only the first tag leaves the program script with no
+	// nonce, and script-src then refuses to run it.
+	const std::string html =
+		"<script nonce=\"keep\">window.OES={};</script>"
+		"<style>body{margin:0}</style>"
+		"<script>var x=1;</script>";
+	const std::string nonce(32, 'a');
+	const std::string out = ibWebDocumentWithNonce(html, nonce);
+	EXPECT_NE(out.find("<script nonce=\"keep\">"), std::string::npos);
+	EXPECT_NE(out.find("<style nonce=\"" + nonce + "\">"), std::string::npos);
+	EXPECT_NE(out.find("<script nonce=\"" + nonce + "\">var x=1;</script>"), std::string::npos);
+	const std::size_t stamp = std::string(" nonce=\"").size() + nonce.size() + 1;
+	EXPECT_EQ(out.size(), html.size() + stamp * 2);
+}
+
 TEST(WebGuardHeaders, AQuoteInTheNonceIsNotWrittenIntoTheDocument)
 {
 	const std::string html = "<script>var x=1;</script>";
