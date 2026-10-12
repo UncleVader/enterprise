@@ -1320,6 +1320,8 @@ bool ibApplicationInstance::Login(const wxString& strUserName,
 #include <wx/mstream.h>
 #include <wx/filename.h>
 
+#include "backend/utils/zipBudget.h"
+
 bool ibApplicationInstance::LoadDatabase(const wxString& strFullPath)
 {
 	wxFileInputStream fis(strFullPath);
@@ -1328,11 +1330,20 @@ bool ibApplicationInstance::LoadDatabase(const wxString& strFullPath)
 		return false;
 	}
 
+	// The archive is expanded under a byte budget BEFORE the live base is cleared.
+	// An entry that claims or emits more than that budget, a duplicate name, or a
+	// stream that is not a readable archive returns here, and the database stays
+	// the one that is already open.
+	std::vector<ibZipEntryBytes> entries;
+	ibZipBudgetFault fault = ibZipBudgetFault::None;
+	if (!ibReadDatabaseArchive(fis, ibZipBudgetForDatabase(), entries, fault)) {
+		ibJournalError(wxT("appdata"),
+			_("The file could not be read within the size allowed for a database archive - the database was not changed"));
+		return false;
+	}
+
 	if (!ClearDatabase() && !ClearTableUser())
 		return false;
-
-	wxZipInputStream zis(fis);
-	std::unique_ptr<wxZipEntry> entry;
 
 	// The entries are READ IN FILE ORDER, and the order carries meaning: rows can only be written once
 	// the structure holding them exists. Our own writer emits config before data, so this is a guard
@@ -1340,93 +1351,48 @@ bool ibApplicationInstance::LoadDatabase(const wxString& strFullPath)
 	// landing in whatever structure the database happened to have.
 	bool configLoaded = false;
 
-	// Iterate through all entries in the zip file
-	while (entry.reset(zis.GetNextEntry()), entry) {
+	for (const ibZipEntryBytes& entry : entries) {
 
-		if (!entry->IsDir() && entry->GetName() == wxT("config")) {
+		wxMemoryBuffer buffer;
+		if (!entry.bytes.empty())
+			buffer.AppendData(entry.bytes.data(), entry.bytes.size());
 
-			// Open the entry for reading and write its data to a new file
-			if (zis.OpenEntry(*entry)) {
-				wxMemoryOutputStream fos;
-				if (fos.IsOk()) {
-					zis.Read(fos); // Read from zip stream, write to file stream
-				}
-				else {
-					return false;
-				}
+		if (entry.name == wxT("config")) {
 
-				//load configuration 
-				wxMemoryBuffer buffer;
-				fos.CopyTo(buffer.GetAppendBuf(fos.GetSize()), fos.GetSize());
-				buffer.SetDataLen(fos.GetSize());
+			// LoadConfigFromBuffer already RUNs the loaded tree (the
+			// ibMetaDataConfiguration override) — no separate RunDatabase
+			// here, that would be a double-run (asserts !m_configOpened).
+			if (!activeMetaData->LoadConfigFromBuffer(buffer))
+				return false;
 
-				// LoadConfigFromBuffer already RUNs the loaded tree (the
-				// ibMetaDataConfiguration override) — no separate RunDatabase
-				// here, that would be a double-run (asserts !m_configOpened).
-				if (!activeMetaData->LoadConfigFromBuffer(buffer))
-					return false;
-
-				// ⭐⭐ THE STRUCTURE IS BUILT FIRST, AND THE LOAD STOPS IF IT WAS NOT.
-				//
-				// This is the whole shape of a load: the file carries the configuration and the rows, so
-				// the configuration is applied — creating the very tables, with the very column ids, the
-				// rows are about to be written into — and only then does `data` arrive. The answer used
-				// to be discarded. A failed apply therefore went unnoticed and the load carried on,
-				// pouring rows into tables that were not there or were still the shape of the database
-				// being overwritten: no rows restored, no word said, and a base left half-replaced.
-				if (!activeMetaData->SaveDatabase(saveConfigFlag)) {
-					ibJournalError(wxT("appdata"),_("The configuration from the file could not be applied - the data was not loaded"));
-					return false;
-				}
-				configLoaded = true;
+			// ⭐⭐ THE STRUCTURE IS BUILT FIRST, AND THE LOAD STOPS IF IT WAS NOT.
+			//
+			// This is the whole shape of a load: the file carries the configuration and the rows, so
+			// the configuration is applied — creating the very tables, with the very column ids, the
+			// rows are about to be written into — and only then does `data` arrive. The answer used
+			// to be discarded. A failed apply therefore went unnoticed and the load carried on,
+			// pouring rows into tables that were not there or were still the shape of the database
+			// being overwritten: no rows restored, no word said, and a base left half-replaced.
+			if (!activeMetaData->SaveDatabase(saveConfigFlag)) {
+				ibJournalError(wxT("appdata"),_("The configuration from the file could not be applied - the data was not loaded"));
+				return false;
 			}
+			configLoaded = true;
 		}
-		else if (!entry->IsDir() && entry->GetName() == wxT("user")) {
+		else if (entry.name == wxT("user")) {
 
-			// Open the entry for reading and write its data to a new file
-			if (zis.OpenEntry(*entry)) {
-				wxMemoryOutputStream fos;
-				if (fos.IsOk()) {
-					zis.Read(fos); // Read from zip stream, write to file stream
-				}
-				else {
-					return false;
-				}
-
-				//load user 
-				wxMemoryBuffer buffer;
-				fos.CopyTo(buffer.GetAppendBuf(fos.GetSize()), fos.GetSize());
-				buffer.SetDataLen(fos.GetSize());
-
-				if (!LoadUserInfoFromBuffer(buffer))
-					return false;
-			}
+			if (!LoadUserInfoFromBuffer(buffer))
+				return false;
 		}
-		else if (!entry->IsDir() && entry->GetName() == wxT("data")) {
+		else if (entry.name == wxT("data")) {
 
-			// Open the entry for reading and write its data to a new file
-			if (zis.OpenEntry(*entry)) {
-				wxMemoryOutputStream fos;
-				if (fos.IsOk()) {
-					zis.Read(fos); // Read from zip stream, write to file stream
-				}
-				else {
-					return false;
-				}
-
-				//load data 
-				wxMemoryBuffer buffer;
-				fos.CopyTo(buffer.GetAppendBuf(fos.GetSize()), fos.GetSize());
-				buffer.SetDataLen(fos.GetSize());
-
-				if (!configLoaded) {
-					ibJournalError(wxT("appdata"),_("The file carries data before the configuration - it cannot be loaded"));
-					return false;
-				}
-
-				if (!activeMetaData->RestoreDataFromBuffer(buffer))
-					return false;
+			if (!configLoaded) {
+				ibJournalError(wxT("appdata"),_("The file carries data before the configuration - it cannot be loaded"));
+				return false;
 			}
+
+			if (!activeMetaData->RestoreDataFromBuffer(buffer))
+				return false;
 		}
 	}
 

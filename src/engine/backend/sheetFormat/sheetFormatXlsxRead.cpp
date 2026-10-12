@@ -15,14 +15,67 @@
 
 #include "backend/sheetFormat/sheetFormatXlsx.h"
 
-#include <wx/wfstream.h>
-#include <wx/zipstrm.h>
-#include <wx/mstream.h>
 #include <wx/sstream.h>
 #include <wx/xml/xml.h>
 
 #include <map>
 #include <vector>
+
+namespace {
+
+bool TagNameEnds(wxUniChar ch)
+{
+	return ch == wxT(' ') || ch == wxT('>') || ch == wxT('/')
+		|| ch == wxT('\t') || ch == wxT('\n') || ch == wxT('\r');
+}
+
+} // namespace
+
+uint64_t ibCountXmlMarks(const wxString& text, uint64_t stopAfter)
+{
+	uint64_t count = 0;
+	for (wxUniChar ch : text) {
+		if (ch != wxT('<'))
+			continue;
+		++count;
+		if (count > stopAfter)
+			return count;
+	}
+	return count;
+}
+
+uint64_t ibCountXmlItems(const wxString& text, const wxString& tag, uint64_t stopAfter)
+{
+	uint64_t count = 0;
+	if (tag.empty())
+		return 0;
+
+	const size_t length = text.length();
+	const size_t tagLength = tag.length();
+	for (size_t at = 0; at < length; ++at) {
+		if (text[at] != wxT('<') || at + tagLength >= length)
+			continue;
+		if (text.Mid(at + 1, tagLength) != tag)
+			continue;
+		const size_t after = at + 1 + tagLength;
+		if (after < length && !TagNameEnds(text[after]))
+			continue;
+		++count;
+		if (count > stopAfter)
+			return count;
+	}
+	return count;
+}
+
+ibXlsxReadLimits ibXlsxReadLimitsStandard()
+{
+	ibXlsxReadLimits limits;
+	limits.zip = ibZipBudgetForWorkbook();
+	limits.maxXmlMarks = 1000000;
+	limits.maxCells = 500000;
+	limits.maxSharedStrings = 500000;
+	return limits;
+}
 
 namespace {
 
@@ -95,6 +148,14 @@ bool IsPartWeRead(const wxString& key)
 		|| key == wxT("xl/sharedstrings.xml")
 		|| key == wxT("xl/styles.xml")
 		|| key.StartsWith(wxT("xl/worksheets/"));
+}
+
+wxString XlsxEntryKey(const wxString& name, void*)
+{
+	const wxString key = PartKey(name);
+	if (!IsPartWeRead(key))
+		return wxString();
+	return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,31 +413,31 @@ std::vector<XlsxStyle> ReadStyles(const wxString& xmlText)
 	return byIndex;
 }
 
-bool ReadPackage(wxInputStream& input, ibPackage& parts)
+bool ReadPackage(wxInputStream& input, const ibZipBudget& budget, ibPackage& parts, ibZipBudgetFault& fault)
 {
-	wxZipInputStream zip(input);
-	if (!zip.IsOk())
+	// ⭐ ONLY THE PARTS THIS READER SPEAKS, NAMED — not everything except a list of what to
+	// skip. The two read the same on the files we thought of and differently on the rest:
+	// a workbook also carries themes, printer settings, drawings, certificates, and
+	// xl/calcChain.xml — which is the FORMULA DEPENDENCY GRAPH and on a large sheet rivals
+	// the sheet itself in size. Skipping four names left all of those being read into memory
+	// to be ignored, which is most of what made a big workbook slow to open.
+	//
+	// The names we do read are expanded under `budget`. A part that claims, or emits, more
+	// than that is refused and nothing already expanded is kept.
+	std::vector<ibZipEntryBytes> entries;
+	if (!ibCollectZipEntries(input, budget, &XlsxEntryKey, nullptr, entries, fault))
 		return false;
 
-	for (;;) {
-		std::unique_ptr<wxZipEntry> entry(zip.GetNextEntry());
-		if (!entry)
-			break;
-
-		const wxString name = PartKey(entry->GetInternalName());
-
-		// ⭐ ONLY THE PARTS THIS READER SPEAKS, NAMED — not everything except a list of what to
-		// skip. The two read the same on the files we thought of and differently on the rest:
-		// a workbook also carries themes, printer settings, drawings, certificates, and
-		// xl/calcChain.xml — which is the FORMULA DEPENDENCY GRAPH and on a large sheet rivals
-		// the sheet itself in size. Skipping four names left all of those being read into memory
-		// to be ignored, which is most of what made a big workbook slow to open.
-		if (!IsPartWeRead(name))
-			continue;
-
-		wxStringOutputStream out;
-		zip.Read(out);
-		parts[name] = out.GetString();
+	for (ibZipEntryBytes& entry : entries) {
+		wxString text;
+		if (!entry.bytes.empty()) {
+			const char* data = reinterpret_cast<const char*>(entry.bytes.data());
+			const size_t size = entry.bytes.size();
+			text = wxString::FromUTF8(data, size);
+			if (text.IsEmpty())
+				text = wxString::From8BitData(data, size);
+		}
+		parts.emplace(std::move(entry.name), std::move(text));
 	}
 
 	return !parts.empty();
@@ -400,19 +461,22 @@ bool ParseXml(const wxString& text, wxXmlDocument& xml)
 // ⚠ A STRING MAY BE SPLIT ACROSS RUNS (<si><r><t>Total</t></r><r><t> 2026</t></r></si>)
 // when part of it is formatted differently — reading only the first <t> silently
 // truncates every such cell, which is exactly what a heading looks like.
-void ReadSharedStrings(const ibPackage& parts, std::vector<wxString>& strings)
+bool ReadSharedStrings(const ibPackage& parts, std::vector<wxString>& strings, uint64_t maxItems)
 {
 	const auto found = parts.find(wxT("xl/sharedstrings.xml"));
 	if (found == parts.end())
-		return;
+		return true;
 
 	wxXmlDocument xml;
 	if (!ParseXml(found->second, xml) || xml.GetRoot() == nullptr)
-		return;
+		return true;
 
 	for (wxXmlNode* si = xml.GetRoot()->GetChildren(); si != nullptr; si = si->GetNext()) {
 		if (si->GetName() != wxT("si"))
 			continue;
+
+		if (strings.size() >= maxItems)
+			return false;
 
 		wxString text;
 		for (wxXmlNode* part = si->GetChildren(); part != nullptr; part = part->GetNext()) {
@@ -426,6 +490,7 @@ void ReadSharedStrings(const ibPackage& parts, std::vector<wxString>& strings)
 		}
 		strings.push_back(text);
 	}
+	return true;
 }
 
 // The sheets, in the order the workbook lists them — which is the order a person
@@ -519,7 +584,8 @@ void GroupsFromLevels(const std::map<int, int>& level, const std::map<int, bool>
 }
 
 int ReadSheet(const wxString& partText, const std::vector<wxString>& strings,
-              const std::vector<XlsxStyle>& styles, ibSpreadsheetDescription& document, int topRow, ibJournalStopwatch& parsed)
+              const std::vector<XlsxStyle>& styles, ibSpreadsheetDescription& document, int topRow,
+              ibJournalStopwatch& parsed, uint64_t maxCells)
 {
 	wxXmlDocument xml;
 	parsed.Resume();
@@ -529,6 +595,7 @@ int ReadSheet(const wxString& partText, const std::vector<wxString>& strings,
 		return 0;
 
 	int usedRows = 0;
+	uint64_t cells = 0;
 	std::map<int, int> rowLevel, colLevel;
 	std::map<int, bool> rowHidden, colHidden;
 
@@ -609,6 +676,10 @@ int ReadSheet(const wxString& partText, const std::vector<wxString>& strings,
 				long depth = 0;
 				col->GetAttribute(wxT("outlineLevel"), wxT("0")).ToLong(&depth);
 
+				// A range wider than a worksheet's columns is not a width, it is a loop.
+				if (to < from || to - from > 16384)
+					continue;
+
 				for (long at = from; at <= to && at > 0; at++) {
 					const int index = static_cast<int>(at) - 1;
 					// A hidden column is a width of nothing here, which is what «Hide» leaves behind.
@@ -666,6 +737,9 @@ int ReadSheet(const wxString& partText, const std::vector<wxString>& strings,
 			for (wxXmlNode* cell = row->GetChildren(); cell != nullptr; cell = cell->GetNext()) {
 				if (cell->GetName() != wxT("c"))
 					continue;
+
+				if (++cells > maxCells)
+					return -1;
 
 				int cellRow = 0, cellCol = 0;
 				if (!CellAt(cell->GetAttribute(wxT("r")), cellRow, cellCol))
@@ -766,24 +840,61 @@ int ReadSheet(const wxString& partText, const std::vector<wxString>& strings,
 
 bool ibSheetFormatXlsx::Read(wxInputStream& input, ibSpreadsheetDescription& sheet) const
 {
+	ibZipBudgetFault fault = ibZipBudgetFault::None;
+	return ibSheetFormatXlsxRead(input, sheet, ibXlsxReadLimitsStandard(), fault);
+}
+
+bool ibSheetFormatXlsxRead(wxInputStream& input, ibSpreadsheetDescription& sheet,
+                           const ibXlsxReadLimits& limits, ibZipBudgetFault& fault)
+{
+	fault = ibZipBudgetFault::None;
+
 	// Its stages timed — what of a workbook takes the time (a debug build's journal).
 	ibJournalStopwatch unpacked, said, styled, filled, parsed, handed;
 
 	unpacked.Resume();
 	ibPackage parts;
-	const bool opened = ReadPackage(input, parts);
+	const bool opened = ReadPackage(input, limits.zip, parts, fault);
 	unpacked.Pause();
 	if (!opened)
 		return false;
+
+	for (const auto& part : parts) {
+		if (ibCountXmlMarks(part.second, limits.maxXmlMarks) > limits.maxXmlMarks) {
+			fault = ibZipBudgetFault::TooManyXmlMarks;
+			return false;
+		}
+	}
+
+	const auto shared = parts.find(wxT("xl/sharedstrings.xml"));
+	if (shared != parts.end()
+		&& ibCountXmlItems(shared->second, wxT("si"), limits.maxSharedStrings) > limits.maxSharedStrings) {
+		fault = ibZipBudgetFault::TooManySharedStrings;
+		return false;
+	}
 
 	std::vector<wxString> sheetParts;
 	ReadSheetOrder(parts, sheetParts);
 	if (sheetParts.empty())
 		return false;   // nothing in this file is a worksheet
 
+	for (const wxString& sheetPart : sheetParts) {
+		const auto part = parts.find(sheetPart);
+		if (part == parts.end())
+			continue;
+		if (ibCountXmlItems(part->second, wxT("c"), limits.maxCells) > limits.maxCells) {
+			fault = ibZipBudgetFault::TooManyCells;
+			return false;
+		}
+	}
+
 	said.Resume();
 	std::vector<wxString> strings;
-	ReadSharedStrings(parts, strings);
+	if (!ReadSharedStrings(parts, strings, limits.maxSharedStrings)) {
+		fault = ibZipBudgetFault::TooManySharedStrings;
+		said.Pause();
+		return false;
+	}
 	said.Pause();
 
 	styled.Resume();
@@ -809,7 +920,12 @@ bool ibSheetFormatXlsx::Read(wxInputStream& input, ibSpreadsheetDescription& she
 		if (at > 0 && topRow > 0)
 			read.AddRowBrake(topRow - 1);
 
-		const int used = ReadSheet(part->second, strings, styles, read, topRow, parsed);
+		const int used = ReadSheet(part->second, strings, styles, read, topRow, parsed, limits.maxCells);
+		if (used < 0) {
+			fault = ibZipBudgetFault::TooManyCells;
+			filled.Pause();
+			return false;
+		}
 		topRow += wxMax(used, 1);
 	}
 

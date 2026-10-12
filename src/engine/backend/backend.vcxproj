@@ -1005,6 +1005,7 @@
     <ClCompile Include="utils\md5.cpp" />
     <ClCompile Include="utils\sha256.cpp" />
     <ClCompile Include="utils\passwordHash.cpp" />
+    <ClCompile Include="utils\zipBudget.cpp" />
     <ClCompile Include="utils\dataVersion.cpp" />
     <ClCompile Include="value_cast.cpp" />
   </ItemGroup>
