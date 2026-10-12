@@ -76,6 +76,11 @@ struct BACKEND_API ibMcpSettings {
 	bool IsOk() const { return !m_address.IsEmpty() && m_port != 0; }
 };
 
+// True when an Origin header is absent, or is http(s) with the host exactly
+// localhost, 127.0.0.1 or [::1] and an optional numeric port. A host that only
+// starts with one of those, and the literal "null", are refused.
+BACKEND_API bool ibMcpOriginAllowed(const wxString& origin);
+
 // WATCHING THE CONVERSATION. The designer shows a window with the exchange in
 // it — what was asked, what the platform answered — so a person can see what is
 // being done in their name rather than infer it from the tree changing under

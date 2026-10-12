@@ -72,6 +72,70 @@
 
 #include <cpp-httplib/httplib.h>
 
+bool ibMcpOriginAllowed(const wxString& origin)
+{
+	if (origin.IsEmpty())
+		return true;
+
+	const wxString value = origin.Lower();
+	if (value == wxT("null"))
+		return false;
+
+	wxString rest;
+	if (value.StartsWith(wxT("https://")))
+		rest = value.Mid(8);
+	else if (value.StartsWith(wxT("http://")))
+		rest = value.Mid(7);
+	else
+		return false;
+
+	if (rest.IsEmpty()
+		|| rest.Find(wxT("@")) != wxNOT_FOUND
+		|| rest.Find(wxT("/")) != wxNOT_FOUND
+		|| rest.Find(wxT("?")) != wxNOT_FOUND
+		|| rest.Find(wxT("#")) != wxNOT_FOUND)
+		return false;
+
+	wxString host;
+	wxString port;
+	if (rest.StartsWith(wxT("["))) {
+		const int end = rest.Find(wxT("]"));
+		if (end == wxNOT_FOUND)
+			return false;
+		host = rest.Mid(1, end - 1);
+		const wxString after = rest.Mid(end + 1);
+		if (!after.IsEmpty()) {
+			if (!after.StartsWith(wxT(":")) || after.length() < 2)
+				return false;
+			port = after.Mid(1);
+		}
+	}
+	else {
+		const int colon = rest.Find(wxT(":"));
+		if (colon == wxNOT_FOUND)
+			host = rest;
+		else {
+			host = rest.Left(colon);
+			port = rest.Mid(colon + 1);
+			if (port.IsEmpty())
+				return false;
+		}
+	}
+
+	if (host != wxT("localhost") && host != wxT("127.0.0.1") && host != wxT("::1"))
+		return false;
+	if (port.IsEmpty())
+		return true;
+
+	unsigned long number = 0;
+	for (size_t i = 0; i < port.length(); ++i) {
+		const wxUniChar ch = port[i];
+		if (ch < wxT('0') || ch > wxT('9'))
+			return false;
+	}
+	return port.ToULong(&number) && number >= 1 && number <= 65535;
+}
+
 namespace {
 
 // The protocol revision this server speaks. Announced in `initialize`; a client
@@ -332,23 +396,19 @@ private:
 	//
 	// PRESENCE IS THE DISCRIMINATOR: an ordinary client (a CLI, an editor plugin) sends no Origin
 	// at all, and the spec asks for a refusal only when the header IS present and wrong — so this
-	// costs nothing for the callers that are not browsers. A loopback origin is allowed because
-	// that is a page served by this machine's own tooling.
+	// costs nothing for the callers that are not browsers. A page on this computer is allowed
+	// only when its host is exactly localhost, 127.0.0.1 or [::1]. A name that merely starts
+	// that way is a different site, and the literal "null" — a sandboxed frame, or a file://
+	// page — is foreign.
 	//
 	// The token already refuses an unauthorised caller; this refuses an unauthorised PLACE, one
 	// step earlier, without reading the body.
 	static bool IsOriginAllowed(const httplib::Request& req)
 	{
 		const std::string origin = req.get_header_value("Origin");
-		if (origin.empty())
-			return true;   // not a browser — nothing to check
-
-		const wxString value = wxString::FromUTF8(origin.c_str(), origin.size()).Lower();
-		return value.StartsWith(wxT("http://127.0.0.1"))
-			|| value.StartsWith(wxT("https://127.0.0.1"))
-			|| value.StartsWith(wxT("http://localhost"))
-			|| value.StartsWith(wxT("https://localhost"))
-			|| value == wxT("null");   // a file:// page, which is local by construction
+		return ibMcpOriginAllowed(origin.empty()
+			? wxString()
+			: wxString::FromUTF8(origin.c_str(), origin.size()));
 	}
 
 	// WHICH REVISION THIS CALLER SPEAKS, and whether we speak it too.
