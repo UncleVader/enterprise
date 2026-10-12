@@ -372,11 +372,16 @@ bool ibApplicationHost::InitLocale(const wxString& locale)
 		}
 	}
 
-	if (!m_locale.Init(m_localeLang)) {
-		if (!m_locale.Init(wxLanguage::wxLANGUAGE_ENGLISH))
-			return false;
-		m_localeLang = wxLanguage::wxLANGUAGE_ENGLISH;
+	// ONE ATTEMPT. See ibLocaleOpenContinues: a second Init asserts once DoInit
+	// has marked the locale initialized, and that false return used to abort
+	// the open after the base was already attached.
+	const bool set = m_locale.Init(m_localeLang);
+	if (!set) {
+		wxLogWarning(_("Cannot set locale to '%s'; continuing with the C locale"),
+			wxLocale::GetLanguageName(m_localeLang));
 	}
+	if (!ibLocaleOpenContinues(set))
+		return false;
 
 	// Initialize the catalogs we'll be using.
 	m_locale.AddCatalog(wxT("open_es"));
