@@ -1010,16 +1010,18 @@ async function netFetch(url, opts){
   }
 }
 
-// Best-effort tab-close cleanup. pagehide (and the legacy beforeunload
-// fallback) fire both on close and on reload/navigation, but the
-// server's GET / mints a fresh session for an unknown id, so a racing
-// reload just lands on a clean slate with the same tabSid — no broken
-// state. sendBeacon is queued by the browser and delivered even after
-// the page unloads; we pass ?sid because beacon can't attach headers.
+// Best-effort tab-close cleanup. pagehide fires on close and on
+// reload. fetch with keepalive survives the unload and can carry
+// X-OES-Session. POST /logout reads that header only, so a beacon
+// with ?sid= would no longer name the session.
 window.addEventListener('pagehide', () => {
   try {
-    navigator.sendBeacon(
-      API + '/logout?sid=' + encodeURIComponent(tabSid));
+    fetch(API + '/logout', {
+      method: 'POST',
+      keepalive: true,
+      credentials: 'same-origin',
+      headers: { 'X-OES-Session': tabSid }
+    });
   } catch (e) { /* best-effort */ }
 });
 
@@ -1121,7 +1123,10 @@ function applyPendingModal(modal){
     const body = new URLSearchParams({result: String(code)});
     fetch(API + '/modal-reply/' + encodeURIComponent(modal.id), {
       method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      headers:{
+        'Content-Type':'application/x-www-form-urlencoded',
+        'X-OES-Session': tabSid
+      },
       body: body.toString()
     }).catch(()=>{ /* network blip — next poll re-queues */ });
   }
