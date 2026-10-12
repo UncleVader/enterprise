@@ -8,7 +8,9 @@
 
 #include "backend/appData.h"
 #include "backend/backend_exception.h"
+#include "backend/databaseLayer/firebird/firebirdLeaderMode.h"
 #include "backend/debugger/debugClient.h"
+#include "backend/fileBaseSecondProcess.h"
 #include "backend/session/sessionRegistry.h"
 
 #include "docManager/templates/docViewConfigCompare.h"
@@ -163,6 +165,24 @@ static bool SaveBeforeChildLaunch(wxWindow* parent)
 	return true;
 }
 
+// The designer stays open, so a child on this same local file cannot open it.
+// Said here, before the process is started: the child would otherwise exit at
+// once and the menu would have nothing to show.
+static bool RefuseSecondProcessOnLocalFile(wxWindow* parent)
+{
+	if (appData == nullptr)
+		return false;
+
+	const bool heldStandalone = ibFirebirdLeaderMode::CurrentRole()
+		== ibFirebirdLeaderMode::Role::Standalone;
+	const wxString why = ibSecondProcessOnLocalFile(appData->GetFile(), heldStandalone);
+	if (why.IsEmpty())
+		return false;
+
+	wxMessageBox(why, wxTheApp->GetAppDisplayName(), wxOK | wxICON_INFORMATION, parent);
+	return true;
+}
+
 void ibFrontendMainFrameDesigner::OnStartDebug(wxCommandEvent& WXUNUSED(event))
 {
 	if (debugClient->HasConnections()) {
@@ -173,12 +193,18 @@ void ibFrontendMainFrameDesigner::OnStartDebug(wxCommandEvent& WXUNUSED(event))
 	if (!SaveBeforeChildLaunch(this))
 		return;
 
+	if (RefuseSecondProcessOnLocalFile(this))
+		return;
+
 	appData->RunApplication(wxT("enterprise"));
 }
 
 void ibFrontendMainFrameDesigner::OnStartDebugWithoutDebug(wxCommandEvent& WXUNUSED(event))
 {
 	if (!SaveBeforeChildLaunch(this))
+		return;
+
+	if (RefuseSecondProcessOnLocalFile(this))
 		return;
 
 	appData->RunApplication(wxT("enterprise"), false);
@@ -196,12 +222,18 @@ void ibFrontendMainFrameDesigner::OnStartDebugThin(wxCommandEvent& WXUNUSED(even
 	if (!SaveBeforeChildLaunch(this))
 		return;
 
+	if (RefuseSecondProcessOnLocalFile(this))
+		return;
+
 	appData->RunApplication(wxT("enterprise-thin"));
 }
 
 void ibFrontendMainFrameDesigner::OnStartDebugWithoutDebugThin(wxCommandEvent& WXUNUSED(event))
 {
 	if (!SaveBeforeChildLaunch(this))
+		return;
+
+	if (RefuseSecondProcessOnLocalFile(this))
 		return;
 
 	appData->RunApplication(wxT("enterprise-thin"), false);
@@ -236,12 +268,16 @@ void ibFrontendMainFrameDesigner::OnStartDebugWeb(wxCommandEvent& WXUNUSED(event
 	}
 	if (!SaveIfModifiedBeforeWebDebug(this))
 		return;
+	if (RefuseSecondProcessOnLocalFile(this))
+		return;
 	LaunchWebDebug(this, /*withDebug=*/true);
 }
 
 void ibFrontendMainFrameDesigner::OnStartDebugWithoutDebugWeb(wxCommandEvent& WXUNUSED(event))
 {
 	if (!SaveIfModifiedBeforeWebDebug(this))
+		return;
+	if (RefuseSecondProcessOnLocalFile(this))
 		return;
 	LaunchWebDebug(this, /*withDebug=*/false);
 }
