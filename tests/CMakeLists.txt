@@ -86,6 +86,7 @@ add_executable(oes_tests
     test_mcpToolContract.cpp
     test_webStreamGate.cpp
     test_webSessionCookie.cpp
+    test_webPublicError.cpp
     test_spreadsheetCompose.cpp
     test_spreadsheetDocument.cpp
     test_spreadsheetDescriptionNode.cpp

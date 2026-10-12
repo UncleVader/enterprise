@@ -30,6 +30,7 @@
 #include "backend/backend_exception.h"
 #include "backend/session/webStreamGate.h"
 #include "backend/session/webSessionCookie.h"
+#include "backend/webPublicError.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 #include "frontend/diagnostics/oesConsole.h"
 
@@ -466,28 +467,36 @@ int main(int argc, char** argv)
 	// swallows raw escapes but our session state is left half-torn).
 	// With ThrowDatabaseException now actually throwing, the surface
 	// of paths that can reach here grew — every DB call inside a
-	// handler can now produce a structured exception. We surface a
-	// JSON 500 with the most-specific kind/code we can extract so
-	// client diagnostics (and admin dashboards) see something useful
-	// instead of the generic empty cpp-httplib body.
+	// handler can now produce a structured exception. A database
+	// failure and a plain std::exception answer {"error":"internal",
+	// "id":"..."} : the driver text, including the rendered statement,
+	// is journalled under that id and is not sent to the browser. A
+	// script or backend exception still carries its own message.
 	svr.set_exception_handler([](const httplib::Request& /*req*/,
 	                              httplib::Response& res,
 	                              std::exception_ptr ep) {
 		std::string body;
 		try { std::rethrow_exception(ep); }
 		catch (const ibDatabaseLayerException& e) {
-			body = std::string("{\"error\":\"database\",\"code\":")
-				+ std::to_string(e.GetDriverErrorCode())
-				+ ",\"sqlstate\":\"" + e.GetSqlState().ToUTF8().data()
-				+ "\",\"retryable\":" + (e.IsRetryable() ? "true" : "false")
-				+ ",\"message\":" + nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
-				+ "}";
+			// The message includes the rendered statement. The browser
+			// gets an id; the statement stays in the journal.
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.GetErrorDescription().ToUTF8().data();
+			failure.sqlState = e.GetSqlState().ToUTF8().data();
+			failure.driverCode = e.GetDriverErrorCode();
+			failure.hasDriverCode = true;
+			failure.retryable = e.IsRetryable();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (const ibBackendDatabaseException& e) {
-			body = std::string("{\"error\":\"database\",\"retryable\":")
-				+ (e.IsRetryable() ? "true" : "false")
-				+ ",\"message\":" + nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
-				+ "}";
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.GetErrorDescription().ToUTF8().data();
+			failure.retryable = e.IsRetryable();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (const ibCoreException& e) {
 			body = std::string("{\"error\":\"backend\",\"message\":")
@@ -495,9 +504,11 @@ int main(int argc, char** argv)
 				+ "}";
 		}
 		catch (const std::exception& e) {
-			body = std::string("{\"error\":\"internal\",\"message\":")
-				+ nlohmann::json(e.what()).dump()
-				+ "}";
+			ibWebDatabaseFailure failure;
+			failure.correlationId = ibWebCorrelationId();
+			failure.message = e.what();
+			ibWebRecordDatabaseFailure(failure);
+			body = ibWebPublicInternalError(failure.correlationId);
 		}
 		catch (...) {
 			body = "{\"error\":\"unknown\"}";
