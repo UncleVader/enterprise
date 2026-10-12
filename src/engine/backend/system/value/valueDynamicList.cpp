@@ -149,6 +149,11 @@ ibValueDynamicList::ibValueDynamicList(const ibBackendQueryable* queryable, ibDy
 
 	if (queryable != nullptr)
 		SetSourceQueryable(queryable);   // null → set later via SetSource
+
+	// Refresh was declared and never bound, so a script could not call it — and
+	// nothing else on the list either. GetMetadata is how a list form learns
+	// which object it is listing (a custom query has none, and answers empty).
+	m_members.Bind(this, &ibValueDynamicList::FillMembers);
 }
 
 // 🛑 THE READ IS WAITED OUT BEFORE THE LIST GOES — here, in the class whose parts it walks, as the
@@ -719,16 +724,36 @@ const ibMetaData* ibValueDynamicList::GetSourceMetaData() const
 // surface over it is rebuilt over the settled structure, in
 // system/value/composition/valueComposerSettings.h. Offering a property that hands out nothing would
 // be worse than not offering it: a script would set a filter and be told nothing went wrong.
+enum Func {
+	enRefresh,
+	enGetMetadata,
+};
+
 void ibValueDynamicList::FillMembers(ibMemberTable& helper) const
 {
 	helper.AppendProc(wxT("Refresh"), wxT("Refresh()"));
+	helper.AppendFunc(wxT("GetMetadata"), wxT("GetMetadata()"));
 }
 
 bool ibValueDynamicList::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
 {
-	if (lMethodNum == 0) {   // Refresh
+	switch (lMethodNum)
+	{
+	case Func::enRefresh:
 		RefreshComposerSettings();
 		RefetchAll();
+		return true;
+	}
+	return false;
+}
+
+bool ibValueDynamicList::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+{
+	switch (lMethodNum)
+	{
+	case Func::enGetMetadata:
+		// A custom query lists no object: the empty value.
+		pvarRetValue = GetSourceMetaObject();
 		return true;
 	}
 	return false;

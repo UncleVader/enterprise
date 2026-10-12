@@ -273,6 +273,9 @@ class ibValueTextCtrl : public ibValueWindow,
 	// keystroke); Change — the text as it stands is committed (Text: the client sends it on Enter, or on
 	// leaving a field that was typed into); Select / Open / Clear — the field's three buttons.
 	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	// Input while the form's object is not modified yet: the first keystroke modifies it, and the «*» of its tab comes
+	// with that frame. Any later one changes nothing until the next call.
+	virtual bool IsSubscribed(ibProtocolEvent event) const override;
 
 	//support icons
 	virtual wxIcon GetIcon() const;
@@ -530,14 +533,14 @@ class ibValueRadioButton : public ibValueWindow {
 	//get title
 	virtual wxString GetControlTitle() const { return GetCaption(); }
 
-	// The caption in the session's language.
+	// The caption in the session's language, and whether it is shown selected.
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	//support icons
 	virtual wxIcon GetIcon() const;
 	static wxIcon GetIconGroup();
 
-	//load & save object in control 
+	//load & save object in control
 	virtual bool ReadData(const ibDataNode& node);
 	virtual bool WriteData(ibDataNode& node) const;
 

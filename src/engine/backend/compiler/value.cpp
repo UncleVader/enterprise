@@ -1301,8 +1301,13 @@ const ibValue& ibValue::operator+(const ibValue& cParam)
 		// (GetDate), a date its own count - the arithmetic a date on the right always had.
 		m_dData = m_dData.AddMilliseconds(cParam.GetDate() - ibDateTime());
 		break;
+	case ibValueTypes::TYPE_STRING:
+		// Text is joined, as the script's own '+' joins it (procUnit.cpp, AddValue). Without this
+		// branch a string was left as it was, and Sum() of "1", "2", "3" answered "1".
+		m_sData += cParam.GetString();
+		break;
 	default:
-		break;      // '+' is defined for number and date only; others unchanged
+		break;      // '+' is defined for number, date and string; others unchanged
 	}
 
 	return *this;
