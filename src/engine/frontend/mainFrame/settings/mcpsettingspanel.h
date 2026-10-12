@@ -43,6 +43,7 @@ public:
 	void OnEnabled(wxCommandEvent& event);
 	void OnAddressChanged(wxCommandEvent& event);
 	void OnPortChanged(wxCommandEvent& event);
+	void OnExpose(wxCommandEvent& event);
 
 	// Taking the handout away. Two, because there are two shapes of it and a single button would
 	// have to guess which one a person meant.
@@ -83,12 +84,14 @@ private:
 		ID_McpEnabled = wxID_HIGHEST + 700,
 		ID_McpAddress,
 		ID_McpPort,
+		ID_McpExpose,
 		ID_McpCopyCommand,
 		ID_McpCopyBlock,
 		ID_McpRun,
 	};
 
 	wxCheckBox* m_enabled     = nullptr;
+	wxCheckBox* m_expose      = nullptr;
 	wxTextCtrl* m_addressCtrl = nullptr;
 	wxTextCtrl* m_portCtrl    = nullptr;
 
