@@ -24,6 +24,8 @@
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/backend_exception.h"
+#include "backend/databaseLayer/databaseLayerException.h"
+#include "backend/webPublicError.h"
 #include "backend/databaseLayer/connectionHolder.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — the meta-watch sys_config read (ibQueryResult, no raw L1)
@@ -1273,6 +1275,22 @@ namespace {
 std::string ExceptionToJson(const ibCoreException& e)
 {
 	nlohmann::json j;
+
+	// A driver failure's message carries the rendered statement. That
+	// text stays in the journal. The browser gets an id.
+	if (auto* db = dynamic_cast<const ibBackendDatabaseException*>(&e)) {
+		ibWebDatabaseFailure failure;
+		failure.correlationId = ibWebCorrelationId();
+		failure.message = std::string(e.GetErrorDescription().utf8_str());
+		failure.retryable = db->IsRetryable();
+		if (auto* layer = dynamic_cast<const ibDatabaseLayerException*>(&e)) {
+			failure.hasDriverCode = true;
+			failure.driverCode = layer->GetDriverErrorCode();
+			failure.sqlState = std::string(layer->GetSqlState().utf8_str());
+		}
+		ibWebRecordDatabaseFailure(failure);
+		return ibWebPublicInternalError(failure.correlationId);
+	}
 
 	if (auto* lockEx = dynamic_cast<const ibBackendLockException*>(&e)) {
 		j["error"] = "lock_conflict";
