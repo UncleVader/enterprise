@@ -50,6 +50,14 @@ TEST(PasswordHash, EmptyPasswordRoundTrips) {
     EXPECT_FALSE(ibPasswordHash::Verify(wxT("x"), h));
 }
 
+// A row whose password column is blank is not an account with no password.
+// Editing a user without retyping one used to store that blank, and login
+// then succeeded with an empty password.
+TEST(PasswordHash, EmptyStoredHashVerifiesNothing) {
+    EXPECT_FALSE(ibPasswordHash::Verify(wxEmptyString, wxEmptyString));
+    EXPECT_FALSE(ibPasswordHash::Verify(wxT("x"), wxEmptyString));
+}
+
 // ---------------------------------------------------------------------------
 // Salt — same password hashes to different strings each time
 // ---------------------------------------------------------------------------

@@ -26,6 +26,9 @@ public:
 	// Accepts both the new PBKDF2 format and a legacy 32-hex MD5 string.
 	// If the stored value looks like MD5, compares via ibMD5 — the caller
 	// should then call IsLegacy() and re-store with Hash() to upgrade.
+	// An empty stored hash verifies nothing, including an empty password:
+	// a missing hash is not an account with no password. Hash("") is a
+	// real PHC string and is a different case.
 	static bool Verify(const wxString& password, const wxString& storedHash);
 
 	// True if storedHash is a legacy MD5 (32 hex chars) rather than PBKDF2.

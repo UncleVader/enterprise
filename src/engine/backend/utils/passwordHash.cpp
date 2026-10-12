@@ -191,8 +191,11 @@ wxString ibPasswordHash::Hash(const wxString& password)
 
 bool ibPasswordHash::Verify(const wxString& password, const wxString& storedHash)
 {
+	// A missing hash is not "no password". The user dialog used to save an
+	// empty string when a record was edited without retyping the password,
+	// and this branch then admitted that account with an empty password.
 	if (storedHash.IsEmpty())
-		return password.IsEmpty();
+		return false;
 
 	// Legacy fast path: 32-hex MD5.
 	if (IsLegacy(storedHash))

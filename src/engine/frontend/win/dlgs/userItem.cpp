@@ -17,6 +17,11 @@ bool ibDialogUserItem::ReadUserData(const ibGuid& userGuid, bool copy)
 		m_textName->SetValue(userInfo.m_strUserName);
 		m_textFullName->SetValue(userInfo.m_strUserFullName);
 
+		// The box shows a placeholder, not the hash. Keep the hash that is
+		// already stored, so OK without a new password writes it back. The
+		// text handler is off for the placeholder: it would hash "12345678"
+		// and replace the real one.
+		m_strUserPassword = userInfo.m_strUserPassword;
 		if (userInfo.IsSetPassword()) {
 			m_bInitialized = false;
 			m_textPassword->SetValue(
