@@ -319,8 +319,12 @@ void ibValueForm::FillFormMembers(ibMemberTable& helper) const
 	// virtual GetCompileModule() on a possibly half-alive `this` (crash on teardown /
 	// debugger-thread lazy build); the descriptor thunk is dynamic_cast-guarded.
 
+	// A button, a caption, or an HTML box holds no value and is still what a
+	// module names. The compiler already accepts ThisForm.<name>; leaving the
+	// control off this list is the runtime "field not found". An empty name
+	// is not a member.
 	for (auto control : GetControlList()) {
-		if (!control->HasValueInControl())
+		if (control->GetControlName().IsEmpty())
 			continue;
 
 		helper.AppendProp(
@@ -401,17 +405,12 @@ bool ibValueForm::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 		// Bound handle (Controls / DataSource) — resolve the live bind value directly. Works in the
 		// Designer (no ProcUnit) and as a runtime fallback.
 		//
-		// The bound cell is an EMBEDDED member, NOT a heap object with its own ref count: ThisForm =
-		// the form itself; Controls = m_formCollectionControl; DataSource / <attr> = &m_value of the
-		// attribute wrapper. Its ref count is 0. So take `bound` as a CONST pointer — the assignment
-		// then binds a NON-owning reference (operator=(const ibValue*) -> TYPE_CONST_REFFER). An owning
-		// ibValue* (IncrRef now, DecrRef -> delete this on destruct) would drive the member to 0 and
-		// `delete` a member pointer, corrupting the heap (crash: expanding thisForm.DataSource in the
-		// debugger watch).
-		if (const ibValue* bound = GetBoundValue(GetPropName(lPropNum))) {
-			pvarPropVal = bound;
+		// The form module compiles DataSource as a property of ThisForm, so
+		// `DataSource.B = ...` arrives here, and so does `ThisForm.DataSource`.
+		// The cell is an embedded member. Copy the reference it already holds;
+		// a read-only slot answers false instead of leaving the previous value.
+		if (GetBoundValue(GetPropName(lPropNum), pvarPropVal))
 			return true;
-		}
 	}
 	else if (lPropAlias == eProperty || lPropAlias == eEvent) {
 		// Properties + the Events container come from ibValueFrame's surface.
@@ -451,8 +450,14 @@ bool ibValueForm::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 				return id == control->GetControlID();
 			}
 		);
-		if (it != list.end())
-			return (*it)->GetControlValue(pvarPropVal);
+		if (it != list.end()) {
+			// The value, when the control has one. Otherwise the control
+			// itself: ThisForm.HelpPane.SetPage reaches the HTML box.
+			if ((*it)->HasValueInControl())
+				return (*it)->GetControlValue(pvarPropVal);
+			pvarPropVal = *it;
+			return !pvarPropVal.IsEmpty();
+		}
 	}
 	else if (lPropAlias == eFormAttribute) {
 		if (ibFormAttributeValue* attr = FindAttributeById(m_members.GetPropData(lPropNum))) {

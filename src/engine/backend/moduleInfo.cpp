@@ -9,7 +9,7 @@
 #include "backend/compiler/cache/byteCodeCache.h"              // AOT cache Load / Save
 #include "backend/metaCollection/metaModuleObject.h"  // ibValueMetaObjectModuleBase full type for GetGuid/GetClassType
 #include "backend/metaData.h"                         // ibMetaData::GetConfigMD5 — the cache key's second half
-#include "backend/compiler/scriptParseCode.h"          // ibParseCode — the export names a TEXT declares
+#include "core/compiler/scriptParseCode.h"          // ibParseCode — the export names a TEXT declares
 // DEF_VAR_SKIP — the sentinel a parameter's default-value slot carries when there is NO default.
 // ⚠ It lives on the COMPILE side while the field it marks (ibByteParam::m_defaultValue) lives in
 // byteCode.h, which describes it in a comment and cannot see it. Included rather than duplicated;
@@ -192,7 +192,7 @@ static void ibExportNamesFromText(const ibValueMetaObjectModuleBase* moduleObjec
 	if (moduleObject == nullptr)
 		return;
 
-	ibParseCode parser;
+	ibParseCode parser(ibCompileCode::GetCodeStyle());
 
 	// A refusal is ordinary and says nothing: the text is somebody's work in progress, and half a
 	// declaration is what a module looks like while it is being typed. No names, no noise.
@@ -311,6 +311,21 @@ ibValue* ibRuntimeModuleDataObject::GetBoundValue(const wxString& name) const
 	if (cm == nullptr) return nullptr;
 	auto it = cm->m_listExternValue.find(name);
 	return (it != cm->m_listExternValue.end()) ? it->second : nullptr;
+}
+
+bool ibRuntimeModuleDataObject::GetBoundValue(const wxString& name, ibValue& out) const
+{
+	// A slot that cannot be written must not answer true and leave `out` stale.
+	if (out.m_bReadOnly)
+		return false;
+	ibValue* bound = GetBoundValue(name);
+	if (bound == nullptr)
+		return false;
+	// Copy what the cell holds. When the cell is a reference, that copy is the
+	// object it points at: the document stays writable, a const reference stays
+	// const, and the cell itself (an embedded member, refcount 0) is not counted.
+	out = *bound;
+	return true;
 }
 
 // Named context variable — name VISIBLE in the editor (ThisObject / ThisForm).
