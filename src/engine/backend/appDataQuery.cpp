@@ -2,9 +2,10 @@
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — DDL/DML + TableExists/GetColumns/IsOpen + typed row reads (no raw L1)
 #include "backend/databaseLayer/connectionPool.h"
 
-#include "backend/backend_exception.h"
+#include "backend/userInfo.h"
 
 #include "backend/session/sessionRegistry.h"
+#include "core/diagnostics/journal.h"
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -29,6 +30,10 @@ void ibApplicationInstance::CreateTableUser()
 		q.Execute(ibCreateTable(user_table, {
 			{ wxT("guid"),       ibTypeString(36),  /*notNull*/false, /*pk*/true,  wxEmptyString },
 			{ wxT("name"),       ibTypeString(64),  /*notNull*/true,  /*pk*/false, wxEmptyString },
+			// The folded name. "Admin" and "admin" land on one key, and the unique
+			// index below is what a second insert meets even when two saves pass
+			// the check together.
+			{ wxT("nameKey"),    ibTypeString(64),  /*notNull*/true,  /*pk*/false, wxEmptyString },
 			{ wxT("fullName"),   ibTypeString(128), /*notNull*/true,  /*pk*/false, wxEmptyString },
 			{ wxT("changed"),    ibTypeDate(),      /*notNull*/true,  /*pk*/false, wxEmptyString },
 			{ wxT("dataSize"),   ibTypeInteger(),   /*notNull*/true,  /*pk*/false, wxEmptyString },
@@ -37,6 +42,58 @@ void ibApplicationInstance::CreateTableUser()
 		// The index rides with the just-created table, so the old "if not exists" was redundant
 		// (and let Firebird choke on that syntax) — a plain CREATE INDEX is correct here.
 		q.Execute(ibCreateIndex(user_table, wxT("user_index"), { wxT("guid"), wxT("name") }));
+		q.Execute(ibCreateIndex(user_table, wxT("user_name_key"), { wxT("nameKey") }, /*unique*/true));
+	}
+}
+
+void ibApplicationInstance::MigrateTableUser()
+{
+	ibDatabaseQueryBuilder qi;
+	if (!qi.TableExists(user_table))
+		return;
+
+	bool hasNameKey = false;
+	const wxArrayString cols = qi.GetColumns(user_table);
+	for (std::size_t i = 0; i < cols.GetCount(); ++i) {
+		if (cols[i].CmpNoCase(wxT("nameKey")) == 0) {
+			hasNameKey = true;
+			break;
+		}
+	}
+
+	// Nullable on purpose. SQLite refuses NOT NULL on a column added to a table that
+	// already has rows, and an old row has no folded name until the fill below.
+	ibDatabaseQueryBuilder q;
+	if (!hasNameKey) {
+		q.Execute(ibAddColumn(user_table, { wxT("nameKey"), ibTypeString(64), false, false, wxEmptyString }));
+		for (const ibUserInfo::Brief& user : ibUserInfo::ListAll()) {
+			q.Execute(ibUpdate(user_table,
+				{ { wxT("nameKey"), ibConst(ibValue(ibUserInfo::NameKey(user.m_strUserName))) } },
+				ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("guid")), ibConst(ibValue(user.m_strUserGuid)))));
+		}
+	}
+
+	// The base opens either way. The unique index is created only when every folded
+	// name is already distinct; two "Admin" rows, or two blanks, would make CREATE
+	// UNIQUE INDEX fail and the failure would look like the base itself is broken.
+	// Asked again on the next open, so renaming them is enough — nothing else has to
+	// remember to build the index.
+	const wxString shared = ibUserInfo::SharedNameWarning();
+	if (!shared.empty()) {
+		// ibJournalWarning is erased in a Release build. This warning is about a base
+		// that just opened, so it has to be in the file then too, and it does not open
+		// a window (a warning here is for whoever reads the journal).
+		if (ibTechJournal::IsOpen())
+			ibTechJournal::Print(ibJournalMark::Warning, wxT("user"), wxT("%s"), shared);
+		return;
+	}
+
+	try {
+		q.Execute(ibCreateIndex(user_table, wxT("user_name_key"), { wxT("nameKey") }, /*unique*/true));
+	}
+	catch (...) {
+		// Already present from the open that first found the names distinct, or from
+		// CreateTableUser on a new base. A later open must not refuse the base for that.
 	}
 }
 
@@ -66,12 +123,16 @@ void ibApplicationInstance::CreateTableSession()
 			// than by whoever wrote the row. A nullable flag has two (NULL and 0) and they agree only
 			// as long as every reader remembers to make them agree.
 			{ wxT("exclusive"),       ibTypeInteger(),   true,  false, wxT("0") },
+			// tokenHash — SHA-256 hex of the thin client's bearer token. The token itself is never stored.
+			// Null: a session with nothing to resume (every kind but a thin client that has logged in).
+			{ wxT("tokenHash"),       ibTypeString(64),  false, false, wxEmptyString },
 		}));
 		// Indexes ride with the just-created table — no "if not exists" (redundant here, and
 		// unsupported by Firebird), so the per-driver fork collapses to three plain CREATE INDEX.
 		q.Execute(ibCreateIndex(session_table, wxT("session_index_1"), { wxT("session"), wxT("userName") }));
 		q.Execute(ibCreateIndex(session_table, wxT("session_index_2"), { wxT("session") }));
 		q.Execute(ibCreateIndex(session_table, wxT("session_index_3"), { wxT("lastActive") }));
+		q.Execute(ibCreateIndex(session_table, wxT("session_index_4"), { wxT("tokenHash") }));
 	}
 }
 
@@ -88,6 +149,13 @@ void ibApplicationInstance::CreateTableEvent()
 // session end / on zombie sweep. Index on (namespace, keyHash) drives
 // the per-acquire conflict-check; index on sessionGuid drives the
 // session-end cascade.
+//
+// sys_lock_key is the mutex for one key. It is created on every open, including a
+// base that already has sys_lock: the first acquire of a key inserts the header
+// under the primary key, so nothing is copied out of the old rows. The sweep
+// deletes a header once nobody holds the key. An old binary on the same base
+// still acquires without the row, so two processes can both be granted the key
+// until every process is upgraded.
 void ibApplicationInstance::CreateTableLock()
 {
 	ibDatabaseQueryBuilder q;
@@ -108,6 +176,14 @@ void ibApplicationInstance::CreateTableLock()
 		// sessionGuid drives the session-end cascade. No per-driver fork — see CreateTableSession.
 		q.Execute(ibCreateIndex(lock_table, wxT("lock_index_1"), { wxT("namespace"), wxT("keyHash") }));
 		q.Execute(ibCreateIndex(lock_table, wxT("lock_index_2"), { wxT("sessionGuid") }));
+	}
+
+	// The header outlives the lock. Release does not delete it.
+	if (!q.TableExists(lock_key_table)) {
+		q.Execute(ibCreateTable(lock_key_table, {
+			{ wxT("namespace"), ibTypeString(128), true, true, wxEmptyString },
+			{ wxT("keyHash"),   ibTypeString(64),  true, true, wxEmptyString },
+		}));
 	}
 }
 
@@ -304,6 +380,22 @@ void ibApplicationInstance::MigrateTableSession()
 	// exclusive — process-wide monopoly marker; cluster-aware gate in ProcessAdd /
 	// ProcessSetExclusive reads peer rows to detect another process holding it.
 	if (!has(wxT("exclusive")))       addColumn(wxT("exclusive"),       ibTypeInteger());
+	// tokenHash — the bearer token's SHA-256, never the token. Added with the resume window. Null on a
+	// row that predates it, and that row cannot be resumed.
+	if (!has(wxT("tokenHash"))) {
+		addColumn(wxT("tokenHash"), ibTypeString(64));
+		try {
+			ibDatabaseQueryBuilder q;
+			q.Execute(ibCreateIndex(session_table, wxT("session_index_4"), { wxT("tokenHash") }));
+		}
+		catch (const ibCoreException& err) {
+			// The column is enough to resume. The index is only the lookup, and a driver that refuses it is said.
+			ibJournalWarning(wxT("engine"), wxT("sys_session tokenHash index was not created: %s"), err.GetErrorDescription());
+		}
+		catch (...) {
+			ibJournalWarning(wxT("engine"), wxT("sys_session tokenHash index was not created"));
+		}
+	}
 
 	// NO BACK-FILL FOR THE ROWS. A column added to a populated table arrives NULL everywhere, which
 	// normally means an old base carries two spellings of one fact for good — but not this table: every
@@ -386,18 +478,20 @@ bool ibApplicationInstance::LoadUserInfoFromBuffer(wxMemoryBuffer& buffer)
 
 	ibReaderMemory* prevReaderMemory = nullptr; u64 meta_id = 0;
 
+	bool saved = true;
 	while (!reader.eof()) {
 
 		ibReaderMemory* readerMemory = reader.open_chunk_iterator(meta_id, &*prevReaderMemory);
 		if (!readerMemory)
 			break;
 
-		ibUserInfo::Save(ibUserInfo::Deserialize(*readerMemory));
+		if (ibUserInfo::Save(ibUserInfo::Deserialize(*readerMemory)) != ibUserInfo::SaveReason::Saved)
+			saved = false;
 
 		prevReaderMemory = readerMemory;
 	};
 
-	return true;
+	return saved;
 }
 
 bool ibApplicationInstance::SaveUserInfoToBuffer(wxMemoryBuffer& buffer) const

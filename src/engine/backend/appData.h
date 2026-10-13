@@ -329,9 +329,10 @@ public:
 	// Pure credential check used by Login above. Looks up the user, verifies
 	// the password (PBKDF2 with silent MD5→PBKDF2 upgrade via NeedsRehash),
 	// fills `outInfo` on success, and does NOT mutate any session state.
-	// Returns true for open-access mode too (empty sys_user populating +
-	// any creds → pass with outInfo.IsOk()==false). Safe to call from the
-	// registry thread without a ibSessionScope. Exposed as a building block
+	// An empty name is open access only when the user list was read and is
+	// empty, on every host (outInfo stays empty). A list that could not be
+	// read returns false.
+	// Safe to call from the registry thread without a ibSessionScope. Exposed as a building block
 	// so registry's ProcessAttach can short-circuit on bad creds before
 	// pinning a session scope.
 	bool AuthenticateUser(const wxString& strUserName,
@@ -422,6 +423,13 @@ public:
 
 	wxString GetDatabaseDescription() const;
 
+#ifdef OES_TESTING
+	// Open is the production caller. The sqlite fixture builds the table the
+	// migration sees and asks these itself.
+	static void CreateTableUserForTest() { CreateTableUser(); }
+	static void MigrateTableUserForTest() { MigrateTableUser(); }
+#endif
+
 private:
 
 	// Buffer-level user-table export / import. Per-record serialization
@@ -438,6 +446,9 @@ private:
 	static void CreateTableSession();
 	static void CreateTableEvent();
 	static void CreateTableLock();
+#ifdef OES_TESTING
+	friend struct LockSchemaAccess;   // the race test opens a base that already has sys_lock
+#endif
 	// Additive — creates sys_job if missing. The shared last-run clock for
 	// scheduled jobs; independent table, not part of TableAlreadyCreated()'s
 	// init contract, so existing databases pick it up on next open.
@@ -446,6 +457,10 @@ private:
 	// jobs had any. Nullable, and a NULL active reads as ON: silence must never switch a job off.
 	static void MigrateTableJob();
 	static void MigrateTableSession();
+	// Gives sys_user its folded name. The unique index is created only when
+	// every name is already distinct. A base whose users share a name still
+	// opens; that name cannot be used to sign in until each one is unique.
+	static void MigrateTableUser();
 	// Additive — creates sys_settings if missing. One row per saved setting,
 	// addressed by category + object + name + user. Independent table, not part
 	// of TableAlreadyCreated()'s init contract, so existing databases pick it up
@@ -711,6 +726,11 @@ private:
 #define event_table				wxT("sys_event")
 #define bytecode_cache_table	wxT("sys_bytecode_cache")
 #define lock_table				wxT("sys_lock")
+// One row per key, primary key (namespace, keyHash). Acquire locks this row for the
+// transaction, then reads and writes sys_lock. Release does not delete it. The
+// sweep does, once nobody holds the key. An old binary on the same base still
+// acquires without this row, so the race stays open until every process is upgraded.
+#define lock_key_table			wxT("sys_lock_key")
 // sys_job — one row per scheduled job, holding the LAST RUN as every process on
 // this base sees it. Without it each process keeps its own clock and a job runs
 // once per process per interval instead of once per interval.

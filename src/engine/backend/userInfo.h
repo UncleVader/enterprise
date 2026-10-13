@@ -69,18 +69,40 @@ struct BACKEND_API ibUserInfo {
 	// DB I/O against sys_user via the global db_query layer.
 	// Read returns a default-constructed (IsOk() == false) record on miss
 	// or invalid input; Save does an upsert keyed by m_strUserGuid.
+	// A name is one account: "Admin" and "admin" are the same name.
+	static wxString   NameKey(const wxString& userName);
+	// The spelling a person should read. A name that is empty or only spaces is "(blank)".
+	static wxString   NameAsShown(const wxString& userName);
+	// How many accounts fold to this name. An empty name is not a name, so the count is 0
+	// and a blank cannot be used to sign in.
+	static unsigned   CountByName(const wxString& userName);
+	// The accounts that fold to one name, as a person would list them ("Admin / admin").
+	// Empty when every name is distinct.
+	static wxString   SharedNames();
+	// The sentence for the journal and the user list when SharedNames() is not empty.
+	// Empty when every name is distinct.
+	static wxString   SharedNameWarning();
+	// True when saving this account would take a folded name that already belongs to
+	// somebody else. An existing row may keep the name it already has, even while
+	// another row still shares it, so that row can be edited or renamed.
+	static bool       NameChangeConflicts(const ibUserInfo& info);
 	static ibUserInfo Read(const ibGuid& userGuid);
 	static ibUserInfo Read(const wxString& userName);
-	static bool       Save(const ibUserInfo& info);
+	// Saved, the name already belongs to someone else, or the write failed.
+	// A conflict and a database error are not the same answer.
+	enum class SaveReason { Saved, NameTaken, Failed };
+	static SaveReason Save(const ibUserInfo& info);
 	// Remove the sys_user row keyed by guid. True on success (or no-op miss).
 	static bool       Delete(const ibGuid& userGuid);
 
 	// Table-wide queries.
-	// HasAny  — `SELECT 1 FROM sys_user LIMIT 1` semantics; true on any row.
-	//           Used to distinguish open-access mode (empty sys_user) from
-	//           normal auth flow.
+	// HasAny — true when sys_user has a row. A failure to read the table is
+	// thrown: an unreadable list is not an empty one, and login must not
+	// treat it as open access.
 	// ListAll — every row projected to Brief. Cheap by design — does NOT
-	//           crack the binaryData blob.
+	//           crack the binaryData blob. A failure to read is thrown,
+	//           the same as HasAny: an empty vector means the table was
+	//           read and had no rows.
 	static bool                HasAny();
 	static std::vector<Brief>  ListAll();
 
