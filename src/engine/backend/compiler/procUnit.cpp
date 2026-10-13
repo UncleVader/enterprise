@@ -5,7 +5,7 @@
 
 #include "procUnit.h"
 #include "procUnitLambda.h"    // ibValueIterator / ibValueFunction / AsFunction / AsIterator
-#include "core/fiber/fiberLocals.h"
+#include "core/fiber/fiber.h"          // StackLow — the depth count is not the only way the stack runs out
 
 #include "debugger/debugServer.h"
 #include "system/systemManager.h"
@@ -13,6 +13,8 @@
 
 
 #include <algorithm>
+#include <exception>   // std::exception_ptr — a refusal is rethrown after the catch, not inside it
+#include <optional>    // std::optional — whether the core refused, apart from what it said
 #include <utility>   // std::forward — the variadic Raise below
 
 // Operand resolution for the bytecode interpreter. Three slot kinds:
@@ -287,6 +289,9 @@ IB_FORCEINLINE const ibValue& ResolveRead(int slot, int idx,
 		}                                                                       \
 	} while (0)
 
+static void FillLambdaDefaults(ibRunContext& frame, const ibByteCode::ibByteFunction* function,
+	const ibByteCode* bytecode);
+
 //**************************************************************************************************************
 //*                                              support error place                                           *
 //**************************************************************************************************************
@@ -447,8 +452,8 @@ inline void ResetByteCode() { auto* st = ibSession::GetPUState(); while (EndByte
 // The runaway-recursion refusal, OUT OF LINE. It formats the whole stack, and built inside the guard
 // below it gave every script call a 384-byte frame, seven saved registers and a stack-cookie check (the
 // disassembly, 2026-09-28) — for a message a correct script never reaches. Same shape as the raise
-// helpers above.
-IB_NOINLINE void RaiseRecursionLimit(ibProcUnitState* state)
+// helpers above. Two reasons share it, each through its own name below.
+IB_NOINLINE void RaiseWithCallStack(ibProcUnitState* state, const wxString& reason)
 {
 	// ⚠ THE REPEAT IS THE WHOLE POINT, SO IT IS COUNTED AND NOT REPRINTED. A runaway is
 	// recursion, so the frame that ran away is BY DEFINITION on the stack hundreds of
@@ -506,8 +511,19 @@ IB_NOINLINE void RaiseRecursionLimit(ibProcUnitState* state)
 	// argument, and a frame carries names the author wrote — a per cent sign in one of them
 	// is a conversion specifier `FormatV` then reads a missing argument for. Same shape as
 	// the compile-error site in backend_exception.cpp; passed as an argument here too.
-	ibBackendCoreException::Error(wxT("%s"),
-		_("Number of recursive calls exceeded the maximum allowed value!\nCall stack :") + strError);
+	ibBackendCoreException::Error(wxT("%s"), reason + strError);
+}
+
+// The count a script sees (MAX_REC_COUNT).
+IB_NOINLINE void RaiseRecursionLimit(ibProcUnitState* state)
+{
+	RaiseWithCallStack(state, _("Number of recursive calls exceeded the maximum allowed value!\nCall stack :"));
+}
+
+// The native stack ran out before the count did (ibFiber::StackLow).
+IB_NOINLINE void RaiseStackLimit(ibProcUnitState* state)
+{
+	RaiseWithCallStack(state, _("The native stack is too low to continue this call.\nCall stack :"));
 }
 
 struct ibProcStackGuard {
@@ -525,7 +541,12 @@ struct ibProcStackGuard {
 		// through a bound session (ibSessionScope / ibSessionThreadBinding).
 		m_state = state;
 		wxASSERT(state != nullptr);
-		if (state->m_recCount > MAX_REC_COUNT) //critical error
+		// The count is the limit a script sees (MAX_REC_COUNT). The stack
+		// probe lives in Execute, ahead of this frame: a check here runs
+		// only after the prologue has committed it, which is the overflow
+		// on a reserve this frame does not fit. On kStackReserve the count
+		// is reached first, and it raises from a frame that fit.
+		if (state->m_recCount > MAX_REC_COUNT)
 			RaiseRecursionLimit(state);
 		state->m_recCount++;
 		m_currentContext = runContext;
@@ -1059,7 +1080,20 @@ inline ibValue GetValue(const ibValue& cValue1)
 //						Construction/Destruction                    //
 //////////////////////////////////////////////////////////////////////
 
-void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
+// Out of line, and kept small. ExecuteBody's prologue commits that whole
+// frame before any of its checks run; on MSVC that commit is _chkstk, and
+// the page past the reserve becomes a stack overflow the check never
+// reaches. Asking here, the refusal still has kStackSlack under it.
+// A native overflow is not turned into a script error from here: that
+// catch skipped the frame guards, and the dump is the record of it.
+IB_NOINLINE void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
+{
+	if (ibFiber::StackLow())
+		RaiseStackLimit(ibSession::PUStateOf(ibSession::Current()));
+	ExecuteBody(pContext, pvarRetValue, bDelta);
+}
+
+IB_NOINLINE void ibProcUnit::ExecuteBody(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
 {
 	struct ibTryLabel {
 
@@ -1137,7 +1171,11 @@ void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDe
 	unsigned opTick = 0;
 
 	// A FAILURE MET IN THIS MODULE'S RUN — taken by its innermost Try (true: the run goes on at `lCodeLine`), or its place
-	// kept for the modules above and the failure said and thrown on (ProcessError rethrows the one being handled).
+	// kept for the modules above and the failure said. The same exception is rethrown after this catch has
+	// returned: a throw inside the handler is another frame on MSVC, and a chain of them overflows the slack.
+	std::exception_ptr propagate;
+	// Present when the core refused. Its text may be empty, so the text is not the sign.
+	std::optional<wxString> coreRefusal;
 	const auto catchError = [&](const ibBackendException& err) -> bool {
 
 		const long trySize = tryList.size() - 1;
@@ -1163,12 +1201,14 @@ void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDe
 			}
 		}
 
-		//show and throw error message (ProcessError rethrows via `throw;`)
+		// Said here. Thrown after the catch, from this frame, not from the handler.
 		ibBackendException::ProcessError(err, m_pByteCode->m_listCode[lCodeLine]);
 		return false;
 	};
 
 start_label:
+	propagate = nullptr;
+	coreRefusal.reset();
 
 	// 🛑 NO SCRATCH BUFFERS LIVE HERE, and the attempt that put four of them here is
 	// worth recording rather than repeating.
@@ -1339,7 +1379,12 @@ start_label:
 			case OPER_IF: {
 				// A boolean condition — what a comparison leaves — is read where it lies; anything else
 				// asks its own emptiness.
+				//
+				// An `and` marks its test (m_param4 = LINQ_THREE_VALUED_NULL) so a SQL NULL left
+				// side does not skip the right one. UNKNOWN does not decide the conjunction.
 				const ibValue& condition = cvariable1;
+				if (curCode.m_param4.m_numIndex == LINQ_THREE_VALUED_NULL && IsNullOperand(condition))
+					break;
 				if (condition.m_typeClass == ibValueTypes::TYPE_BOOLEAN ? !condition.m_bData : IsEmptyValue(condition))
 					lCodeLine = index2 - 1;
 				break;
@@ -1660,6 +1705,15 @@ start_label:
 					}
 				}
 
+				// A hole is an empty slot of this temporary, not an argument.
+				// Handed over as null, the callee fills its own local from
+				// the declaration. A value the caller wrote keeps its pointer.
+				for (long i = 0; i < cRunContext.m_lParamCount; ++i) {
+					if (cRunContext.m_pRefLocVars[i] == &cRunContext.m_pLocVars[i]
+						&& cRunContext.m_pLocVars[i].IsEmpty())
+						cRunContext.m_pRefLocVars[i] = nullptr;
+				}
+
 				if (pVariable2->HasRetVal(lMethodNum)) {
 					// ⭐ A METHOD THAT ANSWERED NOTHING ANSWERS UNDEFINED — never the previous call's value. This slot is
 					// the one calls write their answers into; a method that returned false without writing it left
@@ -1936,7 +1990,11 @@ start_label:
 			{
 				const long tryCodeLine = index1;
 				const long trySize = tryList.size() - 1;
-				if (trySize >= 0) {
+				// A forward call jumps to the real call at the end of the module and
+				// jumps back. The outbound jump is marked (param2 != 0) so it does not
+				// drop the try it is standing in: the call still runs inside the handler.
+				// ENDTRY and a goto the program wrote still leave the handler.
+				if (trySize >= 0 && !(curCode.m_numOper == OPER_GOTO && index2 != 0)) {
 					if (tryCodeLine >= tryList[trySize].m_lEndLine ||
 						tryCodeLine <= tryList[trySize].m_lStartLine) {
 						tryList.resize(trySize);//exit from try..catch scope
@@ -2021,6 +2079,11 @@ start_label:
 							? &functions[entryIndex]
 							: m_pByteCode->FindFunctionByEntry(lCodeLine);
 				}
+
+				// Defaults, once, before the cached key is built from the
+				// arguments. A hole in the middle is an empty own slot, the
+				// same as a tail the caller did not write.
+				FillLambdaDefaults(*pContext, pContext->m_currentFunction, m_pByteCode);
 
 				// `Cached` — DECIDED HERE, and here only.
 				//
@@ -2270,19 +2333,9 @@ start_label:
 					}
 				}
 
-				// Phase 2 — fill missing tail params from compile-time
-				// defaults on the lambda's m_listParam (same structure
-				// named-function calls read from at PushCallFunction).
-				for (long i = callerArgCount; i < lambdaParamCount; i++) {
-					if (i >= (long)bfn->m_listParam.size())
-						RuntimeError("Lambda call: m_listParam shorter than paramCount at param %ld", i);
-					const ibParamRunUnit& puDef = bfn->m_listParam[i].m_defaultValue;
-					// The parameter's own name: the line above has already refused an index past the list.
-					if (puDef.m_numArray == DEF_VAR_SKIP)
-						RuntimeError("Missing required argument '%s' to function value",
-							bfn->m_listParam[i].m_strName);
-					CopyValue(pNewCtx->m_pLocVars[i], pLocalByteCode->m_listConst[puDef.m_numIndex]);
-				}
+				// Phase 2 — the same fill a named body does at entry, including
+				// a hole between two arguments the caller did write.
+				FillLambdaDefaults(*pNewCtx, bfn, pLocalByteCode);
 
 				fn->Execute(pNewCtx, pRetValue, false);
 				break;
@@ -2448,7 +2501,13 @@ start_label:
 			case OPER_LS + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData < cvariable3.m_bData)); break;
 			case OPER_GE + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData >= cvariable3.m_bData)); break;
 			case OPER_LE + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData <= cvariable3.m_bData)); break;
-			case OPER_IF + TYPE_DELTA4: if (!cvariable1.m_bData) lCodeLine = index2 - 1; break;
+			case OPER_IF + TYPE_DELTA4:
+				// Same mark as the untyped test: a boolean-tier comparison can still be SQL NULL,
+				// and that must not skip the right operand of `and`.
+				if (curCode.m_param4.m_numIndex == LINQ_THREE_VALUED_NULL && IsNullOperand(cvariable1))
+					break;
+				if (!cvariable1.m_bData) lCodeLine = index2 - 1;
+				break;
 			}
 			lCodeLine++;
 		}
@@ -2484,18 +2543,28 @@ start_label:
 	catch (const ibBackendException& err) {
 		if (catchError(err))
 			goto start_label;
+		propagate = std::current_exception();
 	}
 	// …AND A REFUSAL OF THE CORE BELOW — a read that could not go on — is the module's failure like any other: met as the
 	// engine's own (ibBackendCoreException), so a Try takes it and the error is placed where it happened.
+	// The conversion is thrown after this handler returns. Throwing it here would be a second frame
+	// above the one that already failed.
 	catch (const ibCoreException& core) {
+		coreRefusal = core.GetErrorDescription();
+	}
+
+	if (coreRefusal) {
 		try {
-			ibBackendCoreException::Error(wxT("%s"), core.GetErrorDescription());
+			ibBackendCoreException::Error(wxT("%s"), *coreRefusal);
 		}
 		catch (const ibBackendException& err) {
 			if (catchError(err))
 				goto start_label;
+			propagate = std::current_exception();
 		}
 	}
+	if (propagate)
+		std::rethrow_exception(propagate);
 
 	// ⭐ THE CANCEL GOES UP, TO WHOEVER CALLED. This frame has run out - of the loops the block above walked it
 	// out of, or of its code - and while the cancel stands it throws on: the frame that called this one hears
@@ -2794,6 +2863,48 @@ bool ibProcUnit::CallAsFunc(const ibString& funcName, ibValue& pvarRetValue, ibV
 		}
 	}
 	return false;
+}
+
+// The arguments a body was entered without. One place, for every road: a
+// direct call, a call through a module, a lambda. A slot that still points
+// at the frame's own empty local was not written — a tail the caller left
+// off, or a hole in the middle. A slot that names another value was passed,
+// even when that value is empty.
+//
+// A parameter with no default is refused. A default whose constant is not
+// in this module's pool is refused. The same-module compiler already wrote
+// the default at the call site, so this does not write it a second time.
+static void FillLambdaDefaults(ibRunContext& frame, const ibByteCode::ibByteFunction* function,
+	const ibByteCode* bytecode)
+{
+	if (function == nullptr || bytecode == nullptr || frame.m_pLocVars == nullptr)
+		return;
+
+	const long declared = static_cast<long>(function->m_listParam.size());
+	const long slots = frame.GetLocalCount();
+	for (long i = 0; i < declared && i < slots; ++i) {
+		// Null is a hole a method call handed over. The frame's own empty
+		// local is a tail, or a hole, that nobody wrote. A pointer at some
+		// other value was passed, and stays passed even when it is empty.
+		ibValue* slot = frame.m_pRefLocVars[i];
+		const bool omitted = slot == nullptr
+			|| (slot == &frame.m_pLocVars[i] && slot->IsEmpty());
+		if (!omitted)
+			continue;
+		frame.m_pRefLocVars[i] = &frame.m_pLocVars[i];
+		slot = frame.m_pRefLocVars[i];
+
+		const ibByteCode::ibByteParam& param = function->m_listParam[static_cast<size_t>(i)];
+		const ibParamRunUnit& def = param.m_defaultValue;
+		if (def.m_numArray == DEF_VAR_SKIP) {
+			ibBackendCoreException::Error(_("Missing required argument '%s'"), param.m_strName);
+		}
+		if (def.m_numIndex < 0
+			|| static_cast<size_t>(def.m_numIndex) >= bytecode->m_listConst.size()) {
+			ibBackendCoreException::Error(_("Default for '%s' is not a constant"), param.m_strName);
+		}
+		CopyValue(*slot, bytecode->m_listConst[static_cast<size_t>(def.m_numIndex)]);
+	}
 }
 
 //Calling a procedure by its address in the byte code array
