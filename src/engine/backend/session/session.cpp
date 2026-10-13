@@ -316,6 +316,10 @@ private:
 				// session (GetAccessPolicy -> null), so reading the very source it restricts does NOT re-enter
 				// RLS. RAII restores enforcement on every exit, including the throw caught just below.
 				ibAccessTrustScope trust(m_session);
+				// OnAccessRead / OnAccessWrite may not ask the user. The scope names the handler so the
+				// frame's doors refuse, in every build, before the handler can park with m_applyMtx
+				// still held. SetSessionParameters is not wrapped here and may still ask.
+				ibRoleHandlerScope asking(m_session, handler);
 				// CallAsProc (comma-separated args) returns TRUE only if the procedure was FOUND and RAN; it
 				// returns FALSE — WITHOUT throwing and WITHOUT running anything — when there is no such handler.
 				// So absence is the bool, not an exception: no handler -> this role imposes no restriction ->
@@ -578,6 +582,16 @@ struct ibRegisterBindingLocal {
 
 } // namespace
 
+namespace {
+
+long long UnixNowMs()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+
 // The copy Current() keeps, read the way its own fast path reads it: good only at the epoch it was taken, and
 // then as alive as Current()'s answer would be.
 ibSession* ibSession::CurrentCached() noexcept
@@ -593,6 +607,14 @@ ibSession::ibSession(wxString id, ibSessionKind kind)
 	, m_kind(kind)
 	, m_workDate(ibDateTime::Now())
 {
+	const long long now = UnixNowMs();
+	m_bornMs.store(now, std::memory_order_relaxed);
+	m_lastActiveMs.store(now, std::memory_order_relaxed);
+}
+
+void ibSession::NoteActivity() noexcept
+{
+	m_lastActiveMs.store(UnixNowMs(), std::memory_order_relaxed);
 }
 
 ibApplicationInstance* ibSession::GetApplicationInstance() const
@@ -916,8 +938,15 @@ bool ibSession::CompileRoot()
 	// are only live NOW — the policy ctor resolves + caches them once. Still before the session serves
 	// any user query (CompileRoot finishes first), so it is in place before anything it must guard.
 	// Designer never enforces (it runs off the edit-time manager, not this runtime root).
-	if (!m_accessPolicy && !appData->DesignerMode())
-		m_accessPolicy = std::make_unique<ibRuntimeAccessPolicy>(this, GetMetaData());
+	if (!m_accessPolicy && !appData->DesignerMode()) {
+		// The registry's session already holds the configuration it was let in on. A session
+		// built over a configuration it has not acquired yet (a test, a root created first)
+		// still enforces the roles of the configuration its root was compiled against.
+		const ibMetaData* meta = GetMetaData();
+		if (meta == nullptr && m_root != nullptr && m_root->GetMetaManager() != nullptr)
+			meta = m_root->GetMetaManager()->GetMetaData();
+		m_accessPolicy = std::make_unique<ibRuntimeAccessPolicy>(this, meta);
+	}
 
 	// Lambda executor — m_root's procUnit is live after AttachRuntime, so it is
 	// available to borrow from. ibValueFunction's Execute resolves this through
@@ -1018,6 +1047,16 @@ void ibSession::EnsureRoot()
 	// run, so its ctor can resolve the user's role-module procUnits (see there). The L3 door pulls it via
 	// GetAccessPolicy(); no query fires before CompileRoot, so it is always in place when needed.
 	CreateRoot(GetMetaData());
+}
+
+void ibSession::RefuseQuestionFromRoleHandler() const
+{
+	// Only OnAccessRead / OnAccessWrite set the name. A question anywhere else,
+	// including SetSessionParameters, is unchanged.
+	if (m_roleHandler == nullptr || m_roleHandler->IsEmpty())
+		return;
+	ibBackendCoreException::Error(
+		_("Role handler '%s' cannot ask the user"), *m_roleHandler);
 }
 
 const ibAccessPolicy* ibSession::GetAccessPolicy() const
@@ -1465,6 +1504,14 @@ void ibSession::Transition(ibSessionState next, const wxString& reason)
 
 void ibSession::TransitionAuth(ibAuthState next, const wxString& reason)
 {
+	if (next == ibAuthState::Authenticated) {
+		long long expected = 0;
+		m_authenticatedAtMs.compare_exchange_strong(expected, UnixNowMs(),
+			std::memory_order_release, std::memory_order_relaxed);
+	}
+	else if (next == ibAuthState::Anonymous || next == ibAuthState::AuthFailed) {
+		m_authenticatedAtMs.store(0, std::memory_order_release);
+	}
 	{
 		std::lock_guard<std::mutex> lk(m_mtx);
 		if (!reason.IsEmpty()) m_reason = reason;
