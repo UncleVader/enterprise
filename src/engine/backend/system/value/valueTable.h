@@ -5,6 +5,7 @@
 #include "valueMap.h"
 
 #include "backend/tabularModel.h"
+#include "backend/system/value/valueType.h"            // ibValueTypeDescription::AdjustValue — a cell takes its column's type
 #include "backend/picturePredefined.h"                 // g_pic*CLSID — this model emits its own standard command icons
 #include "backend/srcDataObject.h"                    // ibSourceDataObject / ibSourceExplorer — the table IS a form data source
 #include "backend/propertyManager/propertyManager.h"  // ibPropertyObject / ibPropertyUString / ibPropertyType — columns surface / persist AND edit with the form attribute
@@ -50,6 +51,8 @@ private:
 		// the numbers are positions in the member table (FillMembers), which is listed in this order.
 		enTotal,
 		enFindRows,
+		// The position of a row (0-based), as 1C's Индекс(row) answers it; -1 for a row of another table.
+		enIndex,
 	};
 	//attributes:
 	enum Prop {
