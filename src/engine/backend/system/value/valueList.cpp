@@ -32,7 +32,7 @@ bool ibValueValueListItem::SetPropVal(const long lPropNum, const ibValue& varPro
 	return false;
 }
 
-enum { enAdd = 0, enInsert, enCount, enGet, enDelete, enClear, enFindByValue,
+enum { enAdd = 0, enInsert, enCount, enGet, enDelete, enIndexOf, enClear, enFindByValue,
 	enUnloadValues, enLoadValues };
 
 void ibValueValueList_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -43,7 +43,8 @@ void ibValueValueList_BindNames(ibValue::ibMemberTable& helper, const ibValue* /
 	helper.AppendFunc(wxT("Insert"), 5, wxT("Insert(index, value, presentation, check, picture)"));
 	helper.AppendFunc(wxT("Count"), wxT("Count()"));
 	helper.AppendFunc(wxT("Get"), 1, wxT("Get(index)"));
-	helper.AppendFunc(wxT("Delete"), 1, wxT("Delete(index)"));
+	helper.AppendFunc(wxT("Delete"), 1, wxT("Delete(item)"));
+	helper.AppendFunc(wxT("IndexOf"), 1, wxT("IndexOf(item)"));
 	helper.AppendFunc(wxT("Clear"), wxT("Clear()"));
 	helper.AppendFunc(wxT("FindByValue"), 1, wxT("FindByValue(value)"));
 	helper.AppendFunc(wxT("UnloadValues"), wxT("UnloadValues()"));
@@ -89,6 +90,35 @@ void ibValueValueList::Delete(unsigned int index)
 {
 	CheckIndex(index);
 	m_items.erase(m_items.begin() + index);
+}
+
+long ibValueValueList::IndexOf(const ibValue& item) const
+{
+	ibValueValueListItem* wanted = nullptr;
+	if (!item.ConvertToValue(wanted) || wanted == nullptr)
+		return -1;
+	for (size_t at = 0; at < m_items.size(); ++at)
+		if (m_items[at].GetRef() == wanted)
+			return static_cast<long>(at);
+	return -1;
+}
+
+void ibValueValueList::Delete(const ibValue& item)
+{
+	// An item is not a number. Reading it as an index answered 0, so Delete(item)
+	// always removed the first element. A string or Undefined does the same, so
+	// only an item or a number is accepted.
+	ibValueValueListItem* held = nullptr;
+	if (item.ConvertToValue(held)) {
+		const long at = IndexOf(item);
+		if (at < 0)
+			ibBackendCoreException::Error(_("The item is not in the list"));
+		Delete(static_cast<unsigned int>(at));
+		return;
+	}
+	if (item.GetType() != ibValueTypes::TYPE_NUMBER)
+		ibBackendCoreException::Error(_("Delete expects an item or an index"));
+	Delete(item.GetUInteger());
 }
 
 ibValue ibValueValueList::FindByValue(const ibValue& value) const
@@ -146,7 +176,8 @@ bool ibValueValueList::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, 
 		return true;
 	case enCount: pvarRetValue = Count(); return true;
 	case enGet: pvarRetValue = Get(paParams[0]->GetUInteger()); return true;
-	case enDelete: Delete(paParams[0]->GetUInteger()); return true;
+	case enDelete: Delete(*paParams[0]); return true;
+	case enIndexOf: pvarRetValue = static_cast<signed int>(IndexOf(*paParams[0])); return true;
 	case enClear: Clear(); return true;
 	case enFindByValue: pvarRetValue = FindByValue(*paParams[0]); return true;
 	case enUnloadValues: pvarRetValue = UnloadValues(); return true;
