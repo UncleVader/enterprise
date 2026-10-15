@@ -1,6 +1,8 @@
 #ifndef __IB_CALL_TIP_H__
 #define __IB_CALL_TIP_H__
 
+#include "frmclient/frmclient.h"
+
 #include <wx/wx.h>
 #include <wx/dcbuffer.h>
 #include <wx/stc/stc.h>
@@ -11,7 +13,7 @@ class wxSTCCallTip;
 
 /**
  */
-class ibCallTip
+class FRMCLIENT_API ibCallTip
 {
 public:
 

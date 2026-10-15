@@ -1,11 +1,13 @@
 #ifndef __IB_AUTOCOMPLETE_H__
 #define __IB_AUTOCOMPLETE_H__
 
+#include "frmclient/frmclient.h"
+
 #include "helpers/popupWnd.h"
 
 /**
  */
-class ibAutoComplete
+class FRMCLIENT_API ibAutoComplete
 {
 	struct ibKeywordElement {
 		short m_type;
