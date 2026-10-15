@@ -104,6 +104,10 @@ by column id: `Text`, `Checked` for a flag, `Number`, `Value` when the cell take
 model set one — `TextColour`, `BackgroundColour` (a colour's text, `r,g,b`, as a form's colours), `Bold`, `Italic`,
 `Strikethrough`, `Underlined`, `Face`, `Size`, `Align` (`Left`, `Center`, `Right`).
 
+From protocol 4 a fetch from the start (`Direction` 0) may name `Before`, the rows wanted ahead of the row it starts
+at; the answer gives those rows first and says in `Before` how many came. A server before protocol 4 gives none, and
+the client fetches them backwards (`Direction` -1) on its own.
+
 A table's column dragged in its header is `Move {Column, Holder, Position}`: `Holder` the group it now stands in, 0 the
 table. The client moves the column in its own copy of the form at once; the server's form follows.
 
