@@ -263,6 +263,16 @@ private:
 	bool m_textEditMode;
 
 public:
+	// ⭐ THE CAPTION IS TEXT ON SOMETHING ELSE — see ibControlStaticTextValue::SetTransparentBackground.
+	// Off (the default) the control paints its Background colour under the caption, as before.
+	void SetTransparentBackground(bool transparent) {
+		if (m_transparent == transparent)
+			return;
+		m_transparent = transparent;
+		SetBackgroundStyle(transparent ? wxBG_STYLE_TRANSPARENT : wxBG_STYLE_PAINT);
+		Refresh();
+	}
+
 
 	ibControlTextEditor() :
 		m_dvcMode(false), m_passwordMode(false), m_multilineMode(false), m_textEditMode(true)
@@ -591,6 +601,7 @@ protected:
 #endif // wxUSE_TOOLTIPS
 
 	void OnPaint(wxPaintEvent& event);
+	void PaintContent(wxDC& dc);   // caption + frame, on whatever the background is
 	void OnEraseBackground(wxEraseEvent&) { /* handled in OnPaint via wxBG_STYLE_PAINT */ }
 	void OnMouseMotion(wxMouseEvent& event);
 	void OnMouseLeave(wxMouseEvent& event);
@@ -602,6 +613,7 @@ protected:
 	void OnDPIChanged(wxDPIChangedEvent& event) { InvalidateMetrics(); LayoutControls(); event.Skip(); }
 
 private:
+	bool m_transparent = false;   // see SetTransparentBackground
 
 	void InitButtonSlots() {
 		m_btnSelect.text = wxT("...");

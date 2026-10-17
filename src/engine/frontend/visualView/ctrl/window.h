@@ -39,6 +39,17 @@ protected:
 	// toolbar's proportions).
 	void ApplyLook(ibFrontendWindow* window);
 
+	// ⭐ WAS THE BACKGROUND LEFT AT ITS DEFAULT? A control's Background starts as the form's cream, or — for the
+	// controls that are fields — as the system's white. Neither is a colour somebody chose, so a caption drawn
+	// over it should not carry it as a strip of its own (see ibControlStaticTextValue::SetTransparentBackground).
+	// Any other colour was chosen, and stays.
+	bool HasDefaultBackground() const {
+		const wxColour bg = m_propertyBG->GetValueAsColour();
+		return bg == wxDefaultStypeBGColour
+			|| bg == wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW)
+			|| bg == *wxWHITE;
+	}
+
 	ibPropertyCategory* m_categoryWindow = ibPropertyObject::CreatePropertyCategory(wxT("Window"), _("Window"));
 	ibPropertySize* m_propertyMinSize = ibPropertyObject::CreateProperty<ibPropertySize>(m_categoryWindow, wxT("MinimumSize"), _("Minimum size"), _("The smallest size the form layout may give the control, in pixels; -1 on a side means no limit there. The layout never shrinks the control below it, even when the form is made smaller."), wxDefaultSize);
 	ibPropertySize* m_propertyMaxSize = ibPropertyObject::CreateProperty<ibPropertySize>(m_categoryWindow, wxT("MaximumSize"), _("Maximum size"), _("The largest size the form layout may give the control, in pixels; -1 on a side means no limit there. Useful to keep a stretched field from growing across a wide form."), wxDefaultSize);

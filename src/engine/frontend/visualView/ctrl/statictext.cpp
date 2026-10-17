@@ -119,6 +119,10 @@ void ibValueStaticText::Update(wxObject* wxobject, ibVisualHost* visualHost)
 		staticText->SetWindowStyle(m_propertyTitleLocation->GetValueAsInteger() == 1
 			? wxALIGN_LEFT : wxALIGN_RIGHT);
 
+		// A label whose Background is the default has no colour of its own to speak of: it shows what it
+		// lies on. A colour that was chosen stays a colour.
+		staticText->SetTransparentBackground(HasDefaultBackground());
+
 		// Multi-line captions ride on explicit '\n' in the text; word-wrap at a pixel width is not
 		// supported (Wrap / Markup are kept on the metaobject for backward compatibility and have
 		// no effect here).

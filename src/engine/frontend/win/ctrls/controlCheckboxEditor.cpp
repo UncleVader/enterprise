@@ -108,11 +108,20 @@ void ibControlCheckbox::LayoutControls()
 
 void ibControlCheckbox::OnPaint(wxPaintEvent& WXUNUSED(event))
 {
-	wxAutoBufferedPaintDC dc(this);
+	if (m_transparent) {
+		wxPaintDC dc(this);   // nothing under the caption: no Clear, and no buffer that would paint one
+		PaintContent(dc);
+		return;
+	}
 
+	wxAutoBufferedPaintDC dc(this);
 	dc.SetBackground(GetBackgroundColour());
 	dc.Clear();
+	PaintContent(dc);
+}
 
+void ibControlCheckbox::PaintContent(wxDC& dc)
+{
 	if (!m_labelText.empty() && !m_labelRect.IsEmpty()) {
 
 		dc.SetFont(GetFont());

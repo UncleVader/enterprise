@@ -278,12 +278,38 @@ protected:
 		event.Skip();
 	}
 
+public:
+
+	// ⭐ A CAPTION ON A SURFACE IT DOES NOT OWN. A label is text laid over whatever the form is made of —
+	// the page, a group box that draws a fill of its own — and painting a background under it turns
+	// every label into a strip of a slightly different colour (the form read as a stack of stickers).
+	// Transparent, it shows what is behind it, whatever that is. Left off for a label whose Background
+	// was set on purpose: that colour is then what the designer asked for.
+	void SetTransparentBackground(bool transparent) {
+		if (m_transparent == transparent)
+			return;
+		m_transparent = transparent;
+		SetBackgroundStyle(transparent ? wxBG_STYLE_TRANSPARENT : wxBG_STYLE_PAINT);
+		Refresh();
+	}
+
+protected:
+
 	// The caption is DRAWN (like the checkbox's); the value is a child window, so it is placed.
 	void OnPaint(wxPaintEvent& WXUNUSED(event)) {
+		if (m_transparent) {
+			wxPaintDC dc(this);   // nothing under the text: no Clear, no buffer that would paint one
+			PaintCaption(dc);
+			return;
+		}
+
 		wxAutoBufferedPaintDC dc(this);
 		dc.SetBackground(GetBackgroundColour());
 		dc.Clear();
+		PaintCaption(dc);
+	}
 
+	void PaintCaption(wxDC& dc) {
 		if (m_labelText.empty())
 			return;
 
@@ -335,6 +361,8 @@ private:
 			m_labelRect = wxRect(valueW + (caption.x > 0 ? Gap() : 0), 0, caption.x, client.y);
 		}
 	}
+
+	bool m_transparent = false;
 
 	wxDECLARE_NO_COPY_CLASS(ibControlStaticTextValue);
 };

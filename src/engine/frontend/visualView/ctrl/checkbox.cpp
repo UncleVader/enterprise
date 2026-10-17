@@ -143,6 +143,12 @@ void ibValueCheckbox::Update(wxObject* wxobject, ibVisualHost* visualHost)
 #endif
 	}
 
+#ifndef OES_USE_WEB
+	// The caption shows what the checkbox lies on unless its Background was chosen (see ibValueStaticText).
+	if (checkbox != nullptr)
+		checkbox->SetTransparentBackground(HasDefaultBackground());
+#endif
+
 	UpdateWindow(checkbox);
 }
 

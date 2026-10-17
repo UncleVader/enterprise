@@ -65,7 +65,16 @@ void ibValueStaticBoxSizer::Update(wxObject* wxobject, ibVisualHost* visualHost)
 
 	target->SetLabel(m_propertyTitle->GetValueAsTranslateString());
 	target->SetMinSize(m_propertyMinSize->GetValueAsSize());
-	target->SetFont(m_propertyFont->GetValueAsFont());
+	// A group's caption is a HEADING: without a font of its own it is the system font in bold, so it reads as
+	// the title of what is inside it rather than as one more small label on the grey.
+	if (m_propertyFont->IsOk()) {
+		target->SetFont(m_propertyFont->GetValueAsFont());
+	}
+	else {
+		wxFont heading = wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT);
+		heading.SetWeight(wxFONTWEIGHT_BOLD);
+		target->SetFont(heading);
+	}
 	target->SetForegroundColour(m_propertyFG->GetValueAsColour());
 	target->SetBackgroundColour(m_propertyBG->GetValueAsColour());
 	target->Enable(m_propertyEnabled->GetValueAsBoolean());

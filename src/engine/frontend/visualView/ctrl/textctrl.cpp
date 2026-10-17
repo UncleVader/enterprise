@@ -228,6 +228,11 @@ void ibValueTextCtrl::Update(wxObject* wxobject, ibVisualHost* visualHost)
 #endif
 	}
 
+#ifndef OES_USE_WEB
+	// The caption shows what the field lies on unless its Background was chosen (see ibValueStaticText).
+	textEditor->SetTransparentBackground(HasDefaultBackground());
+#endif
+
 	UpdateWindow(textEditor);
 
 #ifndef OES_USE_WEB

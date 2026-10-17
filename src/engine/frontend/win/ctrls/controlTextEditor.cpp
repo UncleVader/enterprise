@@ -521,12 +521,20 @@ void ibControlTextEditor::LayoutControls()
 
 void ibControlTextEditor::OnPaint(wxPaintEvent& WXUNUSED(event))
 {
+	if (m_transparent) {
+		wxPaintDC dc(this);   // nothing under the caption: no Clear, and no buffer that would paint one
+		PaintContent(dc);
+		return;
+	}
+
 	wxAutoBufferedPaintDC dc(this);
-
-	const wxColour bg = GetBackgroundColour();
-	dc.SetBackground(bg);
+	dc.SetBackground(GetBackgroundColour());
 	dc.Clear();
+	PaintContent(dc);
+}
 
+void ibControlTextEditor::PaintContent(wxDC& dc)
+{
 	dc.SetFont(GetFont());
 
 	// label on the left — vertically centred on the frame (which is also the

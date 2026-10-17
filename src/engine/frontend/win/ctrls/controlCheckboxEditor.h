@@ -93,6 +93,16 @@ private:
 	wxAlignment    m_align = wxAlignment::wxALIGN_LEFT;
 
 public:
+	// ⭐ THE CAPTION IS TEXT ON SOMETHING ELSE — see ibControlStaticTextValue::SetTransparentBackground.
+	// Off (the default) the control paints its Background colour under the caption, as before.
+	void SetTransparentBackground(bool transparent) {
+		if (m_transparent == transparent)
+			return;
+		m_transparent = transparent;
+		SetBackgroundStyle(transparent ? wxBG_STYLE_TRANSPARENT : wxBG_STYLE_PAINT);
+		Refresh();
+	}
+
 
 	ibControlCheckbox() {}
 
@@ -261,11 +271,13 @@ protected:
 	virtual wxSize DoGetBestClientSize() const override;
 
 	void OnPaint(wxPaintEvent& event);
+	void PaintContent(wxDC& dc);   // caption + focus ring, on whatever the background is
 	void OnEraseBackground(wxEraseEvent&) {}
 	void OnSize(wxSizeEvent& event) { LayoutControls(); event.Skip(); }
 	void OnDPIChanged(wxDPIChangedEvent& event) { InvalidateMetrics(); LayoutControls(); event.Skip(); }
 
 private:
+	bool m_transparent = false;   // see SetTransparentBackground
 
 	wxSize ComputeLabelBestSize() const;
 	void   InvalidateMetrics() const { m_cachedLabelSize = wxSize(-1, -1); }
