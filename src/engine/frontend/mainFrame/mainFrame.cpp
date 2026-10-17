@@ -83,7 +83,7 @@ ibFrontendMainFrame::ibFrontendMainFrame(ibSessionHolder&& holder,
 	// reacts — it tells the user and closes itself, and closing releases
 	// the holder, which ends the session. Backend stays UI-free: it only
 	// says "this session should reload", never touches a window.
-	if (auto* reg = ibApplicationData::GetSessionRegistry()) {
+	if (auto* reg = ibApplicationInstance::GetSessionRegistry()) {
 		ibSession* const self = GetSession();
 		reg->OnReload([self](ibSession* target) {
 			if (target != self || wxTheApp == nullptr) return;
@@ -250,10 +250,12 @@ ibFrontendWindow* ibFrontendMainFrame::CreateChildFrame(ibView* view, const wxPo
 
 		wxWindow* parent = wxTheApp->GetTopWindow();
 
+		// Over the INNERMOST modal — the last one opened (the list runs in the order they were made): over the first, a
+		// form chosen from a dialog opened by a modal window (a condition's, in the list's settings) stood behind it.
 		for (wxWindow* window : wxTopLevelWindows) {
 			if (window->IsKindOf(CLASSINFO(wxDialog))) {
 				if (((wxDialog*)window)->IsModal()) {
-					parent = window; break;
+					parent = window;
 				}
 			}
 		}
@@ -475,6 +477,12 @@ ibFrontendMainFrame::~ibFrontendMainFrame()
 
 	// The session's back-link is cleared by ~ibBackendDocFrame, which
 	// then releases the holder — that release is what ends the session.
+	//
+	// ⚠ AND IT RUNS LAST, because ibBackendDocFrame is the FIRST base: every child window — the metadata
+	// trees among them, which unsubscribe from the configuration as they go — is gone before the session
+	// is. Releasing it takes the session down on this thread (ibSession::Teardown), and the last one out
+	// closes the configuration inside that release; a tree still subscribed would be told `Closed` while
+	// half destroyed (census of the registry thread, 2026-10-01). Keep that base first.
 
 	// deinitialize the valueForm manager
 	m_mgr.UnInit();
@@ -852,7 +860,7 @@ ibDocBottomStatusBar::ibDocBottomStatusBar(wxWindow* parent, wxWindowID id, long
 
 void ibDocBottomStatusBar::OnAssistantPoll(wxTimerEvent& WXUNUSED(event))
 {
-	const ibMcpServer* server = ibApplicationData::GetMcpServer();
+	const ibMcpServer* server = ibApplicationInstance::GetMcpServer();
 	const bool running = server != nullptr && server->IsRunning();
 
 	// ⭐ NOTHING IS TOUCHED WHILE NOTHING CHANGES. SetStatusText invalidates the field,

@@ -41,9 +41,8 @@ bool ibValueManagerDataObjectReport::CallAsFunc(const long lMethodNum, ibValue& 
 		return true;
 	case eGetForm: {
 		ibValueGuid* guidVal = lSizeArray > 2 ? paParams[2]->ConvertToType<ibValueGuid>() : nullptr;
-		pvarRetValue = m_metaObject->GetGenericForm(paParams[0]->GetString(),
-			lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr,
-			guidVal ? ((ibGuid)*guidVal) : ibGuid());
+		pvarRetValue = m_metaObject->GetGenericForm(ibFormRequest(paParams[0]->GetString(), guidVal ? ((ibGuid)*guidVal) : ibGuid()),
+			lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr);
 		return true;
 	}
 	case eGetTemplate:
@@ -69,13 +68,14 @@ bool ibValueManagerDataObjectExternalReport::CallAsFunc(const long lMethodNum, i
 	{
 	case eCreate:
 	{
-		ibMetaDataReport* metaReport = new ibMetaDataReport();
+		// Held from birth; the object it loads holds it from its load on (ibExternalOwnerHelper), so this
+		// reference may go at the end of the call.
+		const std::shared_ptr<ibMetaDataReport> metaReport = ibMetaData::MakeShared<ibMetaDataReport>();
 		if (metaReport->LoadFromFile(paParams[0]->GetString())) {
 			ibValueModuleRuntimeManagerExternalReport* moduleManager = metaReport->GetManagerModule();
 			pvarRetValue = moduleManager->GetObjectValue();
 			return true;
 		}
-		wxDELETE(metaReport);
 		ibBackendCoreException::Error(_("Failed to load report '%s'"), paParams[0]->GetString());
 	}
 	}

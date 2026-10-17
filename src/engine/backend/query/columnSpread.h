@@ -9,7 +9,7 @@
 // Internal to the codec TUs — not part of any public surface.
 
 #include "backend/query/columnLayout.h"   // ibColumnRole / ibPersistedTypeTag / ibColumnCodec::HasReference / ibQueryStatement
-#include "backend/backend_core.h"          // emptyDate
+#include "backend/backend_core.h"          // ibDateTime, emptyEnum
 #include "backend/compiler/value.h"        // ibValueTypes
 #include "backend/system/value/valueJob.h"    // g_valueScheduleCLSID — a value object stored whole
 #include "backend/system/value/valueType.h"   // g_valueTypeDescriptionCLSID — the other one
@@ -54,18 +54,26 @@ inline ibFieldTypes TagForValue(const ibValue& value)
 	// cell actually holds: nothing, or a member.
 	if (IsEnum(value.GetClassType()))
 		return value.IsEmpty() ? ibFieldTypes_Empty : ibFieldTypes_Enum;
+
+	// 🛑 AND AN EMPTY REFERENCE IS **NOT** FOLDED INTO `Empty`, though it looks like the same rule one line
+	// up. An empty reference is OF A TYPE — "a Catalogue.Goods, but no particular one" — and the Empty tag
+	// says something else: that nothing was chosen at all. On a composite column those are two different
+	// answers, and the whole of the narrowing arc rests on being able to tell them apart (Max, 2026-09-24:
+	// "an empty reference can be of a concrete type; an empty reference and an undefined that was written
+	// are different values"). An enumeration folds because its unset shape carries no target to remember;
+	// a reference does.
 	return TagForValueType(value.GetType());
 }
 
 // Bind a primitive slot's PLACEHOLDER — the value it carries when it is NOT the active type
-// (false / 0 / emptyDate / "" / wxNOT_FOUND). Keyed by role, one place for the constants the old
+// (false / 0 / the empty date / "" / wxNOT_FOUND). Keyed by role, one place for the constants the old
 // hand-rolled spreads repeated per branch.
 inline void BindAbsentPrimitive(ibQueryStatement* st, ibColumnRole role, int& pos)
 {
 	switch (role) {
 	case ibColumnRole::Boolean: st->SetParamBool(pos++, false);             break;
 	case ibColumnRole::Number:  st->SetParamNumber(pos++, 0);               break;
-	case ibColumnRole::Date:    st->SetParamDate(pos++, emptyDate);         break;
+	case ibColumnRole::Date:    st->SetParamDate(pos++, ibDateTime());      break;
 	case ibColumnRole::String:  st->SetParamString(pos++, wxEmptyString);   break;
 	case ibColumnRole::Enum:    st->SetParamInt(pos++, emptyEnum);          break;
 	default:                                                                break;

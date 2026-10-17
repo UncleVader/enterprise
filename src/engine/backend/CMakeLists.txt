@@ -62,6 +62,43 @@ set_source_files_properties(${SQLITE3_SOURCE} PROPERTIES
 # ---------------------------------------------------------------------------
 add_library(backend SHARED ${BACKEND_SOURCES})
 
+# The bytecode cache key carries a hash of the compiler and the built-in
+# registry, computed here rather than typed in. The MSBuild project runs the
+# same script before it compiles (EngineFingerprint). The header is rewritten
+# only when the hash changes, so an untouched tree does not rebuild the backend.
+set(OES_ENGINE_FINGERPRINT_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/engineFingerprintBuild.h")
+file(GLOB_RECURSE OES_FINGERPRINT_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/system/*"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../core/compiler/*")
+# The list of those files is an input too. A file that is DELETED leaves no newer
+# input behind, so the hash would not run again and the old key would stay. The
+# glob reconfigures on an added or removed file; the list is written then, and only
+# when it changed (file(CONFIGURE) keeps the timestamp of an identical file).
+set(OES_FINGERPRINT_INPUTS "${CMAKE_CURRENT_BINARY_DIR}/generated/engineFingerprintInputs.txt")
+set(_oes_fp_sorted ${OES_FINGERPRINT_SOURCES})
+list(SORT _oes_fp_sorted)
+string(REPLACE ";" "\n" _oes_fp_inputs_text "${_oes_fp_sorted}")
+file(CONFIGURE OUTPUT "${OES_FINGERPRINT_INPUTS}" CONTENT "${_oes_fp_inputs_text}\n" @ONLY)
+add_custom_command(
+    OUTPUT "${OES_ENGINE_FINGERPRINT_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+        -DOES_COMPILER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compiler
+        -DOES_SYSTEM_DIR=${CMAKE_CURRENT_SOURCE_DIR}/system
+        -DOES_CORE_COMPILER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../core/compiler
+        -DOES_BACKEND_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DOES_FINGERPRINT_OUT=${OES_ENGINE_FINGERPRINT_HEADER}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/compiler/engineFingerprint.cmake
+    DEPENDS ${OES_FINGERPRINT_SOURCES} "${OES_FINGERPRINT_INPUTS}" "${CMAKE_CURRENT_SOURCE_DIR}/compiler/engineFingerprint.cmake"
+    COMMENT "Hashing the compiler and the built-in registry"
+    VERBATIM
+)
+add_custom_target(oes_engine_fingerprint DEPENDS "${OES_ENGINE_FINGERPRINT_HEADER}")
+add_dependencies(backend oes_engine_fingerprint)
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/compiler/cache/byteCodeCache.cpp"
+    PROPERTIES OBJECT_DEPENDS "${OES_ENGINE_FINGERPRINT_HEADER}")
+
 # ---------------------------------------------------------------------------
 # Include directories
 # ---------------------------------------------------------------------------
@@ -72,10 +109,10 @@ target_include_directories(backend
         "${CMAKE_SOURCE_DIR}"
         "${CMAKE_SOURCE_DIR}/src"
         "${CMAKE_SOURCE_DIR}/src/engine"
-        # The MCP server's transport — header-only, included by mcpServer.cpp alone.
-        "${CMAKE_SOURCE_DIR}/src/3rdparty/cpp-httplib"
         # Embedded database engine headers
         "${CMAKE_CURRENT_SOURCE_DIR}/databaseLayer/sqllite/engine"
+        # engineFingerprintBuild.h, written by oes_engine_fingerprint
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 
 # Firebird headers (bundled in-tree)
@@ -124,6 +161,9 @@ endif()
 # ---------------------------------------------------------------------------
 target_link_libraries(backend
     PUBLIC
+        # The shared meanings the engine is written in (ids, texts, numbers, dates, guids) — PUBLIC: every consumer of
+        # the engine's headers speaks them too.
+        core
         wx::base
         wx::core
         wx::net
@@ -131,7 +171,25 @@ target_link_libraries(backend
         wx::propgrid
         wx::aui
         wx::stc
+        # cpp-httplib's TLS (CPPHTTPLIB_MBEDTLS_SUPPORT is set for the whole build in the root CMakeLists.txt):
+        # PUBLIC, because every consumer that includes httplib.h - the web server, the tests - compiles the
+        # same TLS roads and has to link them.
+        mbedtls
+        mbedx509
+        mbedcrypto
 )
+if(WIN32)
+    # The system certificate store, read by the library for a secure connection that names no trusted file.
+    # (ws2_32 and bcrypt come with mbedcrypto itself.)
+    target_link_libraries(backend PUBLIC crypt32)
+endif()
+if(APPLE)
+    # With a TLS backend and Apple's compiler, cpp-httplib reads the keychain for the system's trusted
+    # certificates (CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN, which it defines itself) - and that is
+    # SecTrustSettingsCopyCertificates, in the Security framework. PUBLIC for the reason the mbedtls
+    # libraries are: everything that includes the header compiles the same call.
+    target_link_libraries(backend PUBLIC "-framework Security" "-framework CoreFoundation")
+endif()
 
 # ---------------------------------------------------------------------------
 # Platform libraries
@@ -142,22 +200,6 @@ if(UNIX)
         ${CMAKE_DL_LIBS}     # dlopen / dlsym
         Threads::Threads      # pthread
     )
-
-    # guid.cpp picks its generator by toolkit: Windows -> CoCreateGuid, macOS -> CFUUID
-    # (CoreFoundation), everything else -> libuuid's uuid_generate. Only the last one is a
-    # separate library, and only on non-Apple UNIX; Apple's CFUUID rides in CoreFoundation.
-    if(NOT APPLE)
-        find_library(UUID_LIBRARY NAMES uuid)
-        if(UUID_LIBRARY)
-            target_link_libraries(backend PRIVATE ${UUID_LIBRARY})
-        else()
-            message(FATAL_ERROR
-                "libuuid not found. guid.cpp uses uuid_generate on this platform — "
-                "install uuid-dev (Debian/Ubuntu) or libuuid-devel (Fedora/RHEL).")
-        endif()
-    else()
-        target_link_libraries(backend PRIVATE "-framework CoreFoundation")
-    endif()
 endif()
 
 if(WIN32 AND OES_USE_ODBC)
@@ -187,9 +229,13 @@ if(WIN32)
     if(OES_USE_FIREBIRD)
         set(OES_FB_KIT "${CMAKE_CURRENT_SOURCE_DIR}/databaseLayer/firebird/engine/dll")
         list(APPEND OES_CLIENT_COPY
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${OES_BIN_DIR}/_fb/intl" "${OES_BIN_DIR}/_fb/plugins")
-        # The same file for either architecture.
-        foreach(OES_FB_FILE firebird.conf firebird.msg security5.fdb icudt63l.dat intl/fbintl.conf)
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${OES_BIN_DIR}/_fb/intl" "${OES_BIN_DIR}/_fb/plugins" "${OES_BIN_DIR}/_fb/tzdata")
+        # The same file for either architecture. tzdata/ is the zone rules ICU counts a region's time by -
+        # without it ICU falls back to the rules it was built with (2018e), which do not know Europe/Kyiv
+        # and count it as UTC without a word (docs/public/date-model.md).
+        foreach(OES_FB_FILE firebird.conf firebird.msg security5.fdb icudt63l.dat intl/fbintl.conf
+                            tzdata/ids.dat tzdata/metaZones.res tzdata/timezoneTypes.res
+                            tzdata/windowsZones.res tzdata/zoneinfo64.res)
             list(APPEND OES_CLIENT_COPY
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OES_FB_KIT}/${OES_FB_FILE}" "${OES_BIN_DIR}/_fb/${OES_FB_FILE}")
         endforeach()

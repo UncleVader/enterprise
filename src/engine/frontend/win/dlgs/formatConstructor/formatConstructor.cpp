@@ -368,7 +368,7 @@ void ibDialogFormatConstructor::ShowResult()
 	}
 	case 1: {
 		const wxDateTime now = wxDateTime::Now();
-		line = sample(now.Format(wxT("%d.%m.%Y %H:%M:%S")), ibValue(now)) + wxT("     ")
+		line = sample(now.Format(wxT("%d.%m.%Y %H:%M:%S")), ibValue(ibDateTime::OfWxDateTime(now))) + wxT("     ")
 			+ sample(_("empty date"), ibValue(ibValueTypes::TYPE_DATE));
 		break;
 	}
@@ -401,4 +401,22 @@ void ibDialogFormatConstructor::OnOk(wxCommandEvent& event)
 		return;
 	}
 	event.Skip();   // the dialog's own OK: EndModal(wxID_OK)
+}
+
+ibDialogTranslateConstructor::ibBoxEditor ibFormatBoxEditor(bool readOnly)
+{
+	return [readOnly](wxWindow* parent, const wxString& language, wxString& text) -> bool {
+		// THE CODE EDITOR'S RULE (codeEditor.cpp): a string that comes back unchanged is not written, so it
+		// keeps its author's spelling.
+		const ibFormatString before = ibFormatString::Parse(text);
+		ibDialogFormatConstructor dialog(parent,
+			wxString::Format(wxT("%s (%s)"), _("Format string constructor"), language), before, readOnly);
+		if (dialog.ShowModal() != wxID_OK)
+			return false;
+		const ibFormatString after = dialog.GetFormat();
+		if (after == before)
+			return false;
+		text = after.Render();
+		return true;
+	};
 }

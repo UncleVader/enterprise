@@ -9,6 +9,8 @@
 #include "backend/query/queryRewrite.h"   // ibQueryFlattenAnd / ibQueryFoldAnd — the AND chain, in one place
 #include "backend/query/queryParser.h"   // a condition typed into a cell is read by the ENGINE
 
+#include "core/exception.h"   // ibCoreException — what a refused condition throws
+
 
 void ibQueryConditionModel::SetContent(ibQuerySelect* select)
 {
@@ -67,6 +69,17 @@ void ibQueryConditionModel::SetRows(const std::vector<ibQueryAstExprPtr>& rows)
 	Reset(static_cast<unsigned int>(rows.size()));
 	if (m_onChanged)
 		m_onChanged();
+}
+
+void ibQueryConditionModel::RemoveRow(unsigned int row)
+{
+	std::vector<ibQueryAstExprPtr> rows = Rows();
+	if (row >= rows.size())
+		return;
+	rows.erase(rows.begin() + row);
+	if (row < m_freehand.size())
+		m_freehand.erase(m_freehand.begin() + row);
+	SetRows(rows);
 }
 
 ibQueryAstExprPtr ibQueryConditionModel::RowAt(unsigned int row) const
@@ -159,8 +172,7 @@ bool ibQueryConditionModel::SetValueByRow(const wxVariant& variant, unsigned row
 	wxString text = variant.GetString();
 	text.Trim(true).Trim(false);
 	if (text.IsEmpty()) {
-		rows.erase(rows.begin() + row);
-		SetRows(rows);
+		RemoveRow(row);
 		return true;
 	}
 
@@ -168,7 +180,7 @@ bool ibQueryConditionModel::SetValueByRow(const wxVariant& variant, unsigned row
 		ibQueryParser parser;
 		rows[row] = parser.ParseExpression(text);
 	}
-	catch (const ibBackendException& error) {
+	catch (const ibCoreException& error) {
 		if (m_onError)
 			m_onError(error.GetErrorDescription());
 		return false;

@@ -11,7 +11,7 @@
 #include "backend/metaData.h"
 #include "backend/backend_exception.h"
 #include "backend/databaseLayer/databaseErrorCodes.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode — universal structure bridge (BuildDataNode/ApplyDataNode)
+#include "core/serialize/dataBuilder.h"   // ibDataNode — universal structure bridge (BuildDataNode/ApplyDataNode)
 
 
 namespace {
@@ -29,6 +29,7 @@ const wxString kTagPredefined  = wxT("NodePredefined");
 const wxString kTagInterface   = wxT("Interface");
 const wxString kTagRoles       = wxT("Roles");
 const wxString kTagComposition = wxT("Composition");
+const wxString kTagFunctionalOptions = wxT("FunctionalOptions");
 
 } // namespace
 
@@ -72,6 +73,12 @@ bool ibValueMetaObject::SaveNode(ibDataNode& node) const
 		return false;
 	node.SetValue(kTagComposition, compositionWriter.buffer());
 
+	// functional options — the switches this object belongs to, beside the other two sets
+	ibWriterMemory functionalOptionWriter;
+	if (!SaveFunctionalOptions(functionalOptionWriter))
+		return false;
+	node.SetValue(kTagFunctionalOptions, functionalOptionWriter.buffer());
+
 	return WriteData(node);
 }
 
@@ -108,6 +115,12 @@ bool ibValueMetaObject::LoadNode(const ibDataNode& node)
 	if (compositionBuf.GetDataLen()) {
 		ibReaderMemory reader(compositionBuf);
 		if (!LoadComposition(reader))
+			return false;
+	}
+	wxMemoryBuffer functionalOptionBuf = node.GetValue<wxMemoryBuffer>(kTagFunctionalOptions);
+	if (functionalOptionBuf.GetDataLen()) {
+		ibReaderMemory reader(functionalOptionBuf);
+		if (!LoadFunctionalOptions(reader))
 			return false;
 	}
 
@@ -192,8 +205,8 @@ bool ibValueMetaObject::ApplyDataNode(const ibDataNode& node, bool resetId)
 				GetName(), (long long)childNode.GetClsid());
 
 		ibValue* ppParams[] = { this };
-		ibValueMetaObject* newMetaObject =
-			ibValue::CreateAndConvertObjectRef<ibValueMetaObject>(childNode.GetClsid(), ppParams, 1);
+		const ibValuePtr<ibValueMetaObject> newMetaObject =
+			ibValue::CreateObject(childNode.GetClsid(), ppParams, 1);   // this node's child vector keeps it
 		if (newMetaObject == nullptr)
 			ibBackendCoreException::Error(
 				_("Unknown metadata class id %lld while loading subtree of '%s'"),
@@ -252,6 +265,24 @@ bool ibValueMetaObject::RunSubtree(int flags, ibRunPhase phase)
 			continue;
 		if (!child->RunSubtree(flags, phase))
 			return false;
+	}
+
+	// ⭐ WHAT A PROPERTY DERIVES IS DERIVED HERE, ONCE — the choices of a list, the types a type description stands
+	// for, the fields a choice link names — in the resolve phase, its children resolved too, and the load sequential.
+	// Every session of the base reads this object; from now on such a read only reads (ibPropertyList,
+	// ibVariantDataAttribute, ibVariantDataChoiceLink).
+	if (phase == ibRunPhase::After) {
+		for (unsigned int idx = 0; idx < GetPropertyCount(); idx++) {
+			ibProperty* const property = GetPropertyByIndex(idx);
+			if (ibPropertyList* const list = dynamic_cast<ibPropertyList*>(property))
+				list->FillList();
+			else if (const ibPropertyType* const type = dynamic_cast<const ibPropertyType*>(property))
+				type->GetValueAsTypeDesc();   // refreshed against the types now registered
+			else if (const ibPropertyChoiceLink* const link = dynamic_cast<const ibPropertyChoiceLink*>(property))
+				link->GetValueAsLinkDesc();
+			else if (const ibPropertyChoiceParameters* const parameters = dynamic_cast<const ibPropertyChoiceParameters*>(property))
+				parameters->GetValueAsParametersDesc();
+		}
 	}
 	return true;
 }

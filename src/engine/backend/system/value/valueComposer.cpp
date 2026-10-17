@@ -6,7 +6,8 @@
 
 #include "valueQuery.h"                  // ibValueQueryResult — Execute returns the standard L4-1 result
 #include "backend/compiler/typeCtor.h"   // VALUE_TYPE_REGISTER
-#include "backend/appData.h"             // appData->DesignerMode()
+#include "backend/appData.h"             // GetActiveMetaData
+#include "backend/backend_exception.h"   // IsEvalComplete — the caret's walk degrades instead of failing
 #include "backend/metadataConfiguration.h"  // ibMetaDataConfigurationBase — full def for the GetActiveMetaData() -> const ibMetaData* upcast
 
 void ibValueDataComposer_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -19,7 +20,7 @@ void ibValueDataComposer_BindNames(ibValue::ibMemberTable& helper, const ibValue
 
 bool ibValueDataComposer::Init(ibValue** paParams, const long lSizeArray)
 {
-	const wxString source = (lSizeArray >= 1) ? paParams[0]->GetString() : wxString();
+	const wxString source = (lSizeArray >= 1) ? paParams[0]->GetString() : ibString();
 
 	// A source-less composer is a valid, empty object (designer introspection keeps the
 	// method chain reachable); Execute() on it yields an empty QueryResult.
@@ -29,7 +30,7 @@ bool ibValueDataComposer::Init(ibValue** paParams, const long lSizeArray)
 	// The query runs ON BEHALF OF the config the script executes in — resolve its by-name source there (per-config),
 	// not the global factory. A script value has no owner metadata of its own, so the running (active) config IS the
 	// query's config; the composer threads it into the lowering at Execute.
-	m_composer.SetMetaData(ibApplicationData::GetActiveMetaData());
+	m_composer.SetMetaData(ibApplicationInstance::GetActiveMetaData());
 
 	// Any whitespace => the author's verbatim query text; otherwise a registered source
 	// `Kind.Name` (the name may be composite — a register's virtual table). A dot-less
@@ -63,15 +64,15 @@ bool ibValueDataComposer::CallAsFunc(const long lMethodNum, ibValue& pvarRetValu
 {
 	switch (lMethodNum) {
 	case enQueryText:
-		// The rendered L4-1 text — the schema's debug view. Designer-tolerant: an
-		// unresolvable source degrades to an empty string so the editor eval survives.
+		// The rendered L4-1 text — the schema's debug view. Completion-tolerant: an
+		// unresolvable source degrades to an empty string so the caret's walk survives.
 		if (m_composer.HasSource()) {
 			try {
 				pvarRetValue = ibValue(m_composer.RenderText());
 				return true;
 			}
 			catch (...) {
-				if (!appData->DesignerMode())
+				if (!ibBackendException::IsEvalComplete())
 					throw;
 			}
 		}
@@ -81,8 +82,8 @@ bool ibValueDataComposer::CallAsFunc(const long lMethodNum, ibValue& pvarRetValu
 	case enExecute:
 		// Render -> parse -> lower -> run; the result is the STANDARD QueryResult, so the
 		// script walks it exactly as a hand-written New Query(text).Execute() — the L5 bug
-		// repro path is a copy-paste of QueryText(). Designer degrades to an empty result
-		// (no live session to read from), runtime surfaces the real error.
+		// repro path is a copy-paste of QueryText(). Completion degrades to an empty result
+		// (the walk may have no live session to read from), runtime surfaces the real error.
 		if (m_composer.HasSource()) {
 			try {
 				std::vector<ibQueryLowering::OutputColumn> schema;
@@ -92,7 +93,7 @@ bool ibValueDataComposer::CallAsFunc(const long lMethodNum, ibValue& pvarRetValu
 				return true;
 			}
 			catch (...) {
-				if (!appData->DesignerMode())
+				if (!ibBackendException::IsEvalComplete())
 					throw;
 			}
 		}

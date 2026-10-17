@@ -13,9 +13,10 @@
 
 #include "backend/interfaceHelper.h"
 #include "backend/compositionHelper.h"
+#include "backend/functionalOptionHelper.h"
 #include "backend/roleHelper.h"
 
-#include "backend/metaCollection/metaObjectEnum.h"   // ibSelectMode — ProcessChoice takes it
+#include "backend/createRequest.h"   // what ProcessChoice is asked with: mode, condition, form
 
 //*******************************************************************************
 class BACKEND_API ibMetaData;
@@ -36,11 +37,19 @@ constexpr ibClassID g_metaCommonModuleCLSID = metadata_to_clsid("MD_CMOD");
 constexpr ibClassID g_metaCommonFormCLSID = metadata_to_clsid("MD_CFRM");
 constexpr ibClassID g_metaCommonTemplateCLSID = metadata_to_clsid("MD_CTMP");
 constexpr ibClassID g_metaCommonCommandCLSID = metadata_to_clsid("MD_CMD");    // COMMON command (config-level, like CommonForm)
+// A COMMAND GROUP — a place in the command interface a command is filed under, beside the platform's own
+// (Important, Normal, Create, Reports, Service). It holds nothing; a command names it (metaCommandGroupObject.h).
+constexpr ibClassID g_metaCommandGroupCLSID = metadata_to_clsid("MD_CMDGR");
 constexpr ibClassID g_metaScheduledJobCLSID = metadata_to_clsid("MD_SJOB");   // PREDEFINED scheduled job — serves the configuration, one of it (docs/private/scheduled-jobs.md)
+constexpr ibClassID g_metaEventHandlerCLSID = metadata_to_clsid("MD_EHND");   // EVENT HANDLER — one event of the types it names, handled by its own module
 // A SESSION PARAMETER — an attribute whose owner is the session rather than a table. Declared
 // here beside the jobs because that is where it sits in the tree: configuration-level, no data
 // of its own, set once per session by the session module (docs/private/access-policy-rls.md).
 constexpr ibClassID g_metaSessionParameterCLSID = metadata_to_clsid("MD_SPRM");
+// A FUNCTIONAL OPTION — a Boolean stored value that also decides what the interface offers: one value per base,
+// and the objects and fields it governs. Switched off, they stay in the metadata and in every query, and are
+// simply not available (metaFunctionalOptionObject.h).
+constexpr ibClassID g_metaFunctionalOptionCLSID = metadata_to_clsid("MD_FOPT");
 
 constexpr ibClassID g_metaRoleCLSID = metadata_to_clsid("MD_ROLE");
 constexpr ibClassID g_metaSectionCLSID = metadata_to_clsid("MD_SSYST");
@@ -245,7 +254,7 @@ class BACKEND_API ibValueMetaObject :
 	public ibValueDynamicMembers,
 
 	public ibPropertyObjectHelper<ibValueMetaObject>,
-	public ibAccessObject, public ibInterfaceObject, public ibCompositionObject {
+	public ibAccessObject, public ibInterfaceObject, public ibCompositionObject, public ibFunctionalOptionObject {
 	public:
 
 	// WHAT THIS METATYPE HAS — one set of flags, declared by the class itself.
@@ -500,6 +509,11 @@ public:
 	// (May this object be part of a composition? — ibCompositionObject::IsCompositionAllowed,
 	// compositionHelper.h. The question lives with the mechanism that asks it.)
 
+	// MAY THIS BELONG TO A FUNCTIONAL OPTION — whatever the command interface may offer (a list, a command,
+	// a form), since what an option hides is what the interface shows. A field and a table say yes for
+	// themselves (they are what a form binds to); an option says no.
+	virtual bool IsFunctionalOptionAllowed() const override { return IsInterfaceAllowed(); }
+
 	// DOES THIS SHOW UP UNDER ITS OWNER? Not a new rule — FilterChild above already knows:
 	// a child the owner does not accept is one it never created and cannot host, so it has
 	// no business being listed under it. Predefined attributes, object modules and manager
@@ -520,9 +534,11 @@ public:
 		return owner == nullptr || owner->FilterChild(GetClassType());
 	}
 
-	//process choice
-	virtual bool ProcessChoice(ibBackendControlFrame* ownerValue,
-		const wxString& strFormName, ibSelectMode selMode) const {
+	// ⭐ ONE ARGUMENT, BECAUSE THIS QUESTION GROWS. The form to open and what may be picked used to
+	// stand side by side here, and what NARROWS the list would have been a third — then a fourth, as
+	// the callers (a form field, a table cell, a filter row, a script) each learn one more thing about
+	// the choice they are asking for. The request carries them, so the door stops changing shape.
+	virtual bool ProcessChoice(ibBackendControlFrame* ownerValue, const ibFormRequest& request) const {
 		return true;
 	}
 
@@ -657,9 +673,8 @@ public:
 	virtual bool OnPropertyChanging(ibProperty* property, const wxVariant& newValue) override;
 	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
 
-	/**
-	* Devuelve la posicion del hijo o GetChildCount() en caso de no encontrarlo
-	*/
+	// THE DOOR FOR THE ORDER OF THE CHILDREN — `pos` is where `obj` ends up. Refused on a read-only
+	// configuration; a move that happened marks the configuration modified and is announced as `Moved`.
 	bool ChangeChildPosition(ibValueMetaObject* obj, unsigned int pos);
 
 	// ⭐⭐ COPY & PASTE ARE NOT HERE ANY MORE — they are ibMetaData::CopyMetaObject and
@@ -701,13 +716,13 @@ public:
 
 	template<typename T, typename... Args>
 	T* CreateMetaObjectAndSetParent(Args&&... args) {
-		T* createdObject = ibValue::CreateAndConvertObjectValueRef<T>(args...);
+		const ibValuePtr<T> createdObject = ibValue::CreateObjectValue<T>(args...);
 		wxASSERT(createdObject);
 		//set child/parent - predefined child, pinned to this parent for life
 		createdObject->SetParent(this);
 		createdObject->SetFlag(metaPredefinedFlag);
 		this->AddChild(createdObject);
-		return createdObject;
+		return createdObject;   // the child vector holds it now
 	}
 
 	// Predefined children (set in CreateMetaObjectAndSetParent) are bound to the
@@ -756,6 +771,10 @@ protected:
 
 #pragma region interface_h
 	virtual void DoSetInterface(const ibMetaID& id, const bool& val = true) override;
+#pragma endregion
+
+#pragma region functional_option_h
+	virtual void DoSetFunctionalOption(const ibMetaID& id, const bool& val = true) override;
 #pragma endregion
 
 #pragma region role_h

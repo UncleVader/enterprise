@@ -6,7 +6,6 @@
 #include "typeSelector.h"
 
 #include "backend/metaData.h"
-#include "backend/objCtor.h"          // ibCtorMetaValueType — the ctor a reference clsid resolves to
 #include "backend/compiler/value.h"
 #include "backend/system/value/valueTable.h"           // g_valueTableCLSID — the container kinds an attribute may be
 #include "backend/system/value/valueDynamicList.h"     // g_valueDynamicListCLSID
@@ -34,17 +33,20 @@ public:
 	ibClassID GetClassType() const { return m_typeCtor->GetClassType(); }
 };
 
-// A LEAF — one type offered directly.
-void AppendType(ibCheckTree* tc, const wxTreeItemId& parent, const ibCtorAbstractType* so,
+// A LEAF — one type offered directly. Returns its node (an event source's family is the heading of its
+// members as well).
+wxTreeItemId AppendType(ibCheckTree* tc, const wxTreeItemId& parent, const ibCtorAbstractType* so,
 	const ibTypeDescription& current, bool allowEdit)
 {
 	if (so == nullptr)
-		return;
+		return wxTreeItemId();
 
 	wxImageList* imageList = tc->GetImageList();
 	wxASSERT(imageList);
 
-	const int icon = imageList->Add(so->GetClassIcon());
+	// A type may have no picture (the base answers wxNullIcon) — the image list refuses one aloud.
+	const wxIcon picture = so->GetClassIcon();
+	const int icon = picture.IsOk() ? imageList->Add(picture) : -1;
 	const wxTreeItemId item = tc->AppendItem(parent, so->GetClassName(), icon, icon, new ibTypeItemData(so));
 
 	const bool held = current.ContainType(so->GetClassType());
@@ -52,71 +54,10 @@ void AppendType(ibCheckTree* tc, const wxTreeItemId& parent, const ibCtorAbstrac
 		? (allowEdit ? ibCheckTree::CHECKED : ibCheckTree::CHECKED_DISABLED)
 		: (allowEdit ? ibCheckTree::UNCHECKED : ibCheckTree::UNCHECKED_DISABLED));
 	tc->Check(item, held);
+	return item;
 }
 
 } // namespace
-
-// WHAT THIS SHAPE OFFERS. Built here, from the registry, so no caller keeps a list of metatypes
-// that has to learn about each new one — and so the two callers cannot drift apart.
-static std::vector<ibClassID> ibTypesForKind(ibSelectorDataType kind, const ibMetaData* metaData)
-{
-	std::vector<ibClassID> types;
-
-	const bool anyType = kind == ibSelectorDataType::ibSelectorDataType_any;
-
-	if (anyType)
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_EMPTY));
-
-	// The primitives. A reference shape carries them too: a characteristic may be a number or a
-	// string just as well as a reference to something.
-	if (anyType || kind == ibSelectorDataType::ibSelectorDataType_reference) {
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_BOOLEAN));
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_NUMBER));
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_DATE));
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_STRING));
-	}
-	else if (kind == ibSelectorDataType::ibSelectorDataType_boolean) {
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_BOOLEAN));
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_NUMBER));
-	}
-	else if (kind == ibSelectorDataType::ibSelectorDataType_resource) {
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_NUMBER));
-	}
-
-	if (anyType)
-		types.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_NULL));
-
-
-	// ⭐ THE CONTAINER KINDS — what an attribute may BE when it holds ROWS rather than one value: a
-	// table, a dynamic list, a data composition. The attribute's type DROP-DOWN offers all three, so
-	// this dialog offers them too: two lists of what a table-shaped attribute may be is one list too
-	// many, and the one a person reaches for second is the one that turns out to be missing entries
-	// (seen live 2026-08-19 — the drop-down had them, the dialog did not).
-	//
-	// They need no metadata: they are registered value types, not something a configuration declares.
-	if (anyType || kind == ibSelectorDataType::ibSelectorDataType_table) {
-		types.push_back(g_valueTableCLSID);
-		types.push_back(g_valueDynamicListCLSID);
-		types.push_back(g_valueDataCompositionCLSID);
-		// …and the document a gridbox shows: the control creates the variable, so the variable has to
-		// be nameable on its own too.
-		types.push_back(g_valueSpreadsheetCLSID);
-	}
-	if (metaData == nullptr)
-		return types;
-
-	// EVERYTHING REFERENCEABLE, asked of the registry. A table shape wants the tabular sources
-	// instead — those are its references.
-	if (anyType || kind == ibSelectorDataType::ibSelectorDataType_reference ||
-		kind == ibSelectorDataType::ibSelectorDataType_table) {
-		for (auto so : metaData->GetListCtorsByType(ibCtorObjectMetaType::ibCtorObjectMetaType_Reference))
-			types.push_back(so->GetClassType());
-		for (auto so : metaData->GetListCtorsByType(ibCtorObjectMetaType::ibCtorObjectMetaType_Characteristic))
-			types.push_back(so->GetClassType());
-	}
-
-	return types;
-}
 
 bool ibShowTypeSelector(wxWindow* parent, ibSelectorDataType kind,
 	const std::vector<ibClassID>& filter, ibTypeDescription& inOut, const ibMetaData* metaData,
@@ -126,7 +67,12 @@ bool ibShowTypeSelector(wxWindow* parent, ibSelectorDataType kind,
 	// the value ALREADY holds survives either way — an editor must not silently drop what it was
 	// opened on.
 	std::vector<ibClassID> allowed;
-	for (const ibClassID& clsid : ibTypesForKind(kind, metaData)) {
+	//	⭐ ASKED OF THE BACKEND, which is where "what a field of this kind may hold" belongs: it is a fact
+	//	about the field, not about this window. It used to be a static function right here, and so this
+	//	dialog was the only door that knew it — the MCP server could set types it would never offer.
+	std::vector<ibClassID> offered;
+	ibBackendTypeConfigFactory::GetTypesByFilter(kind, metaData, offered);
+	for (const ibClassID& clsid : offered) {
 		if (filter.empty() || std::find(filter.begin(), filter.end(), clsid) != filter.end())
 			allowed.push_back(clsid);
 	}
@@ -264,9 +210,16 @@ bool ibShowTypeSelector(wxWindow* parent, ibSelectorDataType kind,
 		event.Skip();
 	});
 
-	// SORTED INTO CATEGORIES HERE, by the id itself: a reference goes under the group of the kind it
-	// points at ("CatalogRef"), a plain type stands at the root. Nobody outside decides this.
-	std::map<wxString, wxTreeItemId> groups;
+	// SORTED INTO CATEGORIES HERE, by the id itself: a type of a metaobject goes under the FAMILY of its kind
+	// — `CatalogRef.Goods` under `CatalogRef`, `DocumentObject.Invoice` under `DocumentObject` — and a type
+	// of none stands at the root. Nobody outside decides this.
+	//
+	// ⭐ A FAMILY IS A TYPE AND A HEADING: `CatalogRef` is chosen as itself — a reference to any catalog, the
+	// ones added later included — and holds each catalog's reference below it. The families come first in
+	// what is offered, and each member finds its own by its id: the member's with the metaID left ANY
+	// (clsid_any_of). A reference whose family is not on offer (a table's shape) goes under a plain heading
+	// of the family's name.
+	std::map<ibClassID, wxTreeItemId> headings;
 
 	for (const ibClassID& clsid : allowed) {
 		const ibCtorAbstractType* so = metaData != nullptr ? metaData->GetAvailableCtor(clsid) : ibValue::GetAvailableCtor(clsid);
@@ -275,23 +228,22 @@ bool ibShowTypeSelector(wxWindow* parent, ibSelectorDataType kind,
 
 		wxTreeItemId parentItem = tc->GetRootItem();
 
-		if (IsReference(clsid)) {
-			// The group is named after the METATYPE the reference belongs to, so every catalog lands
-			// under one heading without anyone passing a list of headings in.
-			const ibCtorMetaValueType* metaCtor = metaData != nullptr ? metaData->GetTypeCtor(clsid) : nullptr;
-			const ibValueMetaObject* owner = metaCtor != nullptr ? metaCtor->GetMetaObject() : nullptr;
-			const wxString groupName = owner != nullptr
-				? ibValue::GetNameObjectFromID(owner->GetClassType()) + wxT("Ref")
-				: _("References");
-
-			auto it = groups.find(groupName);
-			if (it == groups.end()) {
-				wxImageList* imageList = tc->GetImageList();
-				const int groupIcon = imageList->Add(so->GetClassIcon());
-				it = groups.emplace(groupName, tc->AppendItem(tc->GetRootItem(), groupName, groupIcon, groupIcon)).first;
-			}
-			parentItem = it->second;
+		// A type of no metaobject — a primitive, a family itself — stands at the root, a heading to its members.
+		if (!IsMetaValue(clsid) || clsid_is_any(clsid)) {
+			headings[clsid] = AppendType(tc, parentItem, so, inOut, allowEdit);
+			continue;
 		}
+
+		const ibClassID family = clsid_any_of(clsid);
+		auto heading = headings.find(family);
+		if (heading == headings.end() && IsReference(clsid)) {
+			wxImageList* imageList = tc->GetImageList();
+			const int groupIcon = imageList->Add(so->GetClassIcon());
+			const wxString familyName = ibValue::GetNameObjectFromID(family);
+			heading = headings.emplace(family, tc->AppendItem(tc->GetRootItem(), familyName, groupIcon, groupIcon)).first;
+		}
+		if (heading != headings.end() && heading->second.IsOk())
+			parentItem = heading->second;
 
 		AppendType(tc, parentItem, so, inOut, allowEdit);
 	}

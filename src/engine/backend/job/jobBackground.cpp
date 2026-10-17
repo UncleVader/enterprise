@@ -5,6 +5,7 @@
 #include "jobManager.h"
 
 #include "backend/appData.h"
+#include "core/fiber/fiberLocals.h"
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/moduleManager/moduleManager.h"   // root module manager -> GetProcUnit
@@ -12,7 +13,6 @@
 #include "backend/compiler/procUnit.h"             // CallAsFunc by name
 #include "backend/backend_exception.h"
 #include "backend/system/systemManager.h"          // WriteJournalEvent - the run's own record
-#include "backend/diagnostics/journal.h"            // ibJournalInfo - the engine's account of a cancel
 
 #include <wx/log.h>
 
@@ -58,6 +58,15 @@ struct ibBackgroundLaunch {
 
 // THE RUN THIS THREAD IS DOING — set around its body (ibCurrentRun), read by ibBackgroundRun::Current.
 thread_local ibBackgroundRun* t_currentRun = nullptr;
+
+struct ibRegisterCurrentRunLocal {
+	ibRegisterCurrentRunLocal()
+	{
+		ibFiberLocals::RegisterTrivial<ibBackgroundRun*>(
+			[](void* dst) { *static_cast<ibBackgroundRun**>(dst) = t_currentRun; },
+			[](const void* src) { t_currentRun = *static_cast<ibBackgroundRun* const*>(src); });
+	}
+} s_registerCurrentRunLocal;
 
 struct ibCurrentRun {
 	ibBackgroundRun* const m_previous;
@@ -265,8 +274,10 @@ std::shared_ptr<ibBackgroundRun> ibJobManager::StartBackground(ibBackgroundBody 
 	if (!body)
 		ibBackendCoreException::Error(_("Background job: nothing to run"));
 
-	ibSessionRegistry* const registry = ibApplicationData::GetSessionRegistry();
-	if (registry == nullptr || appData == nullptr)
+	// The run works in this manager's base — its registry, its pool — not in the base the calling thread
+	// happens to stand in.
+	ibSessionRegistry* const registry = ibApplicationInstance::GetSessionRegistry(m_applicationInstance);
+	if (registry == nullptr)
 		ibBackendCoreException::Error(_("Background job: the application is not running"));
 
 	// A STOPPED MANAGER TAKES NO WORK. Stop() has already cancelled and waited out everything
@@ -309,7 +320,7 @@ std::shared_ptr<ibBackgroundRun> ibJobManager::StartBackground(ibBackgroundBody 
 	// the job's own session, which has none yet. A tenant installs none: it does
 	// not act as the user, it acts FOR the session that already does.
 	if (!tenant)
-		launch->m_initiator = appData->GetUserInfo();
+		launch->m_initiator = m_applicationInstance->GetUserInfo();
 
 	auto run = std::make_shared<ibBackgroundRun>();
 	if (tenant) {
@@ -329,11 +340,18 @@ std::shared_ptr<ibBackgroundRun> ibJobManager::StartBackground(ibBackgroundBody 
 		auto minted = std::make_shared<ibSession>(wxString(wxNewUniqueGuid),
 		                                          ibSessionKind::BackgroundJob);
 		minted->SetUnlisted();
+		// It reads for its parent in this manager's base: the base's registry is its owner, and the base's pool
+		// gives its connection — and takes it back on whatever thread the session dies.
+		minted->m_registry = registry;
+		minted->m_dbHolder.SetPool(ibApplicationInstance::GetConnectionPool(m_applicationInstance));
+		// …and in its parent's configuration — the one the parent works in, not the base's newest: a read for a
+		// session is read the way that session reads.
+		minted->m_metaData = launch->m_parent->m_metaData;
 		run->m_holder = ibSessionHolder(std::move(minted));
 	}
 	else {
 		run->m_holder = registry->CreateSessionOfKind(
-			appData->GetAppMode(), appData->GetComputerName(),
+			m_applicationInstance->GetAppMode(), m_applicationInstance->GetComputerName(),
 			ibSessionKind::BackgroundJob,
 			&ib_detail::MakeSessionFactory<ibSession>);
 	}
@@ -505,7 +523,7 @@ std::shared_ptr<ibBackgroundRun> ibJobManager::StartBackground(ibBackgroundBody 
 			std::lock_guard<std::mutex> lk(run->m_mtx);
 			run->m_error = _("the run was cancelled");
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			Journal(wxString::Format(_("Background job FAILED: %s - %s"),
 				l.m_activity, err.GetErrorDescription()), ibStatusMessage_Error);
 

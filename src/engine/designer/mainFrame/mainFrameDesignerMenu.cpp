@@ -4,7 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "mainFrameDesigner.h"
-#include "backend/picturePredefined.h"   // the assistant's icon, from the picture registry
+#include "core/picturePredefined.h"   // the assistant's icon, from the picture registry
 
 //********************************************************************************
 //*                                Hotkey support                                *
@@ -66,21 +66,31 @@ void ibFrontendMainFrameDesigner::InitializeDefaultMenu()
 	// and its menu bar
 	m_menuFile = new wxMenu();
 
-	m_menuFile->Append(wxID_NEW);
-	m_menuFile->Append(wxID_OPEN);
+	// The file and edit commands carry the pictures their buttons carry on the main toolbar — one
+	// command, one picture, wherever it is pressed from, the same rule the debug menu below follows.
+	// These are wx's own stock pictures, so the client says which SIZE a menu wants rather than which
+	// picture; a command wx has none for keeps its label and nothing else, instead of borrowing one
+	// that means something different.
+	const auto stockPicture = [](wxMenuItem* item, const wxArtID& art) {
+		item->SetBitmap(wxArtProvider::GetBitmapBundle(art, wxART_MENU, wxSize(16, 16)));
+		return item;
+	};
 
-	m_menuFile->Append(wxID_CLOSE);
-	m_menuFile->Append(wxID_SAVE);
-	m_menuFile->Append(wxID_SAVEAS);
+	stockPicture(m_menuFile->Append(wxID_NEW), wxART_NEW);
+	stockPicture(m_menuFile->Append(wxID_OPEN), wxART_FILE_OPEN);
+
+	stockPicture(m_menuFile->Append(wxID_CLOSE), wxART_CLOSE);
+	stockPicture(m_menuFile->Append(wxID_SAVE), wxART_FILE_SAVE);
+	stockPicture(m_menuFile->Append(wxID_SAVEAS), wxART_FILE_SAVE_AS);
 	m_menuFile->Append(wxID_REVERT, _("Re&vert..."));
 
 	m_menuFile->AppendSeparator();
-	m_menuFile->Append(wxID_PRINT);
+	stockPicture(m_menuFile->Append(wxID_PRINT), wxART_PRINT);
 	m_menuFile->Append(wxID_PRINT_SETUP, _("Print &Setup..."));
 	m_menuFile->Append(wxID_PREVIEW);
 
 	m_menuFile->AppendSeparator();
-	m_menuFile->Append(wxID_EXIT);
+	stockPicture(m_menuFile->Append(wxID_EXIT), wxART_QUIT);
 
 	m_frameMenuBar->Append(m_menuFile, wxGetStockLabel(wxID_FILE));
 
@@ -92,16 +102,16 @@ void ibFrontendMainFrameDesigner::InitializeDefaultMenu()
 #endif // wxUSE_CONFIG
 
 	m_menuEdit = new wxMenu;
-	m_menuEdit->Append(wxID_UNDO);
-	m_menuEdit->Append(wxID_REDO);
+	stockPicture(m_menuEdit->Append(wxID_UNDO), wxART_UNDO);
+	stockPicture(m_menuEdit->Append(wxID_REDO), wxART_REDO);
 	m_menuEdit->AppendSeparator();
-	m_menuEdit->Append(wxID_CUT);
-	m_menuEdit->Append(wxID_COPY);
-	m_menuEdit->Append(wxID_PASTE);
-	m_menuEdit->Append(wxID_DELETE);
+	stockPicture(m_menuEdit->Append(wxID_CUT), wxART_CUT);
+	stockPicture(m_menuEdit->Append(wxID_COPY), wxART_COPY);
+	stockPicture(m_menuEdit->Append(wxID_PASTE), wxART_PASTE);
+	stockPicture(m_menuEdit->Append(wxID_DELETE), wxART_DELETE);
 	m_menuEdit->Append(wxID_SELECTALL);
 	m_menuEdit->AppendSeparator();
-	m_menuEdit->Append(wxID_FIND);
+	stockPicture(m_menuEdit->Append(wxID_FIND), wxART_FIND);
 
 	m_frameMenuBar->Append(m_menuEdit, wxGetStockLabel(wxID_EDIT));
 
@@ -114,15 +124,17 @@ void ibFrontendMainFrameDesigner::InitializeDefaultMenu()
 		return item;
 	};
 
-	// "Start debugging" → GUI / Web
+	// "Start debugging" → GUI / Thin / Web
 	wxMenu* subStart = new wxMenu;
 	debugPicture(subStart->Append(wxID_DESIGNER_DEBUG_START, _("Thick client (GUI)")), wxART_DEBUG_START);
+	subStart->Append(wxID_DESIGNER_DEBUG_START_THIN, _("Thin client"));
 	subStart->Append(wxID_DESIGNER_DEBUG_START_WEB, _("Web client"));
 	debugPicture(m_menuDebug->AppendSubMenu(subStart, _("Start debugging")), wxART_DEBUG_START);
 
-	// "Start without debugging" → GUI / Web
+	// "Start without debugging" → GUI / Thin / Web
 	wxMenu* subStartNoDebug = new wxMenu;
 	debugPicture(subStartNoDebug->Append(wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING, _("Thick client (GUI)")), wxART_DEBUG_START_WITHOUT_DEBUGGING);
+	subStartNoDebug->Append(wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_THIN, _("Thin client"));
 	subStartNoDebug->Append(wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_WEB, _("Web client"));
 	debugPicture(m_menuDebug->AppendSubMenu(subStartNoDebug, _("Start without debugging")), wxART_DEBUG_START_WITHOUT_DEBUGGING);
 
@@ -246,6 +258,8 @@ void ibFrontendMainFrameDesigner::InitializeDefaultMenu()
 	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnStartDebugWithoutDebug, this, wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING);
 	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnStartDebugWeb, this, wxID_DESIGNER_DEBUG_START_WEB);
 	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnStartDebugWithoutDebugWeb, this, wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_WEB);
+	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnStartDebugThin, this, wxID_DESIGNER_DEBUG_START_THIN);
+	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnStartDebugWithoutDebugThin, this, wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_THIN);
 	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnAttachForDebugging, this, wxID_DESIGNER_DEBUG_ATTACH_FOR_DEBUGGING);
 
 	Bind(wxEVT_MENU, &ibFrontendMainFrameDesigner::OnRunDebugCommand, this, wxID_DESIGNER_DEBUG_EDIT_POINT, wxID_DESIGNER_DEBUG_REMOVE_ALL_DEBUGPOINTS);

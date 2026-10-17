@@ -3,6 +3,8 @@
 
 #include "backend/compiler/value.h"
 
+constexpr ibClassID g_valueArrayCLSID = value_to_clsid("VL_ARR");
+
 //Array support
 // Type-invariant contributor — free function (external linkage) so it can be a
 // template non-type arg in the base clause below (the class is incomplete here).
@@ -57,6 +59,9 @@ public:
 		Clear();
 	}
 
+	// Its own id, not the registry's (see the note beside the class ids in procUnitLINQ.cpp).
+	virtual ibClassID GetClassType() const override { return g_valueArrayCLSID; }
+
 	virtual bool Init();
 	virtual bool Init(ibValue** paParams, const long lSizeArray);
 
@@ -100,6 +105,9 @@ public:
 	unsigned int Count() const {
 		return m_listValue.size();
 	}
+
+	// The elements, for a caller in C++ that only reads them (what Entries() is to a Container).
+	const std::vector<ibValue>& Values() const { return m_listValue; }
 
 	ibValue Find(const ibValue& varValue) {
 		auto it = std::find(m_listValue.begin(), m_listValue.end(), varValue);
@@ -273,6 +281,10 @@ public:
 				return true;
 			}
 			void Reset() override { m_pos = 0; m_started = false; }
+			long Remaining() const override {
+				const size_t next = m_started ? m_pos + 1 : m_pos;
+				return next < m_list.size() ? (long)(m_list.size() - next) : 0;
+			}
 		private:
 			ibValueArray*                m_owner;   // kept alive for the walk — see the note above
 			const std::vector<ibValue>&  m_list;

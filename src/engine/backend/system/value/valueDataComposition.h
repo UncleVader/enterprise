@@ -237,7 +237,8 @@ public:
 	//
 	// Const because a fetch is const — what changes is the parameter's cached value and the
 	// composer's parameter map, which are the state a run is entitled to settle.
-	void PrepareParametersForRun();
+	// Returns what it handed over — the values a report's heading prints are the ones the query was given.
+	std::map<wxString, ibValue> PrepareParametersForRun();
 
 	// COMPOSE INTO A DOCUMENT — the report's whole act, and the reason this type exists
 	// separately from the list. It runs the composition and writes the result into a
@@ -443,7 +444,7 @@ private:
 	// Nothing outside decides HOW it composes. Not even the settings: they are already on the
 	// composer by the time this runs, put there when the source was built or when somebody accepted
 	// the settings window. A target is a place to write, not an instruction.
-	bool Compose(class ibBackendSpreadsheetObject* target);
+	bool Compose(class ibSpreadsheetObject* target);
 
 	// Rebuild the columns + composer from the current source and query text.
 	void RebuildSource();

@@ -3,7 +3,7 @@
 
 #include "frontend/visualView/ctrl/control.h"
 #include "frontend/docView/docView.h"   // ibDocument / ibMetaDocument — the doc-parent a form opens under
-#include "backend/sourceDescription.h"   // ibSourceDescription — the binding-path wrapper (Get/SetValueByAttributePath)
+#include "core/description/sourceDescription.h"   // ibSourceDescription — the binding-path wrapper (Get/SetValueByAttributePath)
 #include "backend/backend_command.h"   // ibBackendCommandSender — the form IS-A command-hop source (entry gate)
 
 #include <memory>   // std::unique_ptr — owns the form's attribute/value registry entries
@@ -86,8 +86,8 @@ public:
 	const wxString& GetLockBadgeHolder() const { return m_lockBadgeHolder; }
 	void RefreshLockBadge();
 
-	wxColour GetForegroundColour() const { return m_propertyFG->GetValueAsColour(); }
-	wxColour GetBackgroundColour() const { return m_propertyBG->GetValueAsColour(); }
+	wxColour GetForegroundColour() const { return typeConv::ColourToWxColour(m_propertyFG->GetValueAsColour()); }
+	wxColour GetBackgroundColour() const { return typeConv::ColourToWxColour(m_propertyBG->GetValueAsColour()); }
 
 	bool IsFormEnabled() const { return m_propertyEnabled->GetValueAsBoolean(); }
 
@@ -139,10 +139,24 @@ public:
 
 public:
 
-	ibValueForm(const ibValueMetaObjectFormBase* creator = nullptr, ibControlFrame* ownerControl = nullptr,
-		ibSourceDataObject* srcObject = nullptr, const ibUniqueKey& formGuid = wxNullUniqueKey);
+	// ⭐⭐ BORN WITH WHAT IT WAS ASKED FOR. The opening parameters arrive here, in the constructor, so
+	// the form knows them before anything runs on it — its module, its source, its own build. That is
+	// the whole road: the front asks for a form with parameters, the server makes it with them, and
+	// this object is where they come to rest (Max, 2026-09-23: "and then you pass it into the form's
+	// constructor — at runtime it gets written down in the constructor").
+	ibValueForm(const ibFormRequest& request = ibFormRequest(),
+		const ibValueMetaObjectFormBase* creator = nullptr, ibControlFrame* ownerControl = nullptr,
+		ibSourceDataObject* srcObject = nullptr);
+
+	// What this form was opened with — its own parameters, for whoever reads them (the module, and the
+	// list command that fills a new row with the very values the list is narrowed by).
+	virtual const ibFormRequest& GetFormRequest() const override { return m_request; }
 
 	virtual ~ibValueForm();
+
+	// Counter reference — ibFormPtr's, and a desktop form's reference is its value's.
+	virtual void FormIncrRef() override { ibValue::IncrRef(); }
+	virtual void FormDecrRef() override { ibValue::DecrRef(); }
 
 	//****************************************************************************
 	//*                              Override attribute                          *
@@ -341,8 +355,17 @@ public:
 		return const_cast<ibValueForm*>(this);
 	}
 
-	ibValueFrame* GetOwnerControl() const {
-		return dynamic_cast<ibValueFrame*>(m_controlOwner);
+	// ⭐⭐ WHAT IS HELD, NOT A NARROWER VIEW OF IT. The owner is kept as an ibControlFrame, and that is
+	// the interface its two readers ask through: the value it holds (GetControlValue) and the window
+	// key it was opened under (GetControlGuid) are both declared there.
+	//
+	// 🛑 IT USED TO dynamic_cast TO ibValueFrame, and everything that is not a full form control fell
+	// through the hole. A filter's cell is a RENDERER — ibDataViewValueRenderer + ibControlFrame — so
+	// the choice list it opened had nobody to ask which value it was replacing, and opened standing on
+	// nothing (Max, 2026-09-24: "the current row is what you get from the control's value"; "if there
+	// is no form, take what you can take").
+	ibControlFrame* GetOwnerControl() const {
+		return m_controlOwner;
 	}
 
 	/**
@@ -366,6 +389,12 @@ public:
 	// Distinct from IsEditable() (designer: can the STRUCTURE be changed). SetViewOnly forces it on open.
 	bool IsViewOnly() const;
 	void SetViewOnly(bool viewOnly) { m_viewOnly = viewOnly; }
+
+	// The control of this form last clicked into (given the focus) — ThisForm.CurrentItem, and what the form's
+	// view is a facade over. Put by that view as the focus moves; a focus outside the form (a menu, a toolbar,
+	// the print preview) leaves it where it was, and one that has left the form since is no longer answered.
+	ibValueFrame* GetActiveControl() const;
+	void SetActiveControl(ibValueFrame* control) { m_activeControl = control; }
 
 public:
 
@@ -519,12 +548,19 @@ private:
 	// right, so an unset flag still yields view-only when the role denies writing.
 	bool					m_viewOnly = false;
 
+	// Kept, never followed, until it is found among the form's own controls (GetActiveControl).
+	ibValueFrame*			m_activeControl = nullptr;
+
 	bool					m_closeOnChoice;
 	bool					m_closeOnOwnerClose;
 
 	const ibValueMetaObjectFormBase* m_metaFormObject; // ref to metaData
 
 	ibControlFrame* m_controlOwner;
+
+	// What this opening asked for. Written in the constructor and not touched again — a form is not
+	// re-opened with different parameters, it is made again.
+	ibFormRequest m_request;
 
 	// The form's typed source registry: each entry OWNS an attribute (its definition)
 	// and holds, separately, the runtime VALUE that attribute manages. Held by unique_ptr
@@ -555,8 +591,8 @@ private:
 	ibPropertyTString* m_propertyTitle = ibPropertyObject::CreateProperty<ibPropertyTString>(m_categoryFrame, wxT("Title"), _("Title"),
 		_("The form window's title. Empty: the synonym of the object the form shows (or of the form itself) is used. Can be written per language and changed from code while the form is open."),
 		wxT(""));
-	ibPropertyColour* m_propertyFG = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryFrame, wxT("ForegroundColour"), _("Foreground"), _("The form's text colour, inherited by controls that have no colour of their own. Default: the system colour."), wxDefaultStypeFGColour);
-	ibPropertyColour* m_propertyBG = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryFrame, wxT("BackgroundColour"), _("Background"), _("The form's background colour. Default: the system colour, which follows the user's theme."), wxDefaultStypeBGColour);
+	ibPropertyColour* m_propertyFG = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryFrame, wxT("ForegroundColour"), _("Foreground"), _("The form's text colour, inherited by controls that have no colour of their own. Default: the system colour."), typeConv::WxColourToColour(wxDefaultStypeFGColour));
+	ibPropertyColour* m_propertyBG = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryFrame, wxT("BackgroundColour"), _("Background"), _("The form's background colour. Default: the system colour, which follows the user's theme."), typeConv::WxColourToColour(wxDefaultStypeBGColour));
 	ibPropertyBoolean* m_propertyEnabled = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryFrame, wxT("Enabled"), _("Enabled"), _("Whether the user can interact with the form. Off: every control on it is greyed out and takes no input - a view-only form."), true);
 	ibPropertyCategory* m_categorySizer = ibPropertyObject::CreatePropertyCategory(wxT("Sizer"), _("Sizer"));
 	ibPropertyEnum<ibValueEnumOrient>* m_propertyOrient = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumOrient>>(m_categorySizer, wxT("Orient"), _("Orient"),

@@ -18,7 +18,7 @@
 // (NO valueDataComposition.h. The panel holds no running composition; only the modal host below
 //  takes one, as a pointer, and a name is all that needs.)
 class ibValueDataComposition;
-#include "backend/compositionDescription.h"   // the snapshot Cancel puts back — a DESCRIPTION, not a node
+#include "core/description/compositionDescription.h"   // the snapshot Cancel puts back — a DESCRIPTION, not a node
 // WHICH SHELF a saved setting sits on — an argument of the shelf's door below, so the same menu
 // serves a report and a list. (The storage itself is the backend's; only the word travels here.)
 enum class ibSettingsCategory : int;
@@ -265,6 +265,17 @@ private:
 	wxWindow* BuildOutputPage(wxWindow* parent);    // variants | structure / settings
 	wxWindow* BuildResourcePage(wxWindow* parent);  // WHAT THE LEVELS FOLD — the aggregates
 	wxWindow* BuildQueryPage(wxWindow* parent);     // developer only — what is READ
+	// WHAT EACH FIELD THE QUERY READS IS — everything generated (the title from the name, the type
+	// from the query) and overruled one field at a time; only what a person said is kept.
+	wxWindow* BuildFieldPage(wxWindow* parent);
+	// The "..." behind a field's title: every language of it at once, in the translation constructor.
+	bool EditFieldTitle(wxString& text);
+	// The "..." behind a field's role: the role editor, the same window the query constructor opens.
+	bool EditFieldRole(wxString& text);
+	// The "..." behind a field's appearance: the platform's parameters, each ticked and given a value.
+	bool EditFieldAppearance(wxString& text);
+	// A field's entry was written — the document is told, and every picker re-reads the titles.
+	void OnFieldDescribed();
 	// WHAT THE QUERY ASKS FOR — and how each behaves. `forReader` builds the RUNTIME face of the same
 	// page: only the parameters the author offered ("For user"), read by their presentation, with the
 	// value beside it and nothing else.
@@ -514,6 +525,10 @@ private:
 	// nothing more than that").
 	class ibFilterEditor* m_filterEditor = nullptr;
 	class ibSortEditor*   m_sortEditor   = nullptr;
+	// …and the CONDITIONAL APPEARANCE and OTHER SETTINGS pages after them, pointed at the same storey the same way
+	// (BindNodeEditors).
+	class ibConditionalAppearanceEditor* m_conditionalAppearanceEditor = nullptr;
+	class ibOutputParametersEditor* m_outputParametersEditor = nullptr;
 
 	// (No live settings object. The window's transactional buffer IS m_edited below — the copy of
 	//  the composition's description — and each editor is handed the part of it it edits.)
@@ -663,6 +678,9 @@ private:
 	class ibDataViewCtrl*  m_resourceView = nullptr;
 	class ibResourceModel* m_resourceModel = nullptr;
 	int SelectedResourceIndex() const;
+	// The fields page: the query's fields are the rows, the description's field entries what they say.
+	class ibDataViewCtrl* m_fieldView  = nullptr;
+	class ibFieldModel*   m_fieldModel = nullptr;
 
 
 	// THE SAME STYLED EDITOR the query constructor and the list settings use: SQL lexer, the

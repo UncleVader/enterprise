@@ -24,7 +24,7 @@
 #if wxUSE_DATAVIEWCTRL
 
 #include "dataview.h"
-#include "backend/appData.h"               // ibApplicationData::GetLogger
+#include "backend/appData.h"               // ibApplicationInstance::GetLogger
 #include "backend/backend_exception.h"     // ibBackendException — what a failed portion throws
 #include "backend/logger/logger.h"         // a portion that failed leaves a row in the journal
 #include "datavgen.window.private.h"  // ibDataViewMainWindow — the rows area this freezes / scrolls
@@ -1049,16 +1049,16 @@ void ibDataViewCtrl::DispatchPagedFetch(ibFetchDirection dir, int batch)
 				break;
 			}
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			req->m_ok = false;
 			req->m_error = err.GetErrorDescription();
-			if (ibLogger* const log = ibApplicationData::GetLogger())
+			if (ibLogger* const log = ibApplicationInstance::GetLogger())
 				log->Error(wxT("list"), wxT("fetch"), req->m_error);
 		}
 		catch (...) {
 			req->m_ok = false;
 			req->m_error = _("unknown exception");
-			if (ibLogger* const log = ibApplicationData::GetLogger())
+			if (ibLogger* const log = ibApplicationInstance::GetLogger())
 				log->Error(wxT("list"), wxT("fetch"), req->m_error);
 		}
 

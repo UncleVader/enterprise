@@ -2,7 +2,6 @@
 #define __BYTE_CODE_H__
 
 #include "backend/compiler/value.h"     // ibValue::GetIDObjectFromString — the type registry
-#include "backend/guid.h"
 
 // A TYPE NAME AS WRITTEN → its class id; nothing declared → no id.
 //
@@ -403,14 +402,14 @@ struct ibByteCode {
 
 public:
 
-	long FindMethod(const wxString& strMethodName) const;
-	long FindExportMethod(const wxString& strMethodName) const;
+	long FindMethod(const ibString& strMethodName) const;
+	long FindExportMethod(const ibString& strMethodName) const;
 
-	long FindFunction(const wxString& funcName) const;
-	long FindExportFunction(const wxString& funcName) const;
+	long FindFunction(const ibString& funcName) const;
+	long FindExportFunction(const ibString& funcName) const;
 
-	long FindProcedure(const wxString& procName) const;
-	long FindExportProcedure(const wxString& procName) const;
+	long FindProcedure(const ibString& procName) const;
+	long FindExportProcedure(const ibString& procName) const;
 
 	// Bytecode-driven cross-module symbol resolution.
 	//
@@ -609,9 +608,10 @@ public:
 	// format-version). Caller treats false as cache miss and
 	// recompiles from source.
 	//
-	// Format constants live in byteCodeAOT.cpp; bump
-	// kAOTFormatVersion when the layout changes — readers reject
-	// older blobs and fall back to recompile.
+	// The format number is kAOTFormatVersion in byteCodeFormat.h. Bump
+	// it when the layout or the meaning changes — readers reject
+	// another number and fall back to recompile. The cache key
+	// carries the same number, so the row is not found either.
 	// Exported individually (the struct itself isn't BACKEND_API): the AOT
 	// cache API is the public seam tools / tests call across the DLL boundary.
 	BACKEND_API bool SerializeAOT(ibWriterMemory& writer) const;

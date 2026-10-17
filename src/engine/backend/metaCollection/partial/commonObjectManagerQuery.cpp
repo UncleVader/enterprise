@@ -18,7 +18,7 @@
 
 #include "commonObject.h"
 
-#include "backend/appData.h"
+#include "backend/backend_exception.h"   // IsEvalComplete — the caret's walk reads nothing
 #include "backend/session/session.h"
 
 #include "backend/query/dataQueryBuilder.h"   // L3 door — composite-key existence probe, FindBy*
@@ -39,17 +39,30 @@
 // still read the identity out of the reference's TEXT — its presentation — and so found nothing ever.
 //
 // The answer leaves as a VALUE: the row's own reference, held by the value that carries it out. The
-// query goes through the L3 door (the engine's FIRST / LIMIT fork is L2's), the pattern as a bound value.
-static ibValue ibFindRefLike(const ibValueMetaObjectRecordDataHierarchyMutableRef* meta,
-                             ibValueMetaObjectAttributePredefined* attribute, const ibValue& pattern)
+// query goes through the L3 door (the engine's FIRST / LIMIT fork is L2's), the value bound.
+//
+// ⭐ EXACT IS BY EQUALITY — the value is the one looked for, not a pattern. It was `LIKE ?` for every lookup, and
+// Firebird reaches no index through a LIKE whose pattern is a parameter: every call read the whole catalog, some
+// 50 ms a lookup at tens of thousands of items (perf night, PR #219), while the code has had an index of its own
+// all along. And a `_` or `%` in a code matched as a wildcard, so the lookup was not even exact. A LIKE is what a
+// lookup that is NOT exact asks — the first item whose value begins with the one given.
+static ibValue ibFindRefByAttribute(const ibValueMetaObjectRecordDataHierarchyMutableRef* meta,
+                                    ibValueMetaObjectAttributePredefined* attribute, const ibValue& value, bool exact)
 {
 	if (meta == nullptr)
 		return ibValue();
-	if (attribute == nullptr || pattern.IsEmpty() || appData->DesignerMode())
+	// The caret's walk for completion reads nothing: it CALLS this to learn what the answer is, and an empty
+	// reference of the type says that without a statement on every keystroke. Asked of the evaluation, not of
+	// the process — the client's editors complete with the same walk (2026-10-01).
+	if (attribute == nullptr || value.IsEmpty() || ibBackendException::IsEvalComplete())
 		return ibValueReferenceDataObject::Create(meta);
 	try {
 		ibDataQueryBuilder q;
-		q.From(meta->GetQueryable()).WhereLike(attribute->GetQueryColumn(), attribute->AdjustValue(pattern));
+		q.From(meta->GetQueryable());
+		if (exact)
+			q.Where(attribute->GetQueryColumn(), attribute->AdjustValue(value));
+		else
+			q.WhereLike(attribute->GetQueryColumn(), ibValue(value.GetString() + wxT("%")));
 		ibReadPageRequest page;
 		page.m_count = 1;
 		ibDataQueryResult sel = q.Execute(page);
@@ -68,13 +81,16 @@ static ibValue ibFindRefLike(const ibValueMetaObjectRecordDataHierarchyMutableRe
 ibValue ibValueManagerDataObjectPredefined::FindByCode(const ibValue& code) const
 {
 	const ibValueMetaObjectRecordDataHierarchyMutableRef* meta = GetMetaObject();
-	return ibFindRefLike(meta, meta != nullptr ? meta->GetDataCode() : nullptr, code);
+	return ibFindRefByAttribute(meta, meta != nullptr ? meta->GetDataCode() : nullptr, code, true);
 }
 
-ibValue ibValueManagerDataObjectPredefined::FindByDescription(const ibValue& description) const
+ibValue ibValueManagerDataObjectPredefined::FindByDescription(const ibValue& description, const ibValue& exact) const
 {
 	const ibValueMetaObjectRecordDataHierarchyMutableRef* meta = GetMetaObject();
-	return ibFindRefLike(meta, meta != nullptr ? meta->GetDataDescription() : nullptr, description);
+	// Not given is exact. Asked of the TYPE, not IsEmpty(): False is "empty" there, and an explicit False is
+	// exactly the one answer that must not read as "not given".
+	const bool isExact = exact.GetType() == ibValueTypes::TYPE_EMPTY || exact.GetBoolean();
+	return ibFindRefByAttribute(meta, meta != nullptr ? meta->GetDataDescription() : nullptr, description, isExact);
 }
 
 bool ibValueRecordManagerObject::ExistData()
@@ -157,12 +173,15 @@ bool ibValueRecordManagerObject::SaveData(bool replace)
 		&& !DeleteData())
 		return false;
 
-	// ⭐⭐ A RECORD UNDER A KEY THAT IS TAKEN IS A REPLACEMENT WHEN REPLACEMENT WAS ASKED FOR. `Write(True)` —
-	// the default — means "this is the record under this key now", whether one was there or not, and the
-	// set's write below replaces by the key. The probe used to refuse it regardless: a price written again
-	// for the same item, a rate for a month already rated, failed with "failed to store the record" and a
-	// message box nobody reads in a script (measured 2026-09-17, both kinds of information register). Only
-	// `Write(False)` asks to add and nothing else — and the door then says why it will not, in words.
+	// ⭐⭐ A RECORD UNDER A KEY THAT IS TAKEN IS A REPLACEMENT WHEN REPLACEMENT WAS ASKED FOR. `Write(True)`
+	// means "this is the record under this key now", whether one was there or not, and the set's write below
+	// replaces by the key. The probe used to refuse it regardless: a price written again for the same item, a
+	// rate for a month already rated, failed with "failed to store the record" and a message box nobody reads
+	// in a script (measured 2026-09-17, both kinds of information register). `Write(False)` asks to add and
+	// nothing else — and the door then says why it will not, in words.
+	//
+	// ⚠ AND ADDING IS WHAT IS ASKED UNLESS REPLACING IS SAID: the form and a bare `Write()` both write False
+	// (2026-09-24). With True as the default a record given another one's dimensions overwrote it silently.
 	if (!replace && ExistData()) {
 		ibBackendCoreException::Error(
 			_("Register '%s': a record with these key values already exists. Write(True) replaces it."),

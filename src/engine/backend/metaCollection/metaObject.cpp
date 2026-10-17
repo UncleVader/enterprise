@@ -8,7 +8,7 @@
 #include "backend/metadataConfiguration.h"   // ibMetaDataConfigurationBase::GetRestructureInfo (the static ledger accessor)
 
 #include "backend/metaData.h"
-#include "backend/utils/debugTrace.h"   // ibDebugTraceEnabled — per-object id tracing is opt-in
+#include "core/diagnostics/debugTrace.h"   // ibDebugTraceEnabled — per-object id tracing is opt-in
 #include "backend/databaseLayer/databaseErrorCodes.h"
 
 #include <wx/log.h>
@@ -117,6 +117,12 @@ void ibValueMetaObject::DoSetInterface(const ibMetaID& id, const bool& val)
 	m_metaData->Modify(true);
 }
 #pragma endregion
+#pragma region functional_option_h
+void ibValueMetaObject::DoSetFunctionalOption(const ibMetaID& id, const bool& val)
+{
+	m_metaData->Modify(true);
+}
+#pragma endregion
 #pragma region role_h 
 void ibValueMetaObject::DoSetRight(const ibRole* role, const bool& val)
 {
@@ -158,8 +164,8 @@ bool ibValueMetaObject::Init(ibValue** paParams, const long lSizeArray)
 		if (parent == nullptr)
 			return true;
 		// Check acceptance BEFORE attaching: with owning children a rejected node
-		// would already sit in the parent's vector when CreateObjectRef wxDELETEs
-		// it on Init failure → double free. Reject first, attach only if accepted.
+		// would already sit in the parent's vector when Init reports the failure —
+		// kept alive there, a child nobody asked for. Reject first, attach only if accepted.
 		if (!parent->FilterChild(GetClassType()))
 			return false;
 		SetParent(parent);
@@ -239,10 +245,30 @@ void ibValueMetaObject::SetName(const wxString& strName)
 		m_metaData->InvalidateCtorNames();
 }
 
+// ⭐⭐ THE DOOR FOR THE ORDER OF A METAOBJECT'S CHILDREN — the designer's up/down and sort, the MCP
+// verb metadata_move, anything that reorders. The order is data: the sections in the navigation panel,
+// the forms under an object, what a person reads down the tree. `pos` is where the child ENDS UP.
+//
+// 🛑 IT MARKED THE CONFIGURATION MODIFIED BEFORE ASKING, and said nothing: a refused move and a move to
+// where the child already stood both left "modified" behind, while a move nobody announced left every
+// watcher's picture of the order stale — the designer's tree shuffled its own rows by hand, and a move
+// from anywhere else was not drawn at all. Now a move that happened is marked and announced (`Moved`),
+// once, here, and the rows follow the announcement.
 bool ibValueMetaObject::ChangeChildPosition(ibValueMetaObject* object, unsigned int pos)
 {
+	if (m_metaData == nullptr || !m_metaData->IsEditable())   // the rule lives in the door, as for Create
+		return false;
+
+	const unsigned int from = GetChildPosition(object);
+	if (!ibPropertyObjectHelper::ChangeChildPosition(object, pos))
+		return false;
+
+	if (pos == from)
+		return true;   // it already stands there — nothing moved, so nothing is said
+
 	m_metaData->Modify(true);
-	return ibPropertyObjectHelper::ChangeChildPosition(object, pos);
+	m_metaData->MetaObjectStage(ibMetaDataNotifier::ibMetaStage::Moved, object);
+	return true;
 }
 
 wxString ibValueMetaObject::GetModuleName() const
@@ -333,7 +359,7 @@ void ibRestructureInfo::RequireExclusiveForDDL()
 	// session is attached). Nobody else can be connected at this stage, so
 	// skip the gate entirely.
 	auto* session  = ibSession::Current();
-	auto* registry = ibApplicationData::GetSessionRegistry();
+	auto* registry = ibApplicationInstance::GetSessionRegistry();
 	if (session == nullptr || registry == nullptr) return;
 
 	// Normal apply — try to acquire exclusive. Succeeds only if we are the
@@ -361,7 +387,7 @@ void ibRestructureInfo::ReleaseAutoExclusive()
 	if (!ts_acquiredByGate) return;
 	ts_acquiredByGate = false;
 	auto* session  = ibSession::Current();
-	auto* registry = ibApplicationData::GetSessionRegistry();
+	auto* registry = ibApplicationInstance::GetSessionRegistry();
 	if (session != nullptr && registry != nullptr) {
 		registry->SetExclusive(session, false);
 	}

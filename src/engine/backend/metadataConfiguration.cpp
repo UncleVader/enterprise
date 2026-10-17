@@ -8,12 +8,13 @@
 #include "backend/job/jobManager.h"   // the job records are swept once the surviving jobs are known
 
 // ms_instance / Get / Initialize / Destroy retired — ownership moved
-// to ibApplicationData::m_activeMetaData (a unique_ptr). The fabric
-// lives on ibApplicationData::CreateActiveMetaData / DestroyActiveMetaData;
+// to ibApplicationInstance::m_activeMetaData, shared with every session let
+// in while it was active (ibSession::GetMetaData). The fabric
+// lives on ibApplicationInstance::CreateActiveMetaData, its tear-down in the base's Close;
 // callers reach the active metadata through `appEnv::ActiveMetaData()`
 // (which the legacy `activeMetaData` macro now redirects to).
 //
-// Subclass ctors are private + friend ibApplicationData, so `new
+// Subclass ctors are private + friend ibApplicationInstance, so `new
 // ibMetaDataConfiguration()` outside that fabric is a compile error —
 // matches the strict ownership rule used by the rest of the appEnv
 // subsystems (sessionRegistry / lockManager / ...).
@@ -24,7 +25,7 @@
 #include "backend/backend_exception.h"   // catch ibBackendException at the LoadCommonTree boundary
 #include "backend/query/schemaSnapshot.h"   // ibSchemaSnapshot / ibSchemaTable — ContributeTables drives data dump
 #include "backend/query/dataMover.h"         // ibDataMover::Dump / Restore (L3-3 row mover)
-#include "backend/serialize/dataBuilder.h"      // ibDataBuilder / ibBinaryProvider — top-level structure builder
+#include "core/serialize/dataBuilder.h"      // ibDataBuilder / ibBinaryProvider — top-level structure builder
 #include "backend/objCtor.h"                       // ibCtorMetaValueType::GetClassName — clsid -> type name
 
 bool ibMetaDataConfigurationBase::LoadConfigFromFile(const wxString& strFileName)
@@ -123,8 +124,8 @@ m_commonObject(nullptr)
 
 	{
 		ibValue* ppParams[] = { m_commonObject };
-		ibValueMetaObjectLanguage* commonLanguage =
-			ibValue::CreateAndConvertObjectRef<ibValueMetaObjectLanguage>(g_metaLanguageCLSID, ppParams, 1);
+		const ibValuePtr<ibValueMetaObjectLanguage> commonLanguage =
+			ibValue::CreateObject(g_metaLanguageCLSID, ppParams, 1);
 
 		if (commonLanguage->OnCreateMetaObject(this, newObjectFlag)) {
 
@@ -136,7 +137,7 @@ m_commonObject(nullptr)
 		}
 
 		commonLanguage->InvalidateNames();
-		// owned by m_commonObject's child vector (AddChild inside Init) — no IncrRef
+		// owned by m_commonObject's child vector (AddChild inside Init) — the holder here only covers the build
 
 		m_commonObject->SetLanguage(commonLanguage->GetMetaID());
 	}
@@ -233,7 +234,7 @@ bool ibMetaDataConfigurationFile::RunDatabase(int flags)
 		if (!m_commonObject->RunSubtree(flags, ibValueMetaObject::ibRunPhase::After))
 			return false;
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		ibJournalError(wxT("metadata.config"),err.GetErrorDescription());
 		return false;
 	}
@@ -246,7 +247,7 @@ bool ibMetaDataConfigurationFile::RunDatabase(int flags)
 	// and whatever is left in the table belongs to something that did not survive the
 	// restructuring. Doing it at the Designer's delete instead would throw the record away while
 	// the user could still walk away without saving.
-	if (ibJobManager* const jobs = ibApplicationData::GetJobManager())
+	if (ibJobManager* const jobs = ibApplicationInstance::GetJobManager())
 		jobs->PurgeSharedState();
 
 	// Success — keep the image (LoadGuard.Commit): its presence IS the open state.
@@ -361,12 +362,21 @@ bool ibMetaDataConfigurationFile::LoadCommonTree(const ibClassID& clsid, ibReade
 	// validate it here so the common-tree blob stays self-describing (was the
 	// separate LoadHeader). Config keeps no version in the header (version lives in
 	// the common object's data).
+	//
+	// 🛑 BYTES THIS BUILD CANNOT READ ARE REFUSED IN WORDS — never a quiet false. Every caller hands in
+	// a blob it has already checked is not empty, so a missing header, a foreign sign or a missing
+	// configuration block means one thing: another format. Returned as false, the designer's start
+	// swallowed it and opened the DEFAULT configuration over an old base — an empty tree that one
+	// "Update database configuration" would have written over the real one (2026-09-28, a base of
+	// 2026-09-27). Raised, it reaches the start's message box and every menu's error window.
+	const auto unreadable = []() {
+		ibBackendCoreException::Error(_("This configuration is stored in a format this build cannot read: "
+			"it was written by an older or a different build. Nothing was loaded."));
+	};
 	{
 		std::shared_ptr<ibReaderMemory> headerReader(readerData.open_chunk(eHeaderBlock));
-		if (!headerReader)
-			return false;
-		if (headerReader->r_u64() != sign_metadata)
-			return false;
+		if (!headerReader || headerReader->elapsed() < (int)sizeof(u64) || headerReader->r_u64() != sign_metadata)
+			unreadable();
 		wxString metaGuid;
 		headerReader->r_stringZ(metaGuid);
 	}
@@ -376,7 +386,7 @@ bool ibMetaDataConfigurationFile::LoadCommonTree(const ibClassID& clsid, ibReade
 	std::shared_ptr<ibReaderMemory> readerMemory(readerData.open_chunk(clsid));
 
 	if (!readerMemory)
-		return false;
+		unreadable();
 
 	u64 meta_id = 0;
 	std::shared_ptr <ibReaderMemory> readerMetaMemory(readerMemory->open_chunk_iterator(meta_id));
@@ -403,7 +413,7 @@ bool ibMetaDataConfigurationFile::LoadCommonTree(const ibClassID& clsid, ibReade
 	try {
 		fresh->ApplyDataNode(rootNode);
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		// ⭐ THE ENGINE'S WORDS REACH THE USER — the twin of the report / data-processor catches.
 		// A configuration that refuses to load is the costliest of the three to face in silence.
 		ibJournalError(wxT("metadata.config"),wxT("%s"), err.GetErrorDescription());
@@ -442,18 +452,17 @@ bool ibMetaDataConfiguration::OnInitialize(const int flags)
 	// remain shared if a process ever hosted multiple configurations
 	// simultaneously). Today the runtime stays 1:1, so owning it here
 	// keeps the lifecycle close to where flags arrive. Move up to
-	// ibApplicationData::m_debugServer if multi-metadata lands.
-	m_debugServer.reset(new ibDebuggerServer());
+	// ibApplicationInstance::m_debugServer if multi-metadata lands.
+	m_debugServer.reset(new ibDebuggerServer(this));
 
 	if (!LoadDatabase())
 		return false;
 
-	// Localization: pin the process-wide default to the configuration's
-	// main language code (metadata short-code form ru/en/uk). Pre-auth
-	// callers without a session bound — launcher / login screen — read
-	// through this default. Per-session active language is assigned
-	// later by SetUserInfo on authentication and stays cached on the
-	// session for its whole life.
+	// Localization: pin the configuration's main language code (metadata
+	// short-code form ru/en/uk) into the translate state of whoever loads
+	// it — the designer's session, a base's first session. Every other
+	// session takes its base's in CompileRoot; the user's preferred
+	// language is assigned by SetUserInfo on authentication and wins.
 	ibBackendLocalization::SetUserLanguage(GetLangCode());
 
 	if ((flags & _app_start_create_debug_server_flag) != 0) {
@@ -487,9 +496,10 @@ ibMetaDataConfiguration::~ibMetaDataConfiguration() = default;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
-ibMetaDataConfiguration::ibMetaDataConfiguration(ib::AppDataCtorToken) :
+ibMetaDataConfiguration::ibMetaDataConfiguration(ib::AppDataCtorToken owner) :
 	ibMetaDataConfigurationFile(), m_configNew(true)
 {
+	m_applicationInstance = owner.GetApplicationInstance();
 }
 
 //**************************************************************************************************
@@ -507,9 +517,9 @@ bool ibMetaDataConfigurationStorage::OnInitialize(const int flags)
 	}
 
 	// Designer-side debugger client. Same 1:1-with-metadata footing as
-	// m_debugServer above — promoted to ibApplicationData if multi-metadata
+	// m_debugServer above — promoted to ibApplicationInstance if multi-metadata
 	// hosting becomes a thing.
-	m_debugClient.reset(new ibDebuggerClient());
+	m_debugClient.reset(new ibDebuggerClient(this));
 
 	// Load database
 	if (!LoadDatabase())
@@ -544,9 +554,10 @@ bool ibMetaDataConfigurationStorage::OnDestroy()
 
 ////////////////////////////////////////////////////////////////////////////////
 
-ibMetaDataConfigurationStorage::ibMetaDataConfigurationStorage(ib::AppDataCtorToken token) :
-	ibMetaDataConfiguration(token),
-	m_configMetadata(new ibMetaDataConfiguration(token)) {
+ibMetaDataConfigurationStorage::ibMetaDataConfigurationStorage(ib::AppDataCtorToken owner) :
+	ibMetaDataConfiguration(owner),
+	m_configMetadata(MakeShared<ibMetaDataConfiguration>(owner)),
+	m_owner(owner) {
 	// Designer-edit configuration carries a compile-value cache + its module-manager —
 	// built with the runtime image (CreateDesignerCache below); callsites gate on
 	// `if (auto* cc = metaData->GetCompileCache())` rather than appData->DesignerMode().
@@ -570,15 +581,15 @@ std::unique_ptr<ibCompileValueCache> ibMetaDataConfiguration::CreateDesignerCach
 	return cache;
 }
 
-ibMetaDataConfigurationStorage::~ibMetaDataConfigurationStorage() {
-	wxDELETE(m_configMetadata);
-}
+ibMetaDataConfigurationStorage::~ibMetaDataConfigurationStorage() = default;   // the database's copy goes with its last holder
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool ibMetaDataConfigurationStorage::LoadDatabase(int flags)
 {
-	if (m_configMetadata->LoadDatabase(onlyLoadFlag)) {
+	// The database's copy is read here once, the first time; a rollback leaves it as it is (the database still
+	// publishes it), and an apply replaces it whole — never re-read in place under the sessions working in it.
+	if (m_configMetadata->IsConfigOpen() || m_configMetadata->LoadDatabase(onlyLoadFlag)) {
 
 		//close if opened
 		if (ibMetaDataConfiguration::IsConfigOpen()
@@ -587,7 +598,7 @@ bool ibMetaDataConfigurationStorage::LoadDatabase(int flags)
 		}
 
 		if (ibMetaDataConfiguration::LoadDatabase()) {
-			Modify(!CompareMetadata(m_configMetadata));
+			Modify(!CompareMetadata(GetConfiguration()));
 			if (m_configNew)
 				SaveDatabase(saveConfigFlag);
 			m_configNew = false;
@@ -601,6 +612,19 @@ bool ibMetaDataConfigurationStorage::LoadDatabase(int flags)
 bool ibMetaDataConfigurationStorage::RestoreDataFromBuffer(const wxMemoryBuffer& buffer)
 {
 	ibReaderMemory reader(buffer);
+
+	// The form of the dates in the rows (chunk 3, DumpDataToBuffer): a dump made before 2026-09 has
+	// no such chunk and carried instants of the dumping machine's clock; the mover reads each form
+	// as the date it is (ibDataMover::DateOfWire). A form this build does not know is a newer one.
+	ibDataMover::DateForm dates = ibDataMover::DateForm::Instant;
+	wxMemoryBuffer bufferForm;
+	if (reader.r_chunk(3, bufferForm)) {
+		ibReaderMemory readerForm(bufferForm);
+		const u32 form = readerForm.r_u32();
+		if (form > static_cast<u32>(ibDataMover::DateForm::DateTime))
+			ibBackendCoreException::Error(_("The data was saved by a newer build (date form %u) that this build cannot read. Nothing was loaded."), form);
+		dates = static_cast<ibDataMover::DateForm>(form);
+	}
 
 	//common data
 	wxMemoryBuffer bufferData;
@@ -618,7 +642,7 @@ bool ibMetaDataConfigurationStorage::RestoreDataFromBuffer(const wxMemoryBuffer&
 			wxMemoryBuffer tableBuffer;
 			if (readerData.r_chunk(table.m_id, tableBuffer)) {
 				ibReaderMemory rows(tableBuffer);
-				if (!ibDataMover::Restore(table, rows))
+				if (!ibDataMover::Restore(table, rows, dates))
 					return false;
 			}
 		}
@@ -674,6 +698,12 @@ bool ibMetaDataConfigurationStorage::DumpDataToBuffer(wxMemoryBuffer& buffer)
 	ibWriterMemory writerSequence;
 	if (SaveSequenceToBuffer(writerSequence))
 		writer.w_chunk(2, writerSequence.buffer());
+
+	// The form of the dates in chunk 1 (ibDataMover::DateForm): an ibDateTime's count. A dump without
+	// this chunk carried instants, and RestoreDataFromBuffer reads it as one.
+	ibWriterMemory writerForm;
+	writerForm.w_u32(static_cast<u32>(ibDataMover::DateForm::DateTime));
+	writer.w_chunk(3, writerForm.buffer());
 
 	buffer = writer.buffer();
 	return true;
@@ -757,7 +787,7 @@ bool ibMetaDataConfigurationBase::SaveConfiguration(wxString& refusal)
 			return false;
 		}
 	}
-	catch (const ibBackendException& e) {
+	catch (const ibCoreException& e) {
 		refusal = e.GetErrorDescription();
 		return false;
 	}
@@ -849,7 +879,7 @@ bool ibMetaDataConfigurationBase::ApplyConfiguration(wxString& refusal,
 		// that did not happen — which is the whole value of it to a watcher that did not start it.
 		outcome.m_applied = true;
 	}
-	catch (const ibBackendException& e) {
+	catch (const ibCoreException& e) {
 		// OnSaveDatabase self-rolls-back and releases exclusive on a thrown DDL error (its own
 		// try/catch), so there is no transaction left open here — only a message to carry out.
 		refusal = e.GetErrorDescription();

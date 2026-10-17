@@ -30,8 +30,17 @@
 #include "backend/propertyManager/property/variant/variantType.h"   // ibVariantDataAttribute — a value that hides a type description
 #include "backend/propertyManager/property/propertyCalcSchedule.h"          // a calculation register's schedule — and what each part of it may be
 #include "backend/propertyManager/property/variant/variantCalcSchedule.h"   // …and the value that carries it
+#include "backend/propertyManager/property/propertyChoiceLink.h"            // how a field is chosen — and what each part of THAT may be
+#include "backend/propertyManager/property/variant/variantChoiceLink.h"     // …and the two values that carry it
+#include "backend/choiceLinkResolver.h"               // choice_preview asks the resolver a control asks
+#include "backend/metaCollection/partial/commonObject.h"   // …of a record made new: an object, a register's record
+#include "backend/metaCollection/table/metaTableObject.h"  // …or a row of a tabular section
+#include "backend/system/value/valueDynamicList.h"    // …and opens the list a choice form opens
 #include "backend/restructureInfo.h"                  // the ledger an object complains into
-#include "backend/typeDescription.h"                  // …and the description it hides
+#include "core/description/typeDescription.h"                  // …and the description it hides
+
+#include <algorithm>    // std::find — a list offered once
+#include <functional>   // choice_preview — the one write a new record is filled through
 
 namespace {
 
@@ -192,19 +201,11 @@ const ibArg& ArgId()
 	return s_a;
 }
 
-const ibArg& ArgMoveBefore()
+const ibArg& ArgPosition()
 {
-	static const ibArg s_a(wxT("before"), ibArg::Kind::Whole,
-		ibMcpText("The NodeId of the SIBLING to put the object in FRONT of - an object under the same "
-			  "parent. Give this or `after`, not both."));
-	return s_a;
-}
-
-const ibArg& ArgMoveAfter()
-{
-	static const ibArg s_a(wxT("after"), ibArg::Kind::Whole,
-		ibMcpText("The NodeId of the SIBLING to put the object BEHIND - an object under the same "
-			  "parent. Give this or `before`, not both."));
+	static const ibArg s_a(wxT("position"), ibArg::Kind::Whole,
+		ibMcpText("Where the object goes among the objects of its kind under the same parent, counted "
+			  "from 0 - the place in `order`."), /*required*/ true);
 	return s_a;
 }
 
@@ -271,7 +272,7 @@ const ibArg& ArgHelp()
 const ibArg& ArgProperties()
 {
 	static const ibArg s_a(wxT("properties"), ibArg::Kind::Node,
-		ibMcpText("Properties to set on the new object, by name - {\"FormType\": \"Object form\"}. "
+		ibMcpText("Properties to set on the new object, by name - {\"FormType\": \"FormObject\"}. "
 			  "Each is placed the way metadata_set places it, so a property with a closed set "
 			  "takes one of its words. The answer lists every property the object has, with what "
 			  "each accepts, so one call is enough to learn the rest. Passing any of these also "
@@ -284,7 +285,8 @@ const ibArg& ArgType()
 {
 	static const ibArg s_a(wxT("type"), ibArg::Kind::Text,
 		ibMcpText("The type's name: String, Number, Date, Boolean, or a reference type like "
-			  "CatalogRef.Goods / DocumentRef.GoodsReceipt."));
+			  "CatalogRef.Goods / DocumentRef.GoodsReceipt - or a whole kind's family, CatalogRef / "
+			  "DocumentRef (any catalog's item, any document), or AnyRef (any reference at all)."));
 	return s_a;
 }
 
@@ -306,7 +308,7 @@ const ibArg& ArgTypeShape()
 		  "what is held. Read one, change it, send it back."),
 		/*required*/ false, std::vector<wxString>(),
 		[](ibDataValue& shape) {
-			return ibTypeDescriptionMemory::WriteNode(shape, ibTypeDescription(), activeMetaData);
+			return ibTypeDescriptionMemory::WriteNode(shape, ibTypeDescription());
 		});
 	return s_a;
 }
@@ -940,7 +942,21 @@ public:
 			"`ListOwner`, `ListGeneration` - takes the NAME of what to bind or a list of names "
 			"(`{\"ListRegisterRecord\": [\"Stock\", \"Settlements\"]}`), and each is placed through "
 			"metadata_bind, so the other end learns it too: the register takes the document as its "
-			"recorder.");
+			"recorder.\n"
+			"A DECLARED SUBSCRIPTION TO AN EVENT - a routine that must run whenever any of many objects "
+			"raises it: before every document is written, whenever a catalog item is copied, whenever a "
+			"list form is got - is an `EventHandler`, a top-level kind. Nothing in the objects themselves "
+			"is edited, and who subscribes to what is read off the handlers, not out of the code. Its "
+			"`Source` says who raises the event: "
+			"metadata_set_type with one type - a single object's (`CatalogObject.Goods`) or a whole "
+			"kind's (`DocumentObject` is every document's object, `CatalogManager` every catalog's "
+			"manager) - or several at once through `description`, which keeps only the events every one "
+			"of them raises by the same name and with as many arguments. Its `Event` is set with "
+			"metadata_set; metadata_get lists the choices, which follow the source. Its own module - the "
+			"id in the `HandlerModule` property - is prepared with the procedure, named as the event and "
+			"taking `Source` before the event's own arguments: `Procedure BeforeWrite(Source, Cancel)`. "
+			"It runs after the source's own module, with the same arguments, so a `Cancel` set in it "
+			"cancels the write.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -1047,7 +1063,17 @@ public:
 
 			std::vector<ibDataValue> refused;
 
-			for (const auto& field : wanted->Fields()) {
+			// 🛑 AND THE ONES WRITTEN AS AN OBJECT COUNT TOO: a caption in every language, a picture in
+			// its own shape. A node keeps a child value in its PROPERTY area rather than among its
+			// fields (jsonProvider.cpp puts every one there), so walking the fields alone passed over
+			// them IN SILENCE - `properties: {Synonym: {en: ...}, Picture: {Type: 1, ...}}` made the
+			// object with neither, and the answer carried no refusal to say so, because nothing had
+			// been refused: nothing had been SEEN (2026-09-22, giving a command group its caption and
+			// its printer, then finding both empty).
+			std::vector<std::pair<wxString, ibDataValue>> asked = wanted->Fields();
+			asked.insert(asked.end(), wanted->Properties().begin(), wanted->Properties().end());
+
+			for (const auto& field : asked) {
 
 				ibProperty* property = created->GetProperty(field.first);
 
@@ -1069,11 +1095,31 @@ public:
 					// One entry, in the shape ibMcpSetProperty reads — the same one metadata_set
 					// hands it, so a word from a closed set, a relationship by name and a plain
 					// value all behave here exactly as they do there.
+					//
+					// ⚠ AND A VALUE THAT IS AN OBJECT GOES WHERE THAT DOOR LOOKS FOR IT: a caption in
+					// every language and a picture in its own shape are read with FindChild, which
+					// searches the PROPERTY area, while a scalar is read with FindField. Handed over as
+					// a field, the caption fell through to the plain write and the platform answered
+					// `wrong value kind (expected 4, got 6)` — a type mismatch at a caller who had sent
+					// exactly the shape it was given (2026-09-22).
 					ibDataNode one;
-					one.AddField(wxT("value"), field.second);
+					if (field.second.Kind() == ibDataKind::Child)
+						one.SetProperty(wxT("value"), field.second);
+					else
+						one.AddField(wxT("value"), field.second);
 
+					// ⚠ AND A PROPERTY THAT THROWS IS STILL ONE PROPERTY REFUSED. The platform raises on a
+					// value it cannot take, and let out of here that ends the whole call — with the object
+					// already made and named by the platform, so a create that answered with an error left
+					// `CommandGroup2` standing in the tree (2026-09-22). Said as a refusal instead, beside
+					// the others, which is what the rest of this loop promises.
 					ibDataNode said;
-					ibMcpSetProperty(property, one, said, why);
+					try {
+						ibMcpSetProperty(property, one, said, why);
+					}
+					catch (const ibCoreException& e) {
+						why = e.GetErrorDescription();
+					}
 				}
 
 				if (why.IsEmpty())
@@ -1087,6 +1133,26 @@ public:
 
 			if (!refused.empty())
 				result.AddField(wxT("refused"), ibDataValue::Array(refused));
+		}
+
+		// ⚠ A FORM WITH NO KIND IS NOT FINISHED — and announced, it puts the designer's form wizard in front
+		// of a person in the middle of a tool call (2026-09-28: `FormType: "Object form"`, a word no form
+		// has, taken from this tool's own example). So it is refused here, before anything is told of it,
+		// with the words its owner offers.
+		if (ibValueMetaObjectForm* form = created->ConvertToType<ibValueMetaObjectForm>()) {
+			if (form->GetTypeForm() == wxNOT_FOUND) {
+				wxString words;
+				if (ibValueMetaObjectGenericData* owner = parent != nullptr
+						? parent->ConvertToType<ibValueMetaObjectGenericData>() : nullptr) {
+					const ibFormTypeList kinds = owner->GetFormType();
+					for (unsigned int idx = 0; idx < kinds.GetItemCount(); idx++)
+						words += (words.IsEmpty() ? wxString() : wxString(wxT(", "))) + kinds.GetItemName(idx);
+				}
+				metaData->RemoveMetaObject(created, parent);
+				refusal = wxString::Format(ibMcpText("A form is made with its kind - properties: {\"FormType\": ...}, "
+					"one of: %s. Nothing was created."), words);
+				return false;
+			}
 		}
 
 		// ⚠ AND THE STEP THAT STANDS BESIDE THE DIALOG. For a form, choosing the kind and BUILDING
@@ -1379,10 +1445,10 @@ public:
 			}
 
 			ibValue* under[] = { root };
-			ibValueMetaObject* sample = nullptr;
+			ibValuePtr<ibValueMetaObject> sample;
 
 			try {
-				sample = ibValue::CreateAndConvertObjectRef<ibValueMetaObject>(clsid, under, 1);
+				sample = ibValue::CreateObject(clsid, under, 1);
 			}
 			catch (...) {
 				sample = nullptr;
@@ -1619,17 +1685,16 @@ public:
 
 	wxString GetDescription() const override
 	{
-		return ibMcpText("Change the place of an object among its siblings - the order of the sections in "
-			"the navigation panel, of the forms under an object, of what the tree shows. Say where with "
-			"`before` or `after`: the NodeId of a sibling to put it in front of or behind (both must sit "
-			"under the same parent). To arrange a whole list, put each object after the one before it. "
-			"Answers with `order`, the siblings of the same kind as they now stand. The order is part of "
-			"what config_save keeps and config_apply hands to the running application.");
+		return ibMcpText("Change the place of an object among its siblings of the same kind - the order of "
+			"the sections in the navigation panel, of the forms under an object, of what the tree shows. "
+			"`position` is its place in that list, from 0. Answers with `order`, the siblings of the same "
+			"kind as they now stand. The order is part of what config_save keeps and config_apply hands to "
+			"the running application.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
 	{
-		static const std::vector<ibMcpArgument> s_arguments = { ArgId(), ArgMoveBefore(), ArgMoveAfter() };
+		static const std::vector<ibMcpArgument> s_arguments = { ArgId(), ArgPosition() };
 		return s_arguments;
 	}
 
@@ -1645,31 +1710,10 @@ public:
 			return false;
 		}
 
-		const bool hasBefore = params.FindField(ArgMoveBefore().Name()) != nullptr;
-		const bool hasAfter  = params.FindField(ArgMoveAfter().Name()) != nullptr;
-		if (hasBefore == hasAfter) {
-			refusal = ibMcpText("Say where with exactly one of `before` and `after` - the NodeId of the "
-				"sibling to stand in front of or behind. Nothing was moved.");
-			return false;
-		}
-
 		ibValueMetaObject* object = ibFindMetaObjectById(metaData, (ibMetaID)asked);
 		if (object == nullptr) {
 			refusal = wxString::Format(
 				ibMcpText("Nothing in this configuration has id %i."), (int)asked);
-			return false;
-		}
-
-		const s32 besideId = hasBefore ? (s32)ArgMoveBefore().Whole(params) : (s32)ArgMoveAfter().Whole(params);
-		ibValueMetaObject* sibling = besideId > 0 ? ibFindMetaObjectById(metaData, (ibMetaID)besideId) : nullptr;
-		if (sibling == nullptr) {
-			refusal = wxString::Format(
-				ibMcpText("Nothing in this configuration has id %i to stand next to."), (int)besideId);
-			return false;
-		}
-
-		if (object == sibling) {
-			refusal = ibMcpText("An object cannot be placed next to itself. Nothing was moved.");
 			return false;
 		}
 
@@ -1680,23 +1724,34 @@ public:
 			return false;
 		}
 
-		if (sibling->GetParent() != parent) {
+		// The objects of its kind — what `position` counts. The children of a parent are of every kind at
+		// once; the object takes the place of the one standing at that position among its own.
+		std::vector<ibValueMetaObject*> kind;
+		for (unsigned int idx = 0; idx < parent->GetChildCount(); idx++) {
+			ibValueMetaObject* child = parent->GetChild(idx);
+			if (child->GetClassType() == object->GetClassType() && !child->IsDeleted())
+				kind.push_back(child);
+		}
+
+		const s32 position = (s32)ArgPosition().Whole(params);
+		if (position < 0 || position >= (s32)kind.size()) {
 			refusal = wxString::Format(
-				ibMcpText("'%s' and '%s' are not siblings - they sit under different parents, and this "
-					  "verb only changes the order under one. Nothing was moved."),
-				object->GetName(), sibling->GetName());
+				ibMcpText("Position %i is past the objects of this kind - there are %i, counted from 0. "
+					  "Nothing was moved."), (int)position, (int)kind.size());
 			return false;
 		}
 
-		bool changed = false;
-		if (!metaData->MoveMetaObject(object, sibling, hasBefore, &changed)) {
+		// The parent's door moves it, marks the configuration modified and announces `Moved` — or
+		// refuses a read-only one, and nothing has moved.
+		const unsigned int from = parent->GetChildPosition(object);
+		if (!parent->ChangeChildPosition(object, parent->GetChildPosition(kind[position]))) {
 			refusal = ibMcpText("The configuration refused the move - it is read-only. Nothing was moved.");
 			return false;
 		}
 
 		result.SetValue(wxT("name"), object->GetName());
 		result.AddField(wxT("id"), ibDataValue::Int((s64)object->GetMetaID()));
-		result.AddField(wxT("moved"), ibDataValue::Bool(changed));
+		result.AddField(wxT("moved"), ibDataValue::Bool(parent->GetChildPosition(object) != from));
 
 		// WHAT THE ORDER IS NOW, of the objects of the same kind - the answer to "did that put it where
 		// I meant", without a second call to read the tree.
@@ -1917,7 +1972,25 @@ public:
 	{
 		return ibMcpText("Give an attribute, a dimension or a resource its type - in words: String with a "
 			"length, Number with precision and scale, Date, Boolean, or a reference such as "
-			"CatalogRef.Goods. type_list shows what names exist.");
+			"CatalogRef.Goods. type_list shows what names exist.\n"
+			"WHICH REFERENCE, by what the field MEANS - a reference field may be as narrow or as wide as that:\n"
+			"* ONE KIND OF THING (the customer, the warehouse) - that object's own reference, CatalogRef.Counterparties. "
+			"The default: a choice opens its list, a query joins its one table, anything else is refused.\n"
+			"* A FEW KINDS KNOWN NOW AND MEANT TO STAY CLOSED (a customer or a supplier) - a composite of those "
+			"references, through `description`. A catalog added later does not join it, which is the point.\n"
+			"* AN ITEM OF ANY OBJECT OF A METATYPE, those added later included (a basis, an analytics value, what a "
+			"note is attached to) - the family: CatalogRef, DocumentRef, ChartOfAccountsRef. Stored as a reference; "
+			"a document put into a CatalogRef leaves it empty.\n"
+			"* ANYTHING THAT CAN BE REFERRED TO (the object a change history is kept for, a file attached to any "
+			"object, a journal's subject) - AnyRef.\n"
+			"* A CHART OF CHARACTERISTIC TYPES' `TypesOfCharacteristics` - what its characteristics, and the account "
+			"analytics typed by them, may hold - is where the wide ones belong most: an analytics kind that takes "
+			"any catalog's item is CatalogRef there, and the chart stays open to catalogs added later.\n"
+			"The wider the type, the less a query and a form know: a family is read across every table of its kind, "
+			"through the dot only what all of them have, and a choice has to ask which list to open "
+			"(choice_preview takes it as `list`). So do not widen a field to avoid choosing; and where it MEANS any of "
+			"them, do not list every type there is today either - that list is the field nobody extends when the next "
+			"catalog arrives.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -2050,7 +2123,7 @@ public:
 			ibDataValue carried = ibDataValue::Child(copy);
 
 			bool readable = false;
-			try { readable = ibTypeDescriptionMemory::ReadNode(carried, described, metaData); }
+			try { readable = ibTypeDescriptionMemory::ReadNode(carried, described); }
 			catch (...) { readable = false; }   // a value of the wrong kind anywhere in the shape — refused below, in words
 			if (!readable) {
 				refusal = ibMcpText("That is not a type description this platform can read. Send back the "
@@ -2066,8 +2139,7 @@ public:
 
 			ibDataValue placed;
 			if (!ibTypeDescriptionMemory::WriteNode(placed,
-					typeProperty->get_cell_variant<ibVariantDataAttribute>()->GetTypeDesc(),
-					metaData)) {
+					typeProperty->get_cell_variant<ibVariantDataAttribute>()->GetTypeDesc())) {
 				refusal = ibMcpText("The description was placed, but could not be read back to confirm it.");
 				return false;
 			}
@@ -2094,6 +2166,40 @@ public:
 			refusal = wxString::Format(
 				ibMcpText("'%s' is not a type this configuration knows. type_list shows the names."),
 				typeName);
+			return false;
+		}
+
+		// ⭐⭐ AND A TYPE THIS FIELD MAY NOT HOLD IS REFUSED — by the SAME rule the designer's type
+		// picker offers by (ibBackendTypeConfigFactory::GetTypesByFilter). A field says what KIND of
+		// slot it is (a resource takes numbers, a boolean flag takes a flag, a reference field takes
+		// references and primitives), and the picker has always thrown the rest out while building its
+		// list.
+		//
+		// 🛑 THIS DOOR DID NOT ASK, because the rule lived inside that dialog and nothing here could
+		// reach it. So `TypeDescription` — which belongs to exactly one place in the platform, a chart
+		// of characteristic types' own Type — could be set on an ordinary attribute over MCP, making a
+		// configuration the editor cannot produce and does not mean to have (Max, 2026-09-23: "it is
+		// the wrong type, you cannot put it here at all — the question is how you got here").
+		//
+		// The rule moved to the backend for this: two doors, one answer.
+		//
+		// The KIND of slot is the field's own answer — every attribute, dimension and resource is an
+		// ibBackendTypeConfigFactory. Something that is not one cannot be asked, and is not refused for
+		// failing to answer a question it was never given.
+		const ibBackendTypeConfigFactory* field = dynamic_cast<const ibBackendTypeConfigFactory*>(object);
+		std::vector<ibClassID> allowed;
+		if (field != nullptr)
+			ibBackendTypeConfigFactory::GetTypesByFilter(field->GetFilterDataType(), metaData, allowed);
+		if (!allowed.empty() && std::find(allowed.begin(), allowed.end(), clsid) == allowed.end()) {
+			wxString offered;
+			for (const ibClassID& may : allowed) {
+				const wxString name = metaData->GetNameObjectFromID(may);
+				if (!name.IsEmpty())
+					offered << (offered.IsEmpty() ? wxT("") : wxT(", ")) << name;
+			}
+			refusal = wxString::Format(
+				ibMcpText("'%s' cannot hold a '%s'. It takes: %s."),
+				object->GetName(), typeName, offered);
 			return false;
 		}
 
@@ -2146,7 +2252,7 @@ public:
 		// ⚠ ASKED WHETHER IT COULD SAY ITSELF. The family answers that, and a dropped answer here
 		// would report a type that was never written as an empty one.
 		ibDataValue described;
-		if (!ibTypeDescriptionMemory::WriteNode(described, now, metaData)) {
+		if (!ibTypeDescriptionMemory::WriteNode(described, now)) {
 			refusal = wxString::Format(
 				ibMcpText("'%s' was set, but the type could not be read back to confirm it."),
 				object->GetName());
@@ -2163,6 +2269,23 @@ public:
 };
 
 MCP_TOOL_REGISTER(ibMcpToolMetadataSetType);
+
+namespace {
+
+// ONE ENTRY OF A LIST A PROPERTY ANSWERED, BY NAME — its id, or 0; `offered` gets every name the list has.
+// The verbs below name the parts of what they set this way, each part out of the property's own list.
+ibMetaID Named(const ibPropertyChoiceList& list, const wxString& asked, wxString& offered)
+{
+	ibMetaID found = 0;
+	for (unsigned int idx = 0; idx < list.GetCount(); idx++) {
+		offered << (offered.IsEmpty() ? wxT("") : wxT(", ")) << list.GetName(idx);
+		if (list.GetName(idx).IsSameAs(asked, false))
+			found = list.GetId(idx);
+	}
+	return found;
+}
+
+} // namespace
 
 //---------------------------------------------------------------------------
 // metadata_set_schedule
@@ -2195,18 +2318,6 @@ class ibMcpToolMetadataSetSchedule : public ibMcpTool {
 				"a dimension of the calculation register whose type meets the schedule dimension's. Every dimension of the schedule but its date "
 				"is linked: a schedule with a link left out is refused when the configuration is saved."));
 		return a;
-	}
-
-	// ONE ENTRY OF A LIST THE PROPERTY ANSWERED, BY NAME — its id, or 0; `offered` gets every name the list has.
-	static ibMetaID Named(const ibPropertyChoiceList& list, const wxString& asked, wxString& offered)
-	{
-		ibMetaID found = 0;
-		for (unsigned int idx = 0; idx < list.GetCount(); idx++) {
-			offered << (offered.IsEmpty() ? wxT("") : wxT(", ")) << list.GetName(idx);
-			if (list.GetName(idx).IsSameAs(asked, false))
-				found = list.GetId(idx);
-		}
-		return found;
 	}
 
 	// The schedule as names, for the answer.
@@ -2354,6 +2465,670 @@ MCP_TOOL_REGISTER(ibMcpToolMetadataSetSchedule);
 
 
 //---------------------------------------------------------------------------
+// metadata_set_choice
+//---------------------------------------------------------------------------
+// ⭐⭐ HOW A FIELD IS CHOSEN, AS ONE VALUE — the same shape metadata_set_schedule has, for the same
+// reason: the two properties behind it (`TypeLink` and `ChoiceParameters`) are one subject, and a
+// caller thinking about a field thinks about it whole.
+//
+// ⭐ EVERY PART IS CHECKED AGAINST THE PROPERTY'S OWN LIST, never against a rule spelled here: which
+// fields may govern is ibChoiceLinkResolver::CanGovern through ibPropertyChoiceLink::GetValueList,
+// which parameters exist is the target's own fields, which fields may supply a value is the holder's
+// neighbours. A refusal names what IS offered, because a caller that cannot see the designer has no
+// other way to find out.
+class ibMcpToolMetadataSetChoice : public ibMcpTool {
+
+	static const ibArg& ArgLink() {
+		static const ibArg a(wxT("link"), ibArg::Kind::Text,
+			ibMcpText("The field whose value decides the TYPE of this one, by name - a characteristic gives the type "
+				"it declares, a field holding a type description gives that, and any other field gives the type of "
+				"the value standing in it. Every field beside this one that holds anything is offered: the link is "
+				"the choice of the COLUMN the type is pulled from, and what is pulled is that column's own answer. "
+				"From a column of a tabular section the object's own fields are named `<Object>.<Field>`. "
+				"An empty string takes the link off. Omitted, the link is left as it is."));
+		return a;
+	}
+	static const ibArg& ArgGovernedType() {
+		static const ibArg a(wxT("governed_type"), ibArg::Kind::Text,
+			ibMcpText("Which of THIS field's types the link decides, spelled as metadata_set_type spells a type: "
+				"CatalogRef.Goods. Needed only when the field holds more than one reference type; with one there is "
+				"nothing to ask."));
+		return a;
+	}
+	static const ibArg& ArgParameters() {
+		static const ibArg a(wxT("parameters"), ibArg::Kind::Node,
+			ibMcpText("What is shown in the list: {\"<field of the chosen object>\": \"<field beside this one>\"} - "
+				"the first is filtered by the value of the second, and the second is always a FIELD, by name, never "
+				"a value. An owner is one of these rows and needs no "
+				"mechanism of its own. To say what becomes of an already chosen value when that field changes, "
+				"give a child instead of a name: {\"Owner\": {\"from\": \"Organisation\", \"on_change\": \"keep\"}} - "
+				"`clear` (the default) or `keep`. An empty name removes that row. The rows given "
+				"REPLACE the table."));
+		return a;
+	}
+
+	// The choice as names, for the answer — read back in exactly the shape it is written in, and by the same
+	// words metadata_get reads it in (mcpTool.cpp): one reading, so a write and a read cannot disagree.
+	static void Say(const ibValueMetaObject* field, const ibChoiceTypeLinkDescription& linkDesc,
+		const ibChoiceParametersDescription& paramsDesc, ibDataNode& result)
+	{
+		ibMcpSayChoiceLink(field, linkDesc, result);
+		ibMcpSayChoiceParameters(field, paramsDesc, result.Child(wxT("parameters")));
+	}
+
+public:
+
+	wxString GetName() const override { return wxT("metadata_set_choice"); }
+
+	wxString GetActivity(const ibDataNode& params) const override
+	{
+		return wxString::Format(ibMcpText("setting how '%s' is chosen"), ibMcpNameOf(params));
+	}
+
+	wxString GetDescription() const override
+	{
+		return ibMcpText("How a field is filled in: which LIST opens for it, and WHAT IS SHOWN in that list.\n"
+			"\n"
+			"`parameters` decide what is shown. Each row is one pair - a field OF WHAT IS BEING CHOSEN, "
+			"and the field BESIDE THIS ONE whose value it must equal - and you are not limited to one: "
+			"{\"Owner\": \"Counterparty\", \"Organisation\": \"Organisation\", \"Export\": \"Export\"} shows "
+			"the contracts of this counterparty, of this organisation, export or not as the document says. "
+			"The rows AND together. Warehouses of the chosen company, price kinds of the chosen agreement, "
+			"employees of the chosen department - every narrowing there is, is rows of these pairs.\n"
+			"The right side is ALWAYS A FIELD and never a value: a row narrows by whatever that field holds, "
+			"False and empty included. A fixed value has to stand in a field to narrow by it.\n"
+			"A SUBORDINATE CATALOG'S OWNER IS ONE SUCH ROW and nothing more, written for you when the "
+			"field's type is set: there is no owner mechanism to look for, and none to build.\n"
+			"\n"
+			"`link` decides the field's TYPE - it names ONE neighbour, and what stands in that neighbour "
+			"settles it, so nobody is asked to repeat a type the model already knows. Reach for it with a "
+			"chart of characteristic types wherever the type has to change with what somebody picked: a "
+			"questionnaire (the question is the kind, the answer is the value), barcodes, user settings. "
+			"It is not only a chart: any neighbour carrying a type will do - a field holding a type "
+			"description, or a reference to something with such a field of its own.\n"
+			"\n"
+			"Both halves apply to a form control and to a table column alike; inside a tabular section the "
+			"neighbours are the other columns of the same row and the object's fields above it, named "
+			"`<Object>.<Field>` - a Warehouse of the header and a Warehouse of the row are two names. "
+			"A value chosen within a field is EMPTIED "
+			"when that field changes - on the server too, so the order of assignments in a script matters: "
+			"the counterparty before the contract, the kind before the value.\n"
+			"Called with only `id` it reads back what is set; choice_preview runs it and shows what it does. "
+			"The corpus has the whole subject: pattern_read {name: \"choice-links\"}.");
+	}
+
+	const std::vector<ibMcpArgument>& Arguments() const override
+	{
+		static const std::vector<ibMcpArgument> s_arguments = { ArgId(), ArgLink(), ArgGovernedType(), ArgParameters() };
+		return s_arguments;
+	}
+
+	bool Call(const ibDataNode& params, ibDataNode& result, wxString& refusal) const override
+	{
+		ibMetaData* metaData = OpenConfiguration(refusal);
+		if (metaData == nullptr)
+			return false;
+
+		ibValueMetaObject* object = ibMcpObjectNamed(params, refusal);
+		if (object == nullptr)
+			return false;
+
+		// WHAT EACH PART MAY BE IS THE PROPERTIES' ANSWER — the inspector asks the same ones.
+		ibPropertyChoiceLink* linkProperty = dynamic_cast<ibPropertyChoiceLink*>(object->GetProperty(wxT("TypeLink")));
+		ibPropertyChoiceParameters* paramsProperty = dynamic_cast<ibPropertyChoiceParameters*>(object->GetProperty(wxT("ChoiceParameters")));
+		if (linkProperty == nullptr || paramsProperty == nullptr) {
+			refusal = wxString::Format(
+				ibMcpText("'%s' is not a field that is chosen into - only an attribute, a dimension, a resource or a "
+					"column has a link and choice parameters."), object->GetName());
+			return false;
+		}
+
+		result.SetValue(wxT("object"), object->GetName());
+
+		ibChoiceTypeLinkDescription linkDesc = linkProperty->GetValueAsLinkDesc();
+		ibChoiceParametersDescription paramsDesc = paramsProperty->GetValueAsParametersDesc();
+
+		if (!ArgLink().Given(params) && !ArgGovernedType().Given(params) && params.FindChild(ArgParameters().Name()) == nullptr) {
+			Say(object, linkDesc, paramsDesc, result);
+			return true;
+		}
+
+		// ---- the link by type -------------------------------------------------------------------
+		if (ArgLink().Given(params)) {
+
+			const wxString governing = ArgLink().Text(params);
+			linkDesc.Clear();   // an empty name takes the link off, and the governed type goes with it
+
+			if (!governing.IsEmpty()) {
+				wxString offered;
+				ibPropertyChoiceList fields;
+				linkProperty->GetValueList(fields);
+				const ibMetaID field = Named(fields, governing, offered);
+				if (field == 0) {
+					refusal = offered.IsEmpty()
+						? wxString::Format(ibMcpText("Nothing beside '%s' carries a type to give it: a link names a "
+							"characteristic or a field holding a type description."), object->GetName())
+						: wxString::Format(ibMcpText("'%s' cannot decide the type of '%s'. These can: %s."),
+							governing, object->GetName(), offered);
+					return false;
+				}
+				linkDesc.m_source.AppendSource(field);
+			}
+		}
+
+		// ---- which of this field's types it decides ---------------------------------------------
+		// ⭐ SPELLED AS A TYPE, the way metadata_set_type takes one (CatalogRef.Goods). A field may hold a
+		// catalog and a document of the same name; the designer tells them apart by their pictures, and a
+		// caller without pictures was handed whichever came last. A bare name is still taken while only
+		// one of the field's types carries it.
+		if (ArgGovernedType().Given(params)) {
+
+			const wxString governed = ArgGovernedType().Text(params);
+			linkDesc.m_governedType = 0;
+
+			if (!governed.IsEmpty()) {
+				ibPropertyChoiceList types;
+				ibFieldReferenceTypes(object, types);
+
+				wxString offered;
+				std::vector<ibClassID> named;
+				for (unsigned int idx = 0; idx < types.GetCount(); idx++) {
+					const ibClassID clsid = metaData->GetIDObjectFromMetaID((ibMetaID)types.GetId(idx), ibCtorObjectMetaType::ibCtorObjectMetaType_Reference);
+					const wxString typeName = metaData->GetNameObjectFromID(clsid);
+					offered << (offered.IsEmpty() ? wxT("") : wxT(", ")) << typeName;
+					if (typeName.IsSameAs(governed, false) || types.GetName(idx).IsSameAs(governed, false))
+						named.push_back(clsid);
+				}
+
+				if (named.size() != 1) {
+					refusal = offered.IsEmpty()
+						? wxString::Format(ibMcpText("'%s' holds no reference type for a link to decide."), object->GetName())
+						: named.empty()
+						? wxString::Format(ibMcpText("'%s' is not one of the types '%s' holds. It holds: %s."),
+							governed, object->GetName(), offered)
+						: wxString::Format(ibMcpText("'%s' names more than one of the types '%s' holds - say which: %s."),
+							governed, object->GetName(), offered);
+					return false;
+				}
+				linkDesc.m_governedType = named.front();
+			}
+		}
+
+		// ---- what is shown in the list ----------------------------------------------------------
+		if (const ibDataNode* rows = params.FindChild(ArgParameters().Name())) {
+
+			// The neighbours a value may come from — the same list for every row, so it is asked once.
+			ibPropertyChoiceList sources;
+			paramsProperty->GetSourceList(sources);
+
+			// …and the parameters, which are the TARGET's fields and so depend on which type it is.
+			ibPropertyChoiceList targets;
+			ibFieldReferenceTypes(object, targets);
+
+			paramsDesc.Clear();
+
+			// ⭐⭐ BOTH HALVES OF THE NODE, because a row may be written either way and the two do not
+			// land in the same place: a bare name is a FIELD, while `{from, on_change}` is a PROPERTY
+			// holding a child node — which is what ibDataNode::FindChild reads (dataBuilder.cpp).
+			//
+			// 🛑 THIS WALKED THE FIELDS ALONE, so the short form was written and the long one was
+			// DROPPED WITHOUT A WORD: the call came back reporting what was already set, which reads
+			// exactly like a call that asked to read. And the long form is the only way to say `keep`,
+			// so it could not be set at all — over a tool whose own description
+			// offers that spelling (found 2026-09-23, driving the tool over the wire).
+			std::vector<wxString> given;
+			for (const auto& field : rows->Fields())
+				given.push_back(field.first);
+			for (const auto& prop : rows->Properties())
+				given.push_back(prop.first);
+
+			for (const wxString& parameter : given) {
+
+				ibChoiceParameterRowDescription row;
+
+				// The parameter, looked for in every type this field may hold: a composite field refers
+				// to more than one thing and they do not have the same fields.
+				wxString offeredParameters;
+				for (unsigned int type = 0; type < targets.GetCount() && row.m_parameter == 0; type++) {
+					ibPropertyChoiceList fields;
+					paramsProperty->GetParameterList(metaData->GetIDObjectFromMetaID((ibMetaID)targets.GetId(type), ibCtorObjectMetaType::ibCtorObjectMetaType_Reference), fields);
+					wxString ofThisType;
+					row.m_parameter = Named(fields, parameter, ofThisType);
+					if (!ofThisType.IsEmpty())
+						offeredParameters << (offeredParameters.IsEmpty() ? wxT("") : wxT(", ")) << ofThisType;
+				}
+
+				if (row.m_parameter == 0) {
+					refusal = offeredParameters.IsEmpty()
+						? wxString::Format(ibMcpText("'%s' refers to nothing whose fields could be filtered - a choice "
+							"parameter narrows a list of something."), object->GetName())
+						: wxString::Format(ibMcpText("'%s' is not a field of what '%s' refers to. These are: %s."),
+							parameter, object->GetName(), offeredParameters);
+					return false;
+				}
+
+				// The value's source, and optionally what becomes of an already chosen value.
+				const ibDataNode* cell = rows->FindChild(parameter);
+				const ibDataValue* said = cell != nullptr ? cell->FindField(wxT("from")) : rows->FindField(parameter);
+				if (cell != nullptr) {
+					if (const ibDataValue* mode = cell->FindField(wxT("on_change"))) {
+						const wxString word = mode->AsString();
+						if (word.IsSameAs(wxT("keep"), false)) row.m_onChange = ibChoiceParameterOnChange::Keep;
+						else if (!word.IsSameAs(wxT("clear"), false)) {
+							refusal = wxString::Format(
+								ibMcpText("'%s' is not what can become of a value: clear or keep."), word);
+							return false;
+						}
+					}
+				}
+
+				// 🛑 THE RIGHT SIDE IS A FIELD, NEVER A VALUE. A value written there (`"Closed": false`) used
+				// to read as an empty name, and an empty name removes the row: the call meant to add a
+				// condition took one away and answered as if it had done what it was asked.
+				if (said != nullptr && said->Kind() != ibDataKind::String && said->Kind() != ibDataKind::Empty) {
+					refusal = wxString::Format(
+						ibMcpText("'%s' is given a value - a row takes its value from a FIELD beside '%s', by name, and "
+							"narrows by whatever that field holds. A fixed value has to stand in a field to narrow by it."),
+						parameter, object->GetName());
+					return false;
+				}
+				const wxString from = said != nullptr ? said->AsString() : wxString();
+
+				// An empty source removes the row rather than writing a condition over nothing.
+				if (from.IsEmpty())
+					continue;
+
+				wxString offeredSources;
+				const ibMetaID source = Named(sources, from, offeredSources);
+				if (source == 0) {
+					refusal = offeredSources.IsEmpty()
+						? wxString::Format(ibMcpText("'%s' stands beside no other field to take a value from."), object->GetName())
+						: wxString::Format(ibMcpText("'%s' is not a field standing beside '%s'. These are: %s."),
+							from, object->GetName(), offeredSources);
+					return false;
+				}
+
+				row.m_source.AppendSource(source);
+				paramsDesc.SetRow(row);
+			}
+		}
+
+		// ⭐ THROUGH THE DOOR A MOUSE CLICK USES — the gate needs an old value and a new one to offer the
+		// owner, which is why each half is edited on a copy above and handed over whole.
+		if (!ibMcpApplyByHand(linkProperty, wxVariant(new ibVariantDataChoiceLink(object, linkDesc)), refusal))
+			return false;
+		if (!ibMcpApplyByHand(paramsProperty, wxVariant(new ibVariantDataChoiceParameters(object, paramsDesc)), refusal))
+			return false;
+
+		metaData->Modify(true);
+		Say(object, linkDesc, paramsDesc, result);
+		ibMcpReportComplaints(result, object);
+		return true;
+	}
+};
+
+MCP_TOOL_REGISTER(ibMcpToolMetadataSetChoice);
+
+
+//---------------------------------------------------------------------------
+// choice_preview
+//---------------------------------------------------------------------------
+// ⭐⭐ WHAT A FIELD'S CHOICE DOES, RUN RATHER THAN DESCRIBED. metadata_set_choice says how a field is
+// chosen; this chooses — through the pieces a form's field goes through, in the order it goes through
+// them: the neighbours are written by the record's own writes, ibChoiceLinkResolver::Resolve gives the
+// condition the control asks for, the list is made from it by the creator a choice form's list comes
+// from, and a new item is filled the way Add in that list fills it (ibChoiceLinkResolver::Fill).
+//
+// ⚠ THE RECORD IS NEW, IN MEMORY, AND NEVER WRITTEN — made for the question and dropped with the answer.
+// ⚠ AND A CONTROL IS NOT ON THIS ROAD: how a form finds the record or the row it stands on is not
+// exercised here. That is what a person clicking is for.
+class ibMcpToolChoicePreview : public ibMcpTool {
+
+	static const ibArg& ArgValues() {
+		static const ibArg a(wxT("values"), ibArg::Kind::Node,
+			ibMcpText("The neighbours to fill in first, by name: {\"Counterparty\": \"Vector\", \"Export\": true}. "
+				"Named as metadata_set_choice names them - from a column, the object's own fields as "
+				"`<Object>.<Field>`. A text given for a reference is looked for by code or description, the way "
+				"a form's field looks for typed text; a date, or anything JSON cannot say, goes packed "
+				"(value_pack). Omitted, every neighbour is empty - which is worth asking about too."));
+		return a;
+	}
+	static const ibArg& ArgList() {
+		static const ibArg a(wxT("list"), ibArg::Kind::Text,
+			ibMcpText("Which list to open when the field may refer to more than one kind, spelled as "
+				"metadata_set_type spells a type: CatalogRef.Goods. With one there is nothing to ask."));
+		return a;
+	}
+	static const ibArg& ArgRows() {
+		static const ibArg a(wxT("rows"), ibArg::Kind::Whole,
+			ibMcpText("How many rows of the list to show. Default 10."));
+		return a;
+	}
+
+	// ⭐ THE RECORD THE FIELD STANDS IN, and the one write it is filled through. The values keep what they
+	// point at alive: a row lives as long as the object above it is held.
+	struct ibPreviewRecord {
+		ibValue object;   // what owns it all
+		ibValue line;     // the row, where the field is a column — or a register keeps no single record
+		ibChoiceHolder holder;
+		std::function<bool(const ibValueMetaObjectAttributeBase*, const ibValue&)> write;
+	};
+
+	// A ROW, ADDED THE WAY A SCRIPT ADDS ONE — the table's own `Add`, which answers with the row it made.
+	// No class is named to reach it: every table that takes rows answers to that word.
+	static bool AddLine(ibValueModel* table, ibPreviewRecord& into)
+	{
+		const long add = table != nullptr ? table->FindMethod(wxT("Add")) : wxNOT_FOUND;
+		ibValue added;
+		if (add == wxNOT_FOUND || !table->CallAsFunc(add, added, nullptr, 0))
+			return false;
+		const ibValuePtr<ibValueModel::ibValueModelReturnLine> line(added);
+		if (!line)
+			return false;
+		into.line = added;
+		into.holder = ibChoiceHolder(line->GetOwnerModel(), line->GetLineItem());
+		return true;
+	}
+
+	// WHERE THE FIELD STANDS, made new: a row of its section for a column, a record of its register for
+	// a register's field (the record manager where the register has one, else a line of a record set),
+	// an object for a field of an object.
+	static bool MakeRecord(const ibValueMetaObjectAttributeBase* field, ibPreviewRecord& into)
+	{
+		const ibValueMetaObject* owner = field->GetParent();
+
+		ibValueMetaObjectTableData* section = nullptr;
+		if (owner->ConvertToValue(section)) {
+			ibValueMetaObjectRecordData* data = nullptr;
+			if (!section->GetParent()->ConvertToValue(data))
+				return false;
+			const ibValuePtr<ibValueRecordDataObject> object = data->CreateRecordDataObjectValue();
+			if (!object || !AddLine(object->GetTableByMetaID(section->GetMetaID()), into))
+				return false;
+			into.object = object;
+			into.holder.m_source = object;   // …and the header above the row, for a link that names it
+			into.write = [object, section, line = into.line](const ibValueMetaObjectAttributeBase* neighbour, const ibValue& value) {
+				ibValueModel::ibValueModelReturnLine* row = nullptr;
+				if (neighbour->GetParent() == section && line.ConvertToValue(row))
+					return row->SetValueByMetaID(neighbour->GetMetaID(), value);
+				return object->SetValueByMetaID(neighbour->GetMetaID(), value);
+			};
+			return true;
+		}
+
+		ibValueMetaObjectRegisterData* reg = nullptr;
+		if (owner->ConvertToValue(reg)) {
+			if (const ibValuePtr<ibValueRecordManagerObject> record = reg->CreateRecordManagerObjectValue()) {
+				into.object = record;
+				into.holder = ibChoiceHolder(record);
+				into.write = [record](const ibValueMetaObjectAttributeBase* neighbour, const ibValue& value) {
+					return record->SetValueByMetaID(neighbour->GetMetaID(), value);
+				};
+				return true;
+			}
+			const ibValuePtr<ibValueRecordSetObject> set = reg->CreateRecordSetObjectValue();
+			if (!set || !AddLine(set, into))
+				return false;
+			into.object = set;
+			into.write = [line = into.line](const ibValueMetaObjectAttributeBase* neighbour, const ibValue& value) {
+				ibValueModel::ibValueModelReturnLine* row = nullptr;
+				return line.ConvertToValue(row) && row->SetValueByMetaID(neighbour->GetMetaID(), value);
+			};
+			return true;
+		}
+
+		ibValueMetaObjectRecordData* data = nullptr;
+		if (owner->ConvertToValue(data)) {
+			const ibValuePtr<ibValueRecordDataObject> object = data->CreateRecordDataObjectValue();
+			if (!object)
+				return false;
+			into.object = object;
+			into.holder = ibChoiceHolder(object);
+			into.write = [object](const ibValueMetaObjectAttributeBase* neighbour, const ibValue& value) {
+				return object->SetValueByMetaID(neighbour->GetMetaID(), value);
+			};
+			return true;
+		}
+
+		return false;
+	}
+
+	// A NEIGHBOUR'S VALUE FROM WHAT THE CALLER WROTE. Text is looked for, as a form's field looks for typed
+	// text (FindValue: a reference by code or description, a number or a date read from it); what JSON
+	// cannot say comes packed. Anything else is the empty value.
+	static ibValue ValueOf(const ibMetaData* metaData, const ibValueMetaObjectAttributeBase* neighbour,
+		const ibDataNode& values, const wxString& name)
+	{
+		if (const ibDataNode* packed = values.FindChild(name))
+			return metaData->Deserialize(*packed);
+
+		const ibDataValue* said = values.FindField(name);
+		if (said == nullptr)
+			return ibValue();
+
+		switch (said->Kind()) {
+			case ibDataKind::Bool:   return ibValue(said->AsBool());
+			case ibDataKind::Number: return ibValue(said->AsNumber());
+			case ibDataKind::String: {
+				std::vector<ibValue> found;
+				if (neighbour->AdjustValue().FindValue(said->AsString(), found) && !found.empty())
+					return found.front();
+				return neighbour->AdjustValue(ibValue(said->AsString()));
+			}
+			default: return ibValue();
+		}
+	}
+
+	static wxString Spelled(const ibValue& value)
+	{
+		return wxString::Format(wxT("%s [%s]"), value.GetString(), value.GetClassName());
+	}
+
+public:
+
+	wxString GetName() const override { return wxT("choice_preview"); }
+
+	wxString GetActivity(const ibDataNode& params) const override
+	{
+		return wxString::Format(ibMcpText("choosing into '%s'"), ibMcpNameOf(params));
+	}
+
+	wxString GetDescription() const override
+	{
+		return ibMcpText("RUN a field's choice and say what came out - the check that what metadata_set_choice "
+			"set does what it was meant to. It answers which types the field offers (and whether its link "
+			"settled them), the condition its list opens with - every parameter with the value it took - the "
+			"first rows of that list, and what a new item added in that list is born with.\n"
+			"\n"
+			"The field stands in a NEW record of its owner, made in memory and never written: an object for a "
+			"field of an object, a row of the section for a column, a record of the register for a register's "
+			"field. `values` fills its neighbours first, through the record's own writes - the same ones a "
+			"form's field makes.\n"
+			"\n"
+			"What it does not pass through is a form: how a control finds the record it stands on. Everything "
+			"after that is the road a person's choice takes.");
+	}
+
+	const std::vector<ibMcpArgument>& Arguments() const override
+	{
+		static const std::vector<ibMcpArgument> s_arguments = { ArgId(), ArgValues(), ArgList(), ArgRows() };
+		return s_arguments;
+	}
+
+	bool Call(const ibDataNode& params, ibDataNode& result, wxString& refusal) const override
+	{
+		ibMetaData* metaData = OpenConfiguration(refusal);
+		if (metaData == nullptr)
+			return false;
+
+		ibValueMetaObject* object = ibMcpObjectNamed(params, refusal);
+		if (object == nullptr)
+			return false;
+
+		const ibValueMetaObjectAttributeBase* field = nullptr;
+		ibPreviewRecord at;
+		if (!object->ConvertToValue(field) || !MakeRecord(field, at)) {
+			refusal = wxString::Format(
+				ibMcpText("'%s' is not a field that is chosen into - an attribute, a dimension, a resource or a "
+					"column is."), object->GetName());
+			return false;
+		}
+		result.SetValue(wxT("field"), object->GetName());
+
+		// ---- the neighbours, written first ------------------------------------------------------
+		// Named out of the same list metadata_set_choice names them from, so the two tools spell a
+		// neighbour alike.
+		if (const ibDataNode* values = params.FindChild(ArgValues().Name())) {
+
+			ibPropertyChoiceList sources;
+			if (ibPropertyChoiceParameters* paramsProperty =
+				dynamic_cast<ibPropertyChoiceParameters*>(object->GetProperty(wxT("ChoiceParameters"))))
+				paramsProperty->GetSourceList(sources);
+
+			std::vector<wxString> given;
+			for (const auto& value : values->Fields())
+				given.push_back(value.first);
+			for (const auto& value : values->Properties())
+				given.push_back(value.first);
+
+			for (const wxString& name : given) {
+				wxString offered;
+				const ibMetaID id = Named(sources, name, offered);
+				const ibValueMetaObjectAttributeBase* neighbour = id > 0
+					? metaData->FindAnyObjectByFilter<ibValueMetaObjectAttributeBase>(id, true) : nullptr;
+				if (neighbour == nullptr) {
+					refusal = offered.IsEmpty()
+						? wxString::Format(ibMcpText("'%s' stands beside no other field to fill in."), object->GetName())
+						: wxString::Format(ibMcpText("'%s' is not a field standing beside '%s'. These are: %s."),
+							name, object->GetName(), offered);
+					return false;
+				}
+				const ibValue value = ValueOf(metaData, neighbour, *values, name);
+				if (!at.write(neighbour, value)) {
+					refusal = wxString::Format(ibMcpText("'%s' did not take %s."), name, Spelled(value));
+					return false;
+				}
+			}
+		}
+
+		// ---- the condition, as the control asks for it ------------------------------------------
+		const ibChoiceCondition condition = ibChoiceLinkResolver::Resolve(at.holder, field);
+
+		// ⭐ WHAT A LINK BY TYPE SETTLES, ASKED THE WAY A WRITE ASKS IT. A condition used to carry a
+		// settled type description computed here a second way; it narrowed no list and this report was
+		// its only reader, so it is gone. Bringing an EMPTY value through the link gives a value of
+		// whatever the link settles on, and its class is the answer (2026-09-24).
+		const ibClassID settled = field->GetTypeLink().IsOk()
+			? ibChoiceLinkResolver::Adjust(at.holder, field, ibValue()).GetClassType() : 0;
+
+		std::vector<ibDataValue> types;
+		std::vector<ibClassID> lists;
+		const auto offer = [&lists](const ibClassID& list) {
+			if (std::find(lists.begin(), lists.end(), list) == lists.end())
+				lists.push_back(list);
+		};
+		for (const ibClassID& clsid : field->GetTypeValueDesc().GetClsidList()) {
+			if (settled != 0 && clsid != settled)
+				continue;   // the link has decided this field's type; the rest is not on offer
+			types.push_back(ibDataValue::String(metaData->GetNameObjectFromID(clsid)));
+			// A reference opens its list; an "any" — CatalogRef, AnyRef — any list of its facade, every reference
+			// its bits admit (clsid_admits), as the picker offers them: nothing opens "a CatalogRef".
+			if (!IsReference(clsid))
+				continue;
+			if (!clsid_is_any(clsid)) {
+				offer(clsid);
+				continue;
+			}
+			for (const ibCtorMetaValueType* member : metaData->GetListCtorsByType(ibCtorObjectMetaType::ibCtorObjectMetaType_Reference))
+				if (clsid_admits(clsid, member->GetClassType()))
+					offer(member->GetClassType());
+		}
+		result.AddField(wxT("types"), ibDataValue::Array(types));
+		result.SetValue(wxT("settled_by_link"), settled != 0);
+		result.SetValue(wxT("asks_type_first"), types.size() > 1 || lists.size() > 1);
+
+		auto parameters = std::make_shared<ibDataNode>();
+		for (const std::pair<const wxString, ibValue>& parameter : condition.m_parameters)
+			parameters->SetValue(parameter.first, Spelled(parameter.second));
+		result.AddField(wxT("parameters"), ibDataValue::Child(parameters));
+
+		// ---- which list opens -------------------------------------------------------------------
+		ibClassID chosen = lists.size() == 1 ? lists.front() : 0;
+		if (ArgList().Given(params)) {
+			chosen = 0;
+			wxString named;
+			for (const ibClassID& clsid : lists) {
+				const wxString name = metaData->GetNameObjectFromID(clsid);
+				named << (named.IsEmpty() ? wxT("") : wxT(", ")) << name;
+				if (name.IsSameAs(ArgList().Text(params), false))
+					chosen = clsid;
+			}
+			if (chosen == 0) {
+				refusal = named.IsEmpty()
+					? wxString::Format(ibMcpText("'%s' opens no list - it refers to nothing."), object->GetName())
+					: wxString::Format(ibMcpText("'%s' is not a list '%s' opens. It opens: %s."),
+						ArgList().Text(params), object->GetName(), named);
+				return false;
+			}
+		}
+		if (chosen == 0) {
+			result.SetValue(wxT("list"), lists.empty()
+				? ibMcpText("none - the field refers to nothing, so a value is typed in rather than chosen")
+				: ibMcpText("the picker asks which type first - name one as `list` to open it"));
+			return true;
+		}
+
+		const ibCtorMetaValueType* ctor = metaData->GetTypeCtor(chosen);
+		const ibValueMetaObject* target = ctor != nullptr ? ctor->GetMetaObject() : nullptr;
+		ibValueMetaObjectRecordDataRef* reference = nullptr;
+		if (target == nullptr || !target->ConvertToValue(reference)) {
+			refusal = wxString::Format(ibMcpText("'%s' is not a list this configuration can open."),
+				metaData->GetNameObjectFromID(chosen));
+			return false;
+		}
+		result.SetValue(wxT("list"), metaData->GetNameObjectFromID(chosen));
+
+		// ⭐ THE LIST A CHOICE FORM OPENS — its creator, handed the request the control hands a form. The
+		// narrowing is the creator's (a filter per parameter); a hierarchy's tree is not, so the rows come
+		// flat.
+		const ibCreateRequest create(field->GetSelectMode(), condition);
+		const ibValuePtr<ibValueDynamicList> list(
+			ibCreateList(create, reference->GetQueryable(), nullptr, ibDynamicListView_Choice));
+		ibDataViewItemArray items;
+		list->GetFirstFetch(ibDataViewItem(), ibDataViewItem(),
+			ArgRows().Given(params) ? static_cast<int>(ArgRows().Whole(params)) : 10, items);
+		std::vector<ibDataValue> rows;
+		for (size_t idx = 0; idx < items.size(); idx++)
+			rows.push_back(ibDataValue::String(list->GetItemSelectValue(items[idx]).GetString()));
+		result.AddField(wxT("rows"), ibDataValue::Array(rows));
+
+		// ---- what a new item is born with -------------------------------------------------------
+		ibValueMetaObjectRecordDataMutableRef* creatable = nullptr;
+		if (!condition.m_parameters.empty() && target->ConvertToValue(creatable)) {
+			if (const ibValuePtr<ibValueRecordDataObject> born = creatable->CreateRecordDataObjectValue()) {
+				ibChoiceHolder bornIn(born);
+				ibChoiceLinkResolver::Fill(bornIn, create);
+
+				auto with = std::make_shared<ibDataNode>();
+				for (const std::pair<const wxString, ibValue>& parameter : condition.m_parameters) {
+					const ibValueMetaObjectAttributeBase* filled =
+						creatable->FindAnyObjectByFilter<ibValueMetaObjectAttributeBase>(parameter.first);
+					ibValue value;
+					if (filled != nullptr && born->GetValueByMetaID(filled->GetMetaID(), value))
+						with->SetValue(parameter.first, Spelled(value));
+				}
+				result.AddField(wxT("born_with"), ibDataValue::Child(with));
+			}
+		}
+
+		return true;
+	}
+};
+
+MCP_TOOL_REGISTER(ibMcpToolChoicePreview);
+
+
+//---------------------------------------------------------------------------
 // module_write
 //---------------------------------------------------------------------------
 
@@ -2436,8 +3211,8 @@ MCP_TOOL_REGISTER(ibMcpToolMetadataProperties);
 // register get filled from*. Nothing answered it, so the honest options were to read every object
 // or to guess (measured on this server, 2026-09-02, building a warehouse application blind).
 //
-// ⭐ AND IT IS EXACT WHERE IT MATTERS, because a dynamic type carries the metaID as the BODY of its
-// clsid (clsid.h — `metaID_from_clsid`). A reference to a catalogue is not a NAME stored somewhere:
+// ⭐ AND IT IS EXACT WHERE IT MATTERS, because a dynamic type carries the metaID in the low bits of its
+// clsid (clsid.h — `clsid_metaID`). A reference to a catalogue is not a NAME stored somewhere:
 // it is a number, so the type half of this answer is not a search at all. That is what makes the
 // difference between "these mention the word" and "these would stop compiling".
 //
@@ -2458,11 +3233,13 @@ public:
 	wxString GetDescription() const override
 	{
 		return ibMcpText("WHO POINTS AT THIS OBJECT - the backward question, which nothing else here "
-			"answers. Two kinds of answer, kept apart: `types` are attributes, dimensions and "
+			"answers. Three kinds of answer, kept apart: `types` are attributes, dimensions and "
 			"resources DECLARED of this type, which is exact (a reference carries the object's id, "
-			"not its name) and is what would break if it went; `mentions` are modules and composer "
-			"queries naming it as a whole word, which is a search and can find a comment. Ask it "
-			"before renaming or deleting anything, and to learn how a base you did not build hangs "
+			"not its name) and is what would break if it went; `links` are fields whose CHOICE names "
+			"it - a link by type, a choice parameter, or the field a parameter takes its value from - "
+			"exact too, and removed it leaves that row narrowing nothing; `mentions` are modules and "
+			"composer queries naming it as a whole word, which is a search and can find a comment. Ask "
+			"it before renaming or deleting anything, and to learn how a base you did not build hangs "
 			"together.");
 	}
 
@@ -2485,7 +3262,25 @@ public:
 		const ibClassID target = (ibClassID)object->GetMetaID();
 		const wxString name = object->GetName();
 
-		std::vector<ibDataValue> types, mentions;
+		// Does this id name the object asked about, or something standing under it — a catalog's field goes
+		// where the catalog goes.
+		const auto namesIt = [metaData, object](ibMetaID id) {
+			for (const ibValueMetaObject* at = id > 0 ? metaData->FindAnyObjectByFilter(id, true) : nullptr;
+				 at != nullptr; at = at->GetParent()) {
+				if (at == object)
+					return true;
+			}
+			return false;
+		};
+		const auto pathNamesIt = [&namesIt](const ibSourceDescription& path) {
+			for (const ibSourceHop& hop : path.m_listSource) {
+				if (namesIt(hop.m_id))
+					return true;
+			}
+			return false;
+		};
+
+		std::vector<ibDataValue> types, mentions, links;
 
 		for (ibValueMetaObject* other : metaData->GetAnyArrayObject<ibValueMetaObject>(true)) {
 
@@ -2523,7 +3318,7 @@ public:
 					if (clsid_kind(clsid) < ibClassKind_Reference)
 						continue;
 
-					if (metaID_from_clsid(clsid) != target)
+					if (clsid_metaID(clsid) != target)
 						continue;
 
 					std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
@@ -2533,6 +3328,32 @@ public:
 
 					types.push_back(ibDataValue::Child(entry));
 					break;
+				}
+
+				// --- NAMED BY A CHOICE. A link by type and a parameter row hold fields by id, at either end
+				// of the row, and neither half here looked at them: asked about the contracts' `Export`, this
+				// answered "remove it freely" while a document's choice of contracts narrowed by it
+				// (2026-09-24). Removed, such a row narrows nothing — which is worth knowing BEFORE.
+				const auto say = [&](const wxString& as, const wxString& parameter) {
+					std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
+					ibMcpSayObject(other, *entry);
+					if (const ibValueMetaObject* owner = other->GetParent())
+						entry->SetValue(wxT("in"), owner->GetName());
+					entry->SetValue(wxT("as"), as);
+					if (!parameter.IsEmpty())
+						entry->SetValue(wxT("parameter"), parameter);
+					links.push_back(ibDataValue::Child(entry));
+				};
+
+				if (pathNamesIt(column->GetTypeLink().m_source))
+					say(ibMcpText("link by type"), wxString());
+
+				for (const ibChoiceParameterRowDescription& row : column->GetChoiceParameters().m_rows) {
+					const wxString parameter = ibChoiceTargetFieldName(column, row.m_parameter);
+					if (namesIt(row.m_parameter))
+						say(ibMcpText("choice parameter"), parameter);
+					else if (pathNamesIt(row.m_source))
+						say(ibMcpText("value of a choice parameter"), parameter);
 				}
 			}
 
@@ -2573,15 +3394,16 @@ public:
 		ibMcpSayObject(object, result);
 		result.AddField(wxT("types"), ibDataValue::Array(types));
 		result.AddField(wxT("mentions"), ibDataValue::Array(mentions));
+		result.AddField(wxT("links"), ibDataValue::Array(links));
 
 		// ⭐ NOTHING IS AN ANSWER, AND IT IS THE ONE WORTH SAYING OUT LOUD: this object can be
-		// renamed or removed without anything else noticing. An empty pair of lists says that only
-		// to a reader who already knows what the lists mean.
-		if (types.empty() && mentions.empty())
+		// renamed or removed without anything else noticing. Empty lists say that only to a reader who
+		// already knows what the lists mean.
+		if (types.empty() && mentions.empty() && links.empty())
 			result.SetValue(wxT("note"), wxString::Format(
-				ibMcpText("Nothing in this configuration declares a field of type '%s' or names it in "
-				  "a script or a query. It can be renamed or removed freely - and if it was meant "
-				  "to be in use, that is the finding."), name));
+				ibMcpText("Nothing in this configuration declares a field of type '%s', names it in "
+				  "a script or a query, or chooses by it. It can be renamed or removed freely - and if "
+				  "it was meant to be in use, that is the finding."), name));
 
 		return true;
 	}

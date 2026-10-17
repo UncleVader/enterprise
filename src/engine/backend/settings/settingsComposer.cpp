@@ -2,9 +2,8 @@
 
 #include "backend/appData.h"                        // the session's user + GetSettingsStorage
 #include "backend/composition/dataComposer.h"       // the settings themselves
-#include "backend/compositionDescription.h"         // ibSettingsDescriptionMemory — the pair that writes them
-#include "backend/serialize/dataBuilder.h"          // ibDataNode
-#include "backend/guid.h"                           // a new setting's identity
+#include "backend/backend_composition.h"         // ibBackendSettingsDescriptionMemory — the pair that writes them
+#include "core/serialize/dataBuilder.h"          // ibDataNode
 
 #include <algorithm>
 
@@ -42,7 +41,7 @@ ibSettingsKey ibUserSettingsKey(ibSettingsCategory category, const ibGuid& objec
 ibGuid ibSaveComposerSettings(ibSettingsCategory category, const ibGuid& objectKey,
                                 const ibGuid& id, const wxString& name, const ibDataComposer& composer, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid())
 		return wxNullGuid;
 
@@ -69,7 +68,7 @@ ibGuid ibSaveComposerSettings(ibSettingsCategory category, const ibGuid& objectK
 bool ibRestoreComposerSettings(ibSettingsCategory category, const ibGuid& objectKey,
                                const ibGuid& id, ibDataComposer& composer, const ibMetaData* metaData, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid() || !id.isValid())
 		return false;
 
@@ -82,7 +81,7 @@ bool ibRestoreComposerSettings(ibSettingsCategory category, const ibGuid& object
 		return false;
 
 	ibSettingsDescription settings;
-	if (!ibSettingsDescriptionMemory::ReadNode(*settingsNode, settings, metaData))
+	if (!ibBackendSettingsDescriptionMemory::ReadNode(*settingsNode, settings, metaData))
 		return false;
 
 	// …AND THAT IS THE WHOLE ACT — the one door there is, the same one the variant picker and the
@@ -95,7 +94,7 @@ std::vector<ibComposerSettingsEntry> ibListComposerSettings(ibSettingsCategory c
 {
 	std::vector<ibComposerSettingsEntry> entries;
 
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid())
 		return entries;
 
@@ -125,7 +124,7 @@ std::vector<ibComposerSettingsEntry> ibListComposerSettings(ibSettingsCategory c
 bool ibRenameComposerSettings(ibSettingsCategory category, const ibGuid& objectKey,
                               const ibGuid& id, const wxString& newName, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid() || !id.isValid() || newName.IsEmpty())
 		return false;
 
@@ -151,7 +150,7 @@ bool ibRenameComposerSettings(ibSettingsCategory category, const ibGuid& objectK
 
 bool ibRemoveComposerSettings(ibSettingsCategory category, const ibGuid& objectKey, const ibGuid& id, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid() || !id.isValid())
 		return false;
 
@@ -172,7 +171,7 @@ bool ibRemoveComposerSettings(ibSettingsCategory category, const ibGuid& objectK
 
 bool ibSetDefaultComposerSettings(const ibGuid& objectKey, const ibGuid& id, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid())
 		return false;
 
@@ -193,7 +192,7 @@ bool ibSetDefaultComposerSettings(const ibGuid& objectKey, const ibGuid& id, con
 
 ibGuid ibGetDefaultComposerSettings(const ibGuid& objectKey, const ibUserInfo* user)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr || !objectKey.isValid())
 		return wxNullGuid;
 

@@ -23,7 +23,7 @@
 // See docs/private/ownership-authority.md. Nothing on THIS side changed — every tier below the L3 door
 // still meets a plain ibBackendQueryColumn and knows nothing about where it came from.
 
-#include "backend/typeDescription.h"    // ibTypeDescription (the column's L3 type)
+#include "core/description/typeDescription.h"    // ibTypeDescription (the column's L3 type)
 #include "backend/databaseLayer/columnType.h"   // ibColumnType — the canonical type a column's field declares
 
 // ⚠ NOT <wx/icon.h> — FORWARD-DECLARED. backend.dll is GUI-free (CLAUDE.md), and this header is
@@ -31,6 +31,8 @@
 // everything behind them. A virtual returning wxIcon compiles against an incomplete type; only the
 // two files that DEFINE such a body need the real header, and they already include it.
 class wxIcon;
+
+#include "core/query/queryBalanceRole.h"      // ibBalanceRole — what a column is in a balance (GetBalanceRole)
 
 #include <limits>   // numeric_limits — the ceiling a composed id may not pass (CanComposeSyntheticId)
 #include <memory>   // enable_shared_from_this — a column carries its own control block (see below)
@@ -146,6 +148,13 @@ public:
 	// gates on THIS instead of poking the metaobject.
 	virtual bool IsAllowed() const { return true; }
 
+	// Is the column AVAILABLE in this base — a functional option's question, and NOT IsAllowed. A column
+	// that is not allowed is not there; one that is not available is there, read and written like any
+	// other, and only the interface does not offer it (functionalOptionGate.h). A plain column always is;
+	// a metaobject attribute asks its metaobject. Last in the class: a virtual added in the middle moves
+	// every slot after it for whatever was built before it.
+	virtual bool IsAvailable() const { return true; }
+
 	// THE COLUMN'S OWN PICTURE — asked of the column, never deduced by the reader. The default is
 	// the plain ATTRIBUTE picture from the icon library, so every column is dressed even when it
 	// stands behind no metaobject (a view's column, a temp table's); a column that IS a metaobject
@@ -156,6 +165,16 @@ public:
 	// Body in metaAttributeObject_res.cpp, next to the icon it returns: this header must not pull
 	// the metadata tree in (the attribute metaobject includes THIS file).
 	virtual wxIcon GetColumnIcon() const;
+
+	// …AND WHAT IT IS IN A BALANCE (ibBalanceRole) — a fact about the column a person is shown, like its
+	// picture, so it is asked here, where the field lists see a column. Answered by the view that published
+	// it; an ordinary column is an ordinary value. Last in the class, for the reason IsAvailable gives.
+	virtual ibBalanceRole GetBalanceRole() const { return ibBalanceRole::None; }
+	// …and, for a PERIOD, its SENIORITY — the smaller is compared first; what tells two readings of one key apart
+	// in time. A query's own `ROLE PERIOD n` counts first; a source orders its own after those (ibSourcePeriodRank:
+	// the period, then a recorder, then a line number); 0 = unranked, after all of them in the order read. A
+	// select's own order cannot say it — a report may read the recorder before the period.
+	virtual int GetPeriodRank() const { return 0; }
 };
 
 // ⭐⭐ A COLUMN CARRIES ITS OWN CONTROL BLOCK, so nobody ever has to invent a second one.

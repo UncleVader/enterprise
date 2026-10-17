@@ -7,29 +7,34 @@
 //*                                          RunStack                                             *
 //*************************************************************************************************
 
+void ibRunStack::EnterBlock(unsigned int block)
+{
+	while (m_blocks.size() <= block)
+		m_blocks.emplace_back(new ibBlock());
+	m_currentBlock = block;
+	m_curVals      = m_blocks[block]->m_vals.get();
+	m_curRefs      = m_blocks[block]->m_refs.get();
+}
+
 bool ibRunStack::Reserve(const long count, ibRun& outRun)
 {
 	if (count < 0 || count > kBlockSlots)
 		return false;                      // wider than a block — the caller owns it instead
 
-	if (m_blocks.empty())
-		m_blocks.emplace_back(new ibBlock());
+	if (m_curVals == nullptr)
+		EnterBlock(m_currentBlock);        // the first reservation, or the first after the number moved
 
 	// Not enough room left in the block being filled: move to the next one WHOLE
 	// rather than splitting a frame across two. A frame's slots have to be
 	// contiguous — the interpreter indexes them as an array — and the tail left
 	// behind is at most one frame's worth, which the next Release reclaims anyway.
 	if (m_top + count > kBlockSlots) {
-		m_currentBlock++;
-		if (m_currentBlock >= m_blocks.size())
-			m_blocks.emplace_back(new ibBlock());
+		EnterBlock(m_currentBlock + 1);
 		m_top = 0;
 	}
 
-	ibBlock& block = *m_blocks[m_currentBlock];
-
-	outRun.m_vals  = block.m_vals.get() + m_top;
-	outRun.m_refs  = block.m_refs.get() + m_top;
+	outRun.m_vals  = m_curVals + m_top;
+	outRun.m_refs  = m_curRefs + m_top;
 	outRun.m_block = m_currentBlock;
 	outRun.m_mark  = (unsigned int)m_top;
 
@@ -51,8 +56,12 @@ void ibRunStack::Release(const ibRun& run, const long count)
 	for (long i = 0; i < count; i++)
 		run.m_vals[i].Reset();
 
-	m_currentBlock = run.m_block;
-	m_top          = (long)run.m_mark;
+	if (run.m_block != m_currentBlock) {
+		m_currentBlock = run.m_block;
+		m_curVals      = nullptr;              // looked up again by the next Reserve
+		m_curRefs      = nullptr;
+	}
+	m_top = (long)run.m_mark;
 }
 
 //*************************************************************************************************
@@ -134,6 +143,55 @@ void ibRunContextSmall::DestroyLocals()
 ibRunContext::~ibRunContext()
 {
 	DestroyLocals();
+}
+
+//*************************************************************************************************
+//*                                     RunCaptureContext                                         *
+//*************************************************************************************************
+
+ibRunCaptureContext::~ibRunCaptureContext()
+{
+	m_destroying = true;
+	// Our own slots go first, and a lambda living in one of them dies here and lets go of us —
+	// which the flag above absorbs. Letting go of the frames THAT lambda held is then its own
+	// business, so the chain comes apart from the inside out without this frame knowing the shape
+	// of it. DestroyLocals is idempotent by design (see its note), so the base destructor running
+	// it again is fine.
+	DestroyLocals();
+}
+
+void ibRunCaptureContext::DecrRef()
+{
+	if (m_destroying)
+		return;
+
+	wxASSERT_MSG(m_refCount.load(std::memory_order_relaxed) > 0, "invalid frame reference count");
+	if (m_refCount.fetch_sub(1, std::memory_order_acq_rel) == 1)
+		delete this;
+}
+
+void ibRunCaptureContext::ReleaseTemporarySlots()
+{
+	if (m_currentFunction == nullptr || m_pLocVars == nullptr)
+		return;
+
+	// ⭐ THE BYTECODE ALREADY SAYS WHICH SLOTS ARE TEMPORARY, by leaving them out: compileCode.cpp
+	// skips `m_bTempVar` entries when it writes m_listLocals, so a slot that no entry claims — and
+	// is not a parameter — is one the compiler minted for an expression. Nothing is matched by name.
+	for (long slot = m_lParamCount; slot < m_lVarCount; slot++) {
+
+		if (m_pLocVars[slot].m_bReadOnly)
+			continue;
+
+		bool named = false;
+		for (const ibByteCode::ibByteCodeVarInfo& local : m_currentFunction->m_listLocals) {
+			if (local.m_slotIndex == slot) { named = true; break; }
+		}
+		if (named)
+			continue;
+
+		m_pLocVars[slot].Reset();
+	}
 }
 
 const ibByteCode* ibRunContext::GetByteCode() const

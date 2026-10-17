@@ -15,7 +15,7 @@ class BACKEND_API ibValueModuleRuntimeManagerExternalDataProcessor : public ibVa
 	virtual std::map<wxString, ibValue*>& GetGlobalVariables();
 
 	//metaData and external variant
-	ibValueModuleRuntimeManagerExternalDataProcessor(ibMetaData* metaData = nullptr, ibValueMetaObjectDataProcessor* metaObject = nullptr);
+	ibValueModuleRuntimeManagerExternalDataProcessor(std::shared_ptr<ibMetaData> metaData = nullptr, ibValueMetaObjectDataProcessor* metaObject = nullptr);
 	virtual ~ibValueModuleRuntimeManagerExternalDataProcessor();
 
 	//return external module
@@ -43,7 +43,7 @@ class BACKEND_API ibValueModuleRuntimeManagerExternalDataProcessor : public ibVa
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);        //setting attribute
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
 
-	virtual long FindProp(const wxString& strName) const;
+	virtual long FindProp(const ibString& strName) const override;
 
 private:
 	ibValueRecordDataObjectDataProcessor* m_objectValue;
@@ -59,7 +59,7 @@ class BACKEND_API ibValueModuleRuntimeManagerExternalReport : public ibValueModu
 	virtual std::map<wxString, ibValue*>& GetGlobalVariables();
 
 	//metaData and external variant
-	ibValueModuleRuntimeManagerExternalReport(ibMetaData* metaData = nullptr, ibValueMetaObjectReport* metaObject = nullptr);
+	ibValueModuleRuntimeManagerExternalReport(std::shared_ptr<ibMetaData> metaData = nullptr, ibValueMetaObjectReport* metaObject = nullptr);
 	virtual ~ibValueModuleRuntimeManagerExternalReport();
 
 	//return external module
@@ -86,7 +86,7 @@ class BACKEND_API ibValueModuleRuntimeManagerExternalReport : public ibValueModu
 
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);        //setting attribute
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
-	virtual long FindProp(const wxString& strName) const;
+	virtual long FindProp(const ibString& strName) const override;
 
 private:
 	ibValueRecordDataObjectReport* m_objectValue;

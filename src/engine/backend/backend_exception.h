@@ -6,92 +6,10 @@
 #include <vector>
 
 #include "backend_core.h"   // ibEvalMode — which kind of evaluation a session is inside
-
-enum { //Error message numbers
-	ERROR_USAGE = 0,
-	ERROR_FILE_READ,
-	ERROR_FILE_OPEN,
-	ERROR_ASSERT,
-	ERROR_ASSERT_VALID,
-	ERROR_SYS1,
-	ERROR_TRANSLATE_BYTE,
-	ERROR_TRANSLATE_BOOLEAN,
-	ERROR_TRANSLATE_WORD,
-	ERROR_TRANSLATE_NUMBER,
-	ERROR_TRANSLATE_STRING,
-	ERROR_TRANSLATE_DATE,
-	ERROR_IDENTIFIER_DUPLICATE,
-	ERROR_LABEL_DEFINE,
-	ERROR_KEYWORD_DEFINE,
-	ERROR_CODE_DEFINE,
-	ERROR_IDENTIFIER_DEFINE,
-	ERROR_IDENTIFIER_REGION,
-	ERROR_CODE,
-	ERROR_DELIMETER,
-	ERROR_FUNC_DELIMETER,
-	ERROR_FUNC_DEFINE,
-	ERROR_RETURN,
-	ERROR_CONST_DEFINE,
-	ERROR_ENDFUNC_DEFINE,
-	ERROR_FILE_WRITE,
-	ERROR_EXPRESSION,
-	ERROR_KEYWORD,
-	ERROR_IDENTIFIER_NOT_FOUND,
-	ERROR_USE_BREAK,
-	ERROR_USE_CONTINUE,
-	ERROR_USE_RETURN,
-	ERROR_USE_BLOCK,
-	ERROR_EXPRESSION_REQUIRE,
-	ERROR_CALL_FUNCTION,
-	ERROR_DEF_VARIABLE,
-	ERROR_DEF_FUNCTION,
-	ERROR_MANY_PARAMS,
-	ERROR_FEW_PARAMS,
-	ERROR_VAR_NOT_FOUND,
-	ERROR_END_PROGRAM,
-	ERROR_ONLY_FUNCTION,
-	ERROR_USE_PROCEDURE_AS_FUNCTION,
-	ERROR_ARRAY_SIZE_CONST,
-	ERROR_DUBLICATE_IMPORT,
-	ERROR_MODULE_NOT_FOUND,
-	ERROR_USE_IMPORT,
-	ERROR_USE_ENDDEF,
-	ERROR_USE_ENDREGION,
-	ERROR_CALL_CONSTRUCTOR,
-	ERROR_TYPE_DEF,
-	ERROR_BAD_TYPE,
-	ERROR_BAD_TYPE_EXPRESSION,
-	ERROR_NUMBER_TYPE,
-	ERROR_BAD_TYPE_EXPRESSION_B,
-	ERROR_BAD_TYPE_EXPRESSION_N,
-	ERROR_BAD_TYPE_EXPRESSION_S,
-	ERROR_BAD_TYPE_EXPRESSION_D,
-	ERROR_TYPE_OPERATION,
-
-	// --- runtime (the interpreting loop) -----------------------------------
-	// Everything above is raised by the COMPILER; these are raised by
-	// ibProcUnit::Execute. They live in the same table on purpose: the texts
-	// were previously spelled inline as _("…") at ~20 sites inside the loop,
-	// which put wxString + wxFormatString construction into the hot function
-	// (see docs/private/runtime-perf.md §5). A code is a constant at the call site.
-	// Keep in lock-step with gs_listErrorString in backend_exception.cpp.
-	ERROR_DIVIDE_BY_ZERO,
-	ERROR_ARRAY_SET,
-	ERROR_ARRAY_GET,
-	ERROR_PROP_NOT_WRITABLE,
-	ERROR_PROP_NOT_READABLE,
-	ERROR_PROP_SCOPE_LOCAL,
-	ERROR_MEMBER_NOT_AGGREGATE,
-	ERROR_MEMBER_NOT_FOUND,
-	ERROR_MEMBER_IS_GLOBAL_FUNCTION,
-
-	// --- compiler, appended after the runtime block so no code above changes its number ------
-	ERROR_LINQ_AFTER_UNNAMED_GROUP,
-
-	LastError
-};
+#include "core/compiler/codeDef.h"   // the error message numbers — the translator in the core raises them too
 
 #include "backend/backend.h"
+#include "core/exception.h"   // ibCoreException — the refusal this one is, and the one a handler that only tells catches
 
 // Forward-declared rather than included: this is a wide header, and the failure
 // RECORD (diagnostic.h) is only named here, never used by value.
@@ -110,9 +28,8 @@ enum class ibDiagnosticKind;
 // which is the order C++ requires anyway — derived before base. What it buys is that the places
 // that catch only the standard base now SEE the description instead of losing it.
 //
-// what() returns UTF-8 and is prepared at construction: it must be noexcept, so it cannot be the
-// place where the string is built.
-class BACKEND_API ibBackendException : public std::exception {
+// The description and what() are the core's refusal's (ibCoreException), which this one is.
+class BACKEND_API ibBackendException : public ibCoreException {
 protected:
 
 	class wxFormatErrorString : public wxFormatString {
@@ -154,20 +71,8 @@ public:
 	// ibBackendCoreException / ibBackendInterruptException / ibBackendAccessException.
 	virtual ~ibBackendException() = default;
 
-	// THE STANDARD DOOR — same text as GetErrorDescription(), in UTF-8, built once in the
-	// constructor because this override must not throw.
-	const char* what() const noexcept override;
-
 	WX_DEFINE_VARARG_FUNC(static wxString, Format, 1, (const wxFormatErrorString&),
 		DoFormatWchar, DoFormatUtf8);
-
-	// Out-of-line — BACKEND_API class + inline body decays to
-	// dllimport-only in consumer TUs. When the call sits inside a
-	// lambda (e.g. cpp-httplib's set_exception_handler in wes/main.cpp)
-	// MSVC can decline to inline and then the linker hunts the symbol
-	// in backend.dll's export table, where the inline never got
-	// emitted. Defining the body in .cpp guarantees the export.
-	const wxString GetErrorDescription() const;
 
 	// ⭐ HAS THE PERSON ALREADY BEEN TOLD? Nothing new is remembered here — m_errorHandled is set
 	// the moment ProcessError reports, and rides the rethrow. It was simply never READABLE from
@@ -285,14 +190,6 @@ private:
 #endif
 
 	mutable bool m_errorHandled;
-
-	// THE DESCRIPTION, HELD ONCE — as UTF-8 bytes, because that is the representation the
-	// narrower of its two doors can hand out: what() returns a `const char*` into storage that
-	// must outlive the call, and a wxString holds UTF-16 here, so asking it for UTF-8 yields a
-	// temporary buffer that dies on return. Keeping the wxString as well would mean two copies
-	// of one sentence, kept in step by hand; GetErrorDescription() builds its wxString from these
-	// bytes instead, and an exception is never on a hot path.
-	std::string m_errorDescriptionUtf8;
 };
 
 #pragma region _exception_h_
@@ -325,7 +222,7 @@ public:
 // wrong and callers need to tell it apart from everything else that can fail in the same line.
 //
 // USING A FORM ON THE SERVER IS NOT ALLOWED, and this exception is how that rule is enforced rather
-// than worked around. A server (a background job, the daemon, codeRunner, a web-server worker) has
+// than worked around. A server (a background job, appserver, codeRunner, a web-server worker) has
 // no windows; code that reaches for one there has asked the wrong process, and softening the refusal
 // to a silent null would let form-driven logic run half-done and answer DIFFERENTLY on the server
 // than on the client — the failure nobody audits (Max, 2026-09-06: *"you have no right to use forms

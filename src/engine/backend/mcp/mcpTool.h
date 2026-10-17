@@ -29,13 +29,15 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "backend/backend_core.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 
 #include <functional>   // an argument may carry a function that writes its shape
 #include <set>          // one object link per id, across the three texts an object carries
 #include <vector>
 
 #include <wx/string.h>
+
+class ibApplicationInstance;   // the base a description is about (ibMcpDescribePlatform)
 
 // ⭐⭐ TEXT THAT GOES DOWN THE WIRE — English, never translated, and a `wxString` rather than a bare
 // literal so it can be stored, formatted and compared like any other.
@@ -470,6 +472,15 @@ BACKEND_API void ibMcpSayProperties(const class ibPropertyObject* object, ibData
 // it arrived — and neither hands over the stored template, which is what `GetNodeValue` would give.
 BACKEND_API void ibMcpSayCaption(const class ibPropertyTString* caption, ibDataNode& into);
 
+// …AND A FIELD'S CHOICE, BY NAMES: `link` and `governed_type` for the link by type, one field per parameter
+// row ({"Owner": {"from": "Counterparty", "on_change": "clear"}}) for the parameters — the shape
+// metadata_set_choice takes back. The answer to that write says both; the walk above says the parameters
+// (the link reads there as the enumeration of neighbours it is). Named in the inspector's own words.
+BACKEND_API void ibMcpSayChoiceLink(const class ibPropertyObject* field,
+	const struct ibChoiceTypeLinkDescription& linkDesc, ibDataNode& into);
+BACKEND_API void ibMcpSayChoiceParameters(const class ibPropertyObject* field,
+	const struct ibChoiceParametersDescription& paramsDesc, ibDataNode& into);
+
 // ⭐ WHAT THE OBJECT ITSELF SAYS AGAINST BEING STORED — from BOTH places it may
 // say it. A metaobject reports "not ready" either into the restructuring ledger
 // or through the message pane, and which one it picks is a matter of when that
@@ -491,16 +502,6 @@ BACKEND_API void ibMcpSayCaption(const class ibPropertyTString* caption, ibDataN
 //
 // `params` supplies "value"; `result` is filled with what the property now holds,
 // read back rather than echoed. False means refused, with words in `refusal`.
-// ⭐ THE CLOSING HALF OF THE INSPECTOR'S SEQUENCE, for a caller that had to set the value through
-// the property's OWN typed setter — a binding takes an ibMetaDescription, which no wxVariant a
-// caller can build will carry.
-//
-// The telling still belongs in one place: the owner learns what changed and the property's real
-// owner learns a child changed, exactly as ibObjectInspector::ModifyProperty does it. Without this
-// the value lands and the object never reacts — and for a BINDING that means the far end of the
-// relationship is never updated.
-BACKEND_API void ibMcpNotifyChanged(class ibProperty* property, const wxVariant& oldValue);
-
 // ⭐ THE WHOLE SEQUENCE, IN ONE CALL — ask the owner, set, tell the owner, tell the property's real
 // owner. Exported because it stopped being one tool's private business: every verb that places a
 // value now goes through it (a choice, a type description, a caption's language cell, a register
@@ -554,7 +555,7 @@ BACKEND_API std::vector<wxString> ibMcpComplaints(class ibValueMetaObject* objec
 //
 // One function, two readers: the orientation renders it into prose, `platform_state` returns it as
 // it stands. Two places computing the dialect would agree until the day they did not.
-BACKEND_API void ibMcpDescribePlatform(ibDataNode& into);
+BACKEND_API void ibMcpDescribePlatform(const ibApplicationInstance* applicationInstance, ibDataNode& into);
 
 // ⭐ A DETAIL IS SHOWN, NOT DUMPED. The window is a running log: a five-hundred-line module pasted
 // into it scrolls everything else out of reach, and the reader loses the thing they were watching
@@ -565,6 +566,16 @@ BACKEND_API void ibMcpDescribePlatform(ibDataNode& into);
 // ```fence``` shows up as backticks around the thing it was meant to frame. `language` is kept
 // because it is a true statement about the text and a real renderer would want it — it simply has
 // no reader today, and inventing one on screen was worse than having none.
+// ⭐ A PICTURE'S ID LEAVES THIS DOOR AS DIGITS IN A STRING. An engine picture's id fills sixty-four bits
+// and a JSON number on the far side is a double, so it comes back rounded and names no picture at all
+// (2026-09-22: `Print` read as …600 for …564). The conversion belongs HERE, at the door: the shape a
+// picture is stored in keeps a number (pictureDescription.cpp), because storage is not a transport and a
+// door's difficulty has no business in every saved configuration. One on the way out, one on the way
+// back: what this door sends as text it takes back as text, and the platform on either side of it sees
+// nothing but a number.
+BACKEND_API void ibMcpPictureIdAsText(class ibDataValue& shape);
+BACKEND_API void ibMcpPictureIdAsNumber(class ibDataValue& shape);
+
 BACKEND_API wxString ibMcpFencedExcerpt(const wxString& text, const wxString& language,
 	size_t maxLines = 40);
 

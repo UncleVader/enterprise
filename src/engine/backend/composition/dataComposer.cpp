@@ -9,13 +9,16 @@
 #include "backend/query/queryableFactory.h"   // the source factory — the column dictionary
 #include "backend/query/dataQueryBuilder.h"   // ibDataQueryResult / ibSelectKind
 #include "backend/query/querySelector.h"      // ibSelector — the TOTALS pre-order walk
-#include "backend/appData.h"                  // ibApplicationData::GetQueryableFactory
+#include "backend/appData.h"                  // ibApplicationInstance::GetQueryableFactory
 #include "backend/metaData.h"                 // ibMetaData::GetSourceFactory — resolve by-name sources per-config
 #include "backend/backend_exception.h"        // ibBackendCoreException
 #include "backend/query/queryReadState.h"  // ibQueryReadState — one build, one state of the data
 #include "backend/query/queryRender.h"        // ibQueryColumnFromPath — a dotted path becomes a column, once
-#include "backend/query/queryKeywords.h"      // ibQueryKeywordText — a grouping line is written in the query's own words
+#include "core/query/queryKeywords.h"         // ibQueryKeywordText — a grouping line is written in the query's own words
 #include "backend/query/queryLexer.h"         // ibQueryLexer::IsIdentifier — what a NAME is, asked of the tier that defines it
+#include "backend/query/queryConstructorModel.h"   // ibQueryFieldsOfText / WalkPath — the author's fields and a path's walk, as the pickers read them
+#include "backend/functionalOption/functionalOptionGate.h"   // AnyUnavailable, AsApplication — a run shows what the base uses
+#include "backend/system/value/valueType.h"   // ibValueTypeDescription::AdjustValue — the empty value of a type, for «filled»
 
 //////////////////////////////////////////////////////////////////////
 // sources
@@ -39,6 +42,7 @@ ibDataDBComposer& ibDataDBComposer::FromSource(const wxString& ns, const wxStrin
 	m_directSources.clear();   // a transient registry belongs to ONE source set — reset it in lock-step
 	m_prepared.Forget();
 	m_sources.push_back({ ns, name });
+	RefreshSourceFields();
 	return *this;
 }
 
@@ -68,57 +72,151 @@ ibDataDBComposer& ibDataDBComposer::FromSource(const ibBackendQueryable* queryab
 	const wxString name = wxString::Format(wxT("t%u"), static_cast<unsigned int>(m_directSources.size()));
 	m_directSources[name] = queryable;
 	m_sources.push_back({ s_tempSourceNamespace, name });
+	RefreshSourceFields();
 	return *this;
 }
 
 ibDataDBComposer& ibDataDBComposer::FromText(const wxString& text)
 {
-	m_sourceText = text;
+	// ⭐ WITHOUT THE ROLES IT SAYS — a field's role is the composition's word (its Fields page, RoleSaidFor),
+	// and a `ROLE` in the author's query would be a second place to say it (Max, 2026-09-29).
+	m_sourceText = ibQueryTextWithoutRoles(text);
 	m_sources.clear();
 	// ⭐ AND THIS IS WHERE A RUN STARTS. Every compose calls it, so it is the honest moment to let go
 	// of what the LAST run prepared: a temp table holds ROWS, and rows read a minute ago are not an
 	// answer to a report being asked again now. (Handing the same text back does not save them — the
 	// question is not "is it the same query" but "is it the same reading of the data".)
 	m_prepared.Forget();
+	RefreshSourceFields();
 	return *this;
 }
 
-bool ibCompositionCompare(const ibValue& cell, const wxString& op, const ibValue& value)
+// A source's field as a walk takes it — its name, what it may hold, and whether the options leave it (a field
+// no column stands behind is not theirs to take).
+static ibQueryConstructorField ibWalkFieldOf(const wxString& name, const ibTypeDescription& type,
+	const ibBackendSourceColumn* column)
 {
-	if (op == wxT("="))                            return cell == value;
-	if (op == wxT("<>") || op == wxT("!="))        return cell != value;
-	if (op == wxT(">"))                            return cell >  value;
-	if (op == wxT(">="))                           return cell >= value;
-	if (op == wxT("<"))                            return cell <  value;
-	if (op == wxT("<="))                           return cell <= value;
-	if (op.CmpNoCase(wxT("LIKE")) == 0) {
-		wxString pattern = value.GetString();
-		pattern.Replace(wxT("%"), wxT("*"));
-		pattern.Replace(wxT("_"), wxT("?"));
-		return cell.GetString().Lower().Matches(pattern.Lower());
-	}
-	return true;   // unknown operator → do not hide anything over a line nobody can read
+	ibQueryConstructorField field;
+	field.m_name      = name;
+	field.m_type      = type;
+	field.m_available = column == nullptr || column->IsAvailable();
+	return field;
 }
 
-// ⭐ THE SAME COMPARISON, ASKED WITH THE KIND IT IS. A stored condition holds an ibComparisonKind,
-// not a spelling, and the string pair that used to translate between them is gone (there was an
-// inverse map that read "IN" back as Equal — see list-settings.md § 5a). So the row-side comparison
-// answers the kind directly; membership is the one that cannot be asked of a single value here, and
-// it hides nothing rather than pretending.
-bool ibCompositionCompare(const ibValue& cell, ibComparisonKind kind, const ibValue& value)
+// ⭐ THE SOURCE'S FIELDS — see the header. Asked of what the source IS, the way the settings pickers ask it: the
+// author's query through the constructor model (a computed output for everything it reads, a temp table's field
+// for the select that made it), a bound queryable through its own columns, a named source through its
+// descriptor's explorer. Each field carries what the source says of it: whether this base's options leave it
+// available, what it is called, and what it is in a balance.
+void ibDataDBComposer::RefreshSourceFields()
 {
-	switch (kind) {
-	case ibComparisonKind_Equal:        return cell == value;
-	case ibComparisonKind_NotEqual:     return cell != value;
-	case ibComparisonKind_Greater:      return cell >  value;
-	case ibComparisonKind_GreaterEqual: return cell >= value;
-	case ibComparisonKind_Less:         return cell <  value;
-	case ibComparisonKind_LessEqual:    return cell <= value;
-	case ibComparisonKind_Contains:     return ibCompositionCompare(cell, wxT("LIKE"),
-	                                        ibValue(wxT("%") + value.GetString() + wxT("%")));
-	default:                            return true;   // In / InHierarchy — a set is the server's question
+	// ⭐ A RUN SHOWS WHAT THE BASE USES, WHOEVER RUNS IT — the application, or the designer answering for what a
+	// person sees (compose_run). The designer's own rule ("it sees everything") is for what an author EDITS, not
+	// for what a composition produces, so the composer works this out as the application does, by itself — no
+	// caller asks for it (2026-09-28: warehouses printed through the designer).
+	const ibFunctionalOptionGate::AsApplication asTheApplication;
+
+	m_sourceFields.reset();
+	DropMemos();   // a new source answers anew
+	// (Read whether or not anything is off in this base: the captions and the balance roles are asked on every
+	//  run — IsAvailable keeps its own fast answer for a base that switched nothing off.)
+
+	std::vector<ibQueryConstructorField> fields;
+	if (!m_sourceText.IsEmpty()) {
+		fields = ibQueryFieldsOfText(m_sourceText, m_metaData);
 	}
+	else {
+		for (const auto& direct : m_directSources) {
+			if (direct.second == nullptr)
+				continue;
+			for (const ibBackendQueryColumn* column : direct.second->GetColumns())
+				if (column != nullptr)
+					fields.push_back(ibWalkFieldOf(column->GetName(), column->GetTypeValueDesc(), column));
+		}
+
+		const ibQueryableFactory* const factory = m_metaData != nullptr
+			? m_metaData->GetSourceFactory() : ibApplicationInstance::GetQueryableFactory();
+		for (const Source& source : m_sources) {
+			ibQueryableSourceDescriptor* const descriptor = factory != nullptr
+				? factory->FindDescriptor(source.m_namespace, source.m_name) : nullptr;
+			if (descriptor == nullptr)
+				continue;   // a direct source (above), or a name nothing answers to
+			ibSourceDataObject::ibSourceExplorer explorer;
+			descriptor->FillSourceExplorer(explorer);
+			for (unsigned int i = 0; i < explorer.GetHelperCount(); ++i) {
+				const ibSourceDataObject::ibSourceExplorer* node = explorer.GetHelper(i);
+				if (node != nullptr)
+					fields.push_back(ibWalkFieldOf(node->GetSourceName(), node->GetTypeValueDesc(), node->GetColumn()));
+			}
+		}
+	}
+	m_sourceFields = std::make_shared<const std::vector<ibQueryConstructorField>>(std::move(fields));
 }
+
+// WHAT THE SOURCE SAYS OF ONE FIELD — the field its list publishes under that name, or null.
+const ibQueryConstructorField* ibDataDBComposer::SourceField(const wxString& path) const
+{
+	if (!m_sourceFields)
+		return nullptr;
+	for (const ibQueryConstructorField& field : *m_sourceFields)
+		if (field.m_name.IsSameAs(path, false))
+			return &field;
+	return nullptr;
+}
+
+// ` ROLE <word> [n]` for a field whose role a person set in the composition (ibFieldDescription::m_useRole), or
+// nothing. The entry is found by its PATH, whole: a walk (`Item.Code`) is another field than `Code`.
+wxString ibDataDBComposer::RoleSaidFor(const wxString& path) const
+{
+	for (const ibSelectDescription& select : Selects())
+		for (const ibFieldDescription& field : select.m_fields)
+			if (field.m_useRole && field.m_path.IsSameAs(path, false))
+				return wxString(wxT(" ROLE ")) + ibBalanceRoleWord(field.m_role)
+					+ (field.m_periodRank > 0 ? wxString::Format(wxT(" %d"), field.m_periodRank) : wxString());
+	return wxString();
+}
+
+wxString ibDataDBComposer::SourceCaptionOf(const wxString& path) const
+{
+	const ibQueryConstructorField* field = SourceField(path);
+	return field != nullptr ? field->m_caption : wxString();
+}
+
+bool ibDataComposer::IsAvailable(const wxString& path) const
+{
+	if (path.IsEmpty())
+		return true;
+	const auto known = m_availablePaths.find(path);   // asked before in this run — see m_availablePaths
+	if (known != m_availablePaths.end())
+		return known->second;
+
+	// The hops are asked the way the fields were — as the application (see RefreshSourceFields).
+	const ibFunctionalOptionGate::AsApplication asTheApplication;
+	bool available = true;   // nothing is off in this base — no path is laid out, no walk is made
+	if (ibFunctionalOptionGate::AnyUnavailable(m_metaData)) {
+		// THE PATH AS HOPS — laid out the way the query carries it (ibQueryColumnFromPath), not by hand.
+		const ibQueryAstExprPtr column = ibQueryColumnFromPath(path);
+		available = !column || column->m_path.empty() || WalkPath(column->m_path).m_available;
+	}
+	m_availablePaths.emplace(path, available);
+	return available;
+}
+
+ibQueryConstructorField ibDataComposer::WalkPath(const std::vector<wxString>& /*hops*/) const
+{
+	return ibQueryConstructorField();
+}
+
+// Walked from the source's fields as every holder of fields walks a path: where it starts (a linked package's
+// `Sales.Qty` included), then each hop by its TYPE, one hidden hop hiding the walk. A name the source does not
+// have is not this question.
+ibQueryConstructorField ibDataDBComposer::WalkPath(const std::vector<wxString>& hops) const
+{
+	return m_sourceFields ? ibQueryConstructorModel(m_metaData).WalkPath(*m_sourceFields, hops) : ibQueryConstructorField();
+}
+
+// (Comparing a value and reading a condition against a row in hand — the evaluator — live in
+//  compositionCondition.cpp, with what a composer tells it; both composers call it the same way.)
 
 //////////////////////////////////////////////////////////////////////
 // settings
@@ -181,7 +279,7 @@ ibDataComposer& ibDataComposer::Filter(const wxString& path, const wxString& op,
 {
 	if (path.IsEmpty())
 		return *this;
-	UserSettings().m_filter.Append(path, ibComparisonFromOpText(op), value);
+	UserSettings().m_filter.Append(path, ibComparisonFromOpText(op), ibStoreValue(value));
 	return *this;
 }
 
@@ -208,15 +306,57 @@ ibQueryAstExprPtr ibBuildFilterSide(ibDataComposer& composer, const ibFilterOper
 		return ibQueryColumnFromPath(side.m_path);
 
 	ibQueryAstExprPtr e = ibQueryAstExpr::Make(ibQueryAstExprKind::Param);
-	e->m_paramName = composer.AddParam(side.m_value);
+	e->m_paramName = composer.AddParam(ibStoredValue(side.m_value, composer.GetMetaData()));
 	return e;
 }
 
 ibQueryAstExprPtr ibBuildFilterNodes(ibDataComposer& composer,
 	const std::vector<ibFilterNodeDescription>& nodes, ibFilterGroupKind kind);
 
+// ⭐ WHETHER THERE IS A VALUE, AS THE QUERY ASKS IT — `f IS NULL OR f IN (<the empty value of each of its types>)`,
+// turned over for «filled». NULL alone is not the question: a stored attribute is never NULL — a supplier nobody
+// chose is an EMPTY REFERENCE — and the row's reading (ibValue::IsEmpty) counts both, so the query must too, or one
+// condition would select one set of rows and paint another. The types are the field's own (WalkPath), a composite
+// giving one empty reference per kind; a field whose type cannot be read is asked for NULL alone.
+ibQueryAstExprPtr ibBuildFilledCondition(ibDataComposer& composer, const ibFilterNodeDescription& item)
+{
+	ibQueryAstExprPtr notFilled = ibQueryAstExpr::Make(ibQueryAstExprKind::IsNull);
+	notFilled->m_lhs = ibBuildFilterSide(composer, item.m_left);
+
+	const ibQueryAstExprPtr column = item.m_left.IsField() ? ibQueryColumnFromPath(item.m_left.m_path) : nullptr;
+	const ibTypeDescription type = column && !column->m_path.empty()
+		? composer.WalkPath(column->m_path).m_type : ibTypeDescription();
+	ibQueryAstExprPtr empty = ibQueryAstExpr::Make(ibQueryAstExprKind::In);
+	empty->m_lhs = ibBuildFilterSide(composer, item.m_left);
+	for (const ibClassID& clsid : type.GetClsidList()) {
+		const ibValue emptyOfType = ibValueTypeDescription::AdjustValue(
+			ibTypeDescription(clsid, type.m_typeData), composer.GetMetaData());
+		if (emptyOfType.m_typeClass == ibValueTypes::TYPE_EMPTY)
+			continue;   // a class nothing can make here — NULL still answers for it
+		ibQueryAstExprPtr param = ibQueryAstExpr::Make(ibQueryAstExprKind::Param);
+		param->m_paramName = composer.AddParam(emptyOfType);
+		empty->m_list.push_back(param);
+	}
+	if (!empty->m_list.empty()) {
+		ibQueryAstExprPtr either = ibQueryAstExpr::Make(ibQueryAstExprKind::Logical);
+		either->m_isOr = true;
+		either->m_lhs = notFilled;
+		either->m_rhs = empty;
+		notFilled = either;
+	}
+	if (item.m_comparison == ibComparisonKind_NotFilled)
+		return notFilled;
+	ibQueryAstExprPtr filled = ibQueryAstExpr::Make(ibQueryAstExprKind::Not);
+	filled->m_lhs = notFilled;
+	return filled;
+}
+
 ibQueryAstExprPtr ibBuildFilterCondition(ibDataComposer& composer, const ibFilterNodeDescription& item)
 {
+	// «FILLED» HAS NO RIGHT SIDE and is not one comparison but a question about the value — see above.
+	if (!ibComparisonTakesValue(item.m_comparison))
+		return ibBuildFilledCondition(composer, item);
+
 	// ⭐⭐ EVERYTHING THAT WAS PASSED IS SUBSTITUTED, AND THE ONLY SWITCH IS THE LINE'S OWN (Max,
 	// 2026-08-29: *"whatever value we pass must be substituted — the one exception is the `use` flag
 	// standing at false. Empty or not empty makes no difference: we can filter BY an empty value"*, and
@@ -583,6 +723,35 @@ static void CollectProjection(std::vector<wxString>& into, const std::vector<wxS
 		CollectProjection(into, here, child);
 }
 
+// ⭐ WHAT A CONDITIONAL APPEARANCE'S CONDITIONS NAME is fetched though nobody shows it — a rule that cannot see its
+// field cannot hold (AttrFor asks it with "unknown = no").
+static void AppendRuleFields(std::vector<wxString>& into, const ibConditionalAppearanceDescription& rules)
+{
+	for (const ibConditionalAppearanceRuleDescription& rule : rules.m_rules)
+		if (rule.m_use)
+			for (const ibFilterNodeDescription& node : rule.m_condition.m_nodes)
+				ibDataComposer::AppendFilterFields(into, node);
+}
+
+static void AppendNodeRuleFields(std::vector<wxString>& into, const ibDataComposer::GroupNode& level)
+{
+	AppendRuleFields(into, level.m_settings.m_conditionalAppearance);
+	for (const ibDataComposer::GroupNode& child : level.m_children)
+		AppendNodeRuleFields(into, child);
+}
+
+std::vector<wxString> ibComposerRuleFieldsOf(const ibDataComposer::Output& output,
+                                             const ibConditionalAppearanceDescription& setting)
+{
+	std::vector<wxString> fields;
+	AppendRuleFields(fields, setting);
+	AppendRuleFields(fields, output.m_settings.m_conditionalAppearance);
+	for (const std::vector<ibDataComposer::GroupNode>* axis : { &output.m_rowGroups, &output.m_columnGroups })
+		for (const ibDataComposer::GroupNode& level : *axis)
+			AppendNodeRuleFields(fields, level);
+	return fields;
+}
+
 
 
 // ⭐ WHICH WAY THE RECORDS READ. A record declared on the COLUMN axis is a column of its own —
@@ -617,12 +786,12 @@ void ibDataComposer::BuildPrintLevels(bool tree, const ibBackendQueryable* sourc
 		const std::vector<const ibBackendQueryColumn*> key = source->GetPrimaryKeyColumns();
 		if (key.size() == 1 && key.front() != nullptr) {
 			identity = key.front()->GetName();
-			// ⚠ A LIST WALKS A TREE ONLY WHERE THE ARRANGEMENT IS ONE (queryable.h, GetHierarchyType).
-			// Asked as "is there a parent column", a chart of accounts — Subordination: a recorded parent,
-			// a flat list — got a tree rung here that the list's own model does not browse, and served it as
-			// a grouping: every account a heading of itself, with itself inside.
+			// ⚠ A LIST WALKS A TREE ONLY WHERE THE ARRANGEMENT IS ONE (queryable.h, GetHierarchyType): folders,
+			// or items — a chart of accounts, an account under an account. Asked as "is there a parent column", a
+			// source whose parent builds no hierarchy (ParentOnly) would get a tree rung here that the list's own
+			// model does not browse, served as a grouping: every row a heading of itself.
 			const ibHierarchyType arrangement = source->GetHierarchyType();
-			hasTree  = arrangement == ibHierarchyType::eItems || arrangement == ibHierarchyType::eFoldersAndItems;
+			hasTree  = arrangement == ibHierarchyType::eItems || arrangement == ibHierarchyType::eFolders;
 		}
 	}
 
@@ -639,7 +808,7 @@ void ibDataComposer::BuildPrintLevels(bool tree, const ibBackendQueryable* sourc
 	// What is genuinely impossible is the same field twice — a level repeated is a fold repeated — and that
 	// is checked below, where the source's own tree is offered.
 	bool identityNamed = false;
-	for (const ibGroupLineDescription& line : GetCurrentGroupDesc().m_lines) {
+	for (const ibGroupLineDescription& line : GetAvailableGroupDesc().m_lines) {
 		if (line.m_path.IsEmpty())
 			continue;
 		AppendLevel(line.m_path, line.m_kind);
@@ -688,6 +857,66 @@ const ibDataComposer::GroupNode* ibDataComposer::DetailLevelOf(const Output& out
 	return nullptr;
 }
 
+ibGroupDescription ibDataComposer::GetAvailableGroupDesc() const
+{
+	ibGroupDescription group = GetCurrentGroupDesc();
+	group.m_lines.erase(std::remove_if(group.m_lines.begin(), group.m_lines.end(),
+		[this](const ibGroupLineDescription& line) { return !IsAvailable(line.m_path); }), group.m_lines.end());
+	return group;
+}
+
+// A selected-fields table less its rows on a field this base does not use (`Auto` names no field and stays).
+static void ibDropUnavailableRows(std::vector<ibSelectedFieldDescription>& rows, const ibDataComposer& composer)
+{
+	rows.erase(std::remove_if(rows.begin(), rows.end(), [&composer](const ibSelectedFieldDescription& row) {
+		return !row.IsAuto() && !composer.IsAvailable(row.m_path);
+	}), rows.end());
+}
+
+// A ladder of levels less what this base does not use: a grouping line on an unavailable field goes, and a level
+// it leaves with no line goes too — its children take its place, so what it held still prints, one storey up.
+static void ibDropUnavailableLevels(std::vector<ibLevelDescription>& levels, const ibDataComposer& composer)
+{
+	std::vector<ibLevelDescription> kept;
+	kept.reserve(levels.size());
+	for (ibLevelDescription& level : levels) {
+		ibDropUnavailableLevels(level.m_children, composer);
+		ibDropUnavailableRows(level.m_selected, composer);
+		ibDropUnavailableRows(level.m_settings.m_selected, composer);
+
+		std::vector<ibGroupLineDescription>& lines = level.m_settings.m_group.m_lines;
+		const bool grouped = !lines.empty();
+		lines.erase(std::remove_if(lines.begin(), lines.end(), [&composer](const ibGroupLineDescription& line) {
+			return !composer.IsAvailable(line.m_path);
+		}), lines.end());
+		if (grouped && lines.empty()) {
+			for (ibLevelDescription& child : level.m_children)
+				kept.push_back(std::move(child));
+			continue;
+		}
+		kept.push_back(std::move(level));
+	}
+	levels = std::move(kept);
+}
+
+void ibDataComposer::ApplyAvailableStructure()
+{
+	const ibFunctionalOptionGate::AsApplication asTheApplication;   // one view of the options for the whole load
+	DropMemos();   // a run reads the options — and the catalogs' trees — as they stand now
+
+	const std::vector<ibOutputDescription>& stored = GetCurrentStructure();
+	if (stored.empty())
+		return;
+	m_outputs.resize(stored.size());
+	for (size_t i = 0; i < stored.size(); ++i) {
+		ibOutputDescription& live = m_outputs[i];   // the base part — the driver each output has stays
+		live = stored[i];
+		ibDropUnavailableRows(live.m_selected, *this);
+		ibDropUnavailableLevels(live.m_rowGroups, *this);
+		ibDropUnavailableLevels(live.m_columnGroups, *this);
+	}
+}
+
 std::vector<wxString> ibDataComposer::SelectedFor(const Output& output) const
 {
 	// 🛑 THE BASE GOES THROUGH THE SAME SIEVE. Taking it as it stands let a duplicate that was
@@ -719,6 +948,9 @@ std::vector<wxString> ibDataComposer::SelectedFor(const Output& output) const
 
 	std::vector<wxString> selected;
 	ibComposerResolveSelected(selected, output.m_selected, byReader);
+	// …and what this base does not use is not shown, whichever storey named it (IsAvailable).
+	selected.erase(std::remove_if(selected.begin(), selected.end(),
+		[this](const wxString& path) { return !IsAvailable(path); }), selected.end());
 	// WHAT A NODE NAMES IS **NOT** HERE — deliberately. This is what the report SHOWS down to the
 	// output, and a node's own fields are what IT shows.
 	return selected;
@@ -781,7 +1013,7 @@ bool ibDataComposer::WantsDetails(const Output& output) const
 
 	// What the headings print — the output's ladder, and a reader's own grouping where one replaces it.
 	std::vector<wxString> grouped = ibComposerGroupingFieldsOf(output);
-	for (const ibGroupLineDescription& line : GetCurrentGroupDesc().m_lines)
+	for (const ibGroupLineDescription& line : GetAvailableGroupDesc().m_lines)
 		if (!line.m_path.IsEmpty())
 			grouped.push_back(line.m_path);
 
@@ -805,6 +1037,13 @@ std::vector<wxString> ibDataComposer::ProjectionFor(const Output& output) const
 	for (const std::vector<GroupNode>* axis : { &output.m_rowGroups, &output.m_columnGroups })
 		for (const GroupNode& level : *axis)
 			CollectProjection(selected, atOutput, level);
+	// ⭐ …AND WHAT THE CONDITIONAL APPEARANCE LOOKS AT, read IN ADDITION to the selection — never in its place. An
+	// empty selection is not "nothing": it is answered by WhenNothingChosen, and a list answers it with EVERY field
+	// (and its rules' walks beside them, RenderTextFor). Named alone they were read alone — a list with one rule on
+	// AccountDr read that one column and blanked every other, on every row, the rule's or not (2026-09-30, the run:
+	// 15 columns → 1).
+	if (!selected.empty())
+		AppendFields(selected, ibComposerRuleFieldsOf(output, GetCurrentConditionalAppearanceDesc()));
 	return selected;
 }
 
@@ -857,7 +1096,7 @@ static std::vector<wxString> ReadOf(const std::vector<wxString>& projected,
 		// every column it names. Read by the query's own parser; a text that does not parse reads
 		// nothing here and is refused where TOTALS is parsed, in the parser's words.
 		try { AppendColumnsOf(ibQueryParser().ParseExpression(named->m_path), read); }
-		catch (const ibBackendException&) {}
+		catch (const ibCoreException&) {}
 	}
 	return read;
 }
@@ -932,6 +1171,9 @@ wxString ibDataDBComposer::RenderTextFor(const std::vector<const Output*>& outpu
 			if (!authorProj.IsEmpty())
 				authorProj += wxT(", ");
 			authorProj += name;
+			// ⭐ …AND WHAT A PERSON SAID IT IS IN A BALANCE — the Fields page's word, written the way the query
+			// says it (`Opening ROLE OPENING`). What the source says needs no word: it travels with the column.
+			authorProj += RoleSaidFor(name);
 		}
 		// ⭐ …AND A PACKAGE IS NOT WRAPPED, IT IS STOOD ON. `(SELECT …; SELECT …)` is not a query, so
 		// the statements that PREPARE stay ahead of the composer's own select and what it reads FROM
@@ -1007,7 +1249,7 @@ wxString ibDataDBComposer::RenderTextFor(const std::vector<const Output*>& outpu
 			// Resolve through THIS query's OWN config factory (per-config sources); no config → the global base.
 			ibQueryableFactory* factory = m_metaData != nullptr ? m_metaData->GetSourceFactory() : nullptr;
 			if (factory == nullptr)
-				factory = ibApplicationData::GetQueryableFactory();
+				factory = ibApplicationInstance::GetQueryableFactory();
 			if (factory == nullptr)
 				ibBackendCoreException::Error(_("Composer: the query engine is not available (no application data)"));
 			src = factory->Resolve(s0.m_namespace, s0.m_name);
@@ -1028,6 +1270,22 @@ wxString ibDataDBComposer::RenderTextFor(const std::vector<const Output*>& outpu
 		}
 		if (proj.IsEmpty())
 			ibBackendCoreException::Error(_("Composer: source '%s.%s' exposes no columns"), s0.m_namespace, s0.m_name);
+
+		// ⭐ …AND WHAT A RULE LOOKS AT THROUGH A REFERENCE (`Recorder.Supplier`). Every field of the source is read here,
+		// a walk from one is not — and a rule that cannot see its field cannot hold: a list's rule on a document's
+		// supplier painted nothing (2026-09-30). A plain name is one of the columns above (or switched off, and not to
+		// be spelled); a path this source cannot walk is left out, so a stale rule never takes the list down with it.
+		std::vector<wxString> walked;
+		for (const Output* out : outputs)
+			for (const wxString& path : ibComposerRuleFieldsOf(*out, GetCurrentConditionalAppearanceDesc())) {
+				if (path.Find(wxT('.')) == wxNOT_FOUND)
+					continue;
+				const ibQueryAstExprPtr column = ibQueryColumnFromPath(path);
+				if (column && !column->m_path.empty() && !WalkPath(column->m_path).m_name.IsEmpty())
+					AppendFields(walked, { path });
+			}
+		for (const wxString& path : walked)
+			proj += wxT(", ") + path;
 		}
 	}
 
@@ -1193,7 +1451,9 @@ void ibDataDBComposer::AppendSettingsClauses(wxString& text, const std::vector<c
 	// TOTALS [agg(path), …] BY dim [HIERARCHY], … — the aggregate list may be empty
 	// (pure grouping / hierarchy), so emit the block whenever there is either an
 	// aggregate OR a BY dimension.
-	if (!m_resources.empty() || HasGroupingFields(output) || GetCurrentGroupDesc().IsOk()) {
+	// The reader's grouping as this base leaves it — one answer for the three questions below.
+	const ibGroupDescription readerGroup = GetAvailableGroupDesc();
+	if (!m_resources.empty() || HasGroupingFields(output) || readerGroup.IsOk()) {
 		// ⭐⭐ A RESOURCE NOBODY SELECTED IS NOT COMPUTED (Max, 2026-08-28: "resources are exactly the
 		// same — a resource that does not take part you throw out; it starts being used the moment
 		// you switch that field on in the settings"). A declared resource is an OFFER, and what a report shows is what
@@ -1266,8 +1526,8 @@ void ibDataDBComposer::AppendSettingsClauses(wxString& text, const std::vector<c
 		// A level written straight after `SPLIT` needs no separator — the word IS the separator, and
 		// a comma there would read back as one more level of the ladder above.
 		bool afterSplit = false;
-		if (GetCurrentGroupDesc().IsOk()) {
-			for (const ibGroupLineDescription& line : GetCurrentGroupDesc().m_lines) {
+		if (readerGroup.IsOk()) {
+			for (const ibGroupLineDescription& line : readerGroup.m_lines) {
 				if (line.m_path.IsEmpty())
 					continue;   // a line with no field is the absence of one
 				text += (wroteBy ? wxT(", ") : wxT(" BY "));
@@ -1303,7 +1563,7 @@ void ibDataDBComposer::AppendSettingsClauses(wxString& text, const std::vector<c
 		// ROWS FIRST because the fold nests: a cell stands where a row key has already been chosen,
 		// so the row keys are the outer ones. Writing columns first would give a table transposed —
 		// the same numbers, in the wrong place, with nothing to say which was meant.
-		if (!GetCurrentGroupDesc().IsOk()) {
+		if (!readerGroup.IsOk()) {
 			if (outputs.size() == 1) {
 				writeAxis(output.m_rowGroups);
 				writeAxis(output.m_columnGroups);
@@ -1360,8 +1620,8 @@ void ibDataDBComposer::AppendSettingsClauses(wxString& text, const std::vector<c
 
 namespace {
 
-// Page-cache signature helpers — a value the signature can't render losslessly
-// (a reference / an object) disables caching for that run; correctness over speed.
+// Page-cache signature — a value the signature cannot compare exactly (a reference / an object orders by
+// its presentation, and two of them can present alike) disables caching for that run; correctness over speed.
 bool ValueSignable(const ibValue& v)
 {
 	switch (v.GetType()) {
@@ -1370,17 +1630,6 @@ bool ValueSignable(const ibValue& v)
 		return true;
 	default:
 		return false;
-	}
-}
-
-wxString ValueSig(const ibValue& v)
-{
-	switch (v.GetType()) {
-	case TYPE_BOOLEAN: return v.GetBoolean() ? wxT("B1") : wxT("B0");
-	case TYPE_NUMBER:  return wxT("N") + v.GetNumber().ToString();
-	case TYPE_DATE:    return wxT("D") + v.GetDateTime().GetValue().ToString();
-	case TYPE_STRING:  return wxT("S") + v.GetString();
-	default:           return wxT("_");
 	}
 }
 
@@ -1412,7 +1661,7 @@ void ibDataDBComposer::SplitSourceText() const
 
 	ibQueryPackage package;
 	try { package = ibQueryParser().ParsePackage(m_sourceText); }
-	catch (const ibBackendException&) { return; }
+	catch (const ibCoreException&) { return; }
 
 	if (package.m_statements.size() <= 1 && package.m_links.empty())
 		return;   // one query and nothing related — a nested source, exactly as before
@@ -1653,7 +1902,7 @@ void ibDataDBComposer::EnsureAst()
 	m_rendered.m_filter = GetCurrentFilterDesc();
 }
 
-bool ibDataDBComposer::BuildPageSignature(const ibReadPageRequest& page, wxString& signature) const
+bool ibDataDBComposer::BuildPageSignature(const ibReadPageRequest& page, ibPageSignature& signature) const
 {
 	// Cache the paged hot path only; the tree's parent filter is excluded (its
 	// reference blob is not signable). An ANCHORED page is NOT cached: the anchor
@@ -1666,12 +1915,15 @@ bool ibDataDBComposer::BuildPageSignature(const ibReadPageRequest& page, wxStrin
 		if (!ValueSignable(p.second))
 			return false;
 
-	signature << wxT("c") << page.m_count
-	          << wxT("d") << static_cast<int>(page.m_direction)
-	          << wxT("a") << (page.m_hasAnchor ? 1 : 0)
-	          << wxT("r") << (page.m_reverseSort ? 1 : 0)
-	          << wxT("|T") << m_rendered.m_text << wxT("|P");
-	for (const auto& p : m_params)
-		signature << wxT(";") << p.first << wxT("=") << ValueSig(p.second);
+	signature.m_text = m_rendered.m_text;
+	signature.m_count = page.m_count;
+	signature.m_direction = static_cast<int>(page.m_direction);
+	signature.m_reverseSort = page.m_reverseSort;
+	signature.m_names.reserve(m_params.size());
+	signature.m_values.reserve(m_params.size());
+	for (const auto& p : m_params) {
+		signature.m_names.push_back(p.first);
+		signature.m_values.push_back(p.second);
+	}
 	return true;
 }

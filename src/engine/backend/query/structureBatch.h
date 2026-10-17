@@ -68,10 +68,13 @@ public:
 	void DropTable(std::vector<const ibBackendQueryColumn*> columns);
 	// Index over LOGICAL columns — each expands to its physical field names through the layout tier
 	// (a raw uuid column -> "uuid"; a reference attribute -> its _RTRef/_RRRef pair; a dimension -> its
-	// fields). The structure speaks columns, not bare field strings.
-	void CreateIndex(const wxString& indexName, std::vector<const ibBackendQueryColumn*> columns, bool unique = false);
+	// fields). The structure speaks columns, not bare field strings. `descending` — the twin an engine walks
+	// when a list reads backwards (ibDialectDictionary::m_descendingIndexWord).
+	void CreateIndex(const wxString& indexName, std::vector<const ibBackendQueryColumn*> columns, bool unique = false,
+		bool descending = false);
 	// Its mirror, carrying what CreateIndex was given — so a failed second phase can put the index back.
-	void DropIndex(const wxString& indexName, std::vector<const ibBackendQueryColumn*> columns, bool unique);
+	void DropIndex(const wxString& indexName, std::vector<const ibBackendQueryColumn*> columns, bool unique,
+		bool descending = false);
 	void Ddl(const ibDdlStatement& ddl);                        // any other prebuilt statement, in order
 
 	// --- data seed the subclass pours in --------------------------------------------------------
@@ -99,7 +102,11 @@ private:
 //   src == null -> DELETE: DROP every physical field of `dst`.
 //   both         -> UPDATE: a slot diff (ADD new / DROP removed / ALTER changed) + the reference pair's
 //                   per-target row cleanup. Metadata context comes from the batch's queryable.
-// Returns the first DML-cleanup error retCode, or 1 (DDL errors surface at Flush).
-BACKEND_API int DiffColumnInto(ibStructureBatch& batch, const ibBackendQueryColumn* srcCol, const ibBackendQueryColumn* dstCol);
+// Returns how many stored values the UPDATE empties: one COUNT per removed type, on the predicate
+// the clear itself runs, taken before the batch does. A new or deleted column clears nothing in
+// place and returns 0. Errors THROW (DDL ones at Flush). What the caller tells a person about the
+// number is the caller's — the ledger lines live beside "Change …" in AlterTable.
+// 🛑 Not the place for a metadata case — see the banner in schemaSnapshot.h.
+BACKEND_API long long DiffColumnInto(ibStructureBatch& batch, const ibBackendQueryColumn* srcCol, const ibBackendQueryColumn* dstCol);
 
 #endif // !__STRUCTURE_BATCH_H__

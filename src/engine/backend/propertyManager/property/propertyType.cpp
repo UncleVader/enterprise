@@ -1,12 +1,12 @@
 #include "propertyType.h"
 #include "backend/propertyManager/property/variant/variantType.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode / ibDataValue (Child + Array)
-#include "backend/typeDescription.h"        // ibTypeDescription + qualifiers
+#include "core/serialize/dataBuilder.h"   // ibDataNode / ibDataValue (Child + Array)
+#include "core/description/typeDescription.h"   // ibTypeDescription + qualifiers
 
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibValueTypes type) const
+wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibValueTypes type)
 {
 	const ibBackendTypeConfigFactory* propFactory = dynamic_cast<const ibBackendTypeConfigFactory*>(property);
 	if (propFactory == nullptr)
@@ -14,7 +14,7 @@ wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, con
 	return new ibVariantDataAttribute(propFactory, type);
 }
 
-wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibClassID& clsid) const
+wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibClassID& clsid)
 {
 	const ibBackendTypeConfigFactory* propFactory = dynamic_cast<const ibBackendTypeConfigFactory*>(property);
 	if (propFactory == nullptr)
@@ -22,7 +22,7 @@ wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, con
 	return new ibVariantDataAttribute(propFactory, clsid);
 }
 
-wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibTypeDescription& typeDesc) const
+wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, const ibTypeDescription& typeDesc)
 {
 	const ibBackendTypeConfigFactory* propFactory = dynamic_cast<const ibBackendTypeConfigFactory*>(property);
 	if (propFactory == nullptr)
@@ -34,6 +34,10 @@ wxVariantData* ibPropertyType::CreateVariantData(ibPropertyObject* property, con
 
 ibTypeDescription& ibPropertyType::GetValueAsTypeDesc() const {
 	return get_cell_variant<ibVariantDataAttribute>()->GetTypeDesc();
+}
+
+ibTypeDescription& ibPropertyType::GetValueAsTypeValueDesc() const {
+	return get_cell_variant<ibVariantDataAttribute>()->GetTypeValueDesc();
 }
 
 void ibPropertyType::SetValue(const ibTypeDescription& val) {
@@ -71,12 +75,10 @@ bool ibPropertyType::GetDataValue(ibValue& pvarPropVal) const
 // The conversion lives once on ibTypeDescriptionMemory (shared with predefined attrs).
 bool ibPropertyType::ReadNodeValue(const ibDataValue& value)
 {
-	const ibPropertyObject* owner = m_owner;   // CONST overload — the non-const one returns null (see propertyObject.h)
-	return ibTypeDescriptionMemory::ReadNode(value, GetValueAsTypeDesc(), owner->GetMetaData());
+	return ibTypeDescriptionMemory::ReadNode(value, GetValueAsTypeDesc());
 }
 
 bool ibPropertyType::WriteNodeValue(ibDataValue& value) const
 {
-	const ibPropertyObject* owner = m_owner;
-	return ibTypeDescriptionMemory::WriteNode(value, GetValueAsTypeDesc(), owner->GetMetaData());
+	return ibTypeDescriptionMemory::WriteNode(value, GetValueAsTypeDesc());
 }

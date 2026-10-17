@@ -11,7 +11,7 @@
 #include "reference/reference.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/system/systemManager.h"
-#include "backend/fileSystem/fs.h"
+#include "core/fileSystem/fs.h"
 
 ibValueRecordDataObjectChartOfAccounts::ibValueRecordDataObjectChartOfAccounts(const ibValueMetaObjectChartOfAccounts* metaObject, const ibGuid& objGuid, ibObjectMode objMode) :
 	ibValueRecordDataObjectHierarchyRef(metaObject, objGuid, objMode) {
@@ -100,7 +100,9 @@ bool ibValueRecordDataObjectChartOfAccounts::SaveData()
 
 const ibSourceExplorer* ibValueRecordDataObjectChartOfAccounts::GetSourceExplorer() const
 {
-	m_sourceExplorer.Reset(wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(), false);
+	if (!m_sourceExplorer.Reset(m_metaObject->GetMetaData()->GetFactoryCountChanges(),
+		wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(), false))
+		return &m_sourceExplorer;   // built at this version of the metadata already — read as it is
 	ibValueMetaObjectChartOfAccounts* metaRef = nullptr;
 
 	if (m_metaObject->ConvertToValue(metaRef)) {
@@ -236,10 +238,10 @@ bool ibValueRecordDataObjectChartOfAccounts::CallAsFunc(const long lMethodNum, i
 	case enWrite: WriteObject(); return true;
 	case enDelete: DeleteObject(); return true;
 	case enPointInTime:
-		pvarRetValue = new ibValuePointInTime(wxDateTime(), GetReference());
+		pvarRetValue = new ibValuePointInTime(ibDateTime(), GetReference());   // a moment with no date: the empty date, the smallest there is
 		return true;
 	case enModified: pvarRetValue = m_objModified; return true;
-	case Func::enGetForm: pvarRetValue = GetFormValue(lSizeArray > 0 ? paParams[0]->GetString() : wxString(wxEmptyString), lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr); return true;
+	case Func::enGetForm: pvarRetValue = GetFormValue(lSizeArray > 0 ? ibFormRequest(paParams[0]->GetString()) : ibFormRequest(), lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr); return true;
 	case Func::enGetTemplate: pvarRetValue = m_metaObject->GetTemplate(paParams[0]->GetString()); return true;
 	case Func::enGetMetadata: pvarRetValue = m_metaObject; return true;
 	case Func::enLock:   TryAcquireFormLock(); return true;

@@ -14,23 +14,16 @@ class ibDebuggerServer;
 class ibDebuggerClient;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-// activeMetaData — process-wide configuration metadata. Owned by
-// ibApplicationData (m_activeMetaData); reached through the thin
-// appEnv accessor. nullptr in modes that don't host metadata
-// (launcher, codeRunner). See backend/appEnv.h for the rationale on
-// the namespace-fasad over appData's static getters.
+// activeMetaData — the configuration the calling thread's session works in: its own reference
+// (ibSession::GetMetaData), else its base's active one (ibApplicationInstance::m_activeMetaData, held for
+// the sessions to come); reached through the thin appEnv accessor. nullptr in modes that don't host
+// metadata (launcher, codeRunner). See backend/appEnv.h for the rationale on the namespace-fasad over
+// appData's static getters.
 #define activeMetaData			(appEnv::ActiveMetaData())
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-// Lifecycle — fabric on ibApplicationData picks the concrete subclass
-// by runMode and stashes the unique_ptr in m_activeMetaData. Returns
-// true on success (or true with no-op for modes that don't allocate
-// metadata, like launcher).
-//
-// `metaDataDestroy()` macro was retired — nobody called it; teardown
-// happens through `~ibApplicationData`, which resets m_activeMetaData
-// (firing the polymorphic dtor chain). Outside-caller-driven destroy
-// would go through `ibApplicationData::DestroyActiveMetaData()` directly.
-#define metaDataCreate(mode, f)	(ibApplicationData::CreateActiveMetaData(mode, f))
+// Lifecycle — ibApplicationInstance::CreateActiveMetaData picks the concrete subclass by the kind of the
+// base's first session; teardown happens in the base's Close (ibApplicationInstance::Close), which calls
+// OnDestroy and then lets the base's reference go — the polymorphic dtor chain runs with the last holder.
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 
 enum ibConfigType {
@@ -52,14 +45,21 @@ public:
 #pragma endregion
 
 protected:
-	// Construction restricted to ibApplicationData::CreateActiveMetaData
+	// Construction restricted to ibApplicationInstance::CreateActiveMetaData
 	// via the ib::AppDataCtorToken gate. Concrete subclasses take the
 	// token as the first ctor argument; the base ctor stays protected
 	// + arg-less so the chain compiles without re-passing the token at
 	// every level.
 	ibMetaDataConfigurationBase() : ibMetaData() {}
 
+	// ⭐ THE BASE THIS CONFIGURATION WAS MADE FOR — set by the concrete class from its constructor, the way a
+	// registry stamps its sessions: a process may hold several bases, and what a configuration owns (its
+	// debugger) asks its base through here rather than through "the current one".
+	ibApplicationInstance* m_applicationInstance = nullptr;
+
 public:
+
+	virtual ibApplicationInstance* GetApplicationInstance() const override { return m_applicationInstance; }
 
 	virtual wxString GetConfigMD5() const = 0;
 	virtual wxString GetConfigName() const = 0;
@@ -179,10 +179,11 @@ public:
 	// Called by the appData fabric right after construction (OnInitialize)
 	// and right before destruction (OnDestroy). Subclasses override to
 	// wire run-mode-specific state. Singleton Get()/Initialize()/Destroy()
-	// retired — ownership is on ibApplicationData::m_activeMetaData; the
-	// fabric is ibApplicationData::CreateActiveMetaData.
+	// retired — held by ibApplicationInstance::m_activeMetaData and by the
+	// sessions let in while it was active (ibSession::GetMetaData); the
+	// fabric is ibApplicationInstance::CreateActiveMetaData.
 	//
-	// Public so the appData fabric / ~ibApplicationData can call them
+	// Public so the appData fabric / ~ibApplicationInstance can call them
 	// through a base-class pointer without a friend declaration.
 	// Construction itself stays gated on ib::AppDataCtorToken.
 	virtual bool OnInitialize(const int flag) { return true; }
@@ -204,7 +205,7 @@ public:
 	// Public ctor — `ibMetaDataConfigurationFile` is NOT the appData-
 	// owned active metadata (those are the leaf subclasses
 	// `ibMetaDataConfiguration` and `ibMetaDataConfigurationStorage`,
-	// which have private ctor + friend ibApplicationData). The File
+	// which have private ctor + friend ibApplicationInstance). The File
 	// base is instantiated directly by designer document views that
 	// load a stand-alone .obk / XML / JSON for inspection — that is
 	// per-document scratch state, not a coordinator singleton.
@@ -322,13 +323,14 @@ protected:
 	virtual bool OnDestroy();
 
 public:
-	// Construction restricted to ibApplicationData::CreateActiveMetaData
+	// Construction restricted to ibApplicationInstance::CreateActiveMetaData
 	// (and to ibMetaDataConfigurationStorage, which composes an inner
 	// ibMetaDataConfiguration as the "saved" reference baseline against
 	// which designer edits are compared). Both gate on the
 	// ib::AppDataCtorToken — appData mints once, Storage forwards the
-	// token it received when constructing its inner baseline.
-	explicit ibMetaDataConfiguration(ib::AppDataCtorToken);
+	// token it received when constructing its inner baseline. The token names
+	// the base it is made for (GetApplicationInstance).
+	explicit ibMetaDataConfiguration(ib::AppDataCtorToken owner);
 
 protected:
 
@@ -355,15 +357,15 @@ public:
 
 	virtual ~ibMetaDataConfigurationStorage();
 
-	// Construction restricted to ibApplicationData::CreateActiveMetaData
+	// Construction restricted to ibApplicationInstance::CreateActiveMetaData
 	// via the ib::AppDataCtorToken gate. The inner baseline reference
-	// (m_configMetadata) is constructed by forwarding the same token.
-	explicit ibMetaDataConfigurationStorage(ib::AppDataCtorToken);
+	// (m_configMetadata) is constructed by forwarding the same token — and with it the same base.
+	explicit ibMetaDataConfigurationStorage(ib::AppDataCtorToken owner);
 
 
 	//is config save
 	virtual bool IsConfigSave() const {
-		return CompareMetadata(m_configMetadata);
+		return CompareMetadata(GetConfiguration());
 	}
 
 	//metadata
@@ -371,17 +373,23 @@ public:
 	virtual bool SaveDatabase(int flags = defaultFlag);
 
 	//run/close
+	// The database's copy runs as the mirror it is (loadConfigFlag), once: after an apply it is the base's active
+	// configuration as well, running already.
 	virtual bool RunDatabase(int flags = defaultFlag) {
 
 		if (!ibMetaDataConfiguration::RunDatabase(flags))
 			return false;
-		
-		return m_configMetadata->RunDatabase(flags | loadConfigFlag);
+
+		return m_configMetadata->IsConfigOpen() || m_configMetadata->RunDatabase(flags | loadConfigFlag);
 	}
 
+	// …and closes with this one only while nobody else holds it; held by the base and its sessions, it goes with
+	// the last of them.
 	virtual bool CloseDatabase(int flags = defaultFlag) {
 		if (!ibMetaDataConfiguration::CloseDatabase(flags))
 			return false;
+		if (m_configMetadata.use_count() > 1 || !m_configMetadata->IsConfigOpen())
+			return true;
 		return m_configMetadata->CloseDatabase(flags);
 	}
 
@@ -398,8 +406,8 @@ public:
 	virtual bool RestoreDataFromBuffer(const wxMemoryBuffer& buffer);
 	virtual bool DumpDataToBuffer(wxMemoryBuffer& buffer);
 
-	// get config metaData 
-	virtual ibMetaDataConfiguration* GetConfiguration() const { return m_configMetadata; }
+	// get config metaData
+	virtual ibMetaDataConfiguration* GetConfiguration() const { return m_configMetadata.get(); }
 
 	//get config type 
 	virtual ibConfigType GetConfigType() const { return ibConfigType::ibConfigType_Load_And_Save; };
@@ -448,7 +456,13 @@ private:
 	bool LoadSequenceFromBuffer(const ibReaderMemory& reader);
 	bool SaveSequenceToBuffer(ibWriterMemory& writer);
 
-	ibMetaDataConfiguration* m_configMetadata;
+	// THE DATABASE'S COPY — what IsConfigSave compares against and what an apply diffs from. Shared: an apply reads
+	// the published configuration into a NEW one and hands it to the base as its active configuration, so the copy
+	// before is never re-read in place under the sessions working in it (OnAfterSaveDatabase).
+	std::shared_ptr<ibMetaDataConfiguration> m_configMetadata;
+
+	// What a new copy is made with — the token this Storage was made with, and with it its base.
+	const ib::AppDataCtorToken m_owner;
 
 	// The config-save STRUCTURE + SEED engine — METADATA-AGNOSTIC: it works only on snapshots this Storage
 	// hands it (built via ContributeTables on the edited config + the saved baseline). On save the Storage

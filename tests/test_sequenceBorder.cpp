@@ -22,6 +22,7 @@
 #include <wx/init.h>
 
 #include "backend/appData.h"
+#include "backend/compiler/compileCode.h"
 #include "backend/compiler/value.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/connectionHolder.h"
@@ -31,6 +32,8 @@
 #include "backend/metaCollection/metaObject.h"
 #include "backend/metaCollection/dimension/metaDimensionObject.h"
 #include "backend/metaCollection/partial/sequence.h"
+#include "backend/query/schemaSnapshot.h"
+#include "backend/restructureInfo.h"
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/query/columnLayout.h"
 #include "backend/system/value/valuePointInTime.h"
@@ -39,6 +42,9 @@ namespace {
 
 struct SequenceBorderFix : ::testing::Test {
 	wxInitializer                          m_wxInit;
+	// RunDatabase sets this thread's code style to the configuration's. The binary runs VES
+	// (test_compiler.cpp), so TearDown puts it back, as StyleGuard does.
+	const short                            m_codeStyle = ibCompileCode::GetCodeStyle();
 	std::shared_ptr<ibDatabaseLayerSQLite> db;
 
 	std::unique_ptr<ibMetaDataConfigurationFile> cfg;
@@ -49,9 +55,9 @@ struct SequenceBorderFix : ::testing::Test {
 	void SetUp() override {
 		if (!m_wxInit.IsOk())
 			GTEST_SKIP() << "wxBase init failed (no wxApp host)";
-		if (!ibApplicationData::CreateAppDataEnv(ibRunMode::eRUNTIME_MODE))
+		if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
 			GTEST_SKIP() << "appData env unavailable headless";
-		ibConnectionPool* pool = ibApplicationData::GetConnectionPool();
+		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool after CreateAppDataEnv";
 		db = std::make_shared<ibDatabaseLayerSQLite>();
@@ -73,7 +79,7 @@ struct SequenceBorderFix : ::testing::Test {
 		ASSERT_NE(dimension, nullptr);
 		ASSERT_EQ(seq->GetDimensionArrayObject().size(), 1u);
 		seq->GetDimensionArrayObject().front()->GetTypeDesc().SetDefaultMetaType(ibValueTypes::TYPE_STRING);
-		seq->GetRegisterRecorder()->GetTypeDesc().AppendMetaType(reference_to_clsid(document->GetMetaID()));
+		seq->GetRegisterRecorder()->GetTypeDesc().AppendMetaType(reference_to_clsid(document->GetMetaID(), clsid_metaclass(document->GetClassType())));
 		ASSERT_TRUE(seq->HasBorders()) << "the borders' holder is numbered with the sequence";
 
 		// ⭐ RUN IT. A reference read back from a row is created through the configuration's TYPE registry,
@@ -97,8 +103,9 @@ struct SequenceBorderFix : ::testing::Test {
 	void TearDown() override {
 		if (cfg) cfg->CloseDatabase();
 		cfg.reset();
-		if (ibApplicationData::Get() != nullptr)
-			ibApplicationData::DestroyAppDataEnv();
+		ibCompileCode::SetCodeStyle(m_codeStyle);
+		if (ibApplicationInstance::Get() != nullptr)
+			ibApplicationInstance::DestroyAppDataEnv();
 	}
 
 	const ibBackendQueryColumn* Dimension() const {
@@ -136,12 +143,12 @@ struct SequenceBorderFix : ::testing::Test {
 	ibValue NewDocument() const {
 		return ibValue(ibValueReferenceDataObject::Create(cfg.get(), document->GetMetaID(), ibGuid(ibGuid::newGuid())));
 	}
-	static ibValue Moment(const wxDateTime& when, const ibValue& recorder) {
+	static ibValue Moment(const ibDateTime& when, const ibValue& recorder) {
 		return ibValue(new ibValuePointInTime(when, recorder));
 	}
 
 	// What a posting does: the document's registration is written, then the border is told.
-	void Post(const ibValue& recorder, const wxDateTime& when, const wxString& warehouse) {
+	void Post(const ibValue& recorder, const ibDateTime& when, const wxString& warehouse) {
 		std::vector<ibDmlAssign> row;
 		Assign(row, seq->GetRegisterActive()->GetQueryColumn(), ibValue(true));
 		Assign(row, seq->GetRegisterPeriod()->GetQueryColumn(), ibValue(when));
@@ -174,10 +181,10 @@ struct SequenceBorderFix : ::testing::Test {
 	}
 };
 
-const wxDateTime kDay1(1, wxDateTime::Jul, 2025, 10, 0, 0);
-const wxDateTime kDay1Later(1, wxDateTime::Jul, 2025, 15, 0, 0);
-const wxDateTime kDay2(2, wxDateTime::Jul, 2025, 10, 0, 0);
-const wxDateTime kDay3(3, wxDateTime::Jul, 2025, 10, 0, 0);
+const ibDateTime kDay1(2025, 7, 1, 10, 0, 0);
+const ibDateTime kDay1Later(2025, 7, 1, 15, 0, 0);
+const ibDateTime kDay2(2025, 7, 2, 10, 0, 0);
+const ibDateTime kDay3(2025, 7, 3, 10, 0, 0);
 
 } // namespace
 
@@ -268,4 +275,91 @@ TEST(SqliteNumberBinding, OnlyANumberADoubleCannotCarryIsBoundAsAnInteger) {
 	EXPECT_EQ(rs->GetResultLong(2), sixtyBits);
 	statement->CloseResultSet(rs);
 	db->CloseStatement(statement);
+}
+
+// A sequence with nothing but its documents is one border. The register save used to refuse that
+// shape ("Doesn't have any dimension, resource or attribute") and the refusal aborted the whole
+// configuration. An information register with the same empty body is still refused: that table
+// really would have no column of its own.
+TEST(SequenceWithoutDimensions, SavesAndKeepsOneBorderWhileAnEmptyRegisterDoesNot) {
+	wxInitializer wx;
+	if (!wx.IsOk())
+		GTEST_SKIP() << "wxBase init failed (no wxApp host)";
+	if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
+		GTEST_SKIP() << "appData env unavailable headless";
+
+	std::shared_ptr<ibMetaDataConfigurationFile> cfg = ibMetaData::MakeShared<ibMetaDataConfigurationFile>();
+	ibApplicationInstance::Get()->ReplaceActiveMetaData(cfg);
+	struct Release {
+		~Release() {
+			// The active configuration is this test's file config. Destroying the base drops
+			// that reference; ReplaceActiveMetaData does not accept an empty one.
+			ibApplicationInstance::DestroyAppDataEnv();
+		}
+	} release;
+
+	ibValueMetaObjectConfiguration* root = cfg->GetCommonMetaObject();
+	ASSERT_NE(root, nullptr);
+
+	ibValueMetaObject* document = cfg->CreateMetaObject(g_metaDocumentCLSID, root, false);
+	ibValueMetaObjectSequence* seq = dynamic_cast<ibValueMetaObjectSequence*>(
+		cfg->CreateMetaObject(g_metaSequenceCLSID, root, false));
+	ASSERT_NE(document, nullptr);
+	ASSERT_NE(seq, nullptr);
+	ASSERT_TRUE(seq->GetDimensionArrayObject().empty());
+	ASSERT_TRUE(seq->GetResourceArrayObject().empty());
+	ASSERT_TRUE(seq->GetAttributeArrayObject().empty());
+	ASSERT_TRUE(seq->HasBorders());
+
+	// The table is the recorder, the period and the line number. No dimensions does not mean no columns,
+	// and the borders table is the same moment with no key in front of it.
+	ibSchemaSnapshot snapshot;
+	seq->ContributeTables(snapshot);
+	const ibSchemaTable* registrations = nullptr;
+	const ibSchemaTable* borders = nullptr;
+	for (const ibSchemaTable& table : snapshot.Tables()) {
+		if (table.m_name == seq->GetQueryable()->GetQueryTableName())
+			registrations = &table;
+		if (table.m_name == seq->GetBordersTableName())
+			borders = &table;
+	}
+	ASSERT_NE(registrations, nullptr);
+	ASSERT_NE(borders, nullptr);
+	EXPECT_GE(registrations->m_columns.size(), 4u);
+	EXPECT_FALSE(borders->m_columns.empty());
+
+	ibRestructureInfo& ledger = ibMetaDataConfigurationBase::GetRestructureInfo();
+	ledger.Clear();
+
+	// No document bound yet: still a sequence, and the refusal names the recorder, not an empty body.
+	EXPECT_FALSE(seq->OnSaveMetaObject(0));
+	bool namedTheBody = false;
+	bool namedTheRecorder = false;
+	for (const ibRestructureInfo::Entry& entry : ledger) {
+		if (entry.type != ibRestructure::error)
+			continue;
+		if (entry.descr.Contains(wxT("Doesn't have any dimension")))
+			namedTheBody = true;
+		if (entry.descr.Contains(wxT("no recorder")))
+			namedTheRecorder = true;
+	}
+	EXPECT_FALSE(namedTheBody);
+	EXPECT_TRUE(namedTheRecorder);
+
+	seq->GetRegisterRecorder()->GetTypeDesc().AppendMetaType(
+		reference_to_clsid(document->GetMetaID(), clsid_metaclass(document->GetClassType())));
+	ledger.Clear();
+	EXPECT_TRUE(seq->OnSaveMetaObject(0)) << "a sequence with a recorder and no dimensions is one border";
+	EXPECT_FALSE(ledger.HasErrors());
+
+	// The same empty body on an information register is still not a register.
+	ibValueMetaObject* info = cfg->CreateMetaObject(g_metaInformationRegisterCLSID, root, false);
+	ASSERT_NE(info, nullptr);
+	ledger.Clear();
+	EXPECT_FALSE(info->OnSaveMetaObject(0));
+	namedTheBody = false;
+	for (const ibRestructureInfo::Entry& entry : ledger)
+		if (entry.type == ibRestructure::error && entry.descr.Contains(wxT("Doesn't have any dimension")))
+			namedTheBody = true;
+	EXPECT_TRUE(namedTheBody);
 }

@@ -36,13 +36,15 @@
 #include "backend/mcp/mcpServer.h"
 
 #include "backend/appData.h"                        // GetSettingsStorage — where a person's settings live
+#include "backend/appHost.h"                        // the process's backend.conf: the certificate the listener speaks TLS over
+#include "backend/server/listener.h"                // the listener: TLS when backend.conf names a certificate
+#include "backend/utils/sessionToken.h"             // TextEqual - the token compared in constant time
 #include "backend/logger/logger.h"                  // …and ibLog — the registration journal
-#include "backend/diagnostics/journal.h"            // ibJournalInfo — the ENGINE's journal, `mcp` channel
 #include "backend/backend_exception.h"              // an engine refusal arrives as an exception
 #include "backend/query/queryException.h"           // …and the query family says WHERE
 #include "backend/debugger/debugClient.h"           // the bridge list — we ride along on a session
 #include "backend/mcp/mcpDebugBridge.h"
-#include "backend/mcp/mcpMessage.h"
+#include "backend/rpc/rpcMessage.h"
 #include "backend/mcp/mcpTool.h"
 #include "backend/metaCollection/metaIntrospect.h"  // ibMetaTypeResolver
 #include "backend/metadataConfiguration.h"
@@ -71,7 +73,7 @@
 #	define _SSIZE_T_DEFINED
 #endif
 
-#include "httplib.h"
+#include <cpp-httplib/httplib.h>
 
 namespace {
 
@@ -167,16 +169,66 @@ public:
 	// listen_after_bind is what the thread then runs.
 	bool Bind(wxString& refusal)
 	{
-		m_server.set_payload_max_length(kMaxRequestBytes);
-		m_server.set_tcp_nodelay(true);
+		// THE TRANSPORT IS THE PROCESS'S (server/listener.h): TLS when backend.conf names a certificate, plain
+		// on this machine's own addresses only - an assistant edits a configuration, and a token sent in the
+		// clear across a network is a token given away.
+		try {
+			m_server = ibMakeListener(m_settings.m_address, ibApplicationHost::Get()->GetTlsFiles());
+		}
+		catch (const ibBackendException& err) {
+			refusal = wxString::Format(_("Assistant access did not start: %s"), err.GetErrorDescription());
+			// Said in the journal as well as to the caller: the designer shows it in its messages pane, the
+			// application server writes its own line - and the transport refusing is the one start-up fact
+			// an operator reads the journal for.
+			ibJournalWarning(wxT("mcp"), wxT("assistant access did not start: %s"), err.GetErrorDescription());
+			return false;
+		}
+		m_server->set_payload_max_length(kMaxRequestBytes);
+		m_server->set_tcp_nodelay(true);
+
+		// 🛑🛑 ONE LISTENER PER PORT, SAID TO THE OPERATING SYSTEM — because on Windows the default
+		// does NOT say it. httplib asks for SO_REUSEADDR (there is no SO_REUSEPORT there), and on
+		// Windows that option means something else than it does everywhere else: it lets a SECOND
+		// socket bind a port another process is already listening on, and WHICH OF THEM a connection
+		// reaches is undefined.
+		//
+		// Measured 2026-09-23, two designers on two different bases: netstat listed BOTH of them
+		// LISTENING on 127.0.0.1:3737, both believed their server was up, and both showed the
+		// endpoint in the status bar. An assistant connecting to that port then edits whichever
+		// base answered — silently, and not necessarily the one the person is looking at. A wrong
+		// configuration written confidently is the worst outcome this server has.
+		//
+		// SO_EXCLUSIVEADDRUSE is the Windows way to say "this port is mine": the second bind then
+		// FAILS, which is what the refusal below is written for and what the designer already knows
+		// how to report. Everywhere else the default is right and is left alone.
+#ifdef _WIN32
+		// The socket type is httplib's own and is not spelled here: a generic lambda converts to its
+		// SocketOptions whatever that turns out to be, and the option itself is the OPERATING
+		// SYSTEM's, asked for directly rather than through a helper of the library's.
+		m_server->set_socket_options([](auto sock) {
+			const int yes = 1;
+			::setsockopt((SOCKET)sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+				reinterpret_cast<const char*>(&yes), sizeof(yes));
+		});
+#endif
 
 		Route();
 
 		const std::string host = std::string(m_settings.m_address.utf8_str());
 
-		if (!m_server.bind_to_port(host, (int)m_settings.m_port)) {
+		// ⭐ THE CONSEQUENCE FIRST, THEN THE CAUSE. This said only "port 3737 is already taken",
+		// which is true and leaves the reader to work out for themselves that the assistant is
+		// therefore NOT LISTENING — and the symptom on the other side is a client that cannot
+		// connect, which looks exactly like the access being switched off (2026-09-23: two
+		// designers open, the second one silently without a server).
+		//
+		// ⚠ AND IT NAMES THE LIKELY HOLDER. Another designer already open is the ordinary reason,
+		// not a fault, so the message says so rather than leaving a person looking for one.
+		if (!m_server->bind_to_port(host, (int)m_settings.m_port)) {
 			refusal = wxString::Format(
-				_("Port %u on %s is already taken"),
+				_("Assistant access did not start: port %u on %s is already taken.\n\n"
+				  "Another designer is probably open and holding it - only one can. "
+				  "Close it, or give this one a port of its own in Tools > Options > Assistant access."),
 				(unsigned)m_settings.m_port, m_settings.m_address);
 			return false;
 		}
@@ -188,7 +240,7 @@ public:
 	// thread that serves the bound socket cannot half-succeed.
 	void Run()
 	{
-		m_thread = std::thread([this] { m_server.listen_after_bind(); });
+		m_thread = std::thread([this] { m_server->listen_after_bind(); });
 	}
 
 	// STOPPED IN THE ORDER THAT LETS EVERYTHING LEAVE.
@@ -205,7 +257,8 @@ public:
 		}
 		m_streamWake.notify_all();
 
-		m_server.stop();
+		if (m_server)
+			m_server->stop();
 
 		if (m_thread.joinable())
 			m_thread.join();
@@ -259,7 +312,10 @@ private:
 		if (!given.StartsWith(wxT("Bearer ")))
 			return false;
 
-		return given.Mid(7).Trim(true).Trim(false) == expected;
+		// In constant time, as the session's token is compared: a comparison that stops at the first wrong
+		// byte tells a caller timing it how many bytes were right.
+		return ibSessionToken::TextEqual(std::string(given.Mid(7).Trim(true).Trim(false).utf8_str()),
+			std::string(expected.utf8_str()));
 	}
 
 	// ⭐⭐ THE REFUSAL SAYS WHAT IS MISSING AND WHERE IT LIVES — because this is the FIRST thing a
@@ -352,7 +408,7 @@ private:
 
 		// No id: the refusal happens before the body has been read, so there is no call to
 		// answer — which is the shape JSON-RPC allows for exactly this.
-		const wxString text = ibMcpWriteError(ibDataValue(), ibMcpError::UnsupportedVersion,
+		const wxString text = ibRpcWriteError(ibDataValue(), ibRpcError::UnsupportedVersion,
 			wxT("Unsupported protocol version"), &data);
 
 		const wxScopedCharBuffer utf8 = text.utf8_str();
@@ -385,8 +441,8 @@ private:
 		// Matched to the wait in RunTool, which gives the main thread five minutes before it
 		// answers on its own, plus a margin so the transport never gives up FIRST — whoever times
 		// out should be the one that can explain why.
-		m_server.set_read_timeout(std::chrono::minutes(6));
-		m_server.set_write_timeout(std::chrono::minutes(6));
+		m_server->set_read_timeout(std::chrono::minutes(6));
+		m_server->set_write_timeout(std::chrono::minutes(6));
 
 		// ⚠ AND HOW LONG A CONNECTION MAY SIT IDLE, which is the half that actually bit. httplib
 		// closes a kept-alive connection after FIVE SECONDS of silence
@@ -398,9 +454,9 @@ private:
 		//
 		// This server exists to be addressed occasionally and thought about in between. Idle is its
 		// normal state, not a sign the caller has gone.
-		m_server.set_keep_alive_timeout(std::chrono::minutes(10));
+		m_server->set_keep_alive_timeout(std::chrono::minutes(10));
 		// A POST IS A QUESTION: one JSON-RPC message in, one answer out.
-		m_server.Post("/", [this](const httplib::Request& req, httplib::Response& res) {
+		m_server->Post("/", [this](const httplib::Request& req, httplib::Response& res) {
 
 			// ⭐ WHO IS SPEAKING, ASKED FIRST AND ASKED HERE. Before a message is parsed, before a
 			// tool is looked up — an unauthorised caller must not be able to learn what exists,
@@ -466,10 +522,10 @@ private:
 			// unknown method WITHOUT parsing — and that is how a dual-era client decides whether
 			// to retry with another version or fall back to `initialize` entirely. A refusal
 			// answered 200 reads as agreement to a client that only looks at the status.
-			switch ((ibMcpError)refusalCode) {
-				case ibMcpError::UnsupportedVersion:                       // retry with another version
-				case ibMcpError::HeaderMismatch: res.status = 400; break;  // the two sources disagree
-				case ibMcpError::MethodNotFound: res.status = 404; break;  // nothing here answers to that name
+			switch ((ibRpcError)refusalCode) {
+				case ibRpcError::UnsupportedVersion:                       // retry with another version
+				case ibRpcError::HeaderMismatch: res.status = 400; break;  // the two sources disagree
+				case ibRpcError::MethodNotFound: res.status = 404; break;  // nothing here answers to that name
 				default: break;                                            // 200: the body carries the whole answer
 			}
 
@@ -486,7 +542,7 @@ private:
 
 		// A GET IS AN OFFER TO LISTEN. It asks nothing — it hands the server
 		// somewhere to speak, and is kept open until one side goes away.
-		m_server.Get("/", [this](const httplib::Request& req, httplib::Response& res) {
+		m_server->Get("/", [this](const httplib::Request& req, httplib::Response& res) {
 
 			// ⚠ THE STREAM IS GUARDED TOO, and it matters more here than on the other verb: this
 			// one hands over everything the platform says from the moment it is opened — what is
@@ -567,7 +623,7 @@ private:
 	ibMcpSettings m_settings;
 	ibSession*    m_session = nullptr;
 
-	httplib::Server m_server;
+	std::unique_ptr<httplib::Server> m_server;   // the listener (server/listener.h): TLS or plain, made in Bind
 	std::thread     m_thread;
 
 	// The way out. Filled by whoever has something to say (the UI thread, a tool)
@@ -583,7 +639,8 @@ private:
 //---------------------------------------------------------------------------
 // the subsystem
 //---------------------------------------------------------------------------
-ibMcpServer::ibMcpServer(ib::AppDataCtorToken)
+ibMcpServer::ibMcpServer(ib::AppDataCtorToken owner) :
+	m_applicationInstance(owner.GetApplicationInstance())
 {
 	// Empty, and still out of line — see the note in the header: the listener is
 	// incomplete there, and an inline constructor would need its destructor.
@@ -617,13 +674,14 @@ public:
 
 	void Watch(ibMetaData* metaData)
 	{
-		if (m_watched == metaData)
+		if (m_watched.get() == metaData)
 			return;
 
 		if (m_watched != nullptr)
 			m_watched->RemoveNotifier(this);
 
-		m_watched = metaData;
+		// Off its list first, then let go — the last holder closes it (ibMetaData::MakeShared).
+		m_watched = metaData != nullptr ? metaData->shared_from_this() : nullptr;
 
 		if (m_watched != nullptr)
 			m_watched->AddNotifier(this);
@@ -743,7 +801,9 @@ private:
 	}
 
 	ibMcpServer* const m_server;
-	ibMetaData*        m_watched = nullptr;
+	// The configuration whose list it is on — HELD, as whoever works in a metadata holds it (metaData.h), so it goes
+	// after the bridge lets go of it, never under it: the session that opened it may leave first.
+	std::shared_ptr<ibMetaData> m_watched;
 
 	// The stage not yet said, waiting to learn whether it stands alone — see MetaObjectChanged.
 	ibMetaID           m_heldId = 0;
@@ -753,6 +813,11 @@ private:
 	wxDECLARE_NO_COPY_CLASS(ibMcpMetaBridge);
 };
 
+ibMetaDataConfigurationBase* ibMcpServer::GetMetaData() const
+{
+	return m_session != nullptr ? m_session->GetMetaData() : nullptr;
+}
+
 void ibMcpServer::WatchMetadata()
 {
 	if (m_metaBridge == nullptr)
@@ -760,8 +825,8 @@ void ibMcpServer::WatchMetadata()
 
 	// The open configuration, or nothing — a server outlives any one configuration and must not
 	// keep a subscription on one that has been closed.
-	m_metaBridge->Watch(activeMetaData != nullptr && activeMetaData->IsConfigOpen()
-		? activeMetaData : nullptr);
+	ibMetaDataConfigurationBase* const metaData = GetMetaData();
+	m_metaBridge->Watch(metaData != nullptr && metaData->IsConfigOpen() ? metaData : nullptr);
 }
 
 ibMcpServer::~ibMcpServer()
@@ -791,7 +856,7 @@ ibSettingsKey KeyFor(const ibSession* session)
 
 bool ibMcpServer::LoadSettings(ibSession* session)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage(m_applicationInstance);
 	if (storage == nullptr)
 		return false;
 
@@ -828,7 +893,7 @@ bool ibMcpServer::LoadSettings(ibSession* session)
 
 bool ibMcpServer::SaveSettings(ibSession* session) const
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage(m_applicationInstance);
 	if (storage == nullptr)
 		return false;
 
@@ -912,6 +977,7 @@ bool ibMcpServer::Start(ibSession* session, wxString& refusal)
 	m_session  = session;
 	m_listener = std::move(listener);
 	m_running.store(true);
+	ibJournalInfo(wxT("mcp"), wxT("assistant access listens on %s"), GetEndpoint());
 
 	// ⭐ WATCHING FROM THE MOMENT IT IS UP, not from the first question somebody asks it. The
 	// subscription is also refreshed at every dispatch, because a configuration can be opened and
@@ -948,24 +1014,17 @@ bool ibMcpServer::Start(ibSession* session, wxString& refusal)
 
 void ibMcpServer::Stop()
 {
-	// 🛑 OFF THE METADATA FIRST, AND BEFORE THE `IsRunning` GATE. The bridge holds a bare pointer to
-	// the configuration it watches, and the process tears down in the other order:
-	// `~ibApplicationData` destroys `m_activeMetaData` (it needs db_query on the way out, so it goes
-	// early) and reaches `m_mcpServer` several fields later — where the bridge's own destructor
-	// called `RemoveNotifier` on a vector that had been freed, and the designer died on every exit
-	// with a configuration open (crash dump 2026-09-08 09:43, `_Adopt_unlocked` inside
-	// `ibMetaData::RemoveNotifier`).
+	// 🛑 OFF THE METADATA FIRST, AND BEFORE THE `IsRunning` GATE. The bridge HOLDS the configuration it
+	// watches, so the configuration goes after the server, never before it. While it held a bare pointer
+	// it was outlived twice: by the base's own release order (crash dump 2026-09-08 09:43,
+	// `_Adopt_unlocked` inside `ibMetaData::RemoveNotifier`), and by the session that opened it — the
+	// thin designer's logout let go of its configuration before the base closed, and this line called
+	// `RemoveNotifier` on a freed list (2026-10-16).
 	//
-	// The subscription comes off HERE because this is the pre-dtor hook `~ibApplicationData` already
-	// calls first (step 0), while everything the server points at is still alive — the same
-	// arrangement the file's teardown contract uses for every other subsystem. Unconditional and
+	// Let go HERE because this is the pre-dtor hook `ibApplicationInstance::Close` calls first (step 0),
+	// while the pool and the registry a closing configuration still asks for are alive. Unconditional and
 	// idempotent: the server can be watching a configuration while switched off, so the gate below
 	// must not be able to skip it.
-	//
-	// ⚠ The third instance this week of an owner outlived by a bare back-pointer (the value table's
-	// row, its column collection, and now this). Where the owner cannot hold the watcher and the
-	// watcher cannot hold the owner, someone has to SAY GOODBYE — and it must be said at a moment
-	// that is reached on every road, not only the tidy one.
 	if (m_metaBridge != nullptr)
 		m_metaBridge->Watch(nullptr);
 
@@ -1012,7 +1071,8 @@ wxString ibMcpServer::GetEndpoint() const
 	if (!IsRunning())
 		return wxEmptyString;
 
-	return wxString::Format(wxT("http://%s:%u/"), m_settings.m_address, (unsigned)m_settings.m_port);
+	return wxString::Format(wxT("%s://%s:%u/"), ibApplicationHost::Get()->GetTlsFiles().IsNamed() ? wxT("https") : wxT("http"),
+		m_settings.m_address, (unsigned)m_settings.m_port);
 }
 
 void ibMcpServer::AddNotifier(ibMcpNotifier* notifier)
@@ -1020,6 +1080,7 @@ void ibMcpServer::AddNotifier(ibMcpNotifier* notifier)
 	if (notifier == nullptr)
 		return;
 
+	std::lock_guard<std::mutex> lock(m_notifiersMutex);
 	for (const ibMcpNotifier* registered : m_notifiers)
 		if (registered == notifier)
 			return;
@@ -1029,6 +1090,7 @@ void ibMcpServer::AddNotifier(ibMcpNotifier* notifier)
 
 void ibMcpServer::RemoveNotifier(ibMcpNotifier* notifier)
 {
+	std::lock_guard<std::mutex> lock(m_notifiersMutex);
 	m_notifiers.erase(
 		std::remove(m_notifiers.begin(), m_notifiers.end(), notifier),
 		m_notifiers.end());
@@ -1094,7 +1156,7 @@ void ibMcpServer::Say(const wxString& text)
 		params.SetValue(wxT("logger"), wxString(wxT("chat")));
 		params.SetValue(wxT("data"), text);
 
-		m_listener->WriteToStream(ibMcpRenderNode(note));
+		m_listener->WriteToStream(ibRpcRenderNode(note));
 	}
 }
 
@@ -1128,7 +1190,7 @@ void ibMcpServer::Note(const wxString& text)
 		params.SetValue(wxT("logger"), wxString(wxT("metadata")));
 		params.SetValue(wxT("data"), text);
 
-		m_listener->WriteToStream(ibMcpRenderNode(note));
+		m_listener->WriteToStream(ibRpcRenderNode(note));
 	}
 }
 
@@ -1143,12 +1205,20 @@ std::vector<wxString> ibMcpServer::TakeNoted()
 
 std::vector<wxString> ibMcpServer::TakeSaid()
 {
-	std::lock_guard<std::mutex> lock(m_saidMutex);
-
-	// TAKEN, not read: two clients asking would otherwise both answer the same
-	// question, and the person would get two replies to one message.
 	std::vector<wxString> taken;
-	taken.swap(m_said);
+	{
+		std::lock_guard<std::mutex> lock(m_saidMutex);
+
+		// TAKEN, not read: two clients asking would otherwise both answer the same
+		// question, and the person would get two replies to one message.
+		taken.swap(m_said);
+	}
+
+	// ⭐ AND THE WINDOWS ARE TOLD IT WAS — "waiting for an assistant to collect it" ends the moment one has. A window
+	// that is drawn only when its client asks (the thin designer's) has no timer to ask PendingCount by, and hears it
+	// here. Nothing to show: not a line of the transcript.
+	if (!taken.empty())
+		Publish(wxT("taken"), wxEmptyString, wxEmptyString);
 	return taken;
 }
 
@@ -1173,8 +1243,9 @@ wxString ibMcpServer::Greeting() const
 
 	// WHAT IS OPEN, because that is what an assistant would be working on and what makes the
 	// line worth reading rather than a status light.
-	if (activeMetaData != nullptr && activeMetaData->IsConfigOpen())
-		if (const ibValueMetaObject* root = activeMetaData->GetCommonMetaObject())
+	const ibMetaDataConfigurationBase* const metaData = GetMetaData();
+	if (metaData != nullptr && metaData->IsConfigOpen())
+		if (const ibValueMetaObject* root = metaData->GetCommonMetaObject())
 			out += wxString::Format(_(" Configuration '%s' is open."), root->GetName());
 
 	// ⚠ AND WHETHER ANYBODY IS ACTUALLY THERE. "Running" is not "connected", and a person waiting
@@ -1276,7 +1347,7 @@ bool ibMcpServer::AskModel(const wxString& question, wxString& refusal)
 	// what comes back is shown in a window, not saved to a file.
 	params.AddField(wxT("maxTokens"), ibDataValue::Int(4096));
 
-	m_listener->WriteToStream(ibMcpRenderNode(ask));
+	m_listener->WriteToStream(ibRpcRenderNode(ask));
 
 	// Shown as asked the moment it is asked. The answer arrives later, through Answer() → Reply,
 	// and a window that showed nothing in between would look like the question was swallowed.
@@ -1302,7 +1373,7 @@ bool ibMcpServer::AskModel(const wxString& question, wxString& refusal)
 // ⭐ NOTHING HAD TO BE BUILT. ibGUISession already holds an ibWorkerPoolGUI whose Submit hands the
 // task to wxTheApp::CallAfter — the main loop, which is where a click arrives — and it runs a task
 // INLINE when the caller is already on that thread, so nothing that worked before pays for this.
-// The pool is asked of the SESSION, so a headless host (daemon, tests) answers null and the tool
+// The pool is asked of the SESSION, so a headless host (appserver, tests) answers null and the tool
 // runs here, which is correct: there is no UI thread to reach.
 //
 // ⚠ THE STATE IS SHARED, NOT CAPTURED BY REFERENCE. A timeout does not cancel the task — it only
@@ -1359,8 +1430,11 @@ bool ibMcpServer::RunTool(const class ibMcpTool* tool, const ibDataNode& argumen
 	// then busy until a person clicks, and nobody is watching this socket. Long enough for real
 	// work, finite so a forgotten dialog is answered instead of hung on.
 	if (done.wait_for(std::chrono::minutes(5)) != std::future_status::ready) {
-		ibJournalError(wxT("mcp"), wxT("%s: the main thread did not take it within five minutes - "
-			"the call is still queued and will run"), toolName);
+		// ⚠ A WARNING — the journal's word for "nobody has to be stopped for this". Written as an error it
+		// put a modal "Designer Error" box (and a dump) on top of the very dialog the call was waiting
+		// behind, in front of a person who had pressed nothing (2026-09-28).
+		ibJournalWarning(wxT("mcp"), wxT("%s: not finished within five minutes - most likely waiting behind "
+			"a dialog; the call still runs when it is answered"), toolName);
 
 		// 🛑 AND THIS IS NOT A REFUSAL, WHICH IS THE WHOLE POINT OF SAYING SO OUT LOUD. The work is
 		// queued and WILL run; what expired is our patience, not the call. Reported as an error it
@@ -1400,6 +1474,7 @@ bool ibMcpServer::RunTool(const class ibMcpTool* tool, const ibDataNode& argumen
 
 void ibMcpServer::Publish(const wxString& method, const wxString& request, const wxString& answer)
 {
+	std::lock_guard<std::mutex> lock(m_notifiersMutex);
 	for (ibMcpNotifier* notifier : m_notifiers) {
 		try {
 			notifier->OnMcpExchange(method, request, answer);
@@ -1571,11 +1646,20 @@ static wxString ibMcpArgumentsOnOffer(const ibMcpTool* tool, const wxString& giv
 //
 //---------------------------------------------------------------------------
 
-void ibMcpDescribePlatform(ibDataNode& into)
+void ibMcpDescribePlatform(const ibApplicationInstance* applicationInstance, ibDataNode& into)
 {
 	into.AddField(wxT("build"), ibDataValue::Int((s64)GetBuildId()));
 
-	const ibUserInfo& who = appData->GetUserInfo();
+	// ⭐⭐ AND WHICH BASE THIS IS. Every tool here answers for the process that happens to hold the port,
+	// and two designers can stand open on two different bases — so an answer naming the configuration but
+	// not the base lets a caller work in the wrong one and never learn it from anything but the journal
+	// (2026-09-22: a print form, a command and an applied configuration, all built in the base somebody
+	// else had open). Where the base lives is said beside it: a Firebird folder, or a PostgreSQL server's database.
+	into.SetValue(wxT("connection"), applicationInstance->GetDatabaseDescription());
+	if (!applicationInstance->GetFile().IsEmpty())
+		into.SetValue(wxT("base"), applicationInstance->GetFile());
+
+	const ibUserInfo& who = applicationInstance->GetUserInfo();
 
 	if (!who.IsOk()) {
 
@@ -1617,7 +1701,8 @@ void ibMcpDescribePlatform(ibDataNode& into)
 			user.SetValue(wxT("language"), who.m_strLanguageName);
 	}
 
-	ibMetaDataConfigurationBase* metaData = activeMetaData;
+	// The configuration of the session this is asked in — as the user above is that session's.
+	ibMetaDataConfigurationBase* metaData = ibApplicationInstance::GetActiveMetaData();
 
 	if (metaData == nullptr || !metaData->IsConfigOpen()) {
 		into.AddField(wxT("configurationOpen"), ibDataValue::Bool(false));
@@ -1849,7 +1934,7 @@ namespace {
 const size_t kOrientationNotesLimit = 20000;
 
 
-wxString BuildOrientation()
+wxString BuildOrientation(const ibApplicationInstance* applicationInstance)
 {
 	wxString out;
 
@@ -1866,9 +1951,9 @@ wxString BuildOrientation()
 	//
 	// ⚠ THE PASSWORD FIELD IS IN THE SAME STRUCTURE and is deliberately not touched. Nothing about
 	// what a caller may do needs it.
-	// ⚠ Through `appData`, not the class: GetUserInfo is an instance method — who is logged in is
+	// ⚠ Through the base, not the class: GetUserInfo is an instance method — who is logged in is
 	// a fact about a RUNNING application, not about the type.
-	const ibUserInfo& who = appData->GetUserInfo();
+	const ibUserInfo& who = applicationInstance->GetUserInfo();
 
 	if (who.IsOk()) {
 
@@ -1986,7 +2071,8 @@ wxString BuildOrientation()
 		<< wxT("And what you DID is kept for you - `journal_read` says what was actually done, and ")
 		<< wxT("tells your changes from somebody else's.\n\n");
 
-	ibMetaDataConfigurationBase* metaData = activeMetaData;
+	// The configuration of the session this is asked in — as the user above is that session's.
+	ibMetaDataConfigurationBase* metaData = ibApplicationInstance::GetActiveMetaData();
 
 	if (metaData == nullptr || !metaData->IsConfigOpen()) {
 		out << wxT("NO CONFIGURATION IS OPEN in this designer yet.\n");
@@ -2370,14 +2456,14 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 	// the first attempt and it failed on a space: the writer emits `"code": -32020`
 	// and the search looked for `"code":-32020`.
 	if (outErrorCode != nullptr) *outErrorCode = 0;
-	const auto refuse = [&](const ibDataValue& id, ibMcpError code, const wxString& text,
+	const auto refuse = [&](const ibDataValue& id, ibRpcError code, const wxString& text,
 		const ibDataNode* data = nullptr) -> wxString {
 		if (outErrorCode != nullptr) *outErrorCode = (int)code;
-		return ibMcpWriteError(id, code, text, data);
+		return ibRpcWriteError(id, code, text, data);
 	};
 	// ⭐ IT MAY NOT BE A CALL AT ALL. Once the server can ask the client something, the same
 	// endpoint starts receiving both — and they are told apart by one fact: a request names a
-	// method, a response does not (mcpMessage.h). This has to be asked FIRST, because reading a
+	// method, a response does not (rpcMessage.h). This has to be asked FIRST, because reading a
 	// response as a request finds no method and answers "no method named ''" to what was actually
 	// an answer to our own question.
 	{
@@ -2385,7 +2471,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		wxString    payload;
 		bool        wasError = false;
 
-		if (ibMcpParseResponse(request, answeringId, payload, wasError)) {
+		if (ibRpcParseResponse(request, answeringId, payload, wasError)) {
 
 			// THE MODEL ANSWERED. It goes where every other side of this conversation goes — into
 			// the window, through Reply — rather than back to whoever asked, who by design did not
@@ -2399,14 +2485,14 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		}
 	}
 
-	ibMcpRequest parsed;
+	ibRpcRequest parsed;
 	wxString     error;
 
-	if (!ibMcpParseRequest(request, parsed, error)) {
+	if (!ibRpcParseRequest(request, parsed, error)) {
 		// A malformed message IS worth a line — but the line says what went
 		// wrong, not what the bytes were.
 		Publish(wxT("did"), wxString::Format(_("unreadable message: %s"), error), wxEmptyString);
-		return ibMcpWriteError(ibDataValue(), ibMcpError::Parse, error);
+		return ibRpcWriteError(ibDataValue(), ibRpcError::Parse, error);
 	}
 
 	// ⭐⭐ WHICH ERA IS SPEAKING, decided before the method is looked at — because the answer
@@ -2430,12 +2516,12 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		// the header, this server executes on the body. A request where they differ is the one
 		// that gets past the first and is carried out by the second.
 		if (!headers.m_protocolVersion.IsEmpty() && headers.m_protocolVersion != asked) {
-			return refuse(parsed.m_id, ibMcpError::HeaderMismatch,
+			return refuse(parsed.m_id, ibRpcError::HeaderMismatch,
 				wxString::Format(wxT("MCP-Protocol-Version header says '%s' and the body says '%s'"),
 					headers.m_protocolVersion, asked));
 		}
 		if (!headers.m_method.IsEmpty() && headers.m_method != parsed.m_method) {
-			return refuse(parsed.m_id, ibMcpError::HeaderMismatch,
+			return refuse(parsed.m_id, ibRpcError::HeaderMismatch,
 				wxString::Format(wxT("Mcp-Method header says '%s' and the body calls '%s'"),
 					headers.m_method, parsed.m_method));
 		}
@@ -2452,7 +2538,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 			// The SAME refusal the header check answers with, from the same list — the only
 			// difference is that here there is a call to answer, so it carries the id.
 			const ibDataNode data = SupportedVersions(asked);
-			return refuse(parsed.m_id, ibMcpError::UnsupportedVersion,
+			return refuse(parsed.m_id, ibRpcError::UnsupportedVersion,
 				wxT("Unsupported protocol version"), &data);
 		}
 	}
@@ -2481,9 +2567,9 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		serverInfo.SetValue(wxT("version"), wxString::Format(wxT("build %d"), GetBuildId()));
 
 		// The same orientation text initialize hands over - one source, two doors.
-		result.SetValue(wxT("instructions"), BuildOrientation());
+		result.SetValue(wxT("instructions"), BuildOrientation(m_applicationInstance));
 
-		return ibMcpWriteResult(parsed.m_id, result);
+		return ibRpcWriteResult(parsed.m_id, result);
 	}
 
 	wxString answer;
@@ -2588,7 +2674,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		// place this is in a few lines; the notes themselves are NOT inlined, because they can run
 		// to pages and this is read in full at every single connection. It says they exist and
 		// what reads them, which is the part that cannot be guessed.
-		result.SetValue(wxT("instructions"), BuildOrientation());
+		result.SetValue(wxT("instructions"), BuildOrientation(m_applicationInstance));
 
 		// ⭐ THE PERSON IS TOLD SOMEBODY ARRIVED. Until now a client could connect, read the whole
 		// configuration and start working, and the window in front of the person showed nothing
@@ -2609,7 +2695,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 
 		Publish(wxT("did"), arrival + wxT("."), wxEmptyString);
 
-		answer = ibMcpWriteResult(parsed.m_id, result);
+		answer = ibRpcWriteResult(parsed.m_id, result);
 	}
 	// ⭐⭐ THE MENU A PERSON SEES, AND IT IS NINE ENTRIES RATHER THAN SIXTY-SEVEN.
 	//
@@ -2677,7 +2763,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 
 		ibDataNode result;
 		result.AddField(wxT("prompts"), ibDataValue::Array(prompts));
-		answer = ibMcpWriteResult(parsed.m_id, result);
+		answer = ibRpcWriteResult(parsed.m_id, result);
 	}
 	// ⭐ AND ONE ENTRY, WHOLE. The corpus is prose meant to be read by whoever is deciding — so the
 	// message is the text as it stands, not a summary of it: a prompt that paraphrases the thing it
@@ -2706,7 +2792,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 			for (const std::pair<wxString, wxString>& each : ibMcpPatternIndex())
 				names << (names.IsEmpty() ? wxT("") : wxT(", ")) << each.first;
 
-			answer = refuse(parsed.m_id, ibMcpError::InvalidParams,
+			answer = refuse(parsed.m_id, ibRpcError::InvalidParams,
 				wanted.IsEmpty()
 					? ibMcpText("Say which entry: `pattern` takes a `name` argument.")
 					: wxString::Format(
@@ -2728,7 +2814,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 			result.AddField(wxT("messages"),
 				ibDataValue::Array({ ibDataValue::Child(message) }));
 
-			answer = ibMcpWriteResult(parsed.m_id, result);
+			answer = ibRpcWriteResult(parsed.m_id, result);
 		}
 	}
 	else if (parsed.m_method == wxT("tools/list")) {
@@ -2755,7 +2841,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		}
 
 		result.AddField(wxT("tools"), ibDataValue::Array(tools));
-		answer = ibMcpWriteResult(parsed.m_id, result);
+		answer = ibRpcWriteResult(parsed.m_id, result);
 	}
 	else if (parsed.m_method == wxT("tools/call")) {
 
@@ -2817,10 +2903,10 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		const ibMcpTool* tool = envelopeRefusal.IsEmpty() ? ibFindMcpTool(name) : nullptr;
 
 		if (!envelopeRefusal.IsEmpty()) {
-			answer = ibMcpWriteError(parsed.m_id, ibMcpError::InvalidParams, envelopeRefusal);
+			answer = ibRpcWriteError(parsed.m_id, ibRpcError::InvalidParams, envelopeRefusal);
 		}
 		else if (tool == nullptr) {
-			answer = refuse(parsed.m_id, ibMcpError::MethodNotFound,
+			answer = refuse(parsed.m_id, ibRpcError::MethodNotFound,
 				wxString::Format(wxT("No tool named '%s'"), name));
 		}
 		else {
@@ -3023,7 +3109,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 			catch (const ibBackendAccessException& e)    { kind = wxT("access");    refusal = e.GetErrorDescription(); }
 			catch (const ibBackendLockException& e)      { kind = wxT("lock");      refusal = e.GetErrorDescription(); }
 			catch (const ibBackendInterruptException& e) { kind = wxT("interrupt"); refusal = e.GetErrorDescription(); }
-			catch (const ibBackendException& e)          { kind = wxT("platform");  refusal = e.GetErrorDescription(); }
+			catch (const ibCoreException& e)          { kind = wxT("platform");  refusal = e.GetErrorDescription(); }
 			catch (const std::exception& e)              { kind = wxT("internal");  refusal = wxString::FromUTF8(e.what()); }
 			catch (...) {
 				kind = wxT("unknown");
@@ -3046,7 +3132,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 			// reads as "CatalogRef.Goods" rather than as a number that means
 			// nothing on the other side of the socket.
 			wxString text = ok
-				? ibMcpRenderNode(payload, ibMetaTypeResolver(activeMetaData))
+				? ibRpcRenderNode(payload, ibMetaTypeResolver(GetMetaData()))
 				: refusal;
 
 			// ⭐⭐ SAID ONCE IS NOT SAID. The orientation asks a client to introduce itself in the
@@ -3158,10 +3244,11 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 					// per-cell and per-object, and there may be hundreds. A caller that has this
 					// early writes every language as it goes, which costs nothing extra when the one
 					// writing is a model that can translate.
-					if (!m_saidLanguages && activeMetaData != nullptr && activeMetaData->IsConfigOpen()) {
+					ibMetaDataConfigurationBase* const metaData = GetMetaData();
+					if (!m_saidLanguages && metaData != nullptr && metaData->IsConfigOpen()) {
 
 						const std::vector<wxString> languages =
-							ibListMetaObjectNames(activeMetaData, wxT("Language"));
+							ibListMetaObjectNames(metaData, wxT("Language"));
 
 						if (languages.size() > 1) {
 
@@ -3268,7 +3355,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 				toolFruitless = empty(wxT("messages")) && empty(wxT("observed"));
 			}
 
-			answer = ibMcpWriteResult(parsed.m_id, result);
+			answer = ibRpcWriteResult(parsed.m_id, result);
 		}
 	}
 	else if (parsed.m_method == wxT("ping")) {
@@ -3279,7 +3366,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		// where refusing correctly is worse than saying nothing.
 		//
 		// An empty result IS the answer the spec asks for; there is nothing to report.
-		answer = ibMcpWriteResult(parsed.m_id, ibDataNode());
+		answer = ibRpcWriteResult(parsed.m_id, ibDataNode());
 	}
 	else if (parsed.m_method == wxT("logging/setLevel")) {
 
@@ -3293,7 +3380,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		// business, not the gate's.
 		m_logLevel.store(ibMcpLevelRank(level));
 
-		answer = ibMcpWriteResult(parsed.m_id, ibDataNode());
+		answer = ibRpcWriteResult(parsed.m_id, ibDataNode());
 	}
 	else if (!parsed.WantsAnswer()) {
 		// A notification we do not act on — `notifications/initialized`, `notifications/cancelled`
@@ -3301,7 +3388,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		answer = wxEmptyString;
 	}
 	else {
-		answer = refuse(parsed.m_id, ibMcpError::MethodNotFound,
+		answer = refuse(parsed.m_id, ibRpcError::MethodNotFound,
 			wxString::Format(wxT("No method named '%s'"), parsed.m_method));
 	}
 
@@ -3361,7 +3448,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 				// written would bury exactly that.
 				detail = called->GetDetail(toolArguments);
 			}
-			catch (const ibBackendException&) { activity = tool; detail.clear(); }
+			catch (const ibCoreException&) { activity = tool; detail.clear(); }
 			catch (const std::exception&)     { activity = tool; detail.clear(); }
 			catch (...)                       { activity = tool; detail.clear(); }
 		}
@@ -3414,7 +3501,8 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 		// assistant asking whether anything was said — and it arrives on a timer whether or not
 		// anything happened. Logging it would bury the record it exists to keep, which is the
 		// same reason the window does not show it. Everything else goes in, chat included.
-		if (toolRan && ibLog != nullptr) {
+		ibLogger* const journal = ibApplicationInstance::GetLogger(m_applicationInstance);
+		if (toolRan && journal != nullptr) {
 
 			if (!toolFruitless) {
 
@@ -3428,7 +3516,7 @@ wxString ibMcpServer::Answer(const wxString& request, const ibMcpWireHeaders& he
 						line << wxT(": ") << toolRefusal;
 				}
 
-				ibLog->Audit(wxT("assistant"), toolOk ? wxT("mcp.did") : wxT("mcp.refused"), line);
+				journal->Audit(wxT("assistant"), toolOk ? wxT("mcp.did") : wxT("mcp.refused"), line);
 			}
 		}
 	}

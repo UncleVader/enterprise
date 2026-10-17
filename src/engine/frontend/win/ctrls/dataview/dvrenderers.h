@@ -301,6 +301,14 @@ protected:
 	// renderer is required
 	ibDataViewCtrl* GetView() const;
 
+public:
+	// ⭐ A COLUMN'S CELLS IN ONE PAINT PASS — told before the first and after the last (DrawTableContent), so what is
+	// the same for every cell of the column is found once and not per cell: the format a value renderer writes its
+	// cells through (ibDataViewValueRenderer). A PrepareForItem outside a pass — a tooltip, a width fit — comes
+	// without them. Declared LAST: a virtual added mid-class shifts the table under objects built without it.
+	virtual void StartColumn(const ibDataViewModel* WXUNUSED(model), unsigned WXUNUSED(column)) {}
+	virtual void FinishColumn() {}
+
 private:
 	// Called from {Called,Finish}Editing() and dtor to cleanup m_editorCtrl
 	void DestroyEditControl();
@@ -376,6 +384,9 @@ public:
 	// that it can be accessed using GetAttr() from Render() if needed.
 	virtual void SetAttr(const ibDataViewItemAttr& attr) wxOVERRIDE { m_attr = attr; }
 	const ibDataViewItemAttr& GetAttr() const { return m_attr; }
+	// THE ALIGNMENT IN FORCE FOR THIS CELL — the item's own horizontal one (its attribute: a conditional
+	// appearance) over the renderer's and the column's.
+	int GetEffectiveItemAlignment() const;
 
 	// Store the enabled state of the item so that it can be accessed from
 	// Render() via GetEnabled() if needed.

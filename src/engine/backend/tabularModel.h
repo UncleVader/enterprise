@@ -7,8 +7,7 @@
 #include <memory>   // std::shared_ptr (CreateIterator)
 #include <utility>  // std::forward — the two handovers below; transitive on MSVC, not on GCC/Clang
 
-#include "backend/tabularModelView.h"
-
+#include "core/tabular/tabularModelView.h"
 
 #include "backend/standardCommand.h"
 #include "backend/tabularDataObject.h"   // ibTabularDataObject — ibValueModel IS one (the table hop gate)
@@ -18,15 +17,9 @@
 // broken: queryable.h now takes ibComparisonType/ibMetaID from tabularModelView.h (above), NOT tabularModel.h.
 #include "backend/composition/ramComposer.h"   // ibDataRamComposer — ibValueModelStorage holds one BY VALUE
 
-// L3 Selector tree (folded from a flat snapshot) — mirrored into the RAM tree model by
-// ibValueModelRamTreeBase::PopulateFromTree. Full type only needed in tabularModel.cpp.
-class ibSelectorTree;
-
-
 // L3 navigation door a DB model vends over its own rows (the base GetSourceQueryable() return type).
 // Forward-declared here so tabularModel.h names the source-hook without pulling the query layer (no include
 // cycle). RAM models have NO queryable — the composer reads ibRamValueStorage directly.
-class ibBackendQueryable;
 class ibBackendQueryColumn;
 
 // The RAM value-storage — the RAM analog of a queryable (a flat/tree table that OWNS the live nodes). Defined
@@ -35,6 +28,9 @@ class ibRamValueStorage;
 
 // The row identity key returned by GetItemKey (value.h → uniqueKey.h pulled in tabularModel.cpp / the model .cpp's).
 class ibUniqueKey;
+
+// What a column's cells are shown with (GetColumnFormat, body in tabularModel.cpp).
+class ibFormatString;
 
 // WHERE THE CURSOR STANDS ACROSS — the column, as much of one as a command needs, and it is NOT an id.
 // A column may be bound to a HOP — a dotted path walked through a reference ("Product.Vendor.Name") — and a
@@ -61,7 +57,6 @@ struct ibDataViewCommandContext {
 	ibDataViewColumnItem m_column;
 };
 
-
 ///////////////////////////////////////////////////////////////////////////////////
 #define defaultCountPerPage 100
 ///////////////////////////////////////////////////////////////////////////////////
@@ -86,12 +81,19 @@ class BACKEND_API ibDataViewModelProvider : public ibDataViewModel {
 public:
 	virtual ~ibDataViewModelProvider() {}
 	virtual class ibValueModel* GetOwnerValueModel() const = 0;
+
+	// The thread is the model's, the base is the asker's: a fresh thread has no session and no base, and a
+	// read that reaches the database (a presentation, db_query) must reach the one the asking thread works for.
+	virtual void SubmitFetchAsync(std::function<void()> work) override;
 };
 #pragma endregion 
 
 class ibVariantDataValue :
 	public wxVariantData {
 public:
+	// THE VALUE THE CELL HOLDS — for the reader that shows it: a table box's renderer writes it through its
+	// column's format and draws a boolean as a tick.
+	virtual const ibValue& GetValue() const = 0;
 protected:
 	ibVariantDataValue() : wxVariantData() {}
 };
@@ -136,6 +138,8 @@ class BACKEND_API ibValueModel : public ibValueDynamicMembers,
 		{
 		}
 
+		virtual const ibValue& GetValue() const override { return m_cValue; }
+
 		virtual bool Eq(wxVariantData& data) const {
 			ibVariantDataValueImpl* srcData = dynamic_cast<ibVariantDataValueImpl*>(&data);
 			if (srcData != nullptr)
@@ -145,7 +149,7 @@ class BACKEND_API ibValueModel : public ibValueDynamicMembers,
 
 #if wxUSE_STD_IOSTREAM
 		virtual bool Write(wxSTD ostream& str) const {
-			str << m_cValue.GetString();
+			str << m_cValue.GetString().ToWxString();
 			return true;
 		}
 #endif
@@ -154,22 +158,11 @@ class BACKEND_API ibValueModel : public ibValueDynamicMembers,
 			return true;
 		}
 
+		// ONE NAME, whatever the value holds — the one a reader checks before it casts the data to this class.
+		// A name per value type ("bool", "string") is wxWidgets' own, and a reader that trusts it casts to wx's
+		// data class (wxVariant::GetBool does).
 		virtual wxString GetType() const {
-			if (m_cValue.GetType() == ibValueTypes::TYPE_BOOLEAN)
-				return wxT("bool");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_NUMBER)
-				return wxT("number");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_DATE)
-				return wxT("date");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_STRING)
-				return wxT("string");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_VALUE)
-				return wxT("value");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_ENUM)
-				return wxT("enum");
-			else if (m_cValue.GetType() == ibValueTypes::TYPE_OLE)
-				return wxT("ole");
-			return wxT("string");
+			return wxT("value");
 		}
 
 	private:
@@ -222,6 +215,11 @@ class BACKEND_API ibValueModel : public ibValueDynamicMembers,
 		virtual bool IsEnabled(const ibDataViewItem& item,
 			unsigned int col) const {
 			return m_ownerModel->IsEnabled(item, col);
+		}
+
+		// The row's state picture — asked by the control once per row (see ibDataViewModel::GetRowPicture).
+		virtual ibPictureID GetRowPicture(const ibDataViewItem& item) const {
+			return m_ownerModel->GetRowPicture(item);
 		}
 
 		// define hierarchy
@@ -379,6 +377,10 @@ public:
 			// re-deciding it. Read by whoever holds VALUES against the column: a filter's right-hand side.
 			virtual const ibTypeDescription GetColumnTypeValue() const { return GetColumnType(); }
 
+			// THE FORMAT A CELL OF THIS COLUMN IS SHOWN WITH — here the one its type gives; a column that is an
+			// attribute answers with the attribute's, the one written on it first.
+			virtual const ibFormatString& GetColumnFormat() const;
+
 			virtual int GetColumnWidth() const { return wxDVC_DEFAULT_WIDTH; }
 
 			virtual void SetColumnWidth(int width) {};
@@ -396,6 +398,11 @@ public:
 			void FillMembers(ibMemberTable& helper) const;   // bound in ctor (was PrepareNames)
 			virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);
 			virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);
+
+			// WHETHER A PERSON IS OFFERED THIS COLUMN — the functional options of the base. A column that
+			// WRAPS an attribute or a queryable column passes the question on; one that declares itself
+			// (a value table's) has no option over it. Last in the class, so no slot above it moves.
+			virtual bool IsColumnAvailable() const { return true; }
 		};
 	public:
 
@@ -423,6 +430,10 @@ public:
 			ibValueModelColumnInfo* colInfo = GetColumnByID(col);
 			return colInfo != nullptr ? colInfo->GetColumnType() : ibTypeDescription();
 		}
+
+		// …AND THE FORMAT A CELL OF IT IS SHOWN WITH, by the same id and for the same reason — what a table
+		// box's renderer shows a column with when the column has no format of its own.
+		const ibFormatString& GetColumnFormat(unsigned int col) const;
 
 		virtual ibValueModelColumnInfo* GetColumnInfo(unsigned int idx) const = 0;
 		virtual unsigned int GetColumnCount() const = 0;
@@ -995,17 +1006,20 @@ public:
 		//
 		// Identity for paged re-fetch + selection survival: a GROUP node identifies by its dimension-value path;
 		// a DB-list row / FindRowValue stub by its primary-key row-key (ibValue == compares a reference key BY
-		// GUID, so a guid-keyed stub matches a freshly-fetched row); a RAM row survives by its stable pointer, so
-		// it rarely falls to the inherited value-map tail. Mixed kinds never match.
+		// GUID, so a guid-keyed stub matches a freshly-fetched row); a RAM row by its stable pointer alone, never
+		// by the value-map tail. Mixed kinds never match.
 		virtual bool IsEqualTo(const ibDataViewObject& other) const override {
 			const ibComposerNode* o = dynamic_cast<const ibComposerNode*>(&other);
 			if (o == nullptr) return false;
+			// A ROW OF A TABLE IN MEMORY IS ITS OBJECT: the storage keeps the same node across every re-fetch, and a
+			// copied line equals its original in every value — matched by values, two rows would be one.
+			if (!m_selfContained || !o->m_selfContained)
+				return this == o;
 			if (m_heading || o->m_heading)
 				return m_heading == o->m_heading
 				    && m_groupPath == o->m_groupPath && m_subPath == o->m_subPath;
-			// A RAM live row survives selection by its STABLE POINTER (same storage row across re-fetch), so the
-			// value-map fallback is rarely consulted for it; a DB-list copy node identifies by its primary-key
-			// row-key (a guid reference compares BY GUID, so a FindRowValue stub matches a freshly-fetched row).
+			// A DB-list copy node identifies by its primary-key row-key (a guid reference compares BY GUID, so a
+			// FindRowValue stub matches a freshly-fetched row).
 			//
 			// ⚠ …AND BY WHERE IT STANDS. One catalog element may appear under SEVERAL groups (the folder
 			// skeleton is printed once per group), so the row-key alone stopped being an identity the
@@ -1037,7 +1051,9 @@ public:
 			m_valueTable(tableRow.m_valueTable), m_nodeValues(tableRow.m_nodeValues),
 			m_groupPath(tableRow.m_groupPath), m_subPath(tableRow.m_subPath),
 			m_heading(tableRow.m_heading), m_rowKey(tableRow.m_rowKey),
-			m_container(tableRow.m_container), m_selfContained(tableRow.m_selfContained) {
+			m_container(tableRow.m_container), m_selfContained(tableRow.m_selfContained),
+			m_compositionAttr(tableRow.m_compositionAttr != nullptr ? std::make_unique<ibCompositionRowAttr>(*tableRow.m_compositionAttr) : nullptr),
+			m_compositionAttrKnown(tableRow.m_compositionAttrKnown) {
 		}
 
 		// --- composer-fetch ctors (out-of-line: they need ibBackendQueryable's full type / are non-trivial) ---
@@ -1058,6 +1074,13 @@ public:
 		// `subPath` = the folder chain inside a hierarchy rung; empty for an ordinary grouping heading.
 		ibComposerNode(const std::map<ibMetaID, ibValue>& values, const std::vector<ibValue>& groupPath, bool container,
 			std::vector<ibValue> subPath = {});
+		// …AND WHAT ITS CONDITIONAL APPEARANCE DRAWS IT WITH, taken from the fetch's row as it is — the pointer moves,
+		// nothing is converted or copied (see m_compositionAttr). Null where no rule held — and that is the answer
+		// (m_compositionAttrKnown).
+		void TakeCompositionAttr(std::unique_ptr<ibCompositionRowAttr> attr) {
+			m_compositionAttr = std::move(attr);
+			m_compositionAttrKnown = true;
+		}
 
 		// ⭐⭐ WHERE THIS NODE STANDS — the dimension values of the rungs above it, root->this. A GROUP node's
 		// own value is the last of them; a ROW's path is the scope it was fetched under and stops above it.
@@ -1325,6 +1348,30 @@ public:
 		std::vector<ibValue> m_rowKey;                            // DB-list / stub identity: source primary-key value(s)
 		bool m_container = false;                                 // drillable group level / folder — OR'd with !m_children.empty()
 		bool m_selfContained = false;                             // composer copy (value copies, m_valueTable null) — IsAttached -> true
+		// ⭐ …AND WHAT ITS CONDITIONAL APPEARANCE DRAWS IT WITH — the composition's own structure, the row's and each
+		// column's under the id its value is filed under (beside m_nodeValues), moved in from the fetch as it is; the
+		// grid is handed its widget's attribute made from it when it asks (ibValueModel::GetAttrByRow). A row the
+		// walk never read (a table in memory, a crumb above a folder) is asked of by its model.
+		// ⚠ NULL WHERE NO RULE HELD — a node of a list with no conditional appearance carries nothing for it, not
+		// even an empty map (Max, 2026-09-30: "no conditional appearance, nothing to count").
+		std::unique_ptr<ibCompositionRowAttr> m_compositionAttr;
+		// ⭐ …AND WHETHER THAT IS THE ANSWER — the walk read this row against the rules (TakeCompositionAttr), so a
+		// null m_compositionAttr says "none held" rather than "nobody asked". Its model then asks nothing: before this,
+		// every row the walk had found
+		// no rule for was asked again, per visible cell, twice, with the rules made ready each time (2026-09-30: "a list
+		// with a conditional appearance is noticeably slower").
+		bool m_compositionAttrKnown = false;
+
+		// THE ATTRIBUTE OF ONE COLUMN — its own, else the row's; null where the row carries none. (Composition in the
+		// name, as the model's GetCompositionAttrByRow: a model's plain Attr is the grid's widget attribute.)
+		const ibCompositionAttr* GetCompositionAttr(const ibMetaID& id) const {
+			if (m_compositionAttr == nullptr)
+				return nullptr;
+			const auto own = m_compositionAttr->m_columns.find(id);
+			return own != m_compositionAttr->m_columns.end() ? &own->second : &m_compositionAttr->m_line;
+		}
+		bool HasCompositionAttr() const { return m_compositionAttr != nullptr; }
+		bool IsCompositionAttrKnown() const { return m_compositionAttrKnown; }
 	};
 
 	// The universal node IS the tree node — a list is just a childless one. The historical ibValueTreeNode
@@ -1397,10 +1444,19 @@ public:
 	virtual bool SetValueByRow(const wxVariant& variant,
 		const ibDataViewItem& row, unsigned int col) = 0;
 
-	virtual bool GetAttrByRow(const ibDataViewItem& WXUNUSED(row), unsigned int WXUNUSED(col),
-		ibDataViewItemAttr& WXUNUSED(attr)) const {
-		return false;
-	}
+	// ⭐ A ROW'S CONDITIONAL APPEARANCE, handed to the grid as the attribute it draws with — converted, value for value,
+	// from the composition's structure GetCompositionAttrByRow answers with: the one the walk made and the fetch moved
+	// onto the node (ibComposerNode::GetAttr), or, for a row that carries none (a table in memory, a heading folded in
+	// memory), the rules of this model's setting asked of the row now, by the walk's own reading of them
+	// (ibCompositionSayRules): the line's, then the column's own over it. Every model whose rows are composer nodes
+	// answers it here; one that draws otherwise overrides it.
+	virtual bool GetAttrByRow(const ibDataViewItem& row, unsigned int col, ibDataViewItemAttr& attr) const;
+	// …and whether the row has one to ask at all — its node carries one, or the setting declares a rule. Asked first,
+	// so a list with no conditional appearance builds nothing per cell for it.
+	bool HasAttrByRow(const ibDataViewItem& row) const;
+	// …and what it draws a cell with in the composition's own structure (ibCompositionAttr) — what the grid's attribute
+	// is converted from, and what the cell's text is read off (GetValue).
+	bool GetCompositionAttrByRow(const ibDataViewItem& row, unsigned int col, ibCompositionAttr& attr) const;
 
 	virtual bool IsEnabledByRow(const ibDataViewItem& WXUNUSED(row),
 		unsigned int WXUNUSED(col)) const {
@@ -1412,10 +1468,10 @@ public:
 	// THE data accessors (the provider forwards here). They forward to the GetValueByRow/SetValueByRow
 	// extension points. Declared FRESH on the single model (the former pure ibValueModel::GetValue/… are gone
 	// — these concrete versions took their place), so no `override`.
+	// …and what the cell SAYS under its conditional appearance — its text (GetCompositionAttrByRow), laid over
+	// what GetValueByRow read. Only what it shows: the row is untouched.
 	virtual void GetValue(wxVariant& variant,
-		const ibDataViewItem& item, unsigned int col) const {
-		GetValueByRow(variant, item, col);
-	}
+		const ibDataViewItem& item, unsigned int col) const;
 
 	virtual bool SetValue(const wxVariant& variant,
 		const ibDataViewItem& item, unsigned int col) {
@@ -1546,6 +1602,12 @@ public:
 	virtual long GetRowCount() const { return 0; }
 	virtual long GetRow(const ibDataViewItem& /*item*/) const { return wxNOT_FOUND; }
 	virtual ibDataViewItem GetItem(long /*row*/) const { return ibDataViewItem(); }
+
+	// THE ROW'S STATE PICTURE — asked by the control once per row, drawn at the start of its first column
+	// (ibDataViewModel::GetRowPicture; the provider forwards here). The model that knows what its rows are
+	// answers — a dynamic list asks its source, which reads the row's cells; a model whose rows have no state
+	// (a table of values, a tabular section) answers 0 and nothing is drawn.
+	virtual ibPictureID GetRowPicture(const ibDataViewItem& /*item*/) const { return 0; }
 
 #pragma endregion
 };
@@ -1749,6 +1811,13 @@ protected:
 	// those are is the list's business and never has to become this member's.
 	mutable ibDataViewItemArray m_lastPage;
 
+	// THE LAST GROUP LEVEL A FETCH FOLDED — where it stands and the rows it was folded into (RunComposerPage). A group
+	// level comes back WHOLE and is windowed on this side, so the page above or below the one shown is in rows already
+	// read: a scroll of the same level is served from them, the way the snapshot below serves a scroll. A Reset
+	// re-reads, and so does a view generation that moved. Its shape lives beside its one reader (tabularModelDb.cpp).
+	struct FoldedLevel;
+	mutable std::shared_ptr<const FoldedLevel> m_foldedLevel;
+
 	// Whole-list RAM snapshot — ONLY populated when IsDynamicRead() is false. m_snapshotComposer sources from
 	// m_snapshot (bound in the ctor); it re-materialises when the view generation moves past m_snapshotGen (a refresh
 	// / filter / sort change bumps the generation; a scroll does not).
@@ -1770,14 +1839,14 @@ public:
 	// A RAM READ TAKES THE PLAIN THREAD, not a rented run: there is no database on
 	// the other end, so a session and a pooled connection would be minted for
 	// nothing. What it wants is exactly what a plain model gets —
-	// ibDataViewModel::SubmitFetchAsync, the model's own thread, under the same
-	// door lock.
+	// ibDataViewModelProvider::SubmitFetchAsync, the model's own thread working
+	// for the asker's base, under the same door lock.
 	//
 	// Reached through the bridge and QUALIFIED: ibValueModel does not derive
 	// ibDataViewModel, it owns a provider that does — and that provider's override
 	// forwards straight back here, so an unqualified call would loop forever.
 	void SubmitFetchAsync(std::function<void()> work) override {
-		GetDataViewModel()->ibDataViewModel::SubmitFetchAsync(std::move(work));
+		GetDataViewModel()->ibDataViewModelProvider::SubmitFetchAsync(std::move(work));
 	}
 
 	// RAM paged fetch: ComputeOrder over the storage's nodes → window by the anchor → return the LIVE nodes.

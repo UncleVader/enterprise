@@ -8,23 +8,13 @@
 #include "backend/backend.h"
 #include "rowValues.h"
 
-extern BACKEND_API unsigned int GetBuildId();
-
-// THE BUILD, SPELLED OUT: the number above plus when it was actually compiled —
-// "3164 (Sep  2 2026 16:55:03)". The number is the VERSION and is stable across a day of rebuilds,
-// which is right for saying which engine this is and wrong for telling two of them apart; this is
-// for the second question (the bytecode cache key, a banner that has to be exact).
-extern BACKEND_API const char* GetBuildStamp();
-
-#include "guid.h"
-#include "clsid.h"
-#include "fnumber.h"
-#include "fstring.h"
-#include "typeconv.h"
-#include "stringUtils.h"
-
-// The UNDEFINED value type's clsid — the canonical "no concrete type"; base-level so low-level code can name it.
-constexpr ibClassID g_valueUndefinedCLSID = primitive_to_clsid("VL_UNDF");
+#include "core/build.h"   // GetBuildId / GetBuildStamp
+#include "core/guid.h"
+#include "core/core.h"    // the class ids, the ids of the configuration, the kinds of a value
+#include "core/fnumber.h"
+#include "core/fdatetime.h"
+#include "core/fstring.h"
+#include "core/stringUtils.h"
 
 //*******************************************************************************************
 
@@ -40,9 +30,7 @@ constexpr ibClassID g_valueUndefinedCLSID = primitive_to_clsid("VL_UNDF");
 //*                                 Special structures                                      *
 //*******************************************************************************************
 
-#define emptyDate -62135604000000ll
-
-// ⭐⭐ THE MEMBER NUMBER THAT MEANS "NO MEMBER" — the enumeration's emptyDate.
+// ⭐⭐ THE MEMBER NUMBER THAT MEANS "NO MEMBER" — the enumeration's empty date.
 //
 // A member's number is whatever its declaration says: 0, 1, 2 — or 50, 51, 52, or any set at all.
 // What holds for EVERY enumeration is the SIGN: members are NON-NEGATIVE, and the negative range is
@@ -56,44 +44,37 @@ constexpr ibClassID g_valueUndefinedCLSID = primitive_to_clsid("VL_UNDF");
 // the emptiness test alike, so the four cannot drift apart.
 #define emptyEnum -1
 
-// ⭐⭐ WHAT A PARENT MAY BE — ONE declaration with FOUR answers, and every layer asks it by name.
+// ⭐⭐ WHAT A PARENT MAY BE — ONE declaration, and every layer asks it by name. Three MODES are offered:
 //
-//   None            — a FLAT list. No parent at all: the field is gone, not merely unused.
-//   Subordination   — a parent that is DATA: the field exists, is filled and is shown like any other
-//                     attribute, and the list stays FLAT. This is a chart of accounts — an account
-//                     records which account it sits under, and nobody browses it as a tree.
-//   Items           — every element may hold elements; the platform drills into any of them.
-//   FoldersAndItems — items live INSIDE folders: a folder is a container, an item is a leaf.
+//   None       — a FLAT list. No parent at all: the field is gone, not merely unused.
+//   Items      — a TREE OF PEERS: every value is an item, and any item may stand under any other; the
+//                platform drills into any of them. This is a chart of accounts — an account under an
+//                account, a class opening onto its accounts.
+//   Folders    — the same tree with a second kind of value: items live INSIDE folders, a folder is a
+//                container, an item is a leaf.
 //
-// It lives HERE, at the bottom, because three different tiers need the same four answers: the
+// …and one that is no longer offered: ParentOnly — a parent recorded as DATA, the list flat, nothing
+// built on it. A configuration that stored it reads back as it did; nobody chooses it any more (Max,
+// 2026-09-29: "folders, items, and no hierarchy"). The modes were Subordination / Items / FoldersAndItems,
+// and Subordination — the chart's own — was the flat one, so a chart printed as a column of codes.
+//
+// It lives HERE, at the bottom, because three different tiers need the same answers: the
 // metaobject declares it, the query tier reads it off a source, the list decides how to walk it.
 // Each of them used to be handed a BOOLEAN PROJECTION instead — `GetHierarchyColumn() != nullptr`
 // for "is there a parent", `IsItemHierarchy()` for "may an item hold items" — and a projection
-// answers one question while the caller has another. That is how a chart of accounts, which
-// declares Subordination, first lost its hierarchy groupings (the accessor said "no parent") and
-// then grew a tree in its list (the same accessor, corrected, now said "yes" to a caller asking
-// whether to DRILL). One value with four states cannot be misread that way: whoever needs a
-// distinction names the state it turns on.
+// answers one question while the caller has another. That is how a chart of accounts first lost its
+// hierarchy groupings (the accessor said "no parent") and then grew a tree in its list (the same
+// accessor, corrected, now said "yes" to a caller asking whether to DRILL). One value with named
+// states cannot be misread that way: whoever needs a distinction names the state it turns on.
 //
-// ⚠ Stored as its INTEGER — these numbers are the wire. New members APPEND.
+// ⚠ Stored as its INTEGER — these numbers are the wire, and they keep their meaning under the new names.
+// New members APPEND.
 enum ibHierarchyType {
-	eFoldersAndItems = 0,
-	eItems           = 1,
-	eNone            = 2,   // the editor lists them in reading order (see CreateEnumeration), which is free
-	eSubordination   = 3,
+	eFolders    = 0,
+	eParentOnly = 1,   // not offered — see above
+	eNone       = 2,   // the editor lists them in reading order (see CreateEnumeration), which is free
+	eItems      = 3,
 };
-
-typedef int ibRoleID;
-typedef int ibMetaID;
-// A metaId acting as a SOURCE-binding hop (an element of a control's binding
-// path: attribute id, then field / reference / column ids). A distinct name so a
-// binding chain reads as source ids, not as arbitrary metaIds.
-typedef int ibSourceId;
-typedef int ibFormID;
-typedef int ibActionID;
-
-typedef uint64_t ibPictureID;   // same base as ibClassID / u64 — see the note in clsid.h
-typedef unsigned int ibVersionID;
 
 // metaID -> ibValue set of one record object / table row.
 // ibRowValues (sorted vector) — same std::map API & sorted order, but one
@@ -101,37 +82,6 @@ typedef unsigned int ibVersionID;
 // (Alias only — ibValue is forward-declared inline; instantiated at member sites
 // where value.h is complete.)
 typedef ibRowValues<ibMetaID, class BACKEND_API ibValue> ibRowMetaValues;
-
-//*******************************************************************************************
-//*                                 Special enumeration                                     *
-//*******************************************************************************************
-
-// Underlying type fixed at 1 byte: the largest enumerator (TYPE_ITERATOR
-// = 204) fits in unsigned char, and the AOT wire format already narrows
-// m_typeClass to uint8_t (byteCodeAOT.cpp), so this is binary-compatible
-// with persisted bytecode. Shrinks the m_typeClass slot in every ibValue.
-enum ibValueTypes : unsigned char {
-
-	TYPE_EMPTY = 0,
-	TYPE_BOOLEAN = 1,
-	TYPE_NUMBER = 2,
-	TYPE_DATE = 3,
-	TYPE_STRING = 4,
-	TYPE_NULL = 5,
-
-	TYPE_REFFER = 100, // object reference (owned: IncrRef/DecrRef, Reset may delete)
-	TYPE_CONST_REFFER = 101, // read-only reference to a NON-owned object (e.g. a
-	                         // const ibValueMetaObject* from the metadata tree).
-	                         // No ref-count, Reset never deletes it; mutation blocked.
-
-	TYPE_VALUE = 200, // value
-	TYPE_ENUM = 201, // enumeration
-	TYPE_OLE = 202, // ole object
-	TYPE_FUNCTION = 203, // anonymous-function / lambda value (ibValueFunction)
-	TYPE_ITERATOR = 204, // iterator wrapper (ibValueIterator)
-
-	TYPE_LAST,
-};
 
 //*******************************************************************************************
 //*                                 Declare special var                                     *
@@ -153,9 +103,8 @@ enum ibValueTypes : unsigned char {
 #define MAX_PRECISION_NUMBER 32
 //max precision 
 #define MAX_LENGTH_STRING 1024
-//stack guard
-#define MAX_OBJECTS_LEVEL 100
-//max record level 
+// (The stack guard — MAX_OBJECTS_LEVEL — is the translator's, in the core: core/compiler/codeDef.h.)
+//max record level
 #define MAX_REC_COUNT 200
 
 #if defined(_LP64) || defined(__LP64__) || defined(__arch64__) || defined(_WIN64)
@@ -164,23 +113,9 @@ enum ibValueTypes : unsigned char {
 #define MAX_STATIC_VAR 10ll
 #endif 
 
-//*******************************************************************************************
-//*                                 Versions support									    *
-//*******************************************************************************************
+// (The program's version — ibProgramVersion, version_oes_last — is the core's, beside its build: core/build.h.)
 
-#define version_generate(major, minor, release) \
-		( (major * 1000) + (minor * 100) + release )
-
-enum ibProgramVersion {
-	version_oes_1_0_0 = version_generate(1, 0, 0),
-	version_oes_1_0_1 = version_generate(1, 0, 1),
-	version_oes_last  = version_oes_1_0_1
-};
-
-enum ibProgramSyntax {
-	syntax_ves,    // Visual Basic-style ES, a legacy business-scripting dialect — keyword-fenced (Then/Do/EndIf/...).
-	syntax_ces,    // C-style ES — paren conditions, brace bodies, `;` terminators (default).
-};
+// (The program's syntax — ibProgramSyntax — is the core's, beside the language it chooses: core/compiler/codeDef.h.)
 
 // ⭐⭐ WHAT KIND OF EVALUATION IS RUNNING — one value rather than a flag per capability.
 //
@@ -218,11 +153,6 @@ enum ibEvalMode : unsigned char {
 
 //*******************************************************************************************
 
-#define COMPONENT_TYPE_ABSTRACT		 0
-#define COMPONENT_TYPE_METADATA		 COMPONENT_TYPE_ABSTRACT
-
-//*******************************************************************************************
-
 // ⭐ THE TECHNOLOGY JOURNAL, DECLARED IN THE CORE — so `ibJournalInfo(...)` is available in every file
 // of the engine without an include of its own. A diagnostic that has to be arranged for is a
 // diagnostic nobody writes at the moment they need it; this one is simply there, like `_()`.
@@ -230,6 +160,6 @@ enum ibEvalMode : unsigned char {
 // Included LAST, and from here rather than the other way round: journal.h includes this header for
 // BACKEND_API, and the guard above makes that re-entry a no-op, so the pair resolves whichever file
 // is reached first.
-#include "backend/diagnostics/journal.h"
+#include "core/diagnostics/journal.h"
 
 #endif 

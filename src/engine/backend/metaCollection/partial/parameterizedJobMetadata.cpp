@@ -7,7 +7,7 @@
 #include "backend/appData.h"                       // appData->DesignerMode(), GetJobManager
 #include "backend/metaData.h"
 #include "backend/moduleManager/moduleManager.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/system/value/valueDynamicList.h"   // ibCreateHierarchyList / ibCreateFolderList
 #include "backend/userInfo.h"                        // ibUserInfo — the identity the job inherits
 #include "backend/job/jobManager.h"                  // ibJobManager / ibJobDescription
@@ -25,14 +25,17 @@ ibValueMetaObjectParameterizedJob::ibValueMetaObjectParameterizedJob()
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("Filling"), ibContentHelper::eProcedureHelper, { wxT("Source"), wxT("StandartProcessing") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnCopy"), ibContentHelper::eProcedureHelper, { wxT("Source") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("SetNewCode"), ibContentHelper::eProcedureHelper, { wxT("Prefix"), wxT("StandartProcessing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("Filling"), ibContentHelper::eProcedureHelper, { wxT("FillingData"), wxT("StandardProcessing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnCopy"), ibContentHelper::eProcedureHelper, { wxT("CopiedObject") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("SetNewCode"), ibContentHelper::eProcedureHelper, { wxT("Prefix"), wxT("StandardProcessing") });
 
 	// THE HANDLER — in the MANAGER module, taking the row's own reference. The name is deliberately
 	// the same one a predefined job uses (where it takes nothing), so the two kinds are described,
 	// documented and debugged as one thing.
 	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("JobProcessing"), ibContentHelper::eProcedureHelper, { wxT("Job") });
+
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("ChoiceDataGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("ChoiceData"), wxT("Parameters"), wxT("StandardProcessing") });
 }
 
 ibValueMetaObjectParameterizedJob::~ibValueMetaObjectParameterizedJob()
@@ -57,73 +60,73 @@ ibValueMetaObjectFormBase* ibValueMetaObjectParameterizedJob::GetDefaultFormByID
 
 #include "parameterizedJobManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectParameterizedJob::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectParameterizedJob::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectJob(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectJob(this));
 }
 
-ibValueRecordDataObjectHierarchyRef* ibValueMetaObjectParameterizedJob::CreateObjectRefValue(ibObjectMode mode, const ibGuid& guid) const
+ibValuePtr<ibValueRecordDataObjectHierarchyRef> ibValueMetaObjectParameterizedJob::CreateObjectRefValue(ibObjectMode mode, const ibGuid& guid) const
 {
 	ibValueRecordDataObjectParameterizedJob* pDataRef = nullptr;
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (!cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef))
-			return new ibValueRecordDataObjectParameterizedJob(this, guid, mode);
+			pDataRef = new ibValueRecordDataObjectParameterizedJob(this, guid, mode);
 	}
 	else {
 		pDataRef = new ibValueRecordDataObjectParameterizedJob(this, guid, mode);
 	}
 
-	return pDataRef;
+	return ibValuePtr<ibValueRecordDataObjectHierarchyRef>(pDataRef);
 }
 
-ibSourceDataObject* ibValueMetaObjectParameterizedJob::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectParameterizedJob::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormObject:
-		return CreateObjectValue(ibObjectMode::OBJECT_ITEM);
+		return ibSourcePtr<ibSourceDataObject>(CreateObjectValue(ibObjectMode::OBJECT_ITEM));
 	case eFormFolder:
-		return CreateObjectValue(ibObjectMode::OBJECT_FOLDER);
+		return ibSourcePtr<ibSourceDataObject>(CreateObjectValue(ibObjectMode::OBJECT_FOLDER));
 	case eFormList:
-		return ibCreateHierarchyList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn());
+		return ibSourcePtr<ibSourceDataObject>(ibCreateHierarchyList(request, GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn()));
 	case eFormSelect:
-		return ibCreateHierarchyList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice);
+		return ibSourcePtr<ibSourceDataObject>(ibCreateHierarchyList(request, GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice));
 	case eFormFolderSelect:
-		return ibCreateFolderList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice);
+		return ibSourcePtr<ibSourceDataObject>(ibCreateFolderList(request, GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice));
 	}
 
 	return nullptr;
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectParameterizedJob::GetObjectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectParameterizedJob::GetObjectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormObject,
-		ownerControl, CreateObjectValue(ibObjectMode::OBJECT_ITEM), formGuid);
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormObject,
+		ownerControl, CreateObjectValue(ibObjectMode::OBJECT_ITEM));
 }
 
-ibBackendValueForm* ibValueMetaObjectParameterizedJob::GetFolderForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectParameterizedJob::GetFolderForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormFolder,
-		ownerControl, CreateObjectValue(ibObjectMode::OBJECT_FOLDER), formGuid);
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormFolder,
+		ownerControl, CreateObjectValue(ibObjectMode::OBJECT_FOLDER));
 }
 
-ibBackendValueForm* ibValueMetaObjectParameterizedJob::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectParameterizedJob::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormList,
-		ownerControl, ibCreateHierarchyList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn()), formGuid);
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormList,
+		ownerControl, ibCreateHierarchyList(request.m_create, GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn()));
 }
 
-ibBackendValueForm* ibValueMetaObjectParameterizedJob::GetSelectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectParameterizedJob::GetSelectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormSelect,
-		ownerControl, ibCreateHierarchyList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice), formGuid);
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormSelect,
+		ownerControl, CreateSourceObject(request.m_create, eFormSelect));
 }
 
-ibBackendValueForm* ibValueMetaObjectParameterizedJob::GetFolderSelectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectParameterizedJob::GetFolderSelectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormFolderSelect,
-		ownerControl, ibCreateFolderList(GetQueryable(), GetDataIsFolder()->GetQueryColumn(), GetDataPresentationAttribute()->GetQueryColumn(), ibDynamicListView_Choice), formGuid);
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormFolderSelect,
+		ownerControl, CreateSourceObject(request.m_create, eFormFolderSelect));
 }
 #pragma endregion
 
@@ -138,7 +141,7 @@ bool ibValueMetaObjectParameterizedJob::OnCreateMetaObject(ibMetaData* metaData,
 
 	// The job's OWN attributes first — they are declared on this leaf, so this leaf is what gives
 	// them their metadata. An attribute that never got it has no factory behind it, and the first
-	// empty object built from this metatype asserts in CreateValueRef.
+	// empty object built from this metatype asserts in CreateValue.
 	if (!(*m_propertyAttributeActive)->OnCreateMetaObject(metaData, flags) ||
 		!(*m_propertyAttributeSchedule)->OnCreateMetaObject(metaData, flags) ||
 		!(*m_propertyAttributeLastRun)->OnCreateMetaObject(metaData, flags) ||
@@ -266,7 +269,7 @@ bool ibValueMetaObjectParameterizedJob::OnAfterRunMetaObject(int flags)
 
 		// The designer builds the compile value and stops — it must not declare a job.
 		return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(),
-			[this]() -> ibValue* { return CreateObjectValue(ibObjectMode::OBJECT_ITEM); });
+			[this]() -> ibValue { return CreateObjectValue(ibObjectMode::OBJECT_ITEM); });
 	}
 
 	if (!ibValueMetaObjectRecordDataHierarchyMutableRef::OnAfterRunMetaObject(flags))
@@ -350,6 +353,63 @@ void ibValueMetaObjectParameterizedJob::OnRemoveMetaForm(ibValueMetaObjectFormBa
 		m_propertyDefFormSelect->SetValue(wxNOT_FOUND);
 	else if (metaForm->GetTypeForm() == eFormFolderSelect && m_propertyDefFormFolderSelect->GetValueAsInteger() == metaForm->GetMetaID())
 		m_propertyDefFormFolderSelect->SetValue(wxNOT_FOUND);
+}
+
+//***********************************************************************
+//*                       Save & load metaData                          *
+//***********************************************************************
+
+bool ibValueMetaObjectParameterizedJob::WriteData(ibDataNode& node) const
+{
+	// The job's own attributes are SERIALISED, like the catalog's Owner — an attribute that is not
+	// written comes back with a fresh metaID on the next load, and a column is addressed by that
+	// id: the stored Schedule / LastRun of every row would then belong to no requisite at all.
+	node.SetProperty(m_propertyAttributeActive->GetName(), m_propertyAttributeActive->GetNodeValue());
+	node.SetProperty(m_propertyAttributeSchedule->GetName(), m_propertyAttributeSchedule->GetNodeValue());
+	node.SetProperty(m_propertyAttributeLastRun->GetName(), m_propertyAttributeLastRun->GetNodeValue());
+	node.SetProperty(m_propertyAttributeNextRun->GetName(), m_propertyAttributeNextRun->GetNodeValue());
+
+	node.SetProperty(m_propertyObjectModule->GetName(), m_propertyObjectModule->GetNodeValue());
+	node.SetProperty(m_propertyManagerModule->GetName(), m_propertyManagerModule->GetNodeValue());
+
+	node.SetValue(m_propertyDefFormObject->GetName(), GetGuidByID(m_propertyDefFormObject->GetValueAsInteger()).str());
+	node.SetValue(m_propertyDefFormFolder->GetName(), GetGuidByID(m_propertyDefFormFolder->GetValueAsInteger()).str());
+	node.SetValue(m_propertyDefFormList->GetName(), GetGuidByID(m_propertyDefFormList->GetValueAsInteger()).str());
+	node.SetValue(m_propertyDefFormSelect->GetName(), GetGuidByID(m_propertyDefFormSelect->GetValueAsInteger()).str());
+	node.SetValue(m_propertyDefFormFolderSelect->GetName(), GetGuidByID(m_propertyDefFormFolderSelect->GetValueAsInteger()).str());
+
+	// Both sides in the same commit — a property declared and never serialised is "the one failure
+	// mode that looks like the feature working" (SplitTotals, docs/private/scheduled-jobs.md § 12).
+	node.SetProperty(m_propertyUse->GetName(), m_propertyUse->GetNodeValue());
+	node.SetProperty(m_propertySchedule->GetName(), m_propertySchedule->GetNodeValue());
+	node.SetProperty(m_propertyRetryCount->GetName(), m_propertyRetryCount->GetNodeValue());
+	node.SetProperty(m_propertyRetryInterval->GetName(), m_propertyRetryInterval->GetNodeValue());
+
+	return ibValueMetaObjectRecordDataHierarchyMutableRef::WriteData(node);
+}
+
+bool ibValueMetaObjectParameterizedJob::ReadData(const ibDataNode& node)
+{
+	m_propertyAttributeActive->SetNodeValue(node.GetProperty(m_propertyAttributeActive->GetName()));
+	m_propertyAttributeSchedule->SetNodeValue(node.GetProperty(m_propertyAttributeSchedule->GetName()));
+	m_propertyAttributeLastRun->SetNodeValue(node.GetProperty(m_propertyAttributeLastRun->GetName()));
+	m_propertyAttributeNextRun->SetNodeValue(node.GetProperty(m_propertyAttributeNextRun->GetName()));
+
+	m_propertyObjectModule->SetNodeValue(node.GetProperty(m_propertyObjectModule->GetName()));
+	m_propertyManagerModule->SetNodeValue(node.GetProperty(m_propertyManagerModule->GetName()));
+
+	m_propertyDefFormObject->SetValue(GetIdByGuid(node.GetValue<wxString>(m_propertyDefFormObject->GetName())));
+	m_propertyDefFormFolder->SetValue(GetIdByGuid(node.GetValue<wxString>(m_propertyDefFormFolder->GetName())));
+	m_propertyDefFormList->SetValue(GetIdByGuid(node.GetValue<wxString>(m_propertyDefFormList->GetName())));
+	m_propertyDefFormSelect->SetValue(GetIdByGuid(node.GetValue<wxString>(m_propertyDefFormSelect->GetName())));
+	m_propertyDefFormFolderSelect->SetValue(GetIdByGuid(node.GetValue<wxString>(m_propertyDefFormFolderSelect->GetName())));
+
+	m_propertyUse->SetNodeValue(node.GetProperty(m_propertyUse->GetName()));
+	m_propertySchedule->SetNodeValue(node.GetProperty(m_propertySchedule->GetName()));
+	m_propertyRetryCount->SetNodeValue(node.GetProperty(m_propertyRetryCount->GetName()));
+	m_propertyRetryInterval->SetNodeValue(node.GetProperty(m_propertyRetryInterval->GetName()));
+
+	return ibValueMetaObjectRecordDataHierarchyMutableRef::ReadData(node);
 }
 
 //***********************************************************************

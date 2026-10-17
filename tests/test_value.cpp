@@ -10,8 +10,10 @@
 #include "backend/compiler/value.h"
 #include "backend/compiler/procUnitLambda.h"   // CopyValue — the LET road a script's `r = …` takes
 #include "backend/system/value/valueArray.h"   // ValueHashContract — composite keys
+#include "backend/system/systemManager.h"      // ibValueSystemFunction::Date — the script's door to a date
+#include "core/serialize/dataBuilder.h"     // ibDataNode — a date packed and unpacked
 
-#include <memory>
+#include <tuple>     // std::make_tuple — a date's place in its week and year, asked at once
 #include <utility>   // std::move — the ValueMove cases
 
 // ===========================================================================
@@ -29,6 +31,49 @@ TEST(ValueTest, SizeofReport) {
               << "  sizeof(ibNumber)=" << sizeof(ibNumber)
               << "  sizeof(wxString)=" << sizeof(wxString) << std::endl;
     SUCCEED();
+}
+
+// THE COUNT SITS IN THE HOLE BEFORE THE UNION: vptr 8 + two bytes + 2 empty + the count 4 + the union 8.
+// Declared at the end of the class it took a word of its own and a value was 32 bytes on x64. Only the
+// 64-bit layout is pinned: a 32-bit one depends on how the ABI aligns the union's 8-byte member.
+TEST(ValueTest, TheCountSitsInThePaddingBeforeTheUnion) {
+    if (sizeof(void*) == 8) {
+        EXPECT_EQ(sizeof(ibValue), 24u);
+    }
+}
+
+// ===========================================================================
+// One word for every kind — a string and a number live in the union
+// ===========================================================================
+
+TEST(ValueUnion, ACopyOfAStringSharesItsText) {
+    const ibValue original(wxT("a text longer than the short-string buffer"));
+    const ibValue copy(original);
+    EXPECT_EQ(original.GetString().wc_str(), copy.GetString().wc_str());   // the same characters
+}
+
+TEST(ValueUnion, EveryKindStartsFromAnEmptyWord) {
+    ibValue v(true);
+    v.SetType(ibValueTypes::TYPE_NUMBER);       // a boolean's byte is not read as a number
+    EXPECT_TRUE(v.GetNumber().IsZero());
+    v = wxT("text");
+    v.SetType(ibValueTypes::TYPE_NUMBER);       // nor a string's text
+    EXPECT_TRUE(v.GetNumber().IsZero());
+    v = ibNumber(wxString(wxT("765.3456754567765443343")));
+    v.SetType(ibValueTypes::TYPE_STRING);       // nor a heap-tier number
+    EXPECT_TRUE(v.GetString().IsEmpty());
+}
+
+TEST(ValueUnion, KindChangesOnTheLetRoad) {
+    const ibValue number(ibNumber(wxString(wxT("765.3456754567765443343"))));
+    const ibValue text(wxT("text"));
+    const ibValue flag(true);
+    ibValue slot;
+    for (const ibValue* source : { &number, &text, &flag, &number, &flag, &text }) {
+        CopyValue(slot, *source);
+        EXPECT_EQ(slot.GetType(), source->GetType());
+        EXPECT_TRUE(slot.GetString() == source->GetString());
+    }
 }
 
 // ===========================================================================
@@ -161,21 +206,165 @@ TEST(ValueTest, AssignWideLiteralIsStringNotBoolean) {
 TEST(ValueTest, DateFromComponents) {
     ibValue v(2025, 1, 15, 10, 30, 0);
     EXPECT_EQ(v.GetType(), ibValueTypes::TYPE_DATE);
-    int y, m, d;
-    v.FromDate(y, m, d);
-    EXPECT_EQ(y, 2025);
-    EXPECT_EQ(m, 1);
-    EXPECT_EQ(d, 15);
+    EXPECT_EQ(ibDateTime(2025, 1, 15, 10, 30), v.GetDate());
+    EXPECT_EQ(2025, ibValueSystemFunction::GetYear(v));
+    EXPECT_EQ(1, ibValueSystemFunction::GetMonth(v));
+    EXPECT_EQ(15, ibValueSystemFunction::GetDay(v));
 }
 
 TEST(ValueTest, DateFromDateTime) {
     wxDateTime dt(15, wxDateTime::Jan, 2025, 10, 30, 0);
-    ibValue v(dt);
+    ibValue v(ibDateTime::OfWxDateTime(dt));
     EXPECT_EQ(v.GetType(), ibValueTypes::TYPE_DATE);
-    wxDateTime recovered = v.GetDateTime();
+    wxDateTime recovered = v.GetDate().ToWxDateTime();
     EXPECT_EQ(recovered.GetYear(), 2025);
     EXPECT_EQ(recovered.GetMonth(), wxDateTime::Jan);
     EXPECT_EQ(recovered.GetDay(), 15);
+}
+
+// ⭐⭐ A DATE IS A WALL-CLOCK READING (fdatetime.h) - the number a date holds is what a calendar and a
+// clock show, and it is the same number wherever it is computed. Nothing below consults the
+// machine's clock or zone: every expected value is written out as parts.
+
+// The empty date is one value on every clock: Date(1, 1, 1) IS it, whichever zone the process
+// stands in. (It used to be the instant of that midnight on a UTC+2 machine, and a UTC runner built
+// a different number for the same parts - so `d = Date(1, 1, 1)` for "no date" held on one machine
+// and not on the next.)
+TEST(ValueTest, TheEmptyDateIsOneValueOnEveryClock) {
+    EXPECT_TRUE(ibValue(1, 1, 1, 0, 0, 0).IsEmpty());
+    EXPECT_TRUE(ibValue(1, 1, 1).GetDate().IsEmpty());
+    EXPECT_FALSE(ibValue(1, 1, 1, 0, 0, 1).IsEmpty());   // a second past the empty date is a date
+    EXPECT_FALSE(ibValue(1, 1, 2).IsEmpty());
+    EXPECT_FALSE(ibValue(1, 2, 1).IsEmpty());
+    EXPECT_TRUE(ibValue(ibValueTypes::TYPE_DATE).IsEmpty());
+    EXPECT_TRUE(ibValue(ibDateTime()).IsEmpty());
+
+    // The script's Date(), a text read as a date and the wxDateTime bridge all give the same reading.
+    EXPECT_TRUE(ibValueSystemFunction::Date(1, 1, 1, 0, 0, 0).IsEmpty());
+    EXPECT_FALSE(ibValueSystemFunction::Date(1, 1, 1, 0, 0, 1).IsEmpty());
+    ibValue text;
+    EXPECT_TRUE(text.SetDate(wxT("01.01.0001 00:00:00")));
+    EXPECT_TRUE(text.IsEmpty());
+    EXPECT_TRUE(text.SetDate(wxT("00010101")));
+    EXPECT_TRUE(text.IsEmpty());
+    EXPECT_TRUE(text.SetDate(wxT("00010101000001")));
+    EXPECT_FALSE(text.IsEmpty());
+    EXPECT_TRUE(ibValue(ibDateTime::OfWxDateTime(wxDateTime())).IsEmpty());   // an invalid wxDateTime crosses as the empty date
+    EXPECT_FALSE(ibValue(ibValueTypes::TYPE_DATE).GetDate().ToWxDateTime().IsValid());   // ...and back
+    EXPECT_EQ(wxT("01.01.0001 00:00:00"), ibValue(ibValueTypes::TYPE_DATE).GetString());
+}
+
+// The reading holds the parts exactly - including a time that does not exist on the machine's own
+// clock. 02:30 on 2026-03-29 is the hour the clocks skip in most of Europe; a date that was an instant
+// could not hold it there, and a wxDateTime still cannot. The value can.
+TEST(ValueTest, ADateHoldsItsPartsWhateverTheMachineClockDoes) {
+    const ibValue gap(2026, 3, 29, 2, 30, 0);
+    EXPECT_EQ(ibDateTime(2026, 3, 29, 2, 30), gap.GetDate());
+    EXPECT_EQ(wxT("29.03.2026 02:30:00"), gap.GetString());
+    EXPECT_EQ(2, ibValueSystemFunction::GetHour(gap));
+    EXPECT_EQ(30, ibValueSystemFunction::GetMinute(gap));
+    EXPECT_EQ(0, ibValueSystemFunction::GetSecond(gap));
+
+    // An hour of seconds added is an hour on the wall; a day is 86 400 seconds, the morning the
+    // clocks go forward included; the difference of two dates is counted the same way.
+    EXPECT_EQ(ibDateTime(2026, 3, 29, 3, 30), gap.GetDate().AddMilliseconds(3600 * 1000));
+    EXPECT_EQ(ibDateTime(2026, 3, 30), ibDateTime(2026, 3, 29).AddMilliseconds(86400 * 1000));
+    EXPECT_EQ(86400 * 1000, ibDateTime(2026, 3, 30) - ibDateTime(2026, 3, 29));
+    EXPECT_EQ(ibDateTime(2026, 3, 28, 23, 0), ibDateTime(2026, 3, 29).AddMilliseconds(-3600 * 1000));
+
+    // The text of the reading reads back as the same reading - by digits, not through a clock.
+    ibValue read;
+    EXPECT_TRUE(read.SetDate(gap.GetString()));
+    EXPECT_EQ(gap.GetDate(), read.GetDate());
+    EXPECT_EQ(gap.GetDate(), ibValue(wxT("29.03.2026 02:30:00")).GetDate());   // the string branch of GetDate
+
+    // Two readings compare by the calendar, and a date hashes as its reading.
+    EXPECT_TRUE(ibValue(2026, 3, 29, 2, 30, 0).CompareValueLS(ibValue(2026, 3, 29, 3, 30, 0)) < 0);
+    EXPECT_EQ(ibValue(2026, 3, 29, 2, 30, 0).GetValueHash(), gap.GetValueHash());
+}
+
+// The doors a text comes through: the reference system's forms by digits, the free-form reader for
+// the rest, and a day the calendar does not have refused at every one of them.
+TEST(ValueTest, ATextBecomesADateByItsDigits) {
+    ibValue v;
+    EXPECT_TRUE(v.SetDate(wxT("15.03.2026")));            EXPECT_EQ(ibDateTime(2026, 3, 15), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxT("5.3.2026 9:5:7")));         EXPECT_EQ(ibDateTime(2026, 3, 5, 9, 5, 7), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxT("15.03.2026 23:59:59")));   EXPECT_EQ(ibDateTime(2026, 3, 15, 23, 59, 59), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxT("20260315")));              EXPECT_EQ(ibDateTime(2026, 3, 15), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxT("20260315235959")));        EXPECT_EQ(ibDateTime(2026, 3, 15, 23, 59, 59), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxT("29.02.2024")));            EXPECT_EQ(ibDateTime(2024, 2, 29), v.GetDate());
+    EXPECT_TRUE(v.SetDate(wxEmptyString));                EXPECT_TRUE(v.IsEmpty());
+    EXPECT_FALSE(v.SetDate(wxT("29.02.2023")));   // not a leap year
+    EXPECT_FALSE(v.SetDate(wxT("31.04.2026")));
+    EXPECT_FALSE(v.SetDate(wxT("15.13.2026")));
+    EXPECT_FALSE(v.SetDate(wxT("15.03.2026 24:00:00")));
+    EXPECT_FALSE(v.SetDate(wxT("20260231")));
+    EXPECT_FALSE(v.SetDate(wxT("not a date at all")));
+    // The same text through the string branch of GetDate - one reading, not two.
+    EXPECT_EQ(ibDateTime(2026, 3, 15), ibValue(wxT("20260315")).GetDate());
+    EXPECT_TRUE(ibValue(wxT("31.04.2026")).GetDate().IsEmpty());
+    // Parts that are no date are the empty date, not a rolled-over one.
+    EXPECT_TRUE(ibValue(2026, 2, 30).IsEmpty());
+    EXPECT_TRUE(ibValue(2026, 13, 1).IsEmpty());
+    EXPECT_TRUE(ibValue(2026, 3, 15, 24, 0, 0).IsEmpty());
+}
+
+// The day's place in the week and the year, ISO-numbered, off the same reading as the date - asked the
+// way a script asks it.
+TEST(ValueTest, ADateKnowsItsWeekAndItsDayOfTheYear) {
+    const auto place = [](const ibValue& date) {
+        return std::make_tuple(ibValueSystemFunction::GetDayOfWeek(date), ibValueSystemFunction::GetDayOfYear(date),
+            ibValueSystemFunction::GetWeekOfYear(date));
+    };
+    EXPECT_EQ(std::make_tuple(1, 1, 1), place(ibValue(2024, 1, 1)));        // a Monday, week 1
+    EXPECT_EQ(std::make_tuple(7, 3, 53), place(ibValue(2021, 1, 3)));       // a Sunday, still week 53 of 2020
+    EXPECT_EQ(std::make_tuple(1, 365, 1), place(ibValue(2024, 12, 30)));    // a Monday, already week 1 of 2025
+    EXPECT_EQ(std::make_tuple(2, 366, 1), place(ibValue(2024, 12, 31)));
+    EXPECT_EQ(4, ibValueSystemFunction::GetQuartOfYear(ibValue(2024, 12, 31)));
+    // BegOfWeek / EndOfWeek stand on it: the Monday of the week and the last second of its Sunday.
+    EXPECT_EQ(ibDateTime(2026, 3, 23), ibValueSystemFunction::BegOfWeek(ibValue(2026, 3, 29, 2, 30, 0)).GetDate());
+    EXPECT_EQ(ibDateTime(2026, 3, 29, 23, 59, 59), ibValueSystemFunction::EndOfWeek(ibValue(2026, 3, 23, 10, 0, 0)).GetDate());
+}
+
+// The script's period functions ask the date, and answer what the query's BEGINOFPERIOD / ENDOFPERIOD
+// answer: an end is the last second of its period, and a month after the 31st is the last day of the
+// next, at the same time of day.
+TEST(ValueTest, TheScriptsPeriodsAreTheDatesOwn) {
+    const ibValue d(2024, 8, 17, 14, 5, 9);
+    EXPECT_EQ(ibDateTime(2024, 8, 1), ibValueSystemFunction::BegOfMonth(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 8, 31, 23, 59, 59), ibValueSystemFunction::EndOfMonth(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 7, 1), ibValueSystemFunction::BegOfQuart(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 9, 30, 23, 59, 59), ibValueSystemFunction::EndOfQuart(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 1, 1), ibValueSystemFunction::BegOfYear(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 12, 31, 23, 59, 59), ibValueSystemFunction::EndOfYear(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 8, 17), ibValueSystemFunction::BegOfDay(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 8, 17, 23, 59, 59), ibValueSystemFunction::EndOfDay(d).GetDate());
+    EXPECT_EQ(ibDateTime(2024, 2, 29, 10, 30), ibValueSystemFunction::AddMonth(ibValue(2024, 1, 31, 10, 30, 0), 1).GetDate());
+    EXPECT_EQ(ibDateTime(2023, 11, 30), ibValueSystemFunction::AddMonth(ibValue(2024, 1, 31), -2).GetDate());
+    // The working date is a day: its midnight, with no time of day (and no milliseconds) left over.
+    const ibDateTime working = ibValueSystemFunction::WorkingDate().GetDate();
+    EXPECT_EQ(working.GetDayStart(), working);
+}
+
+// A date packed into a node and unpacked is the same reading: the number travels, no zone with it.
+TEST(ValueTest, ADatePackedIntoANodeComesBackAsTheSameReading) {
+    const ibValue written(2026, 3, 29, 2, 30, 0);
+    ibDataNode node;
+    ASSERT_TRUE(written.Serialize(node));
+    ibValue read(ibValueTypes::TYPE_DATE);   // Deserialize fills a value whose type the node's creator already resolved
+    ASSERT_TRUE(read.Deserialize(node));
+    EXPECT_EQ(ibValueTypes::TYPE_DATE, read.GetType());
+    EXPECT_EQ(written.GetDate(), read.GetDate());
+    const ibDataValue* stored = node.FindField(kValueFieldData);
+    ASSERT_TRUE(stored != nullptr && stored->Kind() == ibDataKind::Date);
+    EXPECT_EQ(ibDateTime(2026, 3, 29, 2, 30), stored->AsDate());
+
+    const ibValue none(ibValueTypes::TYPE_DATE);
+    ibDataNode empty;
+    ASSERT_TRUE(none.Serialize(empty));
+    ibValue readEmpty(ibValueTypes::TYPE_DATE);
+    ASSERT_TRUE(readEmpty.Deserialize(empty));
+    EXPECT_TRUE(readEmpty.IsEmpty());
 }
 
 // ===========================================================================
@@ -279,7 +468,7 @@ public:
     explicit ConstRefProbe(bool* deletedFlag)
         : ibValue(ibValueTypes::TYPE_VALUE, false), m_deleted(deletedFlag) {}
     ~ConstRefProbe() override { if (m_deleted) *m_deleted = true; }
-    wxString GetString() const override { return wxT("PROBE"); }
+    ibString GetString() const override { return wxT("PROBE"); }
 private:
     bool* m_deleted;
 };
@@ -529,11 +718,12 @@ TEST(ValueOrderAcrossKinds, EqualityUnderOrderIsTransitive) {
     for (const ibValue& a : samples)
         for (const ibValue& b : samples)
             for (const ibValue& c : samples)
-                if (a.CompareValueLS(b) == 0 && b.CompareValueLS(c) == 0)
+                if (a.CompareValueLS(b) == 0 && b.CompareValueLS(c) == 0) {
                     EXPECT_EQ(a.CompareValueLS(c), 0)
                         << "'" << a.GetString().ToStdString() << "' == '"
                         << b.GetString().ToStdString() << "' == '"
                         << c.GetString().ToStdString() << "', but not the first and last";
+                }
 }
 
 TEST(ValueOrderAcrossKinds, EmptySortsBelowEverything) {
@@ -684,77 +874,4 @@ TEST(ValueHashContract, ArraysWithEqualContentsHashAlike) {
 
     b->Add(ibValue(99));                       // now longer -> not equal any more
     EXPECT_NE(va.CompareValueLS(vb), 0);
-}
-
-// ===========================================================================
-// ibValueRefPin — a freshly `new`ed value is held by its creator's raw pointer at reference count
-// ZERO, and the first temporary ibValue that names it frees it on the way out. A document object
-// runs user code inside its own InitializeObject, and `ThisObject.A = 0` in Filling is such a
-// temporary: the object died mid-initialisation and the next read of it crashed the application
-// (#154). The pin holds one reference for the scope and gives it back without the delete.
-// ===========================================================================
-
-// The premise, stated once: with nothing pinning it, a temporary reference to an unowned value
-// deletes the value when the temporary goes.
-TEST(ValueRefPin, UnpinnedTemporaryReference_DeletesAnUnownedValue) {
-    bool deleted = false;
-    ibValue* unowned = new ConstRefProbe(&deleted);
-    {
-        ibValue temporary(unowned);   // IncrRef 0 -> 1
-    }                                 // DecrRef 1 -> 0 -> delete
-    EXPECT_TRUE(deleted);
-}
-
-// The bug: the same temporary inside a pin leaves the value alive.
-TEST(ValueRefPin, TemporaryReferenceInsidePin_DoesNotDeleteTheValue) {
-    bool deleted = false;
-    ibValue* unowned = new ConstRefProbe(&deleted);
-    {
-        const ibValueRefPin pin(unowned);
-        {
-            ibValue temporary(unowned);
-        }
-        EXPECT_FALSE(deleted) << "the pin's reference outlives the temporary's";
-    }
-    EXPECT_FALSE(deleted) << "releasing the pin must not delete: the raw pointer's owner still has it";
-
-    delete unowned;                   // the owner's delete — count is back at zero, as before the pin
-    EXPECT_TRUE(deleted);
-}
-
-// After the pin the count is exactly what it was, so the owner's own wrap behaves as it always did:
-// the first reference it takes is the first, and dropping it frees the value.
-TEST(ValueRefPin, AfterRelease_CountIsBackToZero_SoTheOwnersWrapFreesIt) {
-    bool deleted = false;
-    ibValue* unowned = new ConstRefProbe(&deleted);
-    {
-        const ibValueRefPin pin(unowned);
-        ibValue temporary(unowned);
-    }
-    ASSERT_FALSE(deleted);
-    {
-        ibValue ownersWrap(unowned);  // 0 -> 1
-        EXPECT_FALSE(deleted);
-    }                                 // 1 -> 0 -> delete
-    EXPECT_TRUE(deleted);
-}
-
-// A reference the handler KEPT (ThisObject stored somewhere) stays: the pin returns only its own.
-TEST(ValueRefPin, ReferenceKeptInsidePin_SurvivesTheRelease) {
-    bool deleted = false;
-    ibValue* unowned = new ConstRefProbe(&deleted);
-    std::unique_ptr<ibValue> kept;
-    {
-        const ibValueRefPin pin(unowned);
-        kept.reset(new ibValue(unowned));   // a stored ThisObject
-    }
-    EXPECT_FALSE(deleted) << "the stored reference is what keeps it now";
-
-    kept.reset();                     // the last reference goes
-    EXPECT_TRUE(deleted);
-}
-
-TEST(ValueRefPin, NullValue_IsANoOp) {
-    const ibValueRefPin pin(nullptr);
-    SUCCEED();
 }

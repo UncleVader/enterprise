@@ -11,14 +11,14 @@
 #include "backend/backend_mainFrame.h"
 #include "backend/backend_form.h"
 
-#include "backend/compiler/translateCode.h"
+#include "core/compiler/translateCode.h"
 #include "backend/compiler/procUnit.h"
 #include "backend/appData.h"
 #include "backend/session/session.h"
 
 #include "systemManagerEnum.h"
 
-#include "backend/serialize/jsonProvider.h"          // a value as text — the two verbs below
+#include "core/serialize/jsonProvider.h"          // a value as text — the two verbs below
 #include "backend/metaCollection/metaIntrospect.h"   // …and the type names the writing needs
 
 #include "backend/debugger/debugServer.h"            // …and up to whoever is debugging this run
@@ -36,12 +36,12 @@ ibNumber ibValueSystemFunction::Number(const ibValue& cValue)
 	return cValue.GetNumber();
 }
 
-wxLongLong_t ibValueSystemFunction::Date(const ibValue& cValue)
+ibDateTime ibValueSystemFunction::Date(const ibValue& cValue)
 {
 	return cValue.GetDate();
 }
 
-wxLongLong_t ibValueSystemFunction::Date(int year, int month, int day, int hour, int minute, int second)
+ibDateTime ibValueSystemFunction::Date(int year, int month, int day, int hour, int minute, int second)
 {
 	// REFUSED RATHER THAN ROLLED OVER. wxDateTime happily takes a 13th month and answers with
 	// January of the next year — a date nobody wrote, in a figure somebody will reconcile against.
@@ -54,7 +54,7 @@ wxLongLong_t ibValueSystemFunction::Date(int year, int month, int day, int hour,
 
 	const wxDateTime::Month wxMonth = static_cast<wxDateTime::Month>(wxDateTime::Jan + (month - 1));
 
-	if (day < 1 || day > (int)wxDateTime::GetNumberOfDays(wxMonth, year))
+	if (day < 1 || day > static_cast<int>(ibDateTime::DaysInMonth(year, static_cast<unsigned>(month))))
 		ibBackendCoreException::Error(_("Date: %s has no day %s"),
 			wxDateTime::GetMonthName(wxMonth) + wxString::Format(wxT(" %d"), year),
 			wxString::Format(wxT("%d"), day));
@@ -63,11 +63,10 @@ wxLongLong_t ibValueSystemFunction::Date(int year, int month, int day, int hour,
 		ibBackendCoreException::Error(_("Date: '%s' is not a time of day"),
 			wxString::Format(wxT("%d:%02d:%02d"), hour, minute, second));
 
-	const wxDateTime built(static_cast<unsigned short>(day), wxMonth, year,
-		static_cast<unsigned short>(hour), static_cast<unsigned short>(minute),
-		static_cast<unsigned short>(second));
-
-	return built.GetValue().GetValue();
+	// The reading of these parts (fdatetime.h) - the same on every machine, `Date(1, 1, 1)` the empty
+	// date among them.
+	return ibDateTime(year, static_cast<unsigned>(month), static_cast<unsigned>(day),
+		static_cast<unsigned>(hour), static_cast<unsigned>(minute), static_cast<unsigned>(second));
 }
 
 wxString ibValueSystemFunction::String(const ibValue& cValue)
@@ -163,44 +162,37 @@ ibValue ibValueSystemFunction::Sqrt(const ibValue& cValue)
 //--- Strings:
 int ibValueSystemFunction::StrLen(const ibValue& cValue)
 {
-	ibString scratch;
-	return static_cast<int>(cValue.GetString(scratch).Length());
+	return static_cast<int>(cValue.GetString().Length());
 }
 
 bool ibValueSystemFunction::IsBlankString(const ibValue& cValue)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).IsBlank();
+	return cValue.GetString().IsBlank();
 }
 
 ibString ibValueSystemFunction::TrimL(const ibValue& cValue)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).Trim(false);
+	return ibString(cValue.GetString()).Trim(false);   // Trim works in place, on a copy here
 }
 
 ibString ibValueSystemFunction::TrimR(const ibValue& cValue)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).Trim(true);
+	return ibString(cValue.GetString()).Trim(true);    // Trim works in place, on a copy here
 }
 
 ibString ibValueSystemFunction::TrimAll(const ibValue& cValue)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).TrimAll();
+	return cValue.GetString().TrimAll();
 }
 
 ibString ibValueSystemFunction::Left(const ibValue& cValue, unsigned int nCount)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).Left(nCount);
+	return cValue.GetString().Left(nCount);
 }
 
 ibString ibValueSystemFunction::Right(const ibValue& cValue, unsigned int nCount)
 {
-	ibString scratch;
-	return cValue.GetString(scratch).Right(nCount);
+	return cValue.GetString().Right(nCount);
 }
 
 // ⚠ 1-BASED, AND THE LENGTH IS OPTIONAL — both changed on 2026-09-04 (Max's call).
@@ -211,24 +203,21 @@ ibString ibValueSystemFunction::Right(const ibValue& cValue, unsigned int nCount
 // string, which is not what anybody writing `Mid(s, 5)` intends.
 ibString ibValueSystemFunction::Mid(const ibValue& cValue, size_t nFirst, size_t nCount)
 {
-	ibString scratch;
 	if (nFirst < 1) nFirst = 1;   // position 0 reads as the first character
-	return cValue.GetString(scratch).Mid(nFirst - 1, nCount);
+	return cValue.GetString().Mid(nFirst - 1, nCount);
 }
 
 unsigned int ibValueSystemFunction::Find(const ibValue& cValue, const ibValue& cValue2, unsigned int nStart)
 {
 	if (nStart < 1) nStart = 1;
-	ibString s1, s2;
 	// npos + 1 wraps to 0 — same "not found → 0" contract as the old wxString.find path.
-	return static_cast<unsigned int>(cValue.GetString(s1).Find(cValue2.GetString(s2), nStart - 1) + 1);
+	return static_cast<unsigned int>(cValue.GetString().find(cValue2.GetString(), nStart - 1) + 1);
 }
 
 ibString ibValueSystemFunction::StrReplace(const ibValue& cSource, const ibValue& cValue1, const ibValue& cValue2)
 {
-	ibString sSrc, sFrom, sTo;
-	ibString result(cSource.GetString(sSrc));   // mutable copy of the source
-	result.Replace(cValue1.GetString(sFrom), cValue2.GetString(sTo));
+	ibString result(cSource.GetString());   // mutable copy of the source
+	result.Replace(cValue1.GetString(), cValue2.GetString());
 	return result;
 }
 
@@ -239,9 +228,8 @@ ibString ibValueSystemFunction::StrReplace(const ibValue& cSource, const ibValue
 // "how many times does this appear" means.
 int ibValueSystemFunction::StrCountOccur(const ibValue& cSource, const ibValue& cValue1)
 {
-	ibString s1, s2;
-	const ibString src = cSource.GetString(s1);
-	const ibString sub = cValue1.GetString(s2);
+	const ibString src = cSource.GetString();
+	const ibString sub = cValue1.GetString();
 
 	// An empty needle has no meaningful count — it "occurs" between every pair of
 	// characters. Zero, rather than a loop that never ends.
@@ -249,7 +237,7 @@ int ibValueSystemFunction::StrCountOccur(const ibValue& cSource, const ibValue& 
 		return 0;
 
 	int count = 0;
-	for (size_t pos = src.Find(sub); pos != ibString::npos; pos = src.Find(sub, pos + sub.Length()))
+	for (size_t pos = src.find(sub); pos != ibString::npos; pos = src.find(sub, pos + sub.Length()))
 		count++;
 	return count;
 }
@@ -329,14 +317,12 @@ wxString ibValueSystemFunction::StrGetLine(const ibValue& cValue, unsigned int n
 
 ibString ibValueSystemFunction::Upper(const ibValue& cSource)
 {
-	ibString scratch;
-	return cSource.GetString(scratch).Upper();
+	return cSource.GetString().Upper();
 }
 
 ibString ibValueSystemFunction::Lower(const ibValue& cSource)
 {
-	ibString scratch;
-	return cSource.GetString(scratch).Lower();
+	return cSource.GetString().Lower();
 }
 
 wxString ibValueSystemFunction::Chr(short nCode)
@@ -346,8 +332,7 @@ wxString ibValueSystemFunction::Chr(short nCode)
 
 short ibValueSystemFunction::Asc(const ibValue& cSource)
 {
-	ibString scratch;
-	const ibString& s = cSource.GetString(scratch);
+	const ibString& s = cSource.GetString();
 	if (s.IsEmpty()) return 0;
 	return static_cast<short>(s[0]);
 }
@@ -369,214 +354,57 @@ short ibValueSystemFunction::Asc(const ibValue& cSource)
 // no longer adds it back by hand.
 wxString ibValueSystemFunction::TStr(const ibValue& cSource, const ibValue& cLanguage)
 {
-	return ibBackendLocalization::GetTranslateGetRawLocText(cLanguage.GetString(), cSource.GetString());
+	return ibLocalization::GetTranslateGetRawLocText(cLanguage.GetString(), cSource.GetString());
 }
 
 //--- Date and time:
+//
+// ⭐ THE CALENDAR IS THE DATE'S OWN (fdatetime.h). Every function below asks the date, and gets the
+// answer a query's BEGINOFPERIOD / ENDOFPERIOD / DATEADD / YEAR gives over the same value - one
+// calendar for the script, the query and the server. An EndOf* is the LAST SECOND of its period, so
+// `date <= EndOfQuart(d)` keeps the quarter's last day; a week runs Monday to Sunday; a month after
+// the 31st of January is the last day of February, at the same time of day.
 ibValue ibValueSystemFunction::CurrentDate()
 {
-	wxDateTime timeNow = wxDateTime::Now();
-	wxLongLong m_llValue = timeNow.GetValue();
-
-	ibValue valueNow = ibValueTypes::TYPE_DATE;
-	valueNow.m_dData = m_llValue.GetValue();
-	return valueNow;
+	return ibValue(ibDateTime::Now());   // the machine's clock, read as what it shows (fdatetime.h)
 }
 
 ibValue ibValueSystemFunction::WorkingDate() {
 	// Session-aware via ibSession::Current() — when a worker scope is
 	// active the session's m_workDate is used; otherwise process-wide
 	// ms_workDate (codeRunner / pre-Connect bootstrap).
-	wxDateTime d = ibSession::Current() != nullptr
+	const ibDateTime d = ibSession::Current() != nullptr
 		? ibSession::Current()->GetWorkDate()
 		: ms_workDate;
-	d.SetHour(0);
-	d.SetMinute(0);
-	d.SetSecond(0);
-	return d;
+	return ibValue(d.BeginOfPeriod(ibTotalsPeriod::Day));
 }
 
 ibValue ibValueSystemFunction::AddMonth(const ibValue& cData, int nMonthAdd)
 {
-	int nYear, nMonth, nDay;
-	unsigned short nHour, nMinute, nSecond;
-	cData.FromDate(nYear, nMonth, nDay, nHour, nMinute, nSecond);
-	int SummaMonth = nYear * 12 + nMonth - 1;
-	SummaMonth += nMonthAdd;
-	nYear = SummaMonth / 12;
-	nMonth = SummaMonth % 12 + 1;
-	// ⚠ A DAY THE TARGET MONTH DOES NOT HAVE IS ITS LAST ONE: the 31st of January plus a month is the
-	// 28th of February. Built as the 31st it was no date at all, and the value came back holding
-	// whatever its storage held (ibValue's date constructor keeps nothing from an invalid one).
-	const int lastDay = wxDateTime::GetNumberOfDays(static_cast<wxDateTime::Month>(nMonth - 1), nYear);
-	if (nDay > lastDay)
-		nDay = lastDay;
-	// …and the time of day travels with the date: a month after 10:30 is 10:30.
-	return ibValue(nYear, nMonth, nDay, nHour, nMinute, nSecond);
+	return ibValue(cData.GetDate().AddPeriods(ibTotalsPeriod::Month, nMonthAdd));
 }
 
-ibValue ibValueSystemFunction::BegOfMonth(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, nMonth, 1);
-}
+ibValue ibValueSystemFunction::BegOfMonth(const ibValue& cData)  { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Month)); }
+ibValue ibValueSystemFunction::EndOfMonth(const ibValue& cData)  { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Month)); }
+ibValue ibValueSystemFunction::BegOfQuart(const ibValue& cData)  { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Quarter)); }
+ibValue ibValueSystemFunction::EndOfQuart(const ibValue& cData)  { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Quarter)); }
+ibValue ibValueSystemFunction::BegOfYear(const ibValue& cData)   { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Year)); }
+ibValue ibValueSystemFunction::EndOfYear(const ibValue& cData)   { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Year)); }
+ibValue ibValueSystemFunction::BegOfWeek(const ibValue& cData)   { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Week)); }
+ibValue ibValueSystemFunction::EndOfWeek(const ibValue& cData)   { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Week)); }
+ibValue ibValueSystemFunction::BegOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Day)); }
+ibValue ibValueSystemFunction::EndOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Day)); }
 
-ibValue ibValueSystemFunction::EndOfMonth(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-
-	// The first of the NEXT month at midnight, one second back. (It started from 23:59:59 on the 1st,
-	// which gave the right answer only because AddMonth used to drop the time of day.)
-	ibValue m_date = ibValue(nYear, nMonth, 1);
-	return AddMonth(m_date, 1) - 1;
-}
-
-ibValue ibValueSystemFunction::BegOfQuart(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, 1 + ((nMonth - 1) / 3) * 3, 1);
-}
-
-ibValue ibValueSystemFunction::EndOfQuart(const ibValue& cData)
-{
-	// TO THE END OF THAT DAY, like EndOfMonth / EndOfYear / EndOfDay. This one
-	// and EndOfWeek used to stop at midnight, so `date <= EndOfQuart(d)` dropped
-	// everything recorded during the quarter's last day — a whole day missing
-	// from a total, and only in two of the five period functions.
-	return EndOfDay(AddMonth(BegOfQuart(cData), 3) - 1);
-}
-
-ibValue ibValueSystemFunction::BegOfYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, 1, 1);
-}
-
-ibValue ibValueSystemFunction::EndOfYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, 12, 31, 23, 59, 59);
-}
-
-// The week runs Monday (DayOfWeek == 1) to Sunday (7): its first day is
-// `DayOfWeek - 1` DAYS back and its last is `7 - DayOfWeek` days forward.
-//
-// ⚠ AND A DAY IS NOT A NUMBER HERE. `date + n` adds n SECONDS (GetDate() reads a
-// number as seconds), so the old `- (DayOfWeek + 1)` was not "back two days" but
-// "back two seconds" — landing the previous evening at 23:59:58, whatever day
-// was asked about. EndOfMonth gets away with the same idiom only because
-// AddMonth drops the time of day first, which is not a rule to rely on twice.
-// Stepping in wxDateSpan::Days is calendar arithmetic and says what it means.
-ibValue ibValueSystemFunction::BegOfWeek(const ibValue& cData)
-{
-	int nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear;
-	cData.FromDate(nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear);
-
-	wxDateTime day(static_cast<unsigned short>(nDay),
-		static_cast<wxDateTime::Month>(nMonth - 1), nYear);
-	day -= wxDateSpan::Days(DayOfWeek - 1);
-	return ibValue(day.GetYear(), day.GetMonth() + 1, day.GetDay());
-}
-
-ibValue ibValueSystemFunction::EndOfWeek(const ibValue& cData)
-{
-	int nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear;
-	cData.FromDate(nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear);
-
-	wxDateTime day(static_cast<unsigned short>(nDay),
-		static_cast<wxDateTime::Month>(nMonth - 1), nYear);
-	day += wxDateSpan::Days(7 - DayOfWeek);
-	return ibValue(day.GetYear(), day.GetMonth() + 1, day.GetDay(), 23, 59, 59);
-}
-
-ibValue ibValueSystemFunction::BegOfDay(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, nMonth, nDay, 0, 0, 0);
-}
-
-ibValue ibValueSystemFunction::EndOfDay(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return ibValue(nYear, nMonth, nDay, 23, 59, 59);
-}
-
-int ibValueSystemFunction::GetYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return nYear;
-}
-
-int ibValueSystemFunction::GetMonth(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return nMonth;
-}
-
-int ibValueSystemFunction::GetDay(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return nDay;
-}
-
-int ibValueSystemFunction::GetHour(const ibValue& cData)
-{
-	int nYear, nMonth, nDay; unsigned short nHour, nMinutes, nSeconds;
-	cData.FromDate(nYear, nMonth, nDay, nHour, nMinutes, nSeconds);
-	return nHour;
-}
-
-int ibValueSystemFunction::GetMinute(const ibValue& cData)
-{
-	int nYear, nMonth, nDay; unsigned short nHour, nMinutes, nSeconds;
-	cData.FromDate(nYear, nMonth, nDay, nHour, nMinutes, nSeconds);
-	return nMinutes;
-}
-
-int ibValueSystemFunction::GetSecond(const ibValue& cData)
-{
-	int nYear, nMonth, nDay; unsigned short nHour, nMinutes, nSeconds;
-	cData.FromDate(nYear, nMonth, nDay, nHour, nMinutes, nSeconds);
-	return nSeconds;
-}
-
-int ibValueSystemFunction::GetWeekOfYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear;
-	cData.FromDate(nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear);
-	return WeekOfYear;
-}
-
-int ibValueSystemFunction::GetDayOfYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear;
-	cData.FromDate(nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear);
-	return DayOfYear;
-}
-
-int ibValueSystemFunction::GetDayOfWeek(const ibValue& cData)
-{
-	int nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear;
-	cData.FromDate(nYear, nMonth, nDay, DayOfWeek, DayOfYear, WeekOfYear);
-	return DayOfWeek;
-}
-
-int ibValueSystemFunction::GetQuartOfYear(const ibValue& cData)
-{
-	int nYear, nMonth, nDay;
-	cData.FromDate(nYear, nMonth, nDay);
-	return 1 + ((nMonth - 1) / 3);
-}
+int ibValueSystemFunction::GetYear(const ibValue& cData)         { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Year)); }
+int ibValueSystemFunction::GetMonth(const ibValue& cData)        { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Month)); }
+int ibValueSystemFunction::GetDay(const ibValue& cData)          { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Day)); }
+int ibValueSystemFunction::GetHour(const ibValue& cData)         { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Hour)); }
+int ibValueSystemFunction::GetMinute(const ibValue& cData)       { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Minute)); }
+int ibValueSystemFunction::GetSecond(const ibValue& cData)       { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Second)); }
+int ibValueSystemFunction::GetWeekOfYear(const ibValue& cData)   { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Week)); }
+int ibValueSystemFunction::GetDayOfYear(const ibValue& cData)    { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::DayOfYear)); }
+int ibValueSystemFunction::GetDayOfWeek(const ibValue& cData)    { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::WeekDay)); }
+int ibValueSystemFunction::GetQuartOfYear(const ibValue& cData)  { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Quarter)); }
 
 //--- File operations: 
 
@@ -625,7 +453,7 @@ ibBackendValueForm* ibValueSystemFunction::ActiveWindow()
 void ibValueSystemFunction::WriteJournalEvent(const wxString& strMessage, ibStatusMessage status,
 	const wxString& strEvent, const ibValue& objectValue)
 {
-	ibLogger* const logger = ibApplicationData::GetLogger();
+	ibLogger* const logger = ibApplicationInstance::GetLogger();
 	if (logger == nullptr)
 		return;             // no journal in this process — saying so is not this function's business
 
@@ -730,8 +558,8 @@ void ibValueSystemFunction::Alert(const wxString& strMessage) //Alert
 
 	// Frontend-owned: frame knows whether to pop a wx-modal (desktop)
 	// or emit a toast/HTTP notification (web). ShowModalMessage on web
-	// parks the worker on a future until the client replies — safe to
-	// call from any thread that owns the script's execution context.
+	// waits in the session's pool (ibWorkerPool::Await) until the client
+	// replies, running the session's work meanwhile.
 	if (auto* frame = ibSession::CurrentFrame())
 		frame->ShowModalMessage(strMessage, _("Warning"), wxICON_WARNING | wxOK);
 }
@@ -747,7 +575,7 @@ ibValue ibValueSystemFunction::Question(const wxString& strMessage, ibQuestionMo
 		if (debugServer != nullptr && debugServer->IsDebugging())
 			debugServer->SendEvalMessage(wxT("(question, not asked) ") + strMessage);
 
-		return new ibValueEnumQuestionReturnCode();
+		return ibValue::CreateObject<ibValueEnumQuestionReturnCode>();
 	}
 
 	int wndStyle = 0;
@@ -763,33 +591,33 @@ ibValue ibValueSystemFunction::Question(const wxString& strMessage, ibQuestionMo
 
 	// Route through the frame's MessageBox virtual so backend stays
 	// wx-free here. No frame = script is running in a context without
-	// UI (daemon, codeRunner) — default to "Cancel" to keep flows that
+	// UI (appserver, codeRunner) — default to "Cancel" to keep flows that
 	// assume success conservative.
 	auto* frame = ibSession::CurrentFrame();
 	int retCode = frame != nullptr
 		? frame->ShowModalMessage(strMessage, _("Question"), wndStyle | wxICON_QUESTION)
 		: wxCANCEL;
 
-	ibValueEnumQuestionReturnCode* retValue = new ibValueEnumQuestionReturnCode();
+	ibQuestionReturnCode code = ibQuestionReturnCode::ibQuestionReturnCode_Yes;
 	switch (retCode) {
 	case wxOK:
-		retValue->InitializeEnumeration(ibQuestionReturnCode::ibQuestionReturnCode_OK);
+		code = ibQuestionReturnCode::ibQuestionReturnCode_OK;
 		break;
 	case wxCANCEL:
-		retValue->InitializeEnumeration(ibQuestionReturnCode::ibQuestionReturnCode_Cancel);
+		code = ibQuestionReturnCode::ibQuestionReturnCode_Cancel;
 		break;
 	case wxYES:
-		retValue->InitializeEnumeration(ibQuestionReturnCode::ibQuestionReturnCode_Yes);
+		code = ibQuestionReturnCode::ibQuestionReturnCode_Yes;
 		break;
 	case wxNO:
-		retValue->InitializeEnumeration(ibQuestionReturnCode::ibQuestionReturnCode_No);
-		break;
-	default:
-		retValue->InitializeEnumeration(ibQuestionReturnCode::ibQuestionReturnCode_Yes);
+		code = ibQuestionReturnCode::ibQuestionReturnCode_No;
 		break;
 	}
 
-	return retValue;
+	// 🛑 MADE BY ITS REGISTERED CTOR, which fills the members' names (ibCtorEnumType::CreateObject). A bare `new`
+	// left them empty, and naming the answer threw (std::map::at) — after the person had answered: the question
+	// was asked and the script ended there, silently (found over the protocol, 2026-10-06).
+	return ibValue::CreateEnumObject<ibValueEnumQuestionReturnCode>(code);
 }
 
 void ibValueSystemFunction::SetStatus(const wxString& sStatus)
@@ -964,7 +792,7 @@ void ibValueSystemFunction::Execute(const wxString& strExpression)
 	ibProcUnit::Evaluate(strExpression, puState ? puState->GetCurrentRunContext() : nullptr, retValue, true);
 }
 
-#include "backend/formatString.h"
+#include "core/formatString.h"
 
 // THE FORMAT STRING IS A VALUE of its own now (formatString.h) — read once, and applied by the same
 // code the format string constructor prints its sample with. The reading here was the only one.
@@ -1113,27 +941,27 @@ bool ibValueSystemFunction::IsInRole(const ibValue& cData)
 	return false;
 }
 
-ibValue ibValueSystemFunction::GetCommonForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, ibValueGuid* unique)
+ibValue ibValueSystemFunction::GetCommonForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl, ibValueGuid* unique)
 {
-	if (!strFormName.IsEmpty()) {
+	if (!request.m_formName.IsEmpty()) {
 
 		const ibValueMetaObjectCommonForm* creator =
-			activeMetaData->FindAnyObjectByFilter<ibValueMetaObjectCommonForm>(strFormName, g_metaCommonFormCLSID);
+			activeMetaData->FindAnyObjectByFilter<ibValueMetaObjectCommonForm>(request.m_formName, g_metaCommonFormCLSID);
 
 		if (creator != nullptr)
 			return creator->GetObjectForm(ownerControl, unique ? ((ibGuid)*unique) : ibGuid());
 	}
 
-	ibBackendCoreException::Error(_("Common form not found '%s'"), strFormName);
+	ibBackendCoreException::Error(_("Common form not found '%s'"), request.m_formName);
 	return wxEmptyValue;
 }
 
-void ibValueSystemFunction::ShowCommonForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, ibValueGuid* unique)
+void ibValueSystemFunction::ShowCommonForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl, ibValueGuid* unique)
 {
 	if (ibBackendException::IsEvalMode())
 		return;
 
-	const ibValue& cValue = GetCommonForm(strFormName, ownerControl, unique);
+	const ibValue& cValue = GetCommonForm(request, ownerControl, unique);
 
 	ibBackendValueForm* valueForm = dynamic_cast<ibBackendValueForm*>(cValue.GetRef());
 	if (valueForm != nullptr) valueForm->ShowForm();
@@ -1206,7 +1034,7 @@ int ibValueSystemFunction::RunScheduledJobs()
 	if (ibBackendException::IsEvalMode())
 		return 0;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		return 0;   // no appData (launcher / pre-bootstrap) — nothing scheduled
 
@@ -1220,11 +1048,11 @@ bool ibValueSystemFunction::RunJob(const wxString& strJobName)
 	if (ibBackendException::IsEvalMode())
 		return false;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		return false;
 
-	return manager->RunNow(strJobName);
+	return manager->Execute(strJobName);
 }
 
 #include "backend/system/value/valueArray.h"
@@ -1237,7 +1065,7 @@ ibValue ibValueSystemFunction::RunBackground(const wxString& strProcedureName, i
 	if (ibBackendException::IsEvalMode())
 		return wxEmptyValue;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		ibBackendCoreException::Error(_("Background job: the application is not running"));
 

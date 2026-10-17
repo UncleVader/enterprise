@@ -56,15 +56,13 @@ std::map<wxString, ibValue*>& ibValueModuleRuntimeManagerExternalDataProcessor::
 	return moduleManager->GetGlobalVariables();
 }
 
-ibValueModuleRuntimeManagerExternalDataProcessor::ibValueModuleRuntimeManagerExternalDataProcessor(ibMetaData* metadata, ibValueMetaObjectDataProcessor* metaObject)
+ibValueModuleRuntimeManagerExternalDataProcessor::ibValueModuleRuntimeManagerExternalDataProcessor(std::shared_ptr<ibMetaData> metadata, ibValueMetaObjectDataProcessor* metaObject)
 	: ibValueModuleRuntimeManager(appEnv::ActiveMetaData(), metaObject ? metaObject->GetObjectModule() : nullptr)
 {
-	// metadata is the owning container — LoadFromFile creates this manager and passes
-	// `this` (there is no bootstrap manager). In designer the value object never owns
-	// the metadata. No member access on metadata here → this TU needs no container
-	// header; the External value object's out-of-line dtor instantiates the drop elsewhere.
+	// metadata is the container the object works in — LoadFromFile creates this manager and passes
+	// itself, and at runtime the object holds it. In designer the document holds it, never the object.
 	m_objectValue = new ibValueRecordDataObjectExternalDataProcessor(
-		metaObject, appData->DesignerMode() ? nullptr : metadata);
+		metaObject, appData->DesignerMode() ? nullptr : std::move(metadata));
 	//set complile module
 	//set proc unit
 	m_objectValue->m_compileModule = m_compileModule;
@@ -110,6 +108,15 @@ bool ibValueModuleRuntimeManagerExternalDataProcessor::CreateMainModule()
 	ibValueModuleManager* moduleManager = ibSession::EditModuleManagerFor(appEnv::ActiveMetaData());
 	wxASSERT(moduleManager);
 
+	// ⭐⭐ incrRef - for control delete — TAKEN BEFORE THE MODULE'S FIRST LINE, let go at the end of
+	// StartMainModule, where it always was: the form takes the object there, or nobody does and it unloads,
+	// container and all. It used to be taken in StartMainModule, but the module body runs HERE, and `ThisObject`
+	// in it loads the object into a temporary — zero, one, zero, and the object went with its container and this
+	// manager in the middle of the run (issue #154). A load that fails before StartMainModule leaves it held, as
+	// it used to leave it at zero — never let go, so the opener's own delete of the container stays the only one.
+	m_objectValue->IncrRef();
+
+
 	// Imperative pipeline — SetParent cascades compile+procUnit parents
 	// to configuration root's; BindContextVariable wires thisObject;
 	// InitializeRuntime / Compile / Run drive the top-level.
@@ -134,7 +141,7 @@ bool ibValueModuleRuntimeManagerExternalDataProcessor::CreateMainModule()
 			Compile();
 			Run();
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			// 🛑 THE HANDLER MUST NOT THROW — and `GetClassName()` can (Max, 2026-08-20: "it is
 			// addressed after it was taken off the registry"). A value's class NAME is looked up in
 			// the ctor registry by its dynamic clsid, and the external pair is registered on RUN and
@@ -197,8 +204,7 @@ bool ibValueModuleRuntimeManagerExternalDataProcessor::StartMainModule(bool forc
 	if (!m_initialized)
 		return false;
 
-	//incrRef - for control delete
-	m_objectValue->IncrRef();
+	// (incrRef - for control delete: taken in CreateMainModule, before the module ran)
 
 	const ibValueMetaObjectRecordData* commonObject = m_objectValue->GetMetaObject();
 	wxASSERT(commonObject);
@@ -209,17 +215,17 @@ bool ibValueModuleRuntimeManagerExternalDataProcessor::StartMainModule(bool forc
 
 	if (defFormObject != nullptr) {
 
-		ibBackendValueForm* result = nullptr;
+		ibBackendValueForm* cached = nullptr;
 		// Cache lives on the form's own metadata (external DP for .epf, main config
 		// for embedded DP) — m_metaManager->GetMetaData() is the configuration
 		// passed to base ctor and would miss for external DPs.
 		ibCompileValueCache* cc = defFormObject->GetMetaData()->GetCompileCache();
 
-		if (!cc || !cc->FindCompileModule(defFormObject, result)) {
+		if (!cc || !cc->FindCompileModule(defFormObject, cached)) {
 
-			result = ibValueMetaObjectFormBase::CreateAndBuildForm(defFormObject, nullptr, m_objectValue);
+			const ibFormPtr<ibBackendValueForm> result = ibValueMetaObjectFormBase::CreateAndBuildForm(ibFormRequest(), defFormObject, nullptr, m_objectValue);
 
-			if (result != nullptr) {
+			if (result) {
 				result->ShowForm();
 			}
 			else if (!appData->DesignerMode()) {
@@ -310,13 +316,13 @@ std::map<wxString, ibValue*>& ibValueModuleRuntimeManagerExternalReport::GetGlob
 	return moduleManager->GetGlobalVariables();
 }
 
-ibValueModuleRuntimeManagerExternalReport::ibValueModuleRuntimeManagerExternalReport(ibMetaData* metadata, ibValueMetaObjectReport* metaObject)
+ibValueModuleRuntimeManagerExternalReport::ibValueModuleRuntimeManagerExternalReport(std::shared_ptr<ibMetaData> metadata, ibValueMetaObjectReport* metaObject)
 	: ibValueModuleRuntimeManager(appEnv::ActiveMetaData(), metaObject ? metaObject->GetObjectModule() : nullptr)
 {
-	// See the data-processor manager above: metadata is the owning container (passed
-	// by LoadFromFile), never owned in designer. No member access here.
+	// See the data-processor manager above: metadata is the container (passed by LoadFromFile),
+	// held by the object at runtime, never in designer.
 	m_objectValue = new ibValueRecordDataObjectExternalReport(
-		metaObject, appData->DesignerMode() ? nullptr : metadata);
+		metaObject, appData->DesignerMode() ? nullptr : std::move(metadata));
 	//set complile module
 	//set proc unit
 	m_objectValue->m_compileModule = m_compileModule;
@@ -361,6 +367,9 @@ bool ibValueModuleRuntimeManagerExternalReport::CreateMainModule()
 	ibValueModuleManager* moduleManager = ibSession::EditModuleManagerFor(appEnv::ActiveMetaData());
 	wxASSERT(moduleManager);
 
+	// incrRef - for control delete — before the module's first line, as the data processor's twin says.
+	m_objectValue->IncrRef();
+
 	// Imperative pipeline — see ExternalDataProcessor::CreateMainModule
 	// for the same shape; parent cascade, context var, shared procUnit
 	// with m_objectValue.
@@ -378,7 +387,7 @@ bool ibValueModuleRuntimeManagerExternalReport::CreateMainModule()
 			Compile();
 			Run();
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			// Same rule as the data processor's twin above: the handler asks the METAOBJECT for a
 			// name, because a value's class name is a registry lookup and the registry entry may
 			// already be gone on this very path — a reporting call that throws replaces the fault
@@ -435,8 +444,7 @@ bool ibValueModuleRuntimeManagerExternalReport::StartMainModule(bool force)
 	if (!m_initialized)
 		return false;
 
-	//incrRef - for control delete
-	m_objectValue->IncrRef();
+	// (incrRef - for control delete: taken in CreateMainModule, before the module ran)
 
 	// THE METAOBJECT IS A REPORT'S, and it says so — so both questions below are asked of it
 	// directly: which form is the default one, and which composer is.
@@ -448,15 +456,15 @@ bool ibValueModuleRuntimeManagerExternalReport::StartMainModule(bool force)
 	);
 
 	if (defFormObject != nullptr) {
-		ibBackendValueForm* result = nullptr;
+		ibBackendValueForm* cached = nullptr;
 		// Cache lives on the form's own metadata — see the symmetric DataProcessor
 		// path above for rationale.
 		ibCompileValueCache* cc = defFormObject->GetMetaData()->GetCompileCache();
-		if (!cc || !cc->FindCompileModule(defFormObject, result)) {
+		if (!cc || !cc->FindCompileModule(defFormObject, cached)) {
 
-			result = ibValueMetaObjectFormBase::CreateAndBuildForm(defFormObject, nullptr, m_objectValue);
+			const ibFormPtr<ibBackendValueForm> result = ibValueMetaObjectFormBase::CreateAndBuildForm(ibFormRequest(), defFormObject, nullptr, m_objectValue);
 
-			if (result != nullptr) {
+			if (result) {
 				result->ShowForm();
 			}
 			else if (!appData->DesignerMode()) {
@@ -474,15 +482,15 @@ bool ibValueModuleRuntimeManagerExternalReport::StartMainModule(bool force)
 	// is nothing to show, and an empty window would be a worse answer than none. Without this the
 	// module started and quietly died, which is the same outcome with no explanation.
 	else if (commonObject->GetDefComposer() != wxNOT_FOUND) {
-		// wxNullUniqueKey — the form is generated, so it takes a fresh key of its own.
-		ibBackendValueForm* valueForm =
-			ibBackendValueForm::CreateNewForm(nullptr, nullptr, m_objectValue, wxNullUniqueKey);
+		// No key in the request — the form is generated, so it takes a fresh key of its own.
+		const ibFormPtr<ibBackendValueForm> valueForm =
+			ibBackendValueForm::CreateNewForm(ibFormRequest(), nullptr, nullptr, m_objectValue);
 		valueForm->BuildForm(ibValueMetaObjectReport::eFormReport);
 		try {
 			valueForm->ShowForm();
 		}
 		catch (...) {
-			wxDELETE(valueForm);
+			// A form that failed to show goes with its holder — nobody else took it.
 			if (appData->EnterpriseMode() || appData->ServiceMode()) {
 				//decrRef - for control delete
 				m_objectValue->DecrRef();
@@ -569,7 +577,7 @@ bool ibValueModuleRuntimeManagerExternalDataProcessor::GetPropVal(const long lPr
 	return false;
 }
 
-long ibValueModuleRuntimeManagerExternalDataProcessor::FindProp(const wxString& strName) const
+long ibValueModuleRuntimeManagerExternalDataProcessor::FindProp(const ibString& strName) const
 {
 	if (m_objectValue &&
 		m_objectValue->FindProp(strName) != wxNOT_FOUND) {
@@ -643,7 +651,7 @@ bool ibValueModuleRuntimeManagerExternalReport::GetPropVal(const long lPropNum, 
 	return false;
 }
 
-long ibValueModuleRuntimeManagerExternalReport::FindProp(const wxString& strName) const
+long ibValueModuleRuntimeManagerExternalReport::FindProp(const ibString& strName) const
 {
 	if (m_objectValue &&
 		m_objectValue->FindProp(strName) != wxNOT_FOUND) {

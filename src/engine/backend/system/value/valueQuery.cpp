@@ -5,12 +5,10 @@
 #include "valueQuery.h"
 
 #include "backend/query/queryParser.h"
-#include "backend/diagnostics/crashGuard.h"  // ibJournal — the technology journal
+#include "core/diagnostics/crashGuard.h"  // ibJournal — the technology journal
 #include "valueArray.h"                  // ibValueArray — a package answers with results BY POSITION
-#include "queryUnload.h"                 // ibQueryUnload — the value table Unload() hands back
 #include "backend/compiler/typeCtor.h"   // VALUE_TYPE_REGISTER / SYSTEM_TYPE_REGISTER / ENUM_TYPE_REGISTER
 #include "backend/backend_exception.h"   // ibBackendCoreException — a wrong TempTablesManager is told, not ignored
-#include "backend/appData.h"             // appData->DesignerMode()
 #include "backend/session/session.h"     // ibSession::Current — the session knows WHICH config it was opened for
 #include "backend/moduleManager/moduleManager.h"  // GetMetaManager()->GetMetaData() — that config, held
 
@@ -91,7 +89,7 @@ bool ibValueTempTablesManager::CallAsProc(const long lMethodNum, ibValue** /*paP
 
 bool ibValueQueryExec::Init(ibValue** paParams, const long lSizeArray)
 {
-	m_text = (lSizeArray >= 1) ? paParams[0]->GetString() : wxString();
+	m_text = (lSizeArray >= 1) ? paParams[0]->GetString() : ibString();
 	m_package = ibQueryPackage();
 
 	// An empty query is a valid, statement-less object: its method surface (SetParameter / Execute /
@@ -100,11 +98,12 @@ bool ibValueQueryExec::Init(ibValue** paParams, const long lSizeArray)
 	if (m_text.IsEmpty())
 		return true;
 
-	// Designer: tolerate a malformed / half-typed query so the value (and its method chain) stays reachable
-	// for autocomplete. Runtime: a syntax error throws ibBackendException (line:pos) as before.
-	if (appData->DesignerMode()) {
+	// The caret's walk for completion (eval_complete): tolerate a malformed / half-typed query so the value
+	// (and its method chain) stays reachable — in whichever editor is completing, the client's included.
+	// Anything else: a syntax error throws ibBackendException (line:pos) as before.
+	if (ibBackendException::IsEvalComplete()) {
 		try { m_package = ibQueryParser().ParsePackage(m_text); }
-		catch (const ibBackendException&) { m_package = ibQueryPackage(); }
+		catch (const ibCoreException&) { m_package = ibQueryPackage(); }
 		return true;
 	}
 
@@ -181,12 +180,12 @@ bool ibValueQueryExec::RunPackage(std::vector<ibValue>& out, std::vector<wxStrin
 		return true;
 	}
 	catch (...) {
-		if (!appData->DesignerMode())
+		if (!ibBackendException::IsEvalComplete())
 			throw;   // runtime: the package fails at the statement that failed, with THAT statement's message
-		// designer: editing / autocomplete has no live session to read from, and a session-less read can throw
-		// beyond ibBackendException — degrade instead of failing, so the .Execute().Select()… chain stays
-		// introspectable. (The editor's own eval would otherwise swallow the throw and leave the chain object
-		// undefined → no Select in the dropdown.)
+		// completion: the caret's walk may have no live session to read from (the designer's has no runtime),
+		// and a session-less read can throw beyond ibBackendException — degrade instead of failing, so the
+		// .Execute().Select()… chain stays introspectable. (The walk would otherwise swallow the throw and
+		// leave the chain object undefined → no Select in the dropdown.)
 		out.clear();
 		return false;
 	}
@@ -350,7 +349,7 @@ bool ibValueQueryResult::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue
 	}
 
 	const wxString branch = (lSizeArray >= 2 && paParams[1] != nullptr && !paParams[1]->IsEmpty())
-		? paParams[1]->GetString() : wxString();
+		? paParams[1]->GetString() : ibString();
 	pvarRetValue = MakeSelection(kind, branch).release();
 	return true;
 }
@@ -408,15 +407,19 @@ ibValue ibValueQuerySelect::ReadColumn(const ibQueryLowering::OutputColumn& oc) 
 
 ibValue ibValueQuerySelect::ToTable()
 {
-	std::vector<ibQueryUnloadColumn> columns;
-	columns.reserve(m_schema.size());
-	for (const ibQueryLowering::OutputColumn& oc : m_schema)
-		columns.push_back({ oc.m_name, oc.m_type });
+	// Column i is the output column i, keyed by its ordinal from 1 — a projection may read one source column
+	// under two names, so the source's own id would not tell them apart (DrainIntoSnapshot, queryLowering.cpp).
+	ibQueryRamTable rows;
+	for (size_t i = 0; i < m_schema.size(); ++i)
+		rows.AddColumn(static_cast<ibMetaID>(i + 1), m_schema[i].m_name, m_schema[i].GetTypeDesc());
 
 	// The same two reads a script does with `Next()` and `s.Column` - so the table holds exactly what a walk would show.
-	return ibQueryUnload::BuildTable(columns,
-		[this]() { return m_flat != nullptr ? m_flat->Next() : (m_tree != nullptr && m_tree->Next()); },
-		[this](size_t index) { return ReadColumn(m_schema[index]); });
+	while (m_flat != nullptr ? m_flat->Next() : (m_tree != nullptr && m_tree->Next())) {
+		const long at = rows.AppendRow();
+		for (size_t i = 0; i < m_schema.size(); ++i)
+			rows.SetCell(at, static_cast<ibMetaID>(i + 1), ReadColumn(m_schema[i]));
+	}
+	return rows.ToValueTable();
 }
 
 void ibValueQuerySelect::FillMembers(ibMemberTable& helper) const
@@ -464,7 +467,7 @@ bool ibValueQuerySelect::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue
 		// forked (`SPLIT`). Named nothing, the walk goes THROUGH the forks in order and hands back
 		// every group there is, which is what every script written before branches asks for and gets.
 		const wxString branch = (lSizeArray >= 2 && paParams[1] != nullptr)
-			? paParams[1]->GetString() : wxString();
+			? paParams[1]->GetString() : ibString();
 		// ⭐ THE SHAPE OF THE WALK, in the journal: which level was descended from and how many rows
 		// came back. "It shows one value" and "it shows the last of sixty-three" look identical in a
 		// watch window, and this is the line that tells them apart without anyone guessing.

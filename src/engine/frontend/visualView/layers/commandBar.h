@@ -4,10 +4,11 @@
 #include <vector>
 #include "frontend/visualView/layerObject.h"   // ibValueLayerObject — the common runtime+property base
 #include "backend/standardCommand.h"          // ibActionID, ibPictureDescription, ibStandardCommandDescription
-#include "backend/commandDescription.h"  // ibCommandDescription — the command-hop path a button binds to
+#include "core/description/commandDescription.h"  //ibCommandDescription — the command-hop path a button binds to
 #include "backend/propertyManager/property/propertyCommandSource.h" // ibPropertyCommandSource — the button's command SOURCE property (real picker)
 #include "backend/backend_command.h"                                // ibBackendCommandReceiver — a bar item is a receiver (via the door it inherits)
 #include "backend/propertyManager/property/propertyPicture.h"// ibPropertyPicture
+#include "backend/propertyManager/property/propertyFunctionalOptions.h" // ibPropertyFunctionalOptions — the item's functional options
 #include "frontend/visualView/controlEnum.h"   // ibRepresentation / ibValueEnumRepresentation
 #include "frontend/frontendTypes.h"            // ibFrontendWindow
 #include "frontend/visualView/layers/commandReceiver.h"   // ibFrontendCommandReceiver — the command door the bar IS-A
@@ -25,15 +26,17 @@ class ibDataNode;   // serialize/dataBuilder.h — universal node (layer -> node
 // is the resolved display mode (picture / text / both) for THIS command; enabled greys the
 // tool out (an item's Enabled flag) without dropping it from the bar. item is
 // the source child (nullptr for an AutoFill command) — lets a designer click resolve back.
-// ⭐⭐ WHAT A BAR ENTRY IS — and there are two answers, which is why this is a KIND and not a flag.
+// ⭐⭐ WHAT A BAR ENTRY IS — and there are three answers, which is why this is a KIND and not a flag.
 // A COMMAND stands for something to DO; a QUICK FILTER stands for a filter LINE the author marked
-// «quick access», and clicking it edits that line's value rather than running anything.
+// «quick access», and clicking it edits that line's value rather than running anything; a GROUP stands
+// for a command group of the form command bar, and clicking it opens a submenu of its commands.
 //
 // The kind is asked in exactly two places — the click (which door it opens) and the caption (a
-// filter shows its value) — and nowhere else has to care, because both are entries on one bar.
+// filter shows its value) — and nowhere else has to care, because all are entries on one bar.
 enum ibCommandEntryKind {
 	ibCommandEntryKind_Command = 0,
 	ibCommandEntryKind_QuickFilter,
+	ibCommandEntryKind_Group,
 };
 
 struct ibCommandEntry {
@@ -49,6 +52,11 @@ struct ibCommandEntry {
 	// setting in force. An index rather than a pointer because the settings are rebuilt under the
 	// bar (a refetch, another variant), and a pointer into a vector dies the moment one is added.
 	size_t                  filterLine;
+	// …and WHAT IS UNDER IT, for a group: one transient item per command, in the order they were gathered —
+	// owned by the bar's AutoFill set (m_autoItems), rebuilt with it. Empty for every other kind.
+	std::vector<ibValueCommandBarItem*> members;
+	// The hint on the tool. Empty: the caption.
+	wxString                tooltip;
 	ibCommandEntry() : id(wxNOT_FOUND), representation(ibRepresentation_Auto), enabled(true), item(nullptr),
 		kind(ibCommandEntryKind_Command), filterLine(0) {}
 	ibCommandEntry(const ibActionID& i, const wxString& c, const ibPictureDescription& p, ibRepresentation r, bool en = true, ibValueCommandBarItem* it = nullptr, const wxBitmap& bmp = wxNullBitmap)
@@ -81,6 +89,9 @@ public:
 	wxString GetToolTip() const { return m_propertyTooltip->GetValueAsTranslateString(); }
 	bool IsEnabled() const { return m_propertyEnabled->GetValueAsBoolean(); }
 	bool IsVisible() const { return m_propertyVisible->GetValueAsBoolean(); }
+	// Available by the functional options it names — false while all of them are off in this base. Beside
+	// Visible, never written into it.
+	bool IsAvailable() const { return m_propertyFunctionalOptions->IsAvailable(); }
 	// "Modifies data" is NOT the item's to own — it is a COMMAND attribute (a view-only form greys a data-changing
 	// command). The item obeys: BuildCommands reads the flag off the bound command through the door, never here.
 
@@ -115,7 +126,7 @@ public:
 	virtual void ExecuteMenu(ibFrontendVisualEditorNotebook* editor, int menuId) override;
 
 	// ibValue / ibPropertyObject concrete requirements specific to the item.
-	virtual wxString GetString() const override { return GetCaption(); }
+	virtual ibString GetString() const override { return GetCaption(); }
 	virtual wxString GetClassName() const override { return wxT("CommandBarItem"); }
 	virtual wxString GetObjectTypeName() const override { return wxT("CommandBarItem"); }
 	virtual bool IsEditable() const override { return true; }
@@ -154,6 +165,10 @@ private:
 	// properties in ONE per-page name map (a collision asserts in PrepareToAddItem). Label stays _("Command").
 	ibPropertyCommandSource* m_propertyCommand = ibPropertyObject::CreateProperty<ibPropertyCommandSource>(m_category, wxT("BoundCommand"), _("Command"),
 		_("The command the item runs: a form command, a standard command of the form or of one of its tables, or a command of the form's object or of the configuration."));
+	// USER VISIBILITY — a group of its own, as on an element of a form (control.h).
+	ibPropertyCategory* m_categoryUserVisibility = ibPropertyObject::CreatePropertyCategory(wxT("UserVisibility"), _("User visibility"));
+	ibPropertyFunctionalOptions* m_propertyFunctionalOptions = ibPropertyObject::CreateProperty<ibPropertyFunctionalOptions>(m_categoryUserVisibility, wxT("FunctionalOptions"), _("Functional options"),
+		_("The functional options this element is available under: while every one of them is off, it is neither shown nor offered, and neither is what it holds. Empty - available whatever the options are. Works together with Visible and does not change it."));
 };
 
 // A command bar is a CONTAINER layer object (ibValueLayerObject) — NOT a control; it is PART OF a
@@ -236,6 +251,13 @@ public:
 			if (c.id == id) return c.item;
 		return nullptr;
 	}
+	// The entry built for this id — what the toolbar asks before deciding what a click means (a group opens its
+	// submenu). nullptr when the id is not one of this bar's.
+	const ibCommandEntry* FindEntry(const ibActionID& id) const {
+		for (const ibCommandEntry& c : m_commands)
+			if (c.id == id) return &c;
+		return nullptr;
+	}
 
 	// ibValueLayerObject — container, adds / pastes a command from its designer menu.
 	virtual void PrepareDefaultMenu(wxMenu* menu) const override;
@@ -246,7 +268,7 @@ public:
 	bool ReadData(const ibDataNode& node);
 
 	// ibValue / ibPropertyObject concrete requirements specific to the bar.
-	virtual wxString GetString() const override { return _("Command bar"); }
+	virtual ibString GetString() const override { return _("Command bar"); }
 	virtual wxString GetClassName() const override { return wxT("CommandBar"); }
 	virtual wxString GetObjectTypeName() const override { return wxT("CommandBar"); }
 	virtual bool IsEditable() const override { return true; }

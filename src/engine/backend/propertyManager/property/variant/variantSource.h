@@ -2,7 +2,7 @@
 #define __SOURCE_DATA_VARIANT_H__
 
 #include "variantType.h"
-#include "backend/sourceDescription.h"
+#include "core/description/sourceDescription.h"
 
 class BACKEND_API ibBackendSourceColumn;   // queryColumn.h — neutral source-column the dot returns
 
@@ -60,6 +60,10 @@ public:
 	// True when the binding walks one or more references before the leaf (a dotted
 	// path) rather than a single direct column. Cheap — just the path length.
 	bool IsDotWalk() const { return m_sourceDesc.IsDotWalk(); }
+
+	// Every hop of the binding may be shown (functional options) — the leaf and each reference before it. Unbound,
+	// a whole-attribute binding or a broken path lands on no field and is not this question's: true.
+	bool IsSourceAvailable() const;
 
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 

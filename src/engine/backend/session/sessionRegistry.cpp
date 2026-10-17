@@ -1,18 +1,20 @@
 #include "sessionRegistry.h"
 #include "sessionPolicy.h"
 #include "designerExclusivePolicy.h"
+#include "serviceExclusivePolicy.h"
 
 #include "backend/appData.h"
+#include "backend/appHost.h"   // SetThreadOwner — the registry thread's journal lines name its base
 #include "sessionSnapshot.h"
 #include "backend/backend_exception.h"
-#include "backend/guid.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseLayer.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — q(&m_writeHolder) resolves to the holder's bound conn (write helpers); snapshot reads still raw
 #include "workerPool.h"
 #include "workerPoolHeadless.h"
 #include "backend/lock/lockManager.h"
-#include "backend/utils/debugTrace.h"   // ibTraceToFile — Die's reason must survive a GUI build
+#include "backend/temp/tempStorage.h"
+#include "core/diagnostics/debugTrace.h"   // ibTraceToFile — Die's reason must survive a GUI build
 
 #include <chrono>
 #include <iostream>
@@ -31,7 +33,6 @@
 #endif
 
 #include <wx/log.h>
-#include <wx/datetime.h>
 
 namespace {
 
@@ -82,31 +83,22 @@ constexpr int  kSilentSeconds     = static_cast<int>(
 #define SESSION_LOG(expr) do { std::ostringstream _o; _o << expr; LogSession(_o.str()); } while(0)
 
 // No static `Instance()` definition here — accessor moved to
-// `ibApplicationData::GetSessionRegistry()` (declared inline in appData.h).
+// `ibApplicationInstance::GetSessionRegistry()` (declared inline in appData.h).
 // Single coordinator pattern: subsystems do not own their own global
 // state, they exist for the duration of appData.
 
-ibSessionRegistry::ibSessionRegistry(ib::AppDataCtorToken, std::size_t maxWorkers)
+ibSessionRegistry::ibSessionRegistry(ib::AppDataCtorToken owner)
+	: m_applicationInstance(owner.GetApplicationInstance())
 {
-	// Allocate the worker pool here so registry owns the whole
-	// session-management subsystem end-to-end: pool stops before
-	// sessions tear down inside our Stop(). maxWorkers == 0 means
-	// "no pool" — desktop GUI modes that run a single session on the
-	// wx main thread don't need a thread pool at all.
-	if (maxWorkers > 0)
-		m_workerPool = std::make_unique<ibWorkerPoolHeadless>(maxWorkers);
+	// Its own writes go through its base's pool — reached down the chain once, here, where the pool already
+	// stands (the base builds it first), and never asked of "the current one" from the registry thread.
+	m_writeHolder.SetPool(ibApplicationInstance::GetConnectionPool(m_applicationInstance));
 }
 
-void ibSessionRegistry::SetWorkerPool(std::unique_ptr<ibWorkerPool> pool)
+ibWorkerPool* ibSessionRegistry::GetWorkerPool() const
 {
-	// Drain the outgoing pool before it dies: Stop() lets pending tasks
-	// run to completion against sessions that are still alive, which a
-	// plain reset would not (the unique_ptr would destroy the pool with
-	// queued work still in it).
-	if (m_workerPool != nullptr)
-		m_workerPool->Stop();
-
-	m_workerPool = std::move(pool);
+	ibApplicationHost* const host = m_applicationInstance != nullptr ? m_applicationInstance->GetHost() : nullptr;
+	return host != nullptr ? host->GetWorkerPool() : nullptr;
 }
 
 void ibSessionRegistry::CloseAll(bool force)
@@ -148,7 +140,7 @@ void ibSessionRegistry::EnableDebugForSession(ibSession* s)
 ibSessionRegistry::~ibSessionRegistry()
 {
 	// Best-effort — in normal shutdown Stop() should have been called via
-	// ibApplicationData::Disconnect. Reaching the dtor with m_thread still
+	// ibApplicationInstance::Disconnect. Reaching the dtor with m_thread still
 	// joinable means something forgot to stop; join here so the process
 	// doesn't terminate with a running thread (which std::thread's dtor
 	// would turn into std::terminate anyway).
@@ -217,7 +209,7 @@ bool ibSessionRegistry::HasClients() const
 
 // --- Session factory facade ----------------------------------------------
 
-void ibSessionRegistry::EnsureStartedForCreateSession(ibRunMode runMode)
+void ibSessionRegistry::EnsureStartedForCreateSession()
 {
 	if (m_threadAlive.load(std::memory_order_acquire)) return;
 
@@ -228,31 +220,35 @@ void ibSessionRegistry::EnsureStartedForCreateSession(ibRunMode runMode)
 	// before the first Start().
 	EnableSysSessionOwnership(true);
 
-	// Designer-exclusive policy — only one designer process per IB at a
-	// time. AddPolicy must happen BEFORE Start so the chain is immutable
-	// once the consumer thread is running.
-	if (runMode == eDESIGNER_MODE)
-		AddPolicy(std::make_unique<ibDesignerExclusivePolicy>(this));
+	// Designer-exclusive policy — one designer per IB at a time, in EVERY process: a designer is a session's kind,
+	// and a file base's designer and a thin designer in a server are the same question. It lets everyone else
+	// through. AddPolicy must happen BEFORE Start so the chain is immutable once the consumer thread is running.
+	AddPolicy(std::make_unique<ibDesignerExclusivePolicy>(this));
+
+	// …and a base served by an application server is that server's — in EVERY process, because the refusal has to happen
+	// in the one trying to come in (docs/private/multi-base-process.md § 5.2).
+	AddPolicy(std::make_unique<ibServiceExclusivePolicy>(this));
 
 	Start();
 }
 
-ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
-                                                            const wxString& computer,
-                                                            ibConnectRequest::SessionFactory factory)
+ibSessionHolder ibSessionRegistry::CreateSessionOfKind(ibRunMode runMode,
+                                                       const wxString& computer,
+                                                       ibSessionKind kind,
+                                                       ibConnectRequest::SessionFactory factory)
 {
-	EnsureStartedForCreateSession(runMode);
+	EnsureStartedForCreateSession();
 
 	// Anonymous-phase Connect — registry INSERTs a row with userName=''
 	// immediately so peers (Active Users UI, designer-exclusive policy)
-	// see "someone is logging in". Session kind is explicit: wes's own
-	// technical session is WebServer; desktop modes default via runMode.
+	// see "someone is logging in", and a job is visible from the moment it
+	// exists — before it has an identity, and whether or not it ever gets
+	// one. The kind is the caller's: the server's own login, the designer's
+	// window, wes's technical WebServer row, a job.
 	ibConnectRequest req;
 	req.m_computer       = computer;
 	req.m_appMode        = runMode;
-	req.m_kind           = (runMode == eWEB_RUNTIME_MODE)
-	                         ? ibSessionKind::WebServer
-	                         : SessionKindFromRunMode(runMode);
+	req.m_kind           = kind;
 	req.m_sessionFactory = std::move(factory);
 
 	auto result = Connect(req);
@@ -271,32 +267,6 @@ ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
 	return std::move(result.m_holder);
 }
 
-ibSessionHolder ibSessionRegistry::CreateSessionOfKind(ibRunMode runMode,
-                                                       const wxString& computer,
-                                                       ibSessionKind kind,
-                                                       ibConnectRequest::SessionFactory factory)
-{
-	EnsureStartedForCreateSession(runMode);
-
-	// Same anonymous-phase Connect as the facade above; only the kind is the
-	// caller's rather than derived from runMode. The row appears immediately with
-	// an empty user name, so a job is visible from the moment it exists — before
-	// it has an identity, and whether or not it ever gets one.
-	ibConnectRequest req;
-	req.m_computer       = computer;
-	req.m_appMode        = runMode;
-	req.m_kind           = kind;
-	req.m_sessionFactory = std::move(factory);
-
-	auto result = Connect(req);
-	if (result.m_code != ibConnectResult::Ok) {
-		if (!result.m_reason.IsEmpty())
-			ibBackendCoreException::Error(result.m_reason);
-		return ibSessionHolder();
-	}
-	return std::move(result.m_holder);
-}
-
 // No Connect, no queue, no row — the session simply exists and is owned. Mirrors what
 // ibJobManager does inline for a rented read; lifted here so the one place that may call
 // SetUnlisted is the registry that owns the listing rule. See the header for who uses it.
@@ -310,6 +280,7 @@ ibSessionHolder ibSessionRegistry::MintUnlisted(std::shared_ptr<ibSession> sessi
 
 ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
                                                             const wxString& computer,
+                                                            ibSessionKind kind,
                                                             const wxString& presetGuid,
                                                             const wxString& address,
                                                             ibConnectRequest::SessionFactory factory)
@@ -317,13 +288,14 @@ ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
 	// Per-tab variant — registry is normally already running by the time
 	// per-tab logins arrive (wes process bring-up created its WebServer
 	// system session at startup). EnsureStartedForCreateSession is
-	// idempotent so calling it here is safe in either order.
-	EnsureStartedForCreateSession(runMode);
+	// idempotent so calling it here is safe in either order. The kind is the
+	// caller's: a web tab's, a client of the protocol's.
+	EnsureStartedForCreateSession();
 
 	ibConnectRequest req;
 	req.m_computer       = computer;
 	req.m_appMode        = runMode;
-	req.m_kind           = ibSessionKind::WebClient;
+	req.m_kind           = kind;
 	req.m_address        = address;
 	req.m_presetGuid     = presetGuid;
 	req.m_sessionFactory = std::move(factory);
@@ -382,25 +354,34 @@ void ibSessionRegistry::Start()
 
 void ibSessionRegistry::Stop()
 {
-	if (!m_thread.joinable()) {
-		// Even with no registry thread running, the pool may be live —
-		// the appData ctor allocates it before the registry starts. Stop
-		// anyway so workers join before the host returns from Stop.
-		if (m_workerPool) {
-			m_workerPool->Stop();
-			m_workerPool.reset();
-		}
+	// No registry thread — no session was ever made here, so nothing of ours is in the worker pool either.
+	if (!m_thread.joinable())
 		return;
-	}
 
-	// Drain worker pool BEFORE killing sessions: tasks in flight reference
-	// session pointers; if we tear sessions down first, the pool's worker
-	// threads are left calling into freed memory. After Stop, the pool's
-	// worker threads have joined and no new task can be submitted (Submit
-	// rejects with set_exception on a stopped pool).
-	if (m_workerPool) {
-		m_workerPool->Stop();
-		m_workerPool.reset();
+	// Drain THIS BASE'S work from the worker pool BEFORE killing sessions: tasks in flight reference session
+	// pointers; tear the sessions down first and a worker is left calling into freed memory. The pool is the
+	// process's and the other bases go on using it, so it is not stopped: each own session is CANCELLED, as the
+	// pool's own Stop does — a script waiting for its client (ibWorkerPool::Await) would wait for an answer
+	// nobody is left to give, and would run the no-op below inside its wait instead of behind it — then its
+	// queue is run to its end — a no-op waits behind everything queued before it, the queue being FIFO per
+	// session — and dropped.
+	if (ibWorkerPool* const pool = GetWorkerPool()) {
+		std::vector<std::shared_ptr<ibSession>> own;
+		{
+			std::shared_lock<std::shared_mutex> lk(m_ownMutex);
+			own.reserve(m_own.size());
+			for (auto& kv : m_own)
+				if (auto s = kv.second.Share()) own.push_back(std::move(s));
+		}
+		for (const std::shared_ptr<ibSession>& s : own) {
+			// Only the sessions that work in it — a desktop window's runs on its own (ibGUISession).
+			if (s->GetWorkerPool() != pool)
+				continue;
+			s->Cancel();
+			try { pool->Execute(s.get(), [] {}); }
+			catch (...) { /* swallowed: a task's own failure was reported where it ran; the queue is drained either way */ }
+			pool->Drop(s.get());
+		}
 	}
 
 	// Quiesce the registry thread FIRST without giving it any new work.
@@ -424,7 +405,7 @@ void ibSessionRegistry::Stop()
 	// when m_stop fires; if its NotifyDisconnect → DetachRuntime path
 	// blocks on a mutex that main holds further up the stack (classic
 	// case: main crashed inside BeforeStart's lock_guard<m_runtimeMutex>,
-	// SEH dispatch unrolled to OnFatalException → ~ibApplicationData →
+	// SEH dispatch unrolled to OnFatalException → ~ibApplicationInstance →
 	// Stop without releasing C++ frames — the lock is still held), a
 	// blind join() hangs forever. m_threadAlive is set by ThreadBody
 	// at entry and cleared on exit (incl. exception path via the noexcept
@@ -539,7 +520,7 @@ ibConnectResult ibSessionRegistry::Connect(const ibConnectRequest& req,
 	identity.m_computer          = req.m_computer;
 	identity.m_address           = req.m_address;
 	identity.m_appMode           = req.m_appMode;
-	identity.m_started           = wxDateTime::Now();
+	identity.m_started           = ibDateTime::Now();
 	identity.m_pid               = CurrentPid();
 	identity.m_expectsAnonPhase  = req.m_userName.IsEmpty();
 
@@ -551,6 +532,8 @@ ibConnectResult ibSessionRegistry::Connect(const ibConnectRequest& req,
 	auto session = req.m_sessionFactory
 		? req.m_sessionFactory(idStr, req.m_kind)
 		: std::make_shared<ibSession>(idStr, req.m_kind);
+	session->m_registry = this;
+	session->m_dbHolder.SetPool(ibApplicationInstance::GetConnectionPool(m_applicationInstance));
 	session->SetIdentity(identity);
 
 	// --- Submit Add + wait for Created → Added / Rejected ---
@@ -579,14 +562,7 @@ ibConnectResult ibSessionRegistry::Connect(const ibConnectRequest& req,
 
 	// --- Optional Attach for creds-supplied flow ---
 	if (!req.m_userName.IsEmpty()) {
-		{
-			ibRegistryRequest att;
-			att.kind     = ibRegistryRequestKind::Attach;
-			att.session  = session;
-			att.user     = req.m_userName;
-			att.password = req.m_password;
-			Submit(std::move(att), ibPriority::Normal);
-		}
+		Attach(session, req.m_userName, req.m_password);
 		ibAuthState auth = session->WaitForAuth(ibAuthState::Anonymous, timeout);
 		if (auth == ibAuthState::Anonymous) {
 			// Producer gave up; tear down the session so we don't leak an
@@ -770,8 +746,12 @@ void ibSessionRegistry::NotifyAuthenticated(ibSession* s)
 	// Pin session as Current() on the calling thread BEFORE listeners
 	// fire, so RunDatabase / CompileRoot / etc. can resolve through
 	// ibSession::Current() inside listener bodies without each listener
-	// having to bind manually.
-	ibSession::BindSessionToThread(s, std::this_thread::get_id());
+	// having to bind manually. For the bring-up only: the thread comes
+	// back as it was. Left bound, a pooled thread (a web request's, a job
+	// tick's) answered every later caller with this session; a window's
+	// thread loses nothing — unbound, it resolves to the process's own
+	// session through the registry's fallback.
+	const ibSessionScope bringingUp(s);
 
 	std::vector<SessionCallback> auths;
 	std::vector<SessionCallback> firsts;
@@ -790,10 +770,13 @@ void ibSessionRegistry::NotifyAuthenticated(ibSession* s)
 		for (const auto& cb : firsts)
 			if (cb) cb(s);
 	}
-	// Between phases — OnFirstConnect's metadataCreate may have just set
-	// activeMetaData; OnAuthenticated's listeners (RunDatabase ->
+	// Between phases — OnFirstConnect's metadataCreate may have just made the
+	// base's active configuration, and the session acquires its own reference
+	// to it NOW: the one it works in for its whole life, whatever replaces the
+	// active one later. OnAuthenticated's listeners (RunDatabase ->
 	// OnBeforeRunMetaObject) need session->mm to exist. Session creates
 	// its root here so ownership stays in ibSession (see EnsureRoot).
+	s->AcquireMetaData();
 	s->EnsureRoot();
 	for (const auto& cb : auths)
 		if (cb) cb(s);
@@ -820,58 +803,74 @@ void ibSessionRegistry::NotifyDisconnect(ibSession* s)
 			}
 		}
 	}
-	for (const auto& cb : disconnects)
-		if (cb) cb(s);
+	// THROUGH THE SESSION THAT IS LEAVING — the listeners take its runtime down and, for the last one out,
+	// close its base's configuration; what they reach they reach through that session (its base), as the
+	// login reached it through the session logging in.
+	{
+		ibSessionScope leaving(s);
+		for (const auto& cb : disconnects)
+			if (cb) cb(s);
+		// …and it lets go of the configuration it worked in — the mirror of NotifyAuthenticated's acquire. The last
+		// session in a configuration the base has replaced closes it right here, on this thread, before the last
+		// one out below closes the active one.
+		s->ReleaseMetaData();
+	}
+	// ⚠ …AND BOUND AGAIN FOR THE LAST ONE OUT. A disconnect listener unbinds the session from every thread
+	// (ibSession::UnbindSession) — this one too, which a scope does not undo until it ends. The last-out
+	// listeners then closed the configuration on a thread that worked for nothing: a scheduled job's
+	// Unregister asked "the current base", the throw left ThreadBody, and Die stopped the process — on
+	// every exit of a configuration that declares a job (census of the registry thread, 2026-10-01).
 	if (fireLast) {
+		ibSessionScope leaving(s);
 		for (const auto& cb : lasts)
 			if (cb) cb();
 	}
 }
 
-// --- Access mode + fallback ---------------------------------------------
-
-void ibSessionRegistry::SetAccessMode(ibSession::AccessMode mode)
-{
-	std::unique_lock<std::shared_mutex> lk(m_accessMutex);
-	m_accessMode = mode;
-}
-
-ibSession::AccessMode ibSessionRegistry::GetAccessMode() const
-{
-	std::shared_lock<std::shared_mutex> lk(m_accessMutex);
-	return m_accessMode;
-}
+// --- Fallback -------------------------------------------------------------
 
 void ibSessionRegistry::SetFallback(ibSession* s)
 {
-	std::unique_lock<std::shared_mutex> lk(m_accessMutex);
+	std::unique_lock<std::shared_mutex> lk(m_fallbackMutex);
 	m_fallback = s ? s->weak_from_this() : std::weak_ptr<ibSession>{};
 }
 
 void ibSessionRegistry::ClearFallback()
 {
-	std::unique_lock<std::shared_mutex> lk(m_accessMutex);
+	std::unique_lock<std::shared_mutex> lk(m_fallbackMutex);
 	m_fallback.reset();
 }
 
 ibSession* ibSessionRegistry::GetFallback() const
 {
-	std::shared_lock<std::shared_mutex> lk(m_accessMutex);
+	std::shared_lock<std::shared_mutex> lk(m_fallbackMutex);
 	return m_fallback.lock().get();
 }
 
 // --- debug thread → parked session redirection --------------------------
 
+// The registry the calling thread is a debug worker of — written by the thread's own registration.
+static thread_local ibSessionRegistry* t_debugRegistry = nullptr;
+
 void ibSessionRegistry::RegisterDebugThread(std::thread::id tid)
 {
 	std::unique_lock<std::shared_mutex> lk(m_debugMtx);
 	m_debugThreads.insert(tid);
+	if (tid == std::this_thread::get_id())
+		t_debugRegistry = this;
 }
 
 void ibSessionRegistry::UnregisterDebugThread(std::thread::id tid)
 {
 	std::unique_lock<std::shared_mutex> lk(m_debugMtx);
 	m_debugThreads.erase(tid);
+	if (tid == std::this_thread::get_id() && t_debugRegistry == this)
+		t_debugRegistry = nullptr;
+}
+
+ibSessionRegistry* ibSessionRegistry::ForDebugThread()
+{
+	return t_debugRegistry;
 }
 
 bool ibSessionRegistry::IsDebugThread(std::thread::id tid) const
@@ -943,7 +942,7 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 		          << " user='" << (const char*)userName.ToUTF8().data() << "'"
 		          << " mode=" << int(id.m_appMode));
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		SESSION_LOG("[session INSERT] FAILED: "
 		          << (const char*)err.GetErrorDescription().ToUTF8().data());
 		return false;
@@ -1005,7 +1004,7 @@ void ibSessionRegistry::ProcessAdd(ibRegistryRequest& req)
 	// the process's server; subsequent non-server sessions get Server()
 	// pinned to it so keep-alive / topology queries see the tree without
 	// the caller threading the pointer through. Single-session apps
-	// (desktop GUI, daemon, codeRunner) never add a WebServer-kind
+	// (desktop GUI, appserver, codeRunner) never add a WebServer-kind
 	// session, so m_currentServer stays nullptr and Server() does too.
 	if (s.GetKind() == ibSessionKind::WebServer) {
 		std::unique_lock<std::shared_mutex> lk(m_serverMutex);
@@ -1164,30 +1163,39 @@ void ibSessionRegistry::ProcessAdd(ibRegistryRequest& req)
 	NotifyConnectCreate(&s);
 }
 
+void ibSessionRegistry::Attach(const std::shared_ptr<ibSession>& session, const wxString& user, const wxString& password)
+{
+	if (!session) return;
+	ibRegistryRequest req;
+	req.kind    = ibRegistryRequestKind::Attach;
+	req.session = session;
+	// Verifies the credentials and (when info.IsOk()) writes m_userInfo / m_sessionRawPassword onto the session
+	// through InstallUser — so the scope pins the session: InstallUser routes to it, and everything the login
+	// reads reaches the session's base through it. The session is not yet authenticated, so nobody reads what
+	// is written here until ProcessAttach announces it.
+	if (m_applicationInstance != nullptr) {
+		ibSessionScope scope(session.get());
+		req.accepted = m_applicationInstance->Login(user, password, req.info);
+	}
+	Submit(std::move(req), ibPriority::Normal);
+}
+
 void ibSessionRegistry::ProcessAttach(ibRegistryRequest& req)
 {
 	if (!req.session) return;
 	ibSession& s = *req.session;
 
-	if (appData == nullptr) {
+	if (m_applicationInstance == nullptr) {
 		s.TransitionAuth(ibAuthState::AuthFailed, _("appData unavailable"));
 		return;
 	}
 
-	// Single auth entry — verifies creds and (when info.IsOk()) writes
-	// m_userInfo / m_sessionRawPassword onto the target session via
-	// InstallUser. Pin scope to the target so InstallUser routes to this
-	// session, not whatever the registry thread last touched.
-	ibUserInfo info;
-	bool ok;
-	{
-		ibSessionScope scope(&s);
-		ok = appData->Login(req.user, req.password, info);
-	}
-	if (!ok) {
+	// The verdict was reached on the caller's thread (Attach); here it is only written.
+	if (!req.accepted) {
 		s.TransitionAuth(ibAuthState::AuthFailed, _("invalid user or password"));
 		return;
 	}
+	const ibUserInfo& info = req.info;
 
 	// Open-access pass-through: Login returned true with an empty info
 	// (no sys_user rows AND caller supplied no creds). Transition to
@@ -1263,16 +1271,16 @@ void ibSessionRegistry::ProcessRemove(ibRegistryRequest& req)
 {
 	if (!req.session) return;
 	ibSession& s = *req.session;
-	const bool wasAuthenticated = (s.Auth() == ibAuthState::Authenticated);
+	const bool released = (s.State() == ibSessionState::Stopping);
 	s.Transition(ibSessionState::Stopping);
 
 	// Drop the session's queue from the worker pool so any pending tasks
 	// for this session don't hold its slot once the session itself goes
 	// away. Caller flow (ibWebSession::OnExit) drains via blocking
 	// RunOnWorker(...).get() before Close, so by this point there are
-	// no in-flight tasks; DropSession just removes the empty queue
+	// no in-flight tasks; Drop just removes the empty queue
 	// entry from the pool's per-session map.
-	if (m_workerPool) m_workerPool->DropSession(&s);
+	if (ibWorkerPool* const pool = GetWorkerPool()) pool->Drop(&s);
 
 	// If this session was holding exclusive mode, release it before the
 	// row teardown so any parked Adds resume. Drop the weak under the
@@ -1305,17 +1313,22 @@ void ibSessionRegistry::ProcessRemove(ibRegistryRequest& req)
 	// Stopping and Gone) — they may need to query session identity.
 	// NotifyDisconnect itself gates the auth-counter decrement on
 	// session's auth state, so non-authenticated removals don't
-	// disturb the first/last-connect bookkeeping.
-	NotifyDisconnect(&s);
-	(void)wasAuthenticated;
+	// disturb the first/last-connect bookkeeping. A released session
+	// has had them already, on its owner's thread (ibSession::Teardown).
+	if (!released)
+		NotifyDisconnect(&s);
 
 	// Drop any long-held sys_lock rows owned by this session before the
 	// row teardown below. Cluster-aware — every wes process owning the
 	// session sees the DELETE on next snapshot tick (or on next acquire
 	// attempt against the same key, which then succeeds). See
 	// docs/private/record-locks.md "Planned upgrade path".
-	if (auto* lm = ibApplicationData::GetLockManager())
+	if (auto* lm = ibApplicationInstance::GetLockManager(m_applicationInstance))
 		lm->OnSessionEnd(s.Identity().m_guid);
+
+	// …and its temporary files: they were the session's, and nothing else is there to open them.
+	if (auto* ts = ibApplicationInstance::GetTempStorage(m_applicationInstance))
+		ts->OnSessionEnd(s.Identity().m_guid);
 
 	if (m_ownsSysSession && m_writeConn && s.Inserted()) {
 		const wxString guidStr = s.GetId();
@@ -1543,10 +1556,14 @@ void ibSessionRegistry::ProcessSetActivity(ibRegistryRequest& req)
 	if (!req.session->Inserted()) return;   // nothing to update yet
 
 	const wxString guidStr = req.session->GetId();
+	// ⚠ FITTED TO THE COLUMN, because a longer label is not cut by the engine but refused (`-303 string
+	// right truncation`), and the refusal is swallowed below: a run whose label names a long script path
+	// never showed at all, and the journal took a thrown exception per label (2026-09-29).
+	const wxString label = req.activity.Left(kActivityWidth);
 	try {
 		ibDatabaseQueryBuilder q(&m_writeHolder);
 		q.Execute(ibUpdate(session_table,
-			{ { wxT("currentActivity"), ibConst(ibValue(req.activity)) } },
+			{ { wxT("currentActivity"), ibConst(ibValue(label)) } },
 			ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(guidStr)))));
 	} catch (...) { /* swallowed: SetActivity is a UI-state hint, not a correctness signal — a failed UPDATE just means peer dialogs show a stale label until the next tick */ }
 }
@@ -1594,8 +1611,11 @@ void ibSessionRegistry::JobSweepStale()
 	// from Active Users within ~10 s of their last heartbeat.
 	constexpr int kStaleCutoffSec = kSilentSeconds;
 
-	wxDateTime cutoff = wxDateTime::Now();
-	(void)cutoff.Subtract(wxTimeSpan(0, 0, kStaleCutoffSec));
+	// Aged in REAL time (ElapsedSince, through the machine's zone): on the morning the clocks go forward a
+	// beat written at 01:59:59 is a second old at 03:00:00, and a live peer must not be swept - its row and
+	// then its locks - for the hour the wall skipped.
+	const ibDateTime now = ibDateTime::Now();
+	const long long staleAfter = kStaleCutoffSec * 1000ll;
 
 	std::vector<wxString> zombies;
 	std::vector<ibGuid>   live;   // everyone that survives this pass — the lock sweep's input
@@ -1615,8 +1635,8 @@ void ibSessionRegistry::JobSweepStale()
 				continue;  // our own — heartbeat keeps lastActive fresh
 			}
 
-			const wxDateTime lastActive = rs.GetResultDate(wxT("lastActive"));
-			if (lastActive.IsValid() && lastActive.IsEarlierThan(cutoff))
+			const ibDateTime lastActive = rs.GetResultDate(wxT("lastActive"));
+			if (!lastActive.IsEmpty() && now.ElapsedSince(lastActive) > staleAfter)
 				zombies.push_back(guid);
 			else
 				live.emplace_back(guid);
@@ -1643,10 +1663,17 @@ void ibSessionRegistry::JobSweepStale()
 	// cleanup at all. It stayed until someone deleted the row by hand, and until
 	// then the document it guarded could not be opened on any machine.
 	try {
-		if (auto* lm = ibApplicationData::GetLockManager())
+		if (auto* lm = ibApplicationInstance::GetLockManager(m_applicationInstance))
 			lm->SweepOrphans(live);
 	}
 	catch (...) { /* swallowed: lock cleanup is best-effort, next sweep retries on stale rows */ }
+
+	// The temporary files of a session that died without its end — by the same list of who is alive.
+	try {
+		if (auto* ts = ibApplicationInstance::GetTempStorage(m_applicationInstance))
+			ts->SweepOrphans(live);
+	}
+	catch (...) { /* swallowed: the next sweep retries */ }
 }
 
 void ibSessionRegistry::JobHeartbeatOwn()
@@ -1670,7 +1697,7 @@ void ibSessionRegistry::JobHeartbeatOwn()
 	// previous leader's spawned firebird.exe.
 	try {
 		ibDatabaseQueryBuilder q(&m_writeHolder);
-		const wxDateTime now = wxDateTime::Now();
+		const ibDateTime now = ibDateTime::Now();
 		for (const auto& kv : m_own) {
 			auto s = kv.second.Share();
 			if (!s || !s->Inserted()) continue;
@@ -1700,13 +1727,23 @@ void ibSessionRegistry::JobHeartbeatOwn()
 // 🛑 OUR OWN HEART KEEPS BEATING WHILE WE WATCH. This runs on the registry thread, which is the thread that
 // beats; sitting still for the window, it would let a peer asking the same question about US at the same
 // moment see our row stand still and remove it. So every poll beats first.
+int ibSessionRegistry::GetSilentSeconds()
+{
+	return kSilentSeconds;
+}
+
+std::chrono::milliseconds ibSessionRegistry::GetHeartbeatInterval()
+{
+	return std::chrono::milliseconds(kHeartbeatInterval);
+}
+
 size_t ibSessionRegistry::SettleSilentPeers(const std::vector<wxString>& peers)
 {
 	if (peers.empty() || !m_ownsSysSession || !m_writeConn)
 		return 0;
 
 	// Every row's lastActive — or false, and then nobody is proven dead.
-	const auto readBeats = [this](std::map<wxString, wxDateTime>& beats) {
+	const auto readBeats = [this](std::map<wxString, ibDateTime>& beats) {
 		beats.clear();
 		try {
 			ibDatabaseQueryBuilder q(&m_writeHolder);
@@ -1719,7 +1756,7 @@ size_t ibSessionRegistry::SettleSilentPeers(const std::vector<wxString>& peers)
 		catch (...) { return false; }
 	};
 
-	std::map<wxString, wxDateTime> first, now;
+	std::map<wxString, ibDateTime> first, now;
 	if (!readBeats(first))
 		return 0;
 	std::set<wxString> still;   // named rows that are there and have not moved yet
@@ -1729,14 +1766,14 @@ size_t ibSessionRegistry::SettleSilentPeers(const std::vector<wxString>& peers)
 
 	using clock = std::chrono::steady_clock;
 	const auto deadline = clock::now() + kSilentBeats * kHeartbeatInterval;
-	const wxTimeSpan silence(0, 0, kSilentSeconds);
+	const long long silence = kSilentSeconds * 1000ll;   // in milliseconds of real time (ElapsedSince, as the sweep ages)
 	std::set<wxString> silent;   // stood still until its last beat was older than the silence
 	for (;;) {
 		// Settled by age where the age already says it — the sweep's own rule, asked now.
-		const wxDateTime at = wxDateTime::Now();
+		const ibDateTime at = ibDateTime::Now();
 		for (auto it = still.begin(); it != still.end(); ) {
-			const wxDateTime& beat = first[*it];   // no beat recorded at all: only the watch can settle it
-			if (beat.IsValid() && at - beat >= silence) {
+			const ibDateTime& beat = first[*it];   // no beat recorded at all: only the watch can settle it
+			if (!beat.IsEmpty() && at.ElapsedSince(beat) >= silence) {
 				silent.insert(*it);
 				it = still.erase(it);
 			}
@@ -1865,6 +1902,11 @@ void ibSessionRegistry::JobCheckSignal()
 				// Teardown then follows by itself: the owner dies, its holder is released, and that
 				// release IS the Remove. Submitting one here as well would race that path — it stays only
 				// as the fallback for a close that answered "not now".
+				//
+				// ⚠ THROUGH THE SESSION BEING CLOSED, as a disconnect goes through the one leaving: this thread
+				// works for no base, and what the close reaches — the web host's force-exit listener, a session
+				// kind's OnClose — asks its base the ordinary way (census of the registry thread, 2026-10-01).
+				const ibSessionScope closing(target.get());
 				if (!target->Close(true)) {
 					ibRegistryRequest rm;
 					rm.kind    = ibRegistryRequestKind::Remove;
@@ -1898,12 +1940,11 @@ void ibSessionRegistry::JobCheckSignal()
 void ibSessionRegistry::JobRefreshSnapshot()
 {
 	if (!m_ownsSysSession || !m_writeConn) {
-		static bool warned = false;
-		if (!warned) {
+		if (!m_loggedRefreshSkip) {
 			SESSION_LOG("[session REFRESH] skip - ownsSysSession="
 			          << m_ownsSysSession << " writeConn="
 			          << (m_writeConn ? "ok" : "null"));
-			warned = true;
+			m_loggedRefreshSkip = true;
 		}
 		return;
 	}
@@ -1934,7 +1975,7 @@ void ibSessionRegistry::JobRefreshSnapshot()
 		if (m_sessionHasOptionalColumns.load(std::memory_order_relaxed) >= 0) {
 			struct WideRow {
 				ibRunMode  m_application;
-				wxDateTime m_started;
+				ibDateTime m_started;
 				wxString   m_userName, m_computer, m_session;
 				int        m_kind;
 				bool       m_exclusive;
@@ -2031,8 +2072,22 @@ void ibSessionRegistry::JobRefreshSnapshot()
 			fresh->SetExclusiveFromMap(exclusiveBySession);
 		} catch (...) { /* legacy schema — fine, exclusive stays false */ }
 		}   // !wideRead — the legacy three-pass road
+
+		// currentActivity is optional on a base created before the column. A missing column must not
+		// throw away the snapshot just built. A detached thin client writes "detached until HH:MM:SS".
+		try {
+			ibDatabaseQueryBuilder qa(&m_writeHolder);
+			ibQueryResult rsa = qa.From(session_table)
+				.Select({ wxT("session"), wxT("currentActivity") })
+				.Execute();
+			std::unordered_map<wxString, wxString> activityBySession;
+			while (rsa.Next())
+				activityBySession[rsa.GetResultString(wxT("session"))]
+					= rsa.GetResultString(wxT("currentActivity"));
+			fresh->SetActivityFromMap(activityBySession);
+		} catch (...) { /* legacy schema — the row shows no activity */ }
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		SESSION_LOG("[session REFRESH] SELECT failed: "
 		          << (const char*)err.GetErrorDescription().ToUTF8().data());
 		// Self-heal after a leader handoff is handled inside the FB
@@ -2076,12 +2131,11 @@ void ibSessionRegistry::JobRefreshSnapshot()
 		                             std::memory_order_release);
 	}
 
-	static unsigned lastCount = UINT_MAX;
-	if (rowCount != lastCount) {
+	if (rowCount != m_loggedSnapshotRows) {
 		SESSION_LOG("[session REFRESH] snapshot now has " << rowCount
-		          << " row(s) (was " << (lastCount == UINT_MAX ? 0 : lastCount)
+		          << " row(s) (was " << (m_loggedSnapshotRows == UINT_MAX ? 0 : m_loggedSnapshotRows)
 		          << ")");
-		lastCount = rowCount;
+		m_loggedSnapshotRows = rowCount;
 	}
 
 	std::unique_lock<std::shared_mutex> lk(m_snapshotMtx);
@@ -2100,6 +2154,8 @@ ibSessionSnapshot ibSessionRegistry::GetClusterSnapshot() const
 void ibSessionRegistry::ThreadBody() noexcept
 {
 	m_threadAlive.store(true, std::memory_order_release);
+	// Its lines name its base — the journal's label, not a binding: the registry asks its own base.
+	ibApplicationHost::SetThreadOwner(m_applicationInstance);
 
 	using clock = std::chrono::steady_clock;
 	// Snapshot refresh runs at 1 Hz — cheap (one SELECT on sys_session).
@@ -2138,6 +2194,7 @@ void ibSessionRegistry::ThreadBody() noexcept
 
 			// Drain queue by strict descending priority.
 			auto batch = DrainAll();
+			bool rowsWritten = false;
 			for (auto& req : batch) {
 				switch (req.kind) {
 					case ibRegistryRequestKind::Add:          ProcessAdd(req);          break;
@@ -2147,6 +2204,10 @@ void ibSessionRegistry::ThreadBody() noexcept
 					case ibRegistryRequestKind::SetActivity:  ProcessSetActivity(req);  break;
 					case ibRegistryRequestKind::SetExclusive: ProcessSetExclusive(req); break;
 				}
+				// Every request but an activity label may add, sign in, take out or mark a row the snapshot
+				// shows; the label is not in it.
+				if (req.kind != ibRegistryRequestKind::SetActivity)
+					rowsWritten = true;
 			}
 
 			// ⭐⭐ AND AGAIN BEFORE EVERY PHASE THAT TOUCHES THE DATABASE. `m_stop` was read once, at
@@ -2175,6 +2236,13 @@ void ibSessionRegistry::ThreadBody() noexcept
 				JobRefreshSnapshot();
 				nextRefresh = now + kRefreshInterval;
 			}
+			// ⭐ A BATCH THAT WROTE THIS PROCESS'S ROWS RE-READS THE TABLE AT ONCE — the write is the moment the
+			// snapshot went stale, and the tick only comes round to it a second later: a session that had just
+			// signed in was missing from Active Users for up to two ticks (2026-10-06, a thin client's list).
+			// Once per batch, not per request: a burst of sessions drained together costs one read. Not patched
+			// in place — the snapshot is a reading of the table, and one road writes it.
+			else if (rowsWritten)
+				JobRefreshSnapshot();
 
 			// Sweep only every 3s — cluster-wide zombie cleanup, bounded
 			// latency for dead-session pickup is fine. Signal check piggy-
@@ -2217,7 +2285,7 @@ void ibSessionRegistry::ThreadBody() noexcept
 	// C++ requires (derived before base) rather than a preference. Before it derived, it landed in
 	// `catch (...)` and died as "unknown": the message it carries, the only thing that says WHAT
 	// went wrong, was thrown away at the exact moment the process decided to stop.
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		Die(wxString::Format(wxT("registry-thread backend exception: %s"), err.GetErrorDescription()));
 	}
 	catch (const std::exception& e) {

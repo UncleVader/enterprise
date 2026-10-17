@@ -2,6 +2,7 @@
 #define __VALUE_COLOUR_H__
 
 #include "backend/compiler/value.h"
+#include "core/graphics/colour.h"   // ibColour — the colour, as data
 
 //Array support
 void ibValueColour_BindNames(ibValue::ibMemberTable& helper, const ibValue* ctx);
@@ -12,17 +13,17 @@ class BACKEND_API ibValueColour : public ibValueStaticMembers<&ibValueColour_Bin
 
 public:
 
-	wxColour m_colour;
+	ibColour m_colour;
 
 public:
 
 	ibValueColour();
-	ibValueColour(const wxColour& colour);
+	ibValueColour(const ibColour& colour);
 	virtual ~ibValueColour() {}
 
 	virtual bool Init(ibValue** paParams, const long lSizeArray);
-	virtual wxString GetString() const {
-		return typeConv::ColourToString(m_colour);
+	virtual ibString GetString() const {
+		return m_colour.ToString();
 	}
 
 	//check is empty
@@ -34,7 +35,10 @@ public:
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
 	// DoGetPMethods (protected) + Shared<&ibValueColour_BindNames> come from the base.
 
-	operator wxColour() const { return m_colour; }
+	// ⭐ A PACKED FORM — the text a property keeps a colour in (ibColour's), so a colour kept in a description
+	// (an appearance's parameter) is stored as data and read back without anything to resolve.
+	virtual bool DoSerialize(class ibDataNode& node) const override;
+	virtual bool DoDeserialize(const class ibDataNode& node) override;
 };
 
 #endif

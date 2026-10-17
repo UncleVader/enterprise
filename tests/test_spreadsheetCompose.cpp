@@ -78,10 +78,9 @@ ibCompositionLine HeadAt(int level, ibSelectorNodeKind kind, bool hasChildren, b
 	return line;
 }
 
-// A document the driver writes into. wxObjectDataPtr because the spreadsheet
-// object is ref-counted.
-wxObjectDataPtr<ibBackendSpreadsheetObject> MakeDocument() {
-	return wxObjectDataPtr<ibBackendSpreadsheetObject>(new ibBackendSpreadsheetObject());
+// A document the driver writes into, held as every owner of a sheet holds it.
+std::shared_ptr<ibSpreadsheetObject> MakeDocument() {
+	return std::make_shared<ibSpreadsheetObject>();
 }
 
 // ⭐ A DIMENSION SAYS WHICH LEVEL IT BELONGS TO, and the driver reads that rather than counting
@@ -140,6 +139,23 @@ TEST(SpreadsheetCompose, NoHeading_ColumnTitlesOnFirstRow)
 	EXPECT_EQ(1, driver.GetRowsWritten());
 }
 
+// A REPORT WRITES NOTHING WHERE THERE IS NOTHING: a zero figure is an empty cell, so a column of
+// amounts reads as the rows that have one — and a figure that is there keeps its text.
+TEST(SpreadsheetCompose, ZeroFigure_IsAnEmptyCell)
+{
+	auto doc = MakeDocument();
+	ibSpreadsheetComposeDriver driver(doc.get());
+
+	driver.OnOutputBegin(SchemaInfo(Schema()));
+	driver.OnRow(RowAt(0), { ibValue(wxT("Alpha")), ibValue(0) });
+	driver.OnRow(RowAt(0), { ibValue(wxT("Beta")), ibValue(10) });
+	driver.OnOutputEnd(false);
+
+	EXPECT_EQ(wxT("Alpha"), doc->GetCellValue(1, 0));
+	EXPECT_TRUE(doc->GetCellValue(1, 1).IsEmpty());
+	EXPECT_EQ(wxT("10"), doc->GetCellValue(2, 1));
+}
+
 // A heading pushes the table down and leaves ONE blank row between the two, so
 // the parameters never read as a row of the table.
 TEST(SpreadsheetCompose, Heading_PushesTableDownWithOneBlankRow)
@@ -196,7 +212,7 @@ TEST(SpreadsheetCompose, EveryNonEmptyCell_CarriesItsValue)
 	driver.OnRow(RowAt(0), { ibValue(), ibValue(20) });
 	driver.OnOutputEnd(false);
 
-	wxString details;
+	ibString details;
 	doc->GetCellDetailsParameter(1, 0, details);
 	EXPECT_FALSE(details.IsEmpty());
 	doc->GetCellDetailsParameter(1, 1, details);
@@ -220,11 +236,11 @@ TEST(SpreadsheetCompose, AFigureIsLinkedToItsHeading)
 	driver.OnGroupBegin(HeadAt(1, ibSelectorNodeKind::Group, true, true), { ibValue(wxT("Alpha")), ibValue(100) });
 	driver.OnOutputEnd(true);
 
-	wxString name;
+	ibString name;
 	doc->GetCellDetailsParameter(1, 1, name);   // the figure's own cell
 	ASSERT_FALSE(name.IsEmpty());
 
-	ibValue bound = doc->GetParameter(name);   // held: From returns a pointer INTO it
+	ibValue bound = ibValue::FromAnyValue(doc->GetParameter(name));   // held: From returns a pointer INTO it
 	ibValueSpreadsheetDetails* figure = ibValueSpreadsheetDetails::From(bound);
 	ASSERT_TRUE(figure != nullptr);
 	EXPECT_EQ(wxT("Amount"), figure->GetPath());
@@ -258,11 +274,11 @@ TEST(SpreadsheetCompose, AHeadingIsItsOwnContext)
 	driver.OnGroupBegin(HeadAt(1, ibSelectorNodeKind::Group, true, true), { ibValue(wxT("Alpha")), ibValue(100) });
 	driver.OnOutputEnd(true);
 
-	wxString name;
+	ibString name;
 	doc->GetCellDetailsParameter(1, 0, name);
 	ASSERT_FALSE(name.IsEmpty());
 
-	ibValue bound = doc->GetParameter(name);
+	ibValue bound = ibValue::FromAnyValue(doc->GetParameter(name));
 	ibValueSpreadsheetDetails* heading = ibValueSpreadsheetDetails::From(bound);
 	ASSERT_TRUE(heading != nullptr);
 
@@ -628,11 +644,11 @@ TEST(SpreadsheetCross, ACellIsLinkedToBothItsHeadings)
 	driver.OnGroupBegin(HeadAt(2, ibSelectorNodeKind::Group, false, false), { ibValue(), ibValue(wxT("North")), ibValue(30) });
 	driver.OnOutputEnd(true);
 
-	wxString name;
+	ibString name;
 	doc->GetCellDetailsParameter(1, 1, name);   // where Alpha meets the North
 	ASSERT_FALSE(name.IsEmpty());
 
-	ibValue bound = doc->GetParameter(name);
+	ibValue bound = ibValue::FromAnyValue(doc->GetParameter(name));
 	ibValueSpreadsheetDetails* cell = ibValueSpreadsheetDetails::From(bound);
 	ASSERT_TRUE(cell != nullptr);
 	EXPECT_EQ(size_t(2), cell->GetParents().size());
@@ -793,6 +809,26 @@ TEST(SpreadsheetCompose, AnOutputPrintsItsOwnName)
 	ibSpreadsheetComposeDriver driver(doc.get());
 
 	ibCompositionOutputInfo info;
+	info.m_schema      = { Dim(wxT("Partner"), 0), Measure(wxT("Amount")) };
+	info.m_rowLevels   = 1;
+	info.m_name        = wxT("By partner");
+	info.m_outputCount = 2;   // one of two blocks: the name tells them apart
+	driver.OnOutputBegin(info);
+	driver.OnGroupBegin(HeadAt(1, ibSelectorNodeKind::Group, true, false), { ibValue(wxT("Alpha")), ibValue(100) });
+	driver.OnOutputEnd(true);
+
+	EXPECT_EQ(wxT("By partner"), doc->GetCellValue(0, 0));   // the caption, above its header
+	EXPECT_EQ(wxT("Partner"),    doc->GetCellValue(1, 0));
+}
+
+// …and the ONE output of a report prints no name: there is no other block to tell it from, and the
+// report's title already says what it is — a lone `ByWarehouse` over the figures was noise (2026-09-28).
+TEST(SpreadsheetCompose, ALoneOutputPrintsNoName)
+{
+	auto doc = MakeDocument();
+	ibSpreadsheetComposeDriver driver(doc.get());
+
+	ibCompositionOutputInfo info;
 	info.m_schema    = { Dim(wxT("Partner"), 0), Measure(wxT("Amount")) };
 	info.m_rowLevels = 1;
 	info.m_name      = wxT("By partner");
@@ -800,8 +836,7 @@ TEST(SpreadsheetCompose, AnOutputPrintsItsOwnName)
 	driver.OnGroupBegin(HeadAt(1, ibSelectorNodeKind::Group, true, false), { ibValue(wxT("Alpha")), ibValue(100) });
 	driver.OnOutputEnd(true);
 
-	EXPECT_EQ(wxT("By partner"), doc->GetCellValue(0, 0));   // the caption, above its header
-	EXPECT_EQ(wxT("Partner"),    doc->GetCellValue(1, 0));
+	EXPECT_EQ(wxT("Partner"), doc->GetCellValue(0, 0));   // the header first — no caption above it
 }
 
 // ⭐⭐ A COLUMN AXIS DEEPER THAN ONE LEVEL GETS SUBTOTAL COLUMNS. Warehouse then Month: a figure per
@@ -960,7 +995,7 @@ TEST(SpreadsheetCross, EveryHeadingGetsItsOwnTotalColumnEvenOverOneChild)
 // code (2026-08-30).
 TEST(SpreadsheetCross, AColumnHeadingFedThroughOnColumn_LandsWhereOnGroupBeginPutsIt)
 {
-	const auto compose = [](bool throughOnColumn, ibBackendSpreadsheetObject* into) {
+	const auto compose = [](bool throughOnColumn, ibSpreadsheetObject* into) {
 		ibSpreadsheetComposeDriver driver(into);
 
 		// Partner reads down the page (level 0), Warehouse across it (level 1).

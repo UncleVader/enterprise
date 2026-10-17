@@ -7,6 +7,7 @@
 // =============================================================================
 
 #include <gtest/gtest.h>
+#include <cwctype>   // towupper — the non-ASCII folding probe below
 #include <map>
 #include "backend/system/value/valueMap.h"
 #include "backend/backend_exception.h"
@@ -63,6 +64,167 @@ TEST(ValueStructure, ClearEmpties) {
     s.Insert(Field(wxT("A")), ibValue(ibNumber(1)));
     s.Clear();
     EXPECT_TRUE(s.IsEmpty());
+}
+
+// ===========================================================================
+// A FIELD IS A NAME, SO IT FOLDS CASE
+//
+// A script reaches a structure's field through a dot and does not care how it
+// was typed: `s.Name` and `s.name` are one field. That is the difference from a
+// Container, whose string keys are values and are compared as written
+// (test_valueContainer.cpp).
+// ===========================================================================
+
+TEST(ValueStructure, FieldNamesFoldCase) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("Key")), ibValue(ibNumber(1)));
+    ibValue out;
+    EXPECT_TRUE(s.Property(Field(wxT("kEY")), out));
+    EXPECT_TRUE(s.Property(Field(wxT("KEY")), out));
+    s.SetAt(Field(wxT("KEY")), ibValue(ibNumber(2)));    // the same field, written in another case
+    EXPECT_EQ(s.Count(), 1u);
+    ASSERT_TRUE(s.Property(Field(wxT("key")), out));
+    EXPECT_EQ(out.GetInteger(), 2);
+}
+
+// ...and past ASCII the fold is the C library's, which is where it stops being
+// the structure's business: std::towupper folds a non-ASCII letter only when the
+// process locale says how, and a gtest binary runs in "C", where it does not.
+//
+// ⚠ WORTH KNOWING, because it is not a property of this code: the same script
+// sees case-SENSITIVE Cyrillic field names in a headless run (appserver, codeRunner,
+// this suite) and case-INSENSITIVE ones under a UI locale. Deciding that is a
+// language question, not a folding one, so this test states the rule and skips
+// where the platform will not honour it rather than asserting either answer.
+TEST(ValueStructure, NonAsciiFieldNamesFoldCase) {
+    // Universal-character escapes, never literal Cyrillic: this file has no BOM,
+    // so MSVC decodes a literal in the system code page and it arrives as
+    // something else (warning C4066). U+041A/U+043A KA, U+041B/U+043B EL,
+    // U+042E/U+044E YU, U+0427/U+0447 CHE -- "Kluch" in three cases.
+    if (std::towupper((wint_t)L'\u043A') != (wint_t)L'\u041A')
+        GTEST_SKIP() << "process locale does not fold non-ASCII (C locale) - see the note above";
+
+    ibValueStructure s;
+    s.Insert(Field(wxT("\u041A\u043B\u044E\u0447")), ibValue(ibNumber(1)));   // mixed case
+    ibValue out;
+    EXPECT_TRUE(s.Property(Field(wxT("\u041A\u041B\u042E\u0427")), out));     // all upper
+    EXPECT_TRUE(s.Property(Field(wxT("\u043A\u043B\u044E\u0447")), out));     // all lower
+}
+
+// The dot folds a field's name too: FindProp finds a field by its name, in any case.
+TEST(ValueStructure, AFieldIsAProperty) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("Name")), ibValue(ibNumber(7)));
+    const long at = s.FindProp(wxT("name"));
+    ASSERT_NE(at, wxNOT_FOUND);
+    ibValue out;
+    ASSERT_TRUE(s.GetPropVal(at, out));
+    EXPECT_EQ(out.GetInteger(), 7);
+}
+
+// ...and a field is NAMED by its name and REACHED by it too: what GetPropName answers, FindProp
+// finds again - which is how the debugger's watch reads a row it listed.
+TEST(ValueStructure, AFieldIsNamedAndReachedByItsName) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("Name")), ibValue(ibNumber(7)));
+    EXPECT_EQ(s.GetPropName(0), wxString(wxT("Name")));
+    EXPECT_EQ(s.FindProp(s.GetPropName(0)), 0);
+}
+
+// ...even when the name is not one a script could write after a dot. A field is whatever string was
+// inserted - a spreadsheet document's Areas are keyed by an area's free-text label - and FindProp
+// still answers for it; a script reaches it through the subscript.
+TEST(ValueStructure, AFieldNameThatIsNotAnIdentifierIsStillFoundByIt) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("some label")), ibValue(ibNumber(7)));
+    s.Insert(Field(wxT("2nd")), ibValue(ibNumber(8)));
+    EXPECT_EQ(s.FindProp(wxT("some label")), 0);
+    EXPECT_EQ(s.FindProp(wxT("2nd")), 1);
+    ibValue out;
+    ASSERT_TRUE(s.Property(Field(wxT("some label")), out)) << "and the subscript form does reach it";
+    EXPECT_EQ(out.GetInteger(), 7);
+}
+
+// The member table is ONE table, so a Structure answers Get as well -- by the field's name, in
+// any case, as everything else about a field is. The position matters: FindMethod then CallAsFunc
+// with that number is what the runtime does.
+TEST(ValueStructure, GetAnswersAFieldInAnyCaseOrUndefined) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("Name")), ibValue(ibNumber(7)));
+
+    const long at = s.FindMethod(wxT("Get"));
+    ASSERT_NE(at, wxNOT_FOUND);
+
+    ibValue field = Field(wxT("nAmE"));
+    ibValue* args[1] = { &field };
+    ibValue out;
+    ASSERT_TRUE(s.CallAsFunc(at, out, args, 1));
+    EXPECT_EQ(out.GetInteger(), 7);
+
+    ibValue absent = Field(wxT("Other"));
+    ibValue* argsAbsent[1] = { &absent };
+    out = ibValue(ibNumber(1));
+    ASSERT_TRUE(s.CallAsFunc(at, out, argsAbsent, 1));
+    EXPECT_EQ(out.GetType(), ibValueTypes::TYPE_EMPTY);
+}
+
+// A small structure is WALKED, a large one is INDEXED — the index exists from kIndexMin entries
+// on (valueMap.h). The two roads must answer alike: every field found in any case, a
+// duplicate refused, on the way up past the threshold and on the way back down by Delete.
+TEST(ValueStructure, FieldsAreFoundTheSameWalkedAndIndexed) {
+    ibValueStructure s;
+    const int kFields = 20;   // well past the threshold
+    auto name = [](int i) { return ibValue(wxString::Format(wxT("Field%d"), i)); };
+    auto upper = [](int i) { return ibValue(wxString::Format(wxT("FIELD%d"), i)); };
+
+    for (int i = 0; i < kFields; ++i) {
+        s.Insert(name(i), ibValue(ibNumber(i)));
+        for (int j = 0; j <= i; ++j) {
+            ibValue out;
+            ASSERT_TRUE(s.Property(upper(j), out)) << "field " << j << " after " << i + 1 << " inserts";
+            EXPECT_EQ(out.GetInteger(), j);
+        }
+        ibValue out;
+        EXPECT_FALSE(s.Property(name(i + 1), out)) << "a field not yet inserted, after " << i + 1;
+        EXPECT_ANY_THROW(s.Insert(upper(i), ibValue())) << "a duplicate in another case, at " << i + 1 << " fields";
+        EXPECT_EQ(s.Count(), static_cast<unsigned int>(i + 1)) << "the duplicate was not added";
+    }
+
+    for (int i = kFields - 1; i >= 2; --i) {
+        s.Delete(name(i));
+        ibValue out;
+        EXPECT_FALSE(s.Property(name(i), out)) << "a deleted field, at " << i << " fields";
+        for (int j = 0; j < i; ++j) {
+            ASSERT_TRUE(s.Property(upper(j), out)) << "field " << j << " with " << i << " left";
+            EXPECT_EQ(out.GetInteger(), j);
+        }
+    }
+    EXPECT_EQ(s.Count(), 2u);
+}
+
+// Insert refuses a repeated key in every process, with no question about the designer; an owner for whom a
+// repeat is no error puts it with SetAt — one entry, the later value (the metadata namespaces do).
+TEST(ValueStructure, InsertRefusesARepeatAndSetAtPutsIt) {
+    ibValueStructure s;
+    s.Insert(Field(wxT("Name")), ibValue(ibNumber(1)));
+    EXPECT_ANY_THROW(s.Insert(Field(wxT("NAME")), ibValue(ibNumber(2))));
+    EXPECT_TRUE(s.SetAt(Field(wxT("name")), ibValue(ibNumber(3))));
+    ibValue out;
+    ASSERT_TRUE(s.Property(Field(wxT("Name")), out));
+    EXPECT_EQ(out.GetInteger(), 3);
+    EXPECT_EQ(s.Count(), 1u);
+}
+
+// THE METHOD TABLE IS ONE PER TYPE, not one per structure: two structures answer from the same
+// table, and a read-only one from the other (it has no Insert, and Get keeps its number).
+TEST(ValueStructure, StructuresShareOneMethodTable) {
+    ibValueStructure a, b;
+    ibValueStructure fixed(true);
+    EXPECT_EQ(a.GetPMethods(), b.GetPMethods());
+    EXPECT_NE(a.GetPMethods(), fixed.GetPMethods());
+    EXPECT_NE(a.FindMethod(wxT("Insert")), wxNOT_FOUND);
+    EXPECT_EQ(fixed.FindMethod(wxT("Insert")), wxNOT_FOUND);
+    EXPECT_EQ(a.FindMethod(wxT("Get")), fixed.FindMethod(wxT("Get")));
 }
 
 // ===========================================================================

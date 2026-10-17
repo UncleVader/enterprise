@@ -5,7 +5,7 @@
 
 #include "document.h"
 #include "backend/system/systemManager.h"   // ibValueSystemFunction::Alert
-#include "backend/picturePredefined.h"       // g_picPostCLSID / g_picSaveCLSID — the command band
+#include "core/picturePredefined.h"       // g_picPostCLSID / g_picSaveCLSID — the command band
 
 enum action {
 	eDefActionAndClose = 1,
@@ -55,6 +55,23 @@ void ibValueMetaObjectDocument::GetCommandCollection(const ibFormID& formType, s
 	commands.emplace_back(eClearPostingValue, wxT("ClearPosting"), _("Clear posting"), g_picSaveCLSID);
 }
 
+// The document's row, in three states: marked for deletion, posted, or neither — each read off the row's own
+// cell, as the reference is (commonObjectAction.cpp). The mark is asked first: a row marked for deletion says
+// so whatever its posting.
+ibPictureID ibValueMetaObjectDocument::GetRowPicture(const ibRowMetaValues& rowValues) const
+{
+	const auto flag = [&rowValues](const ibValueMetaObjectAttributePredefined* attribute) {
+		if (attribute == nullptr)
+			return false;
+		const ibRowMetaValues::const_iterator it = rowValues.find(attribute->GetMetaID());
+		return it != rowValues.end() && it->second.GetBoolean();
+	};
+
+	if (flag(GetDataDeletionMark()))
+		return g_picRowDocumentDeletedCLSID;
+	return flag(GetDocumentPosted()) ? g_picRowDocumentPostedCLSID : g_picRowDocumentCLSID;
+}
+
 void ibValueMetaObjectDocument::CallAsCommand(ibActionID id, const ibUniqueKey& anchor, const ibUniqueKey& key, ibBackendValueForm* srcForm) const
 {
 	if (id == ePostValue || id == eClearPostingValue) {
@@ -74,7 +91,7 @@ void ibValueMetaObjectDocument::CallAsCommand(ibActionID id, const ibUniqueKey& 
 		// ibBackendException too, and catching only Core dropped them into the catch(...) below —
 		// posting refused for lack of rights, and the user saw nothing but a line in the log.
 		catch (const ibBackendInterruptException&) {}   // the user stopped it — nothing to report
-		catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+		catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 		catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectDocument::CallAsCommand: unhandled non-ibBackend exception swallowed")); }
 		return;
 	}

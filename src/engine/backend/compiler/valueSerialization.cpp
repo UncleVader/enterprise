@@ -1,7 +1,7 @@
 ﻿#include "value.h"
 #include "valueSerialization.h"
 
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/backend_exception.h"
 
 ////////////////////////////////////////////////////////////////////////////
@@ -77,14 +77,14 @@ ibValue ibValue::CloneValue() const
 	// an alias to one cannot answer on its behalf.
 	if (!IsTransferable()) {
 		ibBackendCoreException::Error(
-			_("A value of type \"%s\" cannot be copied — it belongs to its session"),
+			_("A value of type \"%s\" cannot be copied - it belongs to its session"),
 			GetClassName());
 	}
 
 	ibDataNode node;
 	if (!Serialize(node)) {
 		ibBackendCoreException::Error(
-			_("A value of type \"%s\" cannot be copied — it has no packed form"),
+			_("A value of type \"%s\" cannot be copied - it has no packed form"),
 			GetClassName());
 	}
 
@@ -141,7 +141,7 @@ bool ibValue::DoSerialize(ibDataNode& node) const
 		node.SetValue(kFieldData, GetString());
 		return true;
 	case ibValueTypes::TYPE_DATE:
-		node.SetValue(kFieldData, GetDateTime());
+		node.SetValue(kFieldData, m_dData);   // through the node's ibDateTime codec — the reading itself, no zone to lose
 		return true;
 	default:
 		break;
@@ -196,7 +196,7 @@ bool ibValue::DoDeserialize(const ibDataNode& node)
 			m_dData = text.GetDate();
 			return true;
 		}
-		m_dData = node.GetValue<wxDateTime>(kFieldData).GetValue().GetValue();
+		m_dData = node.GetValue<ibDateTime>(kFieldData);
 		return true;
 	}
 	default:
@@ -249,9 +249,9 @@ ibValue ibValue::FromNode(const ibDataNode& node)
 
 	ibValue created;
 	try {
-		created = ibValue::CreateObjectRef(classType);
+		created = ibValue::CreateObject(classType);
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		throw;
 	}
 	catch (...) {

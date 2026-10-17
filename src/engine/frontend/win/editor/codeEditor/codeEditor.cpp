@@ -33,13 +33,13 @@ wxString ibCodeEditor::MakeProcedureTemplate(const wxString& name, const wxStrin
 }
 
 ibCodeEditor::ibCodeEditor()
-	: wxStyledTextCtrl(), m_ac(this), m_ct(this), m_fp(this)
+	: wxStyledTextCtrl(), m_ac(this), m_ct(this), m_tc(ibCompileCode::GetCodeStyle()), m_fp(this)
 {
 }
 
 ibCodeEditor::ibCodeEditor(ibMetaDocument* document, wxWindow* parent, wxWindowID id, const wxPoint& pos, const wxSize& size, long style, const wxString& name)
 	: wxStyledTextCtrl(parent, id, pos, size, style, name),
-	  m_document(document), m_ac(this), m_ct(this), m_fp(this)
+	  m_document(document), m_ac(this), m_ct(this), m_tc(ibCompileCode::GetCodeStyle()), m_fp(this)
 {
 	// initialize styles
 	StyleClearAll();
@@ -223,6 +223,12 @@ void ibCodeEditor::SetCurrentLine(int lineBreakpoint, bool setBreakLine)
 	//Incorrect position when editing button title
 	//if (!ibCodeEditor::GetSTCFocus()) 
 	// CodeEditor::SetSTCFocus(true);
+
+	// THE RUN LINE MOVED, so every value that was asked about belongs to a state that no longer exists —
+	// the question and its answer both go. This is the door a step comes through, and a step is exactly
+	// what makes an answer stale.
+	m_askedExpression.clear();
+	m_askedValue.clear();
 
 	MarkerDeleteAll(ibCodeEditor::BreakLine);
 
@@ -445,6 +451,7 @@ bool ibCodeEditor::LoadModule()
 				SetReadOnly(true);
 			}
 
+			m_tc.SetCodeStyle(ibCompileCode::GetCodeStyle());
 			m_tc.Load(moduleObject->GetModuleText());
 
 			try {
@@ -489,6 +496,19 @@ int ibCodeEditor::GetRealPositionFromPoint(const wxPoint& pt)
 {
 	const wxString& codeText = GetTextRange(0, PositionFromPoint(pt));
 	return codeText.Length();
+}
+
+void ibCodeEditor::SetDebugValue(const wxString& value)
+{
+	// KEPT AS WELL AS SHOWN. The system decides on its own when to pop a tooltip and shows the text that
+	// is in place at that moment, so the same answer is laid down again on every movement across the word
+	// it belongs to (LoadToolTip) — and that is only possible if the editor still has it.
+	m_askedValue = value;
+
+	if (value.IsEmpty())
+		UnsetToolTip();
+	else
+		SetToolTip(value);
 }
 
 #include "frontend/win/dlgs/lineInput/lineInput.h"
@@ -636,6 +656,7 @@ ibCodeEditor::SetStyling(fromPos + m_tc.GetCurrentPos() - currPos, style);
 
 void ibCodeEditor::HighlightSyntaxAndCalculateFoldLevel(const int fromPos, const int toPos)
 {
+	m_tc.SetCodeStyle(ibCompileCode::GetCodeStyle());
 	m_tc.Load(ibCodeEditor::GetTextRange(fromPos, toPos));
 
 	//remove old styling
@@ -654,7 +675,7 @@ void ibCodeEditor::HighlightSyntaxAndCalculateFoldLevel(const int fromPos, const
 #endif 
 		if (m_tc.IsWord()) {
 			(void)m_tc.GetWord(word, false, true);
-			const short keyWord = ibTranslateCode::IsKeyWord(word);
+			const short keyWord = m_tc.IsKeyWord(word);
 			// A keyword right after a member-access `.` is a MEMBER NAME, not a keyword
 			// (`q.Execute().Select()` — `Select` is the method): style it as a plain identifier.
 			if (keyWord != wxNOT_FOUND && !prevWasDot) {
@@ -781,6 +802,7 @@ void ibCodeEditor::OnTextChange(wxStyledTextEvent& event)
 
 	// Re-lex — fires for every host (codeRunner included). The stream feeds folding, brace
 	// matching and the caret question; nothing here compiles anything.
+	m_tc.SetCodeStyle(ibCompileCode::GetCodeStyle());
 	m_tc.Load(codeText);
 
 	if (event.m_linesAdded != 0) {
@@ -976,7 +998,7 @@ ibCodeEditor::StringLiteralSpan ibCodeEditor::GetStringLiteralUnderCursor()
 	// asked on a click, not a keystroke, so the text is simply read again by the same lexer in the same
 	// mode; the patching is a question of its own, for the colouring and the folds that read it.
 	const int caret = GetCurrentPos();
-	ibTranslateCode stream;
+	ibTranslateCode stream(ibCompileCode::GetCodeStyle());
 	stream.SetLexemMode(ibLexemMode::Editing);
 	stream.Load(GetText());
 	try {
@@ -985,18 +1007,16 @@ ibCodeEditor::StringLiteralSpan ibCodeEditor::GetStringLiteralUnderCursor()
 	catch (...) {
 		return span;
 	}
-	const std::vector<ibLexem>& lexems = stream.GetLexems();
-
 	// The last token that starts at or before the caret. A token's recorded position is where the token
 	// itself starts - the lexer skips the whitespace and comments in front first - so a caret just past a
 	// closing quote, or in the gap after it, still falls to the literal until the next token begins.
-	size_t at = lexems.size();
-	for (size_t i = 0; i < lexems.size(); ++i) {
-		if (lexems[i].m_lexType == ENDPROGRAM || static_cast<int>(lexems[i].m_numUtf8String) > caret)
+	size_t at = stream.GetLexCount();
+	for (size_t i = 0; i < stream.GetLexCount(); ++i) {
+		if (stream.GetLexAt(i).m_lexType == ENDPROGRAM || static_cast<int>(stream.GetLexAt(i).m_numUtf8String) > caret)
 			break;
 		at = i;
 	}
-	if (at == lexems.size())
+	if (at == stream.GetLexCount())
 		return span;
 
 	// WHERE IT OPENS, WHERE IT CLOSES AND WHAT IT SAYS, read by the lexer from the token's start - so
@@ -1005,7 +1025,7 @@ ibCodeEditor::StringLiteralSpan ibCodeEditor::GetStringLiteralUnderCursor()
 		if (lex.m_lexType != CONSTANT || lex.m_valData.GetType() != ibValueTypes::TYPE_STRING)
 			return false;
 		const int from = static_cast<int>(lex.m_numUtf8String);
-		ibTranslateCode reader;
+		ibTranslateCode reader(ibCompileCode::GetCodeStyle());
 		reader.Load(GetTextRange(from, GetLength()));
 		try {
 			if (!reader.IsString())
@@ -1032,8 +1052,8 @@ ibCodeEditor::StringLiteralSpan ibCodeEditor::GetStringLiteralUnderCursor()
 	};
 
 	// A caret just past a closing quote already stands in the NEXT token's stretch.
-	if (!readLiteral(lexems[at]) && at > 0)
-		readLiteral(lexems[at - 1]);
+	if (!readLiteral(stream.GetLexAt(at)) && at > 0)
+		readLiteral(stream.GetLexAt(at - 1));
 	return span;
 }
 
@@ -1169,6 +1189,7 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 	// caption's own (ibDialogTranslateConstructor). The languages are those of the configuration THIS
 	// module belongs to, asked of its document; no document (a code runner) is the language in force.
 	wxMenuItem* miTranslate = menu.Append(wxID_ANY, _("Translation constructor"));
+	miTranslate->SetBitmap(wxArtProvider::GetBitmap(wxART_TRANSLATION_CONSTRUCTOR, wxART_FRONTEND, FromDIP(wxSize(16, 16))));
 	menu.Bind(wxEVT_MENU, [this, literal, caret](wxCommandEvent&) {
 		const ibValueMetaObject* moduleObject = m_document != nullptr ? m_document->GetMetaObject() : nullptr;
 		const ibTranslateString before(literal.m_text);
@@ -1186,6 +1207,7 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 	// …AND THE THIRD: the string Format(value, format) reads. Same literal, same rule — and a string that
 	// comes back unchanged is not written, so it keeps its author's spelling.
 	wxMenuItem* miFormat = menu.Append(wxID_ANY, _("Format string constructor"));
+	miFormat->SetBitmap(wxArtProvider::GetBitmap(wxART_FORMAT_CONSTRUCTOR, wxART_FRONTEND, FromDIP(wxSize(16, 16))));
 	menu.Bind(wxEVT_MENU, [this, literal, caret](wxCommandEvent&) {
 		const ibFormatString before = ibFormatString::Parse(literal.m_text);
 		ibDialogFormatConstructor dialog(this, _("Format string constructor"), before, !IsEditable());
@@ -1204,6 +1226,7 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 	// it opens that query and replaces it; anywhere else it writes a new block at the caret.
 	const int caretChars = GetRealPosition();
 	wxMenuItem* miLinq = menu.Append(wxID_ANY, _("LINQ query constructor"));
+	miLinq->SetBitmap(wxArtProvider::GetBitmap(wxART_LINQ_CONSTRUCTOR, wxART_FRONTEND, FromDIP(wxSize(16, 16))));
 	menu.Bind(wxEVT_MENU, [this, caret, caretChars](wxCommandEvent&) {
 		const wxString text = GetText();
 		ibDialogLinqConstructor dialog(this, text, (unsigned int)caretChars,
@@ -1239,9 +1262,8 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 	miCut  ->SetBitmap(wxArtProvider::GetBitmap(wxART_CUT,   wxART_MENU));
 	miCopy ->SetBitmap(wxArtProvider::GetBitmap(wxART_COPY,  wxART_MENU));
 	miPaste->SetBitmap(wxArtProvider::GetBitmap(wxART_PASTE, wxART_MENU));
-	// Select All — no canonical wxArt id; left unset so the row aligns
-	// with the icon column without a placeholder.
-	(void)miSelectAll;
+	// Select All has no stock id; the provider draws it (a dashed selection round the lines).
+	miSelectAll->SetBitmap(wxArtProvider::GetBitmap(wxART_SELECT_ALL, wxART_DOC_MODULE, FromDIP(wxSize(16, 16))));
 
 	miCut  ->Enable(GetSelectionStart() != GetSelectionEnd() && IsEditable());
 	miCopy ->Enable(GetSelectionStart() != GetSelectionEnd());

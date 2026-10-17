@@ -3,30 +3,8 @@
 #include "backend/objCtor.h"
 #include "backend/metadataConfiguration.h"
 
-ibValue* ibMetaDataDataProcessor::CreateObjectRef(const ibClassID& clsid, ibValue** paParams, const long lSizeArray) const
-{
-	ibCtorMetaValueType* typeCtor = (m_image ? m_image->FindCtor(clsid) : nullptr);
-
-	if (typeCtor != nullptr) {
-		ibValue* newObject = typeCtor->CreateObject();
-		wxASSERT(newObject);
-
-		bool succes = true;
-		if (lSizeArray > 0)
-			succes = newObject->Init(paParams, lSizeArray);
-		else
-			succes = newObject->Init();
-
-		if (!succes) {
-			wxDELETE(newObject);
-			ibBackendCoreException::Error(_("Error initializing object '%s'"), typeCtor->GetClassName());
-		}
-		// Name surface builds lazily on first GetPMethods() — no eager populate.
-		return newObject;
-	}
-
-	return activeMetaData->CreateObjectRef(clsid, paParams, lSizeArray);
-}
+// (No CreateObject of its own: ibMetaData's asks GetTypeCtor below, which looks here first and then at
+// the configuration — the whole of what a second copy of the factory used to add.)
 
 bool ibMetaDataDataProcessor::IsRegisterCtor(const wxString& className) const
 {
@@ -81,13 +59,10 @@ ibCtorMetaValueType* ibMetaDataDataProcessor::GetTypeCtor(const ibClassID& clsid
 
 ibCtorMetaValueType* ibMetaDataDataProcessor::GetTypeCtor(const ibValueMetaObject* metaValue, ibCtorObjectMetaType refType) const
 {
-	// (metaValue, refType) key — metadata-specific, kept linear.
-	ibCtorMetaValueType* result = nullptr;
-	if (m_image) m_image->ForEachCtor([&](ibCtorMetaValueType* typeCtor) {
-		if (result == nullptr && refType == typeCtor->GetMetaTypeCtor() && metaValue == typeCtor->GetMetaObject())
-			result = typeCtor;
-	});
-	if (result != nullptr) return result;
+	// The id the pair spells, in the processor's own image first (ibMetaImage::FindCtor — one probe; this was a
+	// copy of the walk that stood there), then the configuration's.
+	if (ibCtorMetaValueType* typeCtor = (m_image ? m_image->FindCtor(metaValue, refType) : nullptr))
+		return typeCtor;
 	return activeMetaData->GetTypeCtor(metaValue, refType);
 }
 

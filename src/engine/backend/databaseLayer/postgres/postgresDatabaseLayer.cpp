@@ -23,6 +23,8 @@ const ibDialectDictionary& ibDatabaseLayerPostgres::Dialect()
 		d.m_groupByPosition = true;                   // GROUP BY 2 — a key that binds a value is named by its position
 		d.m_features.m_window        = true;
 		d.m_features.m_cte           = true;
+		d.m_features.m_recursiveCte      = true;
+		d.m_features.m_recursiveCteUnion = true;   // UNION in the recursive part — a loop in a parent chain ends
 		d.m_features.m_fullOuterJoin = true;
 		d.m_features.m_iLike         = true;
 		d.m_features.m_rollup        = true;   // GROUP BY ROLLUP(...) — standard spelling
@@ -38,6 +40,7 @@ const ibDialectDictionary& ibDatabaseLayerPostgres::Dialect()
 		d.m_analyzePrefix     = wxT("ANALYZE");   // ANALYZE <t> — refresh planner stats (temps aren't autovacuumed)
 		d.m_rowIdColumn    = wxT("ctid");         // physical row id for the pre-UNIQUE dedup (keep one row per key)
 		d.m_maxIndexSegments = 32;                // INDEX_MAX_KEYS — a build-time constant, 32 in every stock build
+		d.m_maxParameters    = 65535;             // the protocol counts them in 16 bits (libpq-fe.h PQ_QUERY_PARAM_MAX_LIMIT)
 		d.m_returningClause = wxT("RETURNING");   // PostgreSQL has had it since 8.2
 		// Period truncation. date_trunc names seven of the ten units directly; the other three are
 		// offsets from the start of the enclosing unit:
@@ -481,7 +484,7 @@ bool ibDatabaseLayerPostgres::Open()
 			try {
 				DoRunQuery("CREATE DATABASE " + m_strDatabase, false);
 			}
-			catch (const ibBackendException&) {
+			catch (const ibCoreException&) {
 				return false;
 			}
 			DoRunQuery("GRANT ALL PRIVILEGES ON DATABASE " + m_strDatabase + " to " + m_strUser, false);
@@ -627,14 +630,19 @@ void ibDatabaseLayerPostgres::DoBeginTransaction(const ibTxOptions& opts)
 		                 : wxT("BEGIN ISOLATION LEVEL REPEATABLE READ"))
 		: wxT("BEGIN"), false);
 
-	// PG's NOWAIT behaviour is per-statement (`SELECT ... FOR UPDATE NOWAIT`)
-	// or session-level (`SET lock_timeout`). Inside a TX the cleanest knob
-	// is `SET LOCAL lock_timeout = 0` — applies only to this TX, reverts
-	// on commit/rollback. Lets a noWait transaction (ibTxOptions::noWait)
-	// fail immediately with a lock-timeout exception rather than blocking.
+	// lock_timeout of 0 means wait forever. A noWait transaction has to fail
+	// the moment a lock is held, on every statement, not only one that spells
+	// NOWAIT. If the SET itself fails, the transaction is already aborted:
+	// roll it back and let that error out, or the connection stays unusable.
 	if (opts.noWait) {
-		try { DoRunQuery(wxT("SET LOCAL lock_timeout = 0"), false); }
-		catch (...) { /* best-effort — server without lock_timeout just waits */ }
+		try {
+			DoRunQuery(wxT("SET LOCAL lock_timeout = '1ms'"), false);
+		}
+		catch (...) {
+			try { DoRollBack(); }
+			catch (...) {}   // the transaction is already dead; the SET's error is the one that leaves
+			throw;
+		}
 	}
 }
 
@@ -656,13 +664,18 @@ int ibDatabaseLayerPostgres::DoRunQuery(const wxString& strQuery, bool WXUNUSED(
 	// PostgreSQL takes care of parsing the queries itself so bParseQuery is ignored
 
 	ResetErrorCodes();
+	SetLastSqlState(wxString());
 
 	wxCharBuffer sqlBuffer = ConvertToUnicodeStream(strQuery);
 	PGresult* pResultCode = m_pInterface->GetPQexec()((PGconn*)m_pDatabase, sqlBuffer);
 	if ((pResultCode == nullptr) || (m_pInterface->GetPQresultStatus()(pResultCode) != PGRES_COMMAND_OK))
 	{
+		if (pResultCode != nullptr) {
+			const char* state = m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE);
+			SetLastSqlState(state != nullptr ? wxString::FromAscii(state) : wxString());
+		}
 		SetErrorCode(ibDatabaseLayerPostgres::TranslateErrorCode(m_pInterface->GetPQresultStatus()(pResultCode),
-			m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE)));
+			m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE)), ClassifySqlState(m_lastSqlState));
 		SetErrorMessage(ConvertFromUnicodeStream(m_pInterface->GetPQerrorMessage()((PGconn*)m_pDatabase)));
 		m_pInterface->GetPQclear()(pResultCode);
 		ThrowDatabaseException();
@@ -690,13 +703,18 @@ int ibDatabaseLayerPostgres::DoRunQuery(const wxString& strQuery, bool WXUNUSED(
 ibDatabaseResultSet* ibDatabaseLayerPostgres::DoRunQueryWithResults(const wxString& strQuery)
 {
 	ResetErrorCodes();
+	SetLastSqlState(wxString());
 
 	wxCharBuffer sqlBuffer = ConvertToUnicodeStream(strQuery);
 	PGresult* pResultCode = m_pInterface->GetPQexec()((PGconn*)m_pDatabase, sqlBuffer);
 	if ((pResultCode == nullptr) || (m_pInterface->GetPQresultStatus()(pResultCode) != PGRES_TUPLES_OK))
 	{
+		if (pResultCode != nullptr) {
+			const char* state = m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE);
+			SetLastSqlState(state != nullptr ? wxString::FromAscii(state) : wxString());
+		}
 		SetErrorCode(ibDatabaseLayerPostgres::TranslateErrorCode(m_pInterface->GetPQstatus()((PGconn*)m_pDatabase),
-			m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE)));
+			m_pInterface->GetPQresultErrorField()(pResultCode, PG_DIAG_SQLSTATE)), ClassifySqlState(m_lastSqlState));
 		SetErrorMessage(ConvertFromUnicodeStream(m_pInterface->GetPQerrorMessage()((PGconn*)m_pDatabase)));
 		m_pInterface->GetPQclear()(pResultCode);
 		ThrowDatabaseException();
@@ -755,7 +773,7 @@ bool ibDatabaseLayerPostgres::DatabaseExists(const wxString& database)
 			pStatement = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -807,7 +825,7 @@ bool ibDatabaseLayerPostgres::TableExists(const wxString& table)
 			pStatement = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -859,7 +877,7 @@ bool ibDatabaseLayerPostgres::ViewExists(const wxString& view)
 			pStatement = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -896,7 +914,7 @@ wxArrayString ibDatabaseLayerPostgres::GetTables()
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -929,7 +947,7 @@ wxArrayString ibDatabaseLayerPostgres::GetViews()
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -980,7 +998,7 @@ wxArrayString ibDatabaseLayerPostgres::GetColumns(const wxString& table)
 			pStatement = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -1009,14 +1027,8 @@ int ibDatabaseLayerPostgres::TranslateErrorCode(int nCode, const char* sqlState)
 	//return DATABASE_LAYER_ERROR;
 }
 
-ibBackendDatabaseException::Kind ibDatabaseLayerPostgres::ClassifyDatabaseError(int nativeCode) const
+ibBackendDatabaseException::Kind ibDatabaseLayerPostgres::ClassifySqlState(const wxString& sqlState)
 {
-	// PostgreSQL surfaces both a CONNECTION_* status enum (small int,
-	// connection-level only) and SQLSTATE (5-char alphanumeric — the
-	// real classifier). We prefer SQLSTATE when present; the int code
-	// is only used for connection-level failures where libpq doesn't
-	// produce a SQLSTATE at all.
-	//
 	// SQLSTATE classes:
 	//   08*** — connection exception           → ConnectionLost
 	//   23*** — integrity constraint violation → Constraint
@@ -1024,13 +1036,16 @@ ibBackendDatabaseException::Kind ibDatabaseLayerPostgres::ClassifyDatabaseError(
 	//                                            Timeout (40001 serialization fail)
 	//   42*** — syntax / access rule violation → Syntax
 	//   53*** — insufficient resources         → Timeout
+	//   55P03 — lock_not_available             → Timeout (NOWAIT / lock_timeout)
 	//   57*** — operator intervention          → ConnectionLost (admin shutdown)
 	//
 	// See https://www.postgresql.org/docs/current/errcodes-appendix.html
 	using Kind = ibBackendDatabaseException::Kind;
 
-	if (m_lastSqlState.length() >= 2) {
-		const wxString cls = m_lastSqlState.Left(2);
+	if (sqlState == wxT("55P03"))
+		return Kind::Timeout;
+	if (sqlState.length() >= 2) {
+		const wxString cls = sqlState.Left(2);
 		if (cls == wxT("08")) return Kind::ConnectionLost;
 		if (cls == wxT("23")) return Kind::Constraint;
 		if (cls == wxT("42")) return Kind::Syntax;
@@ -1038,14 +1053,10 @@ ibBackendDatabaseException::Kind ibDatabaseLayerPostgres::ClassifyDatabaseError(
 		if (cls == wxT("53")) return Kind::Timeout;
 		if (cls == wxT("40")) {
 			// 40P01 = deadlock_detected, 40001 = serialization_failure
-			if (m_lastSqlState == wxT("40P01")) return Kind::Deadlock;
+			if (sqlState == wxT("40P01")) return Kind::Deadlock;
 			return Kind::Timeout;
 		}
 	}
-
-	// No SQLSTATE — fall back to the libpq connection-status enum.
-	// CONNECTION_BAD is the only one we surface in error paths today.
-	(void)nativeCode;
 	return Kind::Unknown;
 }
 

@@ -15,8 +15,9 @@
 
 #include "backend/query/queryParser.h"
 #include "backend/query/queryRender.h"
-#include "backend/query/queryKeywords.h"
+#include "core/query/queryKeywords.h"
 #include "backend/backend_exception.h"
+#include "core/description/typeDescription.h"     // a CAST to a primitive, read as the type it converts to
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -26,6 +27,9 @@
 #include <wx/dnd.h>
 #include <wx/imaglist.h>
 #include <wx/stc/stc.h>
+#include <wx/choice.h>     // the role constructor — the word picked
+#include <wx/spinctrl.h>   // …and a period's number
+#include <iterator>        // std::size — GCC does not bring it along with the rest
 
 #include <algorithm>
 #include <functional>   // the name check walks the tree through a recursive lambda
@@ -147,7 +151,7 @@ ibDialogQueryExpression::ibDialogQueryExpression(wxWindow* parent, const wxStrin
 	ibStyleQueryText(m_text);
 	if (existing) {
 		m_text->SetText(ibRenderQueryExpr(*existing));
-		ibMarkQueryParameters(m_text);
+		ibMarkQueryText(m_text);
 	}
 	// A DROP LANDS WHERE IT WAS DROPPED. The field travels as its own text, so the drop needs only
 	// to put the caret under the mouse and write it — no payload format of our own.
@@ -195,6 +199,13 @@ ibDialogQueryExpression::ibDialogQueryExpression(wxWindow* parent, const wxStrin
 	choice->Bind(wxEVT_BUTTON, &ibDialogQueryExpression::OnEditChoice, this);
 	choice->Enable(!m_readOnly);
 	buttons->Add(choice, 0, wxRIGHT, FromDIP(6));
+	// ⭐ AND WHAT THE FIELD IS IN A BALANCE — the role constructor, shown only where the expression is a field
+	// (OfferRole). Hidden until then: a condition or a total has no role to give.
+	m_roleButton = new wxButton(this, wxID_ANY, _("Role..."));
+	m_roleButton->Bind(wxEVT_BUTTON, &ibDialogQueryExpression::OnEditRole, this);
+	m_roleButton->Enable(!m_readOnly);
+	m_roleButton->Hide();
+	buttons->Add(m_roleButton, 0, wxRIGHT, FromDIP(6));
 	buttons->AddStretchSpacer();
 	buttons->Add(CreateStdDialogButtonSizer(m_readOnly ? wxCLOSE : (wxOK | wxCANCEL)), 0);
 	sizer->Add(buttons, 0, wxEXPAND | wxALL, FromDIP(6));
@@ -329,12 +340,37 @@ void ibDialogQueryExpression::FillLanguageTree()
 	// CAST written whole, for the same reason CASE is: what a person forgets is the `AS`, not the word.
 	leaf(other, Kw(ibQueryKeyword::Cast) + wxT("( ") + Kw(ibQueryKeyword::As) + wxT(" )"),
 		Kw(ibQueryKeyword::Cast) + wxT("( ") + Kw(ibQueryKeyword::As) + wxT(" )"));
+	// …AND A CAST THAT CONVERTS, one per primitive, with the qualifiers a person usually wants written in —
+	// by the one writer of such a CAST (ibQueryMakeCast), over the words the language reads.
+	{
+		const wxTreeItemId casts = m_language->AppendItem(other, _("CAST to a primitive type"));
+		ibQueryParser parser;
+		for (const wxString& word : ibQueryCastPrimitiveWords()) {
+			ibTypeDescription type;
+			if (!ibQueryCastType(*parser.ParseExpression(Kw(ibQueryKeyword::Cast) + wxT("(x ") + Kw(ibQueryKeyword::As)
+				+ wxT(" ") + word + wxT(")")), type))
+				continue;
+			if (type.ContainType(ibValueTypes::TYPE_NUMBER)) type.SetNumber(15, 2);
+			if (type.ContainType(ibValueTypes::TYPE_STRING)) type.SetString(50);
+			const ibQueryAstExprPtr cast = ibQueryMakeCast(nullptr, type);
+			if (!cast)
+				continue;
+			const wxString text = Kw(ibQueryKeyword::Cast) + wxT("( ") + Kw(ibQueryKeyword::As) + wxT(" ")
+				+ ibRenderQueryCastTarget(*cast) + wxT(")");
+			leaf(casts, text, text);
+		}
+	}
 	leaf(other, ibQueryScalarFnText(ibQueryScalarFn::Type) + wxT("()"),
 		ibQueryScalarFnText(ibQueryScalarFn::Type) + wxT("()"));
 	leaf(other, wxT("DATETIME(y, m, d)"), ibQueryScalarFnText(ibQueryScalarFn::DateTime) + wxT("(, , )"));
 	leaf(other, Kw(ibQueryKeyword::True),  Kw(ibQueryKeyword::True));
 	leaf(other, Kw(ibQueryKeyword::False), Kw(ibQueryKeyword::False));
 	leaf(other, Kw(ibQueryKeyword::Null),  Kw(ibQueryKeyword::Null));
+	// ⭐ …AND THE RUNTIME'S OWN EMPTY VALUE, beside NULL because that is where a person looks for it and
+	// NOT the same thing: NULL is the database's absence, this is a composite field on which nothing was
+	// chosen. Offered here, the difference is something an author can write rather than something they
+	// have to know (Max, 2026-09-24).
+	leaf(other, Kw(ibQueryKeyword::Undefined), Kw(ibQueryKeyword::Undefined));
 	// A PARAMETER is how a value reaches a query from outside — the one piece of syntax a person
 	// writing a condition needs and cannot find among the fields.
 	leaf(other, wxT("&") + wxString(_("Parameter")), wxT("&"));
@@ -452,7 +488,7 @@ wxString ibDialogQueryExpression::GetText() const
 void ibDialogQueryExpression::SetText(const wxString& text)
 {
 	m_text->SetText(text);
-	ibMarkQueryParameters(m_text);
+	ibMarkQueryText(m_text);
 	m_text->GotoPos(m_text->GetLastPosition());   // the caret lands where the writing continues
 	m_text->SetFocus();
 }
@@ -474,7 +510,7 @@ void ibDialogQueryExpression::OnOk(wxCommandEvent& event)
 		ibQueryParser parser;
 		m_expression = parser.ParseExpression(text);
 	}
-	catch (const ibBackendException& e) {
+	catch (const ibCoreException& e) {
 		wxMessageBox(e.GetErrorDescription(), GetTitle(), wxOK | wxICON_ERROR, this);
 		return;
 	}
@@ -564,12 +600,20 @@ wxString ibDialogQueryExpression::CheckExpressionNames(const ibQueryAstExprPtr& 
 				walk(*e.m_lhs);
 			break;
 
-		case ibQueryAstExprKind::Cast:
-			if (e.m_path.size() < 2)
-				complaint = _("CAST narrows to a type: CAST(<field> AS <Kind>.<Name>)");
+		// A CAST names a primitive — `Number(15, 2)`, `String(50)`, `Date`, `Boolean`, read by the parser that
+		// already checked its qualifiers — or a type as REFS does. One bare word that is neither is the mistake.
+		case ibQueryAstExprKind::Cast: {
+			ibTypeDescription primitive;
+			if (e.m_path.size() < 2 && !ibQueryCastType(e, primitive)) {
+				wxString words;
+				for (const wxString& word : ibQueryCastPrimitiveWords())
+					words += (words.IsEmpty() ? wxString() : wxT(", ")) + word;
+				complaint = wxString::Format(_("CAST takes a primitive type (%s) or a type: CAST(<field> AS <Kind>.<Name>)"), words);
+			}
 			else if (e.m_arg)
 				walk(*e.m_arg);
 			break;
+		}
 
 		default:
 			// Everything else is structure: walk whatever it holds.
@@ -620,7 +664,7 @@ void ibDialogQueryExpression::OnEditChoice(wxCommandEvent&)
 			ibQueryParser parser;
 			existing = parser.ParseExpression(fragment);
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			existing = nullptr;
 		}
 	}
@@ -633,4 +677,99 @@ void ibDialogQueryExpression::OnEditChoice(wxCommandEvent&)
 	m_text->SetSelection(from, to);
 	m_text->ReplaceSelection(ibRenderQueryExpr(*existing));
 	m_text->SetFocus();
+}
+
+// ---------------------------------------------------------------------------
+//  The role constructor — what a field is in a balance
+// ---------------------------------------------------------------------------
+
+void ibDialogQueryExpression::OfferRole(bool said, ibBalanceRole role, int periodRank)
+{
+	m_roleSaid   = said;
+	m_role       = role;
+	m_periodRank = periodRank;
+	if (m_roleButton != nullptr) {
+		m_roleButton->Show();
+		ShowRoleOnButton();
+		Layout();
+	}
+}
+
+void ibDialogQueryExpression::ShowRoleOnButton()
+{
+	if (m_roleButton == nullptr)
+		return;
+	wxString label = _("Role");
+	if (m_roleSaid) {
+		label += wxT(": ");
+		label += ibBalanceRoleWord(m_role);
+		if (m_role == ibBalanceRole::Moment && m_periodRank > 0)
+			label += wxString::Format(wxT(" %d"), m_periodRank);
+	}
+	m_roleButton->SetLabel(label + wxT("..."));
+}
+
+// ⭐ THE ROLE EDITOR — the word the query writes (`ROLE OPENING`), picked rather than typed, and for a PERIOD its
+// number: which period decides "first" and "last" before the others. "As its source says" leaves the field what
+// its source says it is; NONE takes that away. The words are the query's own, as everything in the constructor is
+// (it speaks the language it writes). One window — see the declaration for who opens it.
+bool ibEditBalanceRole(wxWindow* parent, bool& said, ibBalanceRole& role, int& periodRank, bool readOnly, bool withNumber)
+{
+	wxDialog dialog(parent, wxID_ANY, _("Role"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE);
+	wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
+
+	static const ibBalanceRole s_roles[] = { ibBalanceRole::Moment, ibBalanceRole::Dimension,
+		ibBalanceRole::Opening, ibBalanceRole::Closing, ibBalanceRole::None };
+	wxArrayString words;
+	words.Add(_("As its source says"));
+	for (const ibBalanceRole known : s_roles)
+		words.Add(ibBalanceRoleWord(known));
+	wxChoice* choice = new wxChoice(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, words);
+	int at = 0;
+	if (said)
+		for (size_t i = 0; i < std::size(s_roles); ++i)
+			if (s_roles[i] == role)
+				at = static_cast<int>(i) + 1;
+	choice->SetSelection(at);
+	choice->Enable(!readOnly);
+	sizer->Add(new wxStaticText(&dialog, wxID_ANY, _("What the field is in a balance:")), 0, wxLEFT | wxRIGHT | wxTOP, dialog.FromDIP(8));
+	sizer->Add(choice, 0, wxEXPAND | wxALL, dialog.FromDIP(8));
+
+	// A PERIOD'S NUMBER — 0 is "in the order it stands": the platform counts it after the numbered ones.
+	wxSpinCtrl* rank = nullptr;
+	if (withNumber) {
+		wxBoxSizer* rankRow = new wxBoxSizer(wxHORIZONTAL);
+		rankRow->Add(new wxStaticText(&dialog, wxID_ANY, _("Period number (0 = in order):")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog.FromDIP(6));
+		rank = new wxSpinCtrl(&dialog, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+			wxSP_ARROW_KEYS, 0, ibSourcePeriodRank(0) - 1, periodRank);
+		rankRow->Add(rank, 0);
+		sizer->Add(rankRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, dialog.FromDIP(8));
+		const auto syncRank = [choice, rank, readOnly]() { rank->Enable(!readOnly && choice->GetSelection() == 1); };   // PERIOD only
+		choice->Bind(wxEVT_CHOICE, [syncRank](wxCommandEvent&) { syncRank(); });
+		syncRank();
+	}
+
+	sizer->Add(dialog.CreateStdDialogButtonSizer(readOnly ? wxCLOSE : (wxOK | wxCANCEL)), 0, wxEXPAND | wxALL, dialog.FromDIP(8));
+	dialog.SetSizerAndFit(sizer);
+	if (readOnly) {
+		dialog.Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_CANCEL); }, wxID_CLOSE);
+		dialog.ShowModal();
+		return false;
+	}
+	if (dialog.ShowModal() != wxID_OK)
+		return false;
+
+	const int picked = choice->GetSelection();
+	said       = picked > 0;
+	role       = said ? s_roles[picked - 1] : ibBalanceRole::None;
+	periodRank = said && role == ibBalanceRole::Moment && rank != nullptr ? rank->GetValue() : 0;
+	return true;
+}
+
+void ibDialogQueryExpression::OnEditRole(wxCommandEvent&)
+{
+	if (!ibEditBalanceRole(this, m_roleSaid, m_role, m_periodRank, m_readOnly))
+		return;
+	ShowRoleOnButton();
+	Layout();
 }

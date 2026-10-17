@@ -4,12 +4,12 @@
 
 #include "blockSyntaxLINQ.h"
 
-#include "backend/compiler/translateCode.h"   // GetKeyWord - the words are the lexer's
-#include "backend/compiler/codeDef.h"         // KEY_FROM ... KEY_RESTRICT
+#include "core/compiler/translateCode.h"   // GetKeyWord - the words are the lexer's
+#include "core/compiler/codeDef.h"         // KEY_FROM ... KEY_RESTRICT
 
 #include "backend/compiler/compileCode.h"      // GetCodeStyle - a function is spelled by the module's syntax
 
-#include "backend/stringUtils.h"
+#include "core/stringUtils.h"
 
 #include <algorithm>
 #include <functional>
@@ -277,24 +277,25 @@ wxString ibLinqBlock::Write(const wxString& indent, wxString& refusal, bool draf
 		}
 	};
 
-	// The order, then the cut. Keys of one direction in a row share a clause; a change of direction
-	// opens the next one. `spell` is how an order key is written where it stands.
+	// The order, then the cut. ONE clause, each key followed by its own way when it runs descending
+	// (`OrderBy g.Group, g.Price Descending, g.Name`). `spell` is how an order key is written where it stands.
 	const auto writeOrderAndCut = [&](const std::function<wxString(const wxString&)>& spell) {
-		for (size_t i = 0; i < m_order.size(); ) {
-			const bool descending = m_order[i].m_descending;
-			wxString keys;
-			for (; i < m_order.size() && m_order[i].m_descending == descending; ++i) {
-				const wxString key = wxString(m_order[i].m_expression).Trim(true).Trim(false);
-				if (key.IsEmpty())
-					continue;
-				finished(key);
-				keys +=(keys.IsEmpty() ? wxString() : wxString(wxT(", "))) + spell(key);
-			}
-			if (keys.IsEmpty())
+		wxString keys;
+		size_t descendingKeys = 0;
+		for (const ibLinqBlockOrder& order : m_order) {
+			const wxString key = wxString(order.m_expression).Trim(true).Trim(false);
+			if (key.IsEmpty())
 				continue;
-			lines.push_back(word(KEY_ORDERBY) + wxT(" ") + keys + (descending ? wxT(" ") + word(KEY_DESCENDING) : wxString()));
+			finished(key);
+			keys += (keys.IsEmpty() ? wxString() : wxString(wxT(", "))) + spell(key)
+				+ (order.m_descending ? wxString(wxT(" ")) + word(KEY_DESCENDING) : wxString());
+			if (order.m_descending)
+				++descendingKeys;
+		}
+		if (!keys.IsEmpty()) {
+			lines.push_back(word(KEY_ORDERBY) + wxT(" ") + keys);
 			say(KEY_ORDERBY, true);
-			if (descending)
+			for (size_t d = 0; d < descendingKeys; ++d)
 				say(KEY_DESCENDING, false);
 		}
 		if (!m_skip.IsEmpty()) {
@@ -506,7 +507,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	// 991d4d53, Linux and macOS alike - so the end is read here (tokenEnd). A `;` is added so the last
 	// clause has a token after it too.
 	const wxString source = text + wxT("\n;");
-	ibTranslateCode lexer;
+	ibTranslateCode lexer(ibCompileCode::GetCodeStyle());
 	lexer.SetLexemMode(ibLexemMode::Editing);
 	lexer.Load(source);
 	try {
@@ -516,22 +517,21 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 		refusal = _("The query's text could not be read.");
 		return false;
 	}
-	const std::vector<ibLexem>& lex = lexer.GetLexems();
-	if (lex.empty())
+	if (lexer.GetLexCount() == 0)
 		return false;
 
-	const size_t end = lex.size() - 1;   // the ENDPROGRAM marker
+	const size_t end = lexer.GetLexCount() - 1;   // the ENDPROGRAM marker
 
 	// WHERE TOKEN `i` ENDS: a string at its closing quote (a doubled one is part of it), a date at its
 	// closing apostrophe, anything else at the first whitespace or comment - and never past the start of
 	// the token after it.
 	const auto tokenEnd = [&](size_t i) -> unsigned int {
-		const unsigned int from = lex[i].m_numString;
-		const unsigned int limit = i + 1 < lex.size() ? lex[i + 1].m_numString : (unsigned int)source.length();
+		const unsigned int from = lexer.GetLexAt(i).m_numString;
+		const unsigned int limit = i + 1 < lexer.GetLexCount() ? lexer.GetLexAt(i + 1).m_numString : (unsigned int)source.length();
 		if (from >= source.length())
 			return from;
 		const wxUniChar open = source[from];
-		if (lex[i].m_lexType == CONSTANT && (open == wxT('"') || open == wxT('\''))) {
+		if (lexer.GetLexAt(i).m_lexType == CONSTANT && (open == wxT('"') || open == wxT('\''))) {
 			for (unsigned int at = from + 1; at < source.length(); ++at) {
 				if (source[at] != open)
 					continue;
@@ -568,12 +568,12 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	const auto span = [&](size_t a, size_t b) {
 		if (b <= a || b > end + 1)
 			return wxString();
-		const unsigned int from = skipGap(lex[a].m_numString);
+		const unsigned int from = skipGap(lexer.GetLexAt(a).m_numString);
 		const unsigned int to = tokenEnd(std::min(b, end) - 1);
 		return wxString(source.Mid(from, to > from ? to - from : 0)).Trim(true).Trim(false);
 	};
 	const auto isDelimiter = [&](size_t i, wxUniChar c) {
-		return i < end && lex[i].m_lexType == DELIMITER && lex[i].m_numData == (int)c;
+		return i < end && lexer.GetLexAt(i).m_lexType == DELIMITER && lexer.GetLexAt(i).m_numData == (int)c;
 	};
 	// ⭐ THE QUERY WORD AT A TOKEN - including one the lexer took for a NAME because a dot stood before
 	// it: `On g. Equals c.` reads as `g.Equals`, and the compiler stops right there. A dot with a SPACE
@@ -582,15 +582,15 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	const auto keyAt = [&](size_t i) -> int {
 		if (i >= end)
 			return -1;
-		if (lex[i].m_lexType == KEYWORD)
-			return lex[i].m_numData;
-		if (lex[i].m_lexType != IDENTIFIER || i == 0 || !isDelimiter(i - 1, wxT('.')))
+		if (lexer.GetLexAt(i).m_lexType == KEYWORD)
+			return lexer.GetLexAt(i).m_numData;
+		if (lexer.GetLexAt(i).m_lexType != IDENTIFIER || i == 0 || !isDelimiter(i - 1, wxT('.')))
 			return -1;
-		if (lex[i].m_numString <= tokenEnd(i - 1))
+		if (lexer.GetLexAt(i).m_numString <= tokenEnd(i - 1))
 			return -1;   // the name touches its dot: `o.Select` is a name, as the lexer says
 		for (const int key : { KEY_FROM, KEY_JOIN, KEY_IN, KEY_ON, KEY_EQUALS, KEY_WHERE, KEY_GROUP, KEY_BY, KEY_INTO,
 				KEY_ORDERBY, KEY_ASCENDING, KEY_DESCENDING, KEY_SKIP, KEY_TAKE, KEY_SELECT, KEY_DISTINCT })
-			if (stringUtils::CompareString(lex[i].m_valData.GetString(), Word(key)))
+			if (lexer.GetLexAt(i).m_valData.GetString().IsSameAs(Word(key), false))
 				return key;
 		return -1;
 	};
@@ -598,7 +598,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 		return keyAt(i) == key;
 	};
 	const auto name = [&](size_t i) {
-		return i < end && lex[i].m_lexType == IDENTIFIER ? lex[i].m_valData.GetString() : wxString();
+		return i < end && lexer.GetLexAt(i).m_lexType == IDENTIFIER ? lexer.GetLexAt(i).m_valData.GetString() : ibString();
 	};
 	const auto opens = [](int key) {
 		switch (key) {
@@ -622,7 +622,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	size_t stop = end;
 	size_t selectAt = end;   // the `Select` at depth zero, once met
 	for (size_t i = 0; i < end; ++i) {
-		const ibLexem& l = lex[i];
+		const ibLexem& l = lexer.GetLexAt(i);
 		if (l.m_lexType == DELIMITER) {
 			if (l.m_numData == '(' || l.m_numData == '[' || l.m_numData == '{') ++depth;
 			else if (l.m_numData == ')' || l.m_numData == ']' || l.m_numData == '}') {
@@ -637,7 +637,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 			else if (l.m_numData == ';' && depth == 0) { stop = i; break; }
 			continue;
 		}
-		if (depth == 0 && selectAt < end && !isDelimiter(selectAt + 1, wxT('{')) && l.GetLine() != lex[selectAt].GetLine()
+		if (depth == 0 && selectAt < end && !isDelimiter(selectAt + 1, wxT('{')) && l.GetLine() != lexer.GetLexAt(selectAt).GetLine()
 			&& !isKey(i, KEY_DISTINCT)) {
 			stop = i;   // a bare `Select` ends with its line
 			break;
@@ -667,9 +667,9 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	const auto findAtTop = [&](size_t from, size_t to, const std::function<bool(size_t)>& match) {
 		int level = 0;
 		for (size_t i = from; i < to; ++i) {
-			if (lex[i].m_lexType == DELIMITER) {
-				if (lex[i].m_numData == '(' || lex[i].m_numData == '[' || lex[i].m_numData == '{') { ++level; continue; }
-				if (lex[i].m_numData == ')' || lex[i].m_numData == ']' || lex[i].m_numData == '}') { --level; continue; }
+			if (lexer.GetLexAt(i).m_lexType == DELIMITER) {
+				if (lexer.GetLexAt(i).m_numData == '(' || lexer.GetLexAt(i).m_numData == '[' || lexer.GetLexAt(i).m_numData == '{') { ++level; continue; }
+				if (lexer.GetLexAt(i).m_numData == ')' || lexer.GetLexAt(i).m_numData == ']' || lexer.GetLexAt(i).m_numData == '}') { --level; continue; }
 			}
 			if (level == 0 && match(i))
 				return i;
@@ -692,7 +692,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	const auto madeOne = [&](size_t from, size_t to, std::vector<std::pair<wxString, wxString>>& parts) {
 		parts.clear();
 		if (to <= from + 5 || !isKey(from, KEY_NEW) || !stringUtils::CompareString(name(from + 1), wxT("Structure"))
-			|| !isDelimiter(from + 2, wxT('(')) || lex[from + 3].m_lexType != CONSTANT || !isDelimiter(from + 4, wxT(',')))
+			|| !isDelimiter(from + 2, wxT('(')) || lexer.GetLexAt(from + 3).m_lexType != CONSTANT || !isDelimiter(from + 4, wxT(',')))
 			return false;
 		// The bracket that closes the one after `Structure` has to be the last token.
 		size_t close = from + 2;
@@ -702,7 +702,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 		}
 		if (close != to - 1)
 			return false;
-		const wxArrayString names = wxSplit(lex[from + 3].m_valData.GetString(), wxT(','), wxT('\0'));
+		const wxArrayString names = wxSplit(lexer.GetLexAt(from + 3).m_valData.GetString(), wxT(','), wxT('\0'));
 		const auto values = splitAtTop(from + 5, to - 1, wxT(','));
 		if (names.size() != values.size())
 			return false;
@@ -721,7 +721,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 	// for anything else, which stays a column written over the group, as it is.
 	const auto groupColumn = [&](const wxString& column, size_t a, size_t b) {
 		const wxString& group = block.m_groupInto;
-		if (b <= a + 2 || !stringUtils::CompareString(name(a), group) || !isDelimiter(a + 1, wxT('.')))
+		if (b <= a + 2 || !name(a).IsSameAs(group, false) || !isDelimiter(a + 1, wxT('.')))
 			return false;
 		const wxString member = name(a + 2);
 		if (stringUtils::CompareString(member, wxT("Key"))) {
@@ -731,7 +731,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 			}
 			if (b == a + 5 && isDelimiter(a + 3, wxT('.')))
 				for (ibLinqBlockField& key : block.m_groupKeys)
-					if (stringUtils::CompareString(key.m_name, name(a + 4))) {
+					if (name(a + 4).IsSameAs(key.m_name, false)) {
 						key.m_name = column;   // the key's field and its column are one name
 						return true;
 					}
@@ -745,7 +745,7 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 		total.m_name = column;
 		bool known = false;
 		for (const ibLinqTotal candidate : { ibLinqTotal::Sum, ibLinqTotal::Count, ibLinqTotal::Min, ibLinqTotal::Max, ibLinqTotal::Average })
-			if (stringUtils::CompareString(ibLinqTotalName(candidate), name(a + 4))) {
+			if (name(a + 4).IsSameAs(ibLinqTotalName(candidate), false)) {
 				total.m_function = candidate;
 				known = true;
 			}
@@ -846,15 +846,17 @@ bool ibLinqBlock::Parse(const wxString& text, ibLinqBlock& block, wxString& refu
 		}
 		case KEY_ORDERBY: {
 			rowsCut = rowsCut || !grouped;
-			// The direction closes the clause and is the whole clause's.
-			size_t keysEnd = e;
-			bool descending = false;
-			if (e > s + 1 && (isKey(e - 1, KEY_DESCENDING) || isKey(e - 1, KEY_ASCENDING))) {
-				descending = isKey(e - 1, KEY_DESCENDING);
-				keysEnd = e - 1;
+			// Each key may close with its own way: `OrderBy a, b Descending, c`.
+			for (const auto& part : splitAtTop(s + 1, e, wxT(','))) {
+				size_t keyEnd = part.second;
+				bool descending = false;
+				if (part.second > part.first + 1
+					&& (isKey(part.second - 1, KEY_DESCENDING) || isKey(part.second - 1, KEY_ASCENDING))) {
+					descending = isKey(part.second - 1, KEY_DESCENDING);
+					keyEnd = part.second - 1;
+				}
+				block.m_order.push_back({ span(part.first, keyEnd), descending });
 			}
-			for (const auto& part : splitAtTop(s + 1, keysEnd, wxT(',')))
-				block.m_order.push_back({ span(part.first, part.second), descending });
 			break;
 		}
 		case KEY_SKIP:

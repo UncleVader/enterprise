@@ -42,8 +42,8 @@ BACKEND_API const wxString& ibFieldSuffix(ibColumnRole role);
 // An output is named by the person who wrote the query (`… AS Date`), but where that name is
 // WRITTEN is inside a projection of ours — a nested select, a declared query's body — and names
 // there belong to that projection's namespace. So the engine spells them: `Date` is written
-// `out_Date`. `ibQueryOutputName` (queryRender.h) answers what the QUERY calls a field; this
-// answers what the STATEMENT does.
+// `out_` and the hash of `Date`, as is every other name, Latin or not. `ibQueryOutputName`
+// (queryRender.h) answers what the QUERY calls a field; this answers what the STATEMENT does.
 //
 // ⭐ EVERY ALIAS, NOT THE AWKWARD ONES. The prefix is a namespace, so it is unconditional; that a
 // prefixed word can no longer collide with SQL's vocabulary (`AS Date` -> `-104 Token unknown`,
@@ -55,7 +55,9 @@ BACKEND_API const wxString& ibFieldSuffix(ibColumnRole role);
 //
 // ⚠ NOT SOLVED BY QUOTING EITHER. Identifier quotes are off by decision, not omission — in Firebird
 // a quoted name becomes case-sensitive while the schema is written unquoted (m_identQuoteOpen,
-// databaseLayer.h), so quoting trades a refusal for a name that no longer matches itself.
+// databaseLayer.h), so quoting trades a refusal for a name that no longer matches itself. The hash
+// keeps the statement ASCII for a name that is not an identifier (Cyrillic, a hyphen), and one
+// spelling for every name keeps that road the one every query takes.
 //
 // ⭐ THE AUTHOR'S NAME SURVIVES UNTOUCHED wherever a person reads it — the composition's title, the
 // constructor's cell, the column header, and the name an outer query calls this output by. Only the
@@ -145,6 +147,12 @@ BACKEND_API std::vector<wxString> ColumnValueFields(const ibBackendQueryColumn* 
 // the layout re-derived by spelling, in a place that cannot be told when the lettering changes.
 // Give the role alongside the name and the question is answerable where it is asked.
 BACKEND_API std::vector<ibColumnSlot> ColumnValueSlots(const ibBackendQueryColumn* col);
+
+// ⭐ WHAT A COLUMN IS SORTED ON, in order: its value fields, and a reference's _RTRef after its key (an
+// empty key of one type orders apart from an empty key of another). One answer for the ORDER BY a read
+// writes and for the fields an index is built over — an index whose leading fields are not the order's
+// own is one the engine cannot walk, and every page of a list sorts the whole table instead.
+BACKEND_API std::vector<wxString> ColumnSortFields(const ibBackendQueryColumn* col);
 
 // The column's FIRST value slot — the field a scalar comparison / sort / anchor rides. Empty name
 // and Raw role when the column spreads to nothing.

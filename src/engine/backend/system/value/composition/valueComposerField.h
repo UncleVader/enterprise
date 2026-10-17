@@ -4,10 +4,10 @@
 // The FIELD a composer setting points at — the runtime value behind every condition, sort line
 // and grouping level. Part of the composer's RUNTIME surface (see valueComposerSettings.h for
 // what that surface is and why it is being rebuilt); the DATA it describes lives in
-// backend/compositionDescription.h and knows nothing about this.
+// core/description/compositionDescription.h and knows nothing about this.
 
 #include "backend/compiler/value.h"
-#include "backend/typeDescription.h"
+#include "core/description/typeDescription.h"
 
 
 ////////////////////////////////////////////////////////////////////////////
@@ -95,7 +95,7 @@ public:
 	// WHAT A PERSON READS IN THE CELL — `CatalogRef.Goods.Chair`, as it was written. Held rather than
 	// recomputed: the name is what the designer chose, and it must read the same before there is any
 	// configuration to ask.
-	virtual wxString GetString() const override { return m_written; }
+	virtual ibString GetString() const override { return m_written; }
 
 	// ⚠ AN EMPTY REFERENCE IS NOT AN EMPTY VALUE. `CatalogRef.Goods.EmptyRef` is a value of that type
 	// and a legitimate thing to store — saying otherwise made it skipped on the way to the store, and
@@ -142,9 +142,7 @@ public:
 	// in a filter line is "Country", not "Supplier.Region.Country" — but a field
 	// built from script has no presentation, and showing an empty cell would be
 	// worse than showing the path.
-	virtual wxString GetString() const override {
-		return m_presentation.IsEmpty() ? m_path : m_presentation;
-	}
+	virtual ibString GetString() const override;
 
 	// TWO FIELDS ARE THE SAME FIELD when they point at the same place. The path
 	// is that answer: the leaf id is only meaningful against one source, and the

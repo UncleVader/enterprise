@@ -362,7 +362,7 @@ bool ibValueForm::InitializeFormModule()
 			Compile();
 			Run(true);
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			if (!appData->DesignerMode())
 				throw;
 			return false;
@@ -537,7 +537,7 @@ bool ibValueForm::ShowForm(ibDocument* docParent, bool createContext)
 				if (lockErr.GetKind() == ibBackendLockException::Kind::LockConflict)
 					SetLockBadge(lockErr.GetBlockingUser());
 			}
-			catch (const ibBackendException&) {
+			catch (const ibCoreException&) {
 				// Non-conflict lock-infra error (DB transient etc.) —
 				// silent. Write path will re-check at save time.
 			}
@@ -776,7 +776,7 @@ bool ibValueForm::GenerateForm(ibValueRecordDataObjectRef* obj) const
 	if (selectDataType->ShowModal(sel_id)) {
 		const ibValueMetaObjectRecordDataMutableRef* meta = metaData->FindAnyObjectByFilter<ibValueMetaObjectRecordDataMutableRef>(sel_id);
 		if (meta != nullptr) {
-			ibValueRecordDataObjectRef* genObj = meta->CreateObjectValue(obj, true);
+			const ibValuePtr<ibValueRecordDataObjectRef> genObj = meta->CreateObjectValue(obj, true);
 			if (genObj != nullptr) {
 				genObj->ShowFormValue();
 				selectDataType->Destroy();

@@ -108,7 +108,7 @@ public:
 
 #pragma region _form_builder_h_
 	//support form
-	virtual ibBackendValueForm* GetObjectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
+	virtual ibFormPtr<ibBackendValueForm> GetObjectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
 #pragma endregion
 
 	//get module object in compose object
@@ -124,13 +124,13 @@ public:
 protected:
 
 	//create manager
-	virtual ibValueManagerDataObject* CreateManagerDataObjectValue() const;
+	virtual ibValuePtr<ibValueManagerDataObject> CreateManagerDataObjectValue() const;
 
 	//create empty object
-	virtual ibValueRecordDataObjectExt* CreateObjectExtValue() const;  //create object
+	virtual ibValuePtr<ibValueRecordDataObjectExt> CreateObjectExtValue() const;  //create object
 
 	//create object data with meta form
-	virtual ibSourceDataObject* CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const;
+	virtual ibSourcePtr<ibSourceDataObject> CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const;
 
 	//load & save metaData from DB
 
@@ -146,7 +146,7 @@ private:
 				prop->AppendItem(
 					object->GetName(),
 					object->GetMetaID(),
-					object->GetIcon(),
+					object->GetClassType(),
 					object);
 			}
 		}
@@ -165,7 +165,7 @@ private:
 			prop->AppendItem(
 				object->GetName(),
 				object->GetMetaID(),
-				object->GetIcon(),
+				object->GetClassType(),
 				object);
 		}
 
@@ -271,15 +271,14 @@ protected:
 	friend class ibValueModuleRuntimeManagerExternalReport;
 };
 
-// External report value object: regular report behaviour + RAII ownership of the
-// transient external metadata container, dropped in ibExternalOwnerHelper's dtor.
-// Embedded / config reports use the plain ibValueRecordDataObjectReport.
+// External report value object: regular report behaviour + a reference to the external metadata container it works
+// in, held at runtime (ibExternalOwnerHelper). Embedded / config reports use the plain ibValueRecordDataObjectReport.
 class ibValueRecordDataObjectExternalReport :
 	public ibValueRecordDataObjectReport,
 	public ibExternalOwnerHelper {
 public:
-	ibValueRecordDataObjectExternalReport(const ibValueMetaObjectReport* metaObject, ibMetaData* ownedMeta = nullptr)
-		: ibValueRecordDataObjectReport(metaObject), ibExternalOwnerHelper(ownedMeta) {}
+	ibValueRecordDataObjectExternalReport(const ibValueMetaObjectReport* metaObject, std::shared_ptr<ibMetaData> externalMetadata = nullptr)
+		: ibValueRecordDataObjectReport(metaObject), ibExternalOwnerHelper(std::move(externalMetadata)) {}
 };
 
 #endif

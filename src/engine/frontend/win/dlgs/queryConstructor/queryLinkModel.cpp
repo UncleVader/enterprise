@@ -8,6 +8,8 @@
 #include "backend/query/queryParser.h"   // a condition typed into a cell is read by the ENGINE
 #include "backend/query/queryRewrite.h"  // ibQueryTrueLiteral / ibQueryIsTrueLiteral — "no link", spelled
 
+#include "core/exception.h"   // ibCoreException — what a refused condition throws
+
 namespace {
 
 // The two boxes ↔ the kind now live in the HEADER (ibJoinAllFromLeft / ibJoinAllFromRight /
@@ -39,6 +41,14 @@ void ibQueryLinkModel::SetContent(ibQuerySelect* select, std::vector<wxString> t
 		if ((m_select->m_joins[i].m_on && !ibQueryIsTrueLiteral(m_select->m_joins[i].m_on)) || m_pending[i])
 			m_rows.push_back(i);
 	Reset(static_cast<unsigned int>(m_rows.size()));
+}
+
+void ibQueryLinkModel::ForgetJoin(size_t joinIndex)
+{
+	if (joinIndex < m_pending.size())
+		m_pending.erase(m_pending.begin() + static_cast<long>(joinIndex));
+	if (joinIndex < m_freehand.size())
+		m_freehand.erase(m_freehand.begin() + static_cast<long>(joinIndex));
 }
 
 size_t ibQueryLinkModel::JoinIndexOf(unsigned int row) const
@@ -326,7 +336,7 @@ bool ibQueryLinkModel::SetValueByRow(const wxVariant& variant, unsigned row, uns
 			ibQueryParser parser;
 			written = parser.ParseExpression(text);
 		}
-		catch (const ibBackendException& error) {
+		catch (const ibCoreException& error) {
 			if (m_onError)
 				m_onError(error.GetErrorDescription());
 			return false;

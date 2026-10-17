@@ -9,7 +9,7 @@
 // =============================================================================
 
 #include <gtest/gtest.h>
-#include "backend/fnumber.h"
+#include "core/fnumber.h"
 
 #include <climits>
 #include <sstream>
@@ -24,6 +24,38 @@ TEST(NumberLayout, SizeofIs8) {
 
 TEST(NumberLayout, AlignofIs8) {
     EXPECT_EQ(alignof(ibNumber), 8u);
+}
+
+// All-zero bits are the number 0 — what lets ibValue keep a number in its union.
+TEST(NumberLayout, ZeroBitsAreZero) {
+    alignas(ibNumber) unsigned char word[sizeof(ibNumber)] = {};
+    const ibNumber& zero = *reinterpret_cast<const ibNumber*>(word);
+    EXPECT_TRUE(zero.IsZero());
+    EXPECT_EQ(zero.ToString(), wxT("0"));
+}
+
+// ===========================================================================
+// The heap tier is shared — a copy is one more owner, a write gets its own
+// ===========================================================================
+
+TEST(NumberShared, WriteToACopyLeavesTheOriginal) {
+    const ibNumber original(wxString(wxT("765.3456754567765443343")));   // 22 digits → heap
+    ibNumber copy(original);
+    copy += ibNumber(1);
+    EXPECT_EQ(original.ToString(), wxT("765.3456754567765443343"));
+    EXPECT_EQ(copy.ToString(), wxT("766.3456754567765443343"));
+
+    ibNumber assigned;
+    assigned = original;
+    assigned = ibNumber(0);                                              // back to immediate
+    EXPECT_EQ(original.ToString(), wxT("765.3456754567765443343"));
+}
+
+TEST(NumberShared, ItselfOnBothSides) {
+    ibNumber n(wxString(wxT("765.3456754567765443343")));
+    n = n;
+    n += n;
+    EXPECT_EQ(n.ToString(), wxT("1530.6913509135530886686"));
 }
 
 // ===========================================================================
@@ -292,9 +324,45 @@ TEST(NumberDivision, ChainStopsAtTheCeiling) {
     EXPECT_LE(text.length() - point - 1, static_cast<size_t>(ibNumber::kMaxDivFracDigits));
 }
 
+TEST(NumberDivision, TheImmediateRoadAnswersAsTheGeneralOne) {
+    // Two immediate operands are divided on the stack (operator/=); the same dividend written with zeros
+    // enough to live on the heap takes the general road. Both must give the same number in the same
+    // spelling — the room, the rounding, the sign, the zeros dropped. The text compare catches a quotient
+    // that is equal in value but carries another length, which the next division would measure.
+    const wxChar* const cases[][2] = {
+        { wxT("1000000"), wxT("7") },          { wxT("2"), wxT("3") },            { wxT("-2"), wxT("3") },
+        { wxT("1"), wxT("-8") },               { wxT("0.1234"), wxT("3") },       { wxT("123.45"), wxT("0.07") },
+        { wxT("70368744177663"), wxT("3") },   { wxT("1"), wxT("70368744177663") },
+        { wxT("5000"), wxT("3") },             { wxT("0.000001"), wxT("7") },     { wxT("99.99"), wxT("33.33") },
+        { wxT("-70368744177663"), wxT("-0.0000007") },                            { wxT("1"), wxT("0.0000000001234") },
+    };
+    const wxString zeros = wxT("000000000000000000000000");   // 24: the mantissa leaves the immediate tier
+    for (const auto& c : cases) {
+        const wxString written(c[0]);
+        const ibNumber a(written), b{ wxString(c[1]) };
+        const ibNumber aOnTheHeap(written.Contains(wxT(".")) ? written + zeros : written + wxT(".") + zeros);
+        ASSERT_EQ(a, aOnTheHeap);
+        const ibNumber viaStack = a / b;
+        const ibNumber viaHeap  = aOnTheHeap / b;
+        EXPECT_EQ(viaStack, viaHeap) << c[0] << " / " << c[1];
+        EXPECT_EQ(viaStack.ToString(), viaHeap.ToString()) << c[0] << " / " << c[1];
+    }
+}
+
 TEST(NumberDivision, QuotientAndRemainderReconstructTheDividend) {
     // What a division drops is the REMAINDER, and `%` returns it exactly — the pair still adds up.
     const ibNumber a(17), b(5);
+    EXPECT_EQ((a / b).Trunc() * b + (a % b), a);
+}
+
+TEST(NumberDivision, AQuotientLimbGuessedOneTooLargeIsCorrected) {
+    // 2^96 / (2^64 + 1): the quotient limb estimated from the top two limbs is one too large, and the
+    // long division has to add the divisor back — its rare branch, found by running the division
+    // against the base-2 one it replaced.
+    const ibNumber a(wxString(wxT("79228162514264337593543950336")));
+    const ibNumber b(wxString(wxT("18446744073709551617")));
+    EXPECT_EQ(a % b, ibNumber(wxString(wxT("18446744069414584321"))));
+    EXPECT_EQ((a / b).Trunc(), ibNumber(wxString(wxT("4294967295"))));
     EXPECT_EQ((a / b).Trunc() * b + (a % b), a);
 }
 
@@ -663,6 +731,27 @@ TEST(NumberFormat, FracDigitsPadsToAFixedWidth) {
 TEST(NumberFormat, FracDigitsZeroDropsThePoint) {
     ibNumber::Format fmt; fmt.fracDigits = 0;
     EXPECT_EQ(ibNumber(wxString(wxT("1250.5"))).ToString(fmt), wxT("1251"));
+}
+
+// The immediate tier is laid out on the stack (fnumber.cpp) and must round exactly as Round(n) does:
+// half away from zero, a carry that grows the integer part, no sign on a figure that rounded to zero.
+TEST(NumberFormat, TheImmediateTierRoundsLikeRound) {
+    ibNumber::Format fmt; fmt.fracDigits = 2;
+    EXPECT_EQ(ibNumber(wxString(wxT("9.995"))).ToString(fmt), wxT("10.00"));
+    EXPECT_EQ(ibNumber(wxString(wxT("-9.995"))).ToString(fmt), wxT("-10.00"));
+    EXPECT_EQ(ibNumber(wxString(wxT("0.005"))).ToString(fmt), wxT("0.01"));
+    EXPECT_EQ(ibNumber(wxString(wxT("-0.004"))).ToString(fmt), wxT("0.00"));
+}
+
+// The out-argument form writes the same text into the string it is handed, whatever that held before —
+// the form a column of a report reuses row after row.
+TEST(NumberFormat, TheOutArgumentWritesTheSameText) {
+    ibNumber::Format fmt; fmt.fracDigits = 2; fmt.groupSep = wxT(' '); fmt.groupSize = 3;
+    wxString out(wxT("something longer that was there before"));
+    ibNumber(wxString(wxT("1234567.891"))).ToString(fmt, out);
+    EXPECT_EQ(out, wxT("1 234 567.89"));
+    ibNumber(5).ToString(fmt, out);
+    EXPECT_EQ(out, wxT("5.00"));
 }
 
 TEST(NumberFormat, FracDigitsWithGroups) {

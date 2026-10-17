@@ -1,5 +1,5 @@
 #include "sizer.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifdef OES_USE_WEB
 // Needed so ibWebSizer's SetMinSize / Layout no-ops are visible when
 // UpdateSizer calls through an ibFrontendSizer* that resolves to
@@ -22,10 +22,10 @@ void ibValueSizer::UpdateSizer(ibFrontendSizer* sizer)
 	// the web build — CSS handles the actual layout. Desktop body:
 	// push MinSize onto the wxSizer and relayout. Historically only
 	// wrapped in #ifndef; unified via ibFrontendSizer typedef.
-	if (m_propertyMinSize->GetValueAsSize() != wxDefaultSize)
-		sizer->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	if (m_propertyMinSize->GetValueAsSize() != ibDefaultSize)
+		sizer->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 
-	if (m_propertyMinSize->GetValueAsSize() != wxDefaultSize)
+	if (m_propertyMinSize->GetValueAsSize() != ibDefaultSize)
 		sizer->Layout();
 }
 
@@ -103,12 +103,12 @@ bool ibValueSizer::ReadData(const ibDataNode& node)
 {
 	m_propertyMinSize->SetNodeValue(node.GetProperty(m_propertyMinSize->GetName()));
 
-	return ibValueFrame::ReadData(node);
+	return ibValueControl::ReadData(node);
 }
 
 bool ibValueSizer::WriteData(ibDataNode& node) const
 {
 	node.SetProperty(m_propertyMinSize->GetName(), m_propertyMinSize->GetNodeValue());
 
-	return ibValueFrame::WriteData(node);
+	return ibValueControl::WriteData(node);
 }

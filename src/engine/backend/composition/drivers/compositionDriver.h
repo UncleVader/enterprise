@@ -16,10 +16,19 @@
 #include "backend/backend_core.h"
 #include "backend/compiler/value.h"           // ibValue — the row a driver is handed
 #include "backend/query/queryLowering.h"      // ibQueryLowering::OutputColumn — the schema of an output
-#include "backend/compositionDescription.h"   // ibCompositionOutputKind — what an output IS
+#include "core/description/compositionDescription.h"   // ibCompositionOutputKind — what an output IS
 
+#include "core/graphics/colour.h"   // ibCompositionAttr — what a cell is drawn with, as data
+#include "core/graphics/font.h"
 #include <wx/string.h>
+#include <map>        // ibCompositionRowAttr — a kept row's, by column id
+#include <memory>     // ibCompositionAttr::m_format — one parsed Format, shared by every cell it is laid on
+#include <optional>
+#include <utility>
 #include <vector>
+
+struct ibCompositionTheme;   // compositionTheme.h — only a driver that paints has to know what a palette holds
+class ibFormatString;        // formatString.h — a Format, handed over parsed (ibCompositionAttr::m_format)
 
 // ⚠ A CHART IS NOT A THIRD SHAPE. It reads exactly what a cross-table reads — series along one
 // axis, points along the other, a resource where they meet — and differs in being DRAWN as a
@@ -53,6 +62,12 @@ struct ibCompositionOutputInfo
 	ibCompositionOutputKind                    m_kind = ibCompositionOutputKind::Grouping;
 	std::vector<ibQueryLowering::OutputColumn> m_schema;
 	wxString                                   m_name;   // what the output is called, when it is
+	// …and HOW MANY OUTPUTS THE RUN DRAWS, this one among them. A caption tells one block from the others,
+	// and a run of one has nothing to tell apart (ibSpreadsheetComposeDriver::WriteOutputCaption).
+	size_t                                     m_outputCount = 1;
+	// ⭐ …AND THE PALETTE IT IS PAINTED IN — the output's own theme, else the setting's (ibOutputParameter::Theme).
+	// Its header, its grid and every line whose node names no theme of its own. Null = the platform's first.
+	const ibCompositionTheme*                  m_theme = nullptr;
 
 	// ⭐⭐ WHAT EACH COLUMN IS CALLED, one entry per schema column. The QUERY names its columns so
 	// they can be read back — uniquely, one word, sometimes qualified to stay apart (`CountNumber`
@@ -90,6 +105,14 @@ struct ibCompositionOutputInfo
 	// …ASKED, like the title, and for the same reason.
 	wxString PathOf(size_t column) const {
 		return column < m_paths.size() ? m_paths[column] : wxString();
+	}
+
+	// ⭐ AND HOW IT IS SHOWN — the appearance of the field the column reads (ibAppearanceDescription), one
+	// entry per schema column; an empty one = the value shows itself its own way. Worked out with the
+	// title, from the same field (AppearanceForPath).
+	std::vector<ibAppearanceDescription>       m_appearances;
+	ibAppearanceDescription AppearanceOf(size_t column) const {
+		return column < m_appearances.size() ? m_appearances[column] : ibAppearanceDescription();
 	}
 
 	// ⭐⭐ AND WHETHER THE COLUMN IS SHOWN AT ALL — one entry per schema column.
@@ -163,6 +186,133 @@ struct ibCompositionOutputInfo
 // exists, so its key is written to no column at all, and the sheet folds it INTO the line above as
 // though it were the next grouping (Max, 2026-08-29, live: the nested element with an empty
 // reference, and row 5 counted as a group).
+// ⭐ A FONT SAID PART BY PART — what a rule's font changes of the ORDINARY font it was chosen from (the report's own,
+// ibDefaultSpreadsheetFont: the font window and the MCP words both start from it), and nothing else. It is laid OVER
+// the font the cell already has (Over), so a bold heading made italic stays bold and a report keeps its size (Max,
+// 2026-09-30, the run: a whole font took the headings' bold and turned 8pt into the system's 9). The flags are said
+// only as ON — a rule makes a line bold or italic, it does not take a heading's bold away.
+struct ibCompositionFont {
+	int         m_pointSize = 0;                   // 0 = not said
+	int         m_weight = 0;                      // numeric, 700 = bold; 0 = not said
+	int         m_style = 0;                       // an ibFontStyle; 0 = not said
+	wxString    m_face;                            // empty = not said
+	bool        m_underlined = false;
+	bool        m_strikethrough = false;
+
+	// WHAT `font` SAYS beyond `ordinary` — made once, when a rule is made ready.
+	static ibCompositionFont Of(const ibFont& font, const ibFont& ordinary) {
+		ibCompositionFont said;
+		if (!font.IsOk())
+			return said;
+		if (static_cast<int>(font.m_pointSize) != static_cast<int>(ordinary.m_pointSize))
+			said.m_pointSize = static_cast<int>(font.m_pointSize);
+		if (font.m_weight != ordinary.m_weight)
+			said.m_weight = font.m_weight;
+		if (font.m_style != ordinary.m_style)
+			said.m_style = font.m_style;
+		if (!wxString(font.m_faceName).IsSameAs(ordinary.m_faceName, false))
+			said.m_face = font.m_faceName;
+		said.m_underlined = font.m_underlined && !ordinary.m_underlined;
+		said.m_strikethrough = font.m_strikethrough && !ordinary.m_strikethrough;
+		return said;
+	}
+
+	bool IsSaid() const {
+		return m_pointSize > 0 || m_weight > 0 || m_style != 0 || !m_face.IsEmpty()
+			|| m_underlined || m_strikethrough;
+	}
+	// …read as the two flags a grid and a word have: bold (semibold and heavier), italic (or slanted).
+	bool IsBold() const { return m_weight >= ibFONTWEIGHT_SEMIBOLD; }
+	bool IsItalic() const { return m_style == ibFONTSTYLE_ITALIC || m_style == ibFONTSTYLE_SLANT; }
+	// …each part another says replaces this one's, the rest stands — a bold rule and an italic one make bold italic.
+	void Say(const ibCompositionFont& other) {
+		if (other.m_pointSize > 0)                 m_pointSize = other.m_pointSize;
+		if (other.m_weight > 0)                    m_weight = other.m_weight;
+		if (other.m_style != 0)                    m_style = other.m_style;
+		if (!other.m_face.IsEmpty())               m_face = other.m_face;
+		m_underlined = m_underlined || other.m_underlined;
+		m_strikethrough = m_strikethrough || other.m_strikethrough;
+	}
+	// THE CELL'S FONT with what is said laid on it.
+	ibFont Over(ibFont font) const {
+		if (m_pointSize > 0)                 font.m_pointSize = m_pointSize;
+		if (m_weight > 0)                    font.m_weight = m_weight;
+		if (m_style != 0)                    font.m_style = static_cast<ibFontStyle>(m_style);
+		if (!m_face.IsEmpty())               font.m_faceName = m_face;
+		if (m_underlined)                    font.m_underlined = true;
+		if (m_strikethrough)                 font.m_strikethrough = true;
+		return font;
+	}
+};
+
+// ⭐⭐ WHAT A COMPOSITION DRAWS A CELL WITH — its conditional appearance made into values, in the driver contract's
+// own words and nobody else's (Max, 2026-09-30: "the drivers work with a structure of their own, and the list simply
+// moves it"). EACH DRIVER TAKES IT IN ITS OWN TERMS — a list into its own row, a report onto its sheet's cells — and
+// what a driver makes of it is that driver's business, not the contract's. A report cell may come to want more — a
+// border, an indent — and that is added HERE, where every driver reads it. Unset — not IsOk, wxALIGN_INVALID, no
+// text, no format — is the driver's own.
+struct BACKEND_API ibCompositionAttr {
+	ibColour m_backgroundColour;
+	ibColour m_textColour;
+	ibCompositionFont m_font;                          // said part by part, over the cell's own (Over)
+	int      m_horizontalAlignment = wxALIGN_INVALID;   // wxALIGN_LEFT / wxALIGN_CENTER_HORIZONTAL / wxALIGN_RIGHT
+	std::optional<wxString> m_text;                    // what the cell says in place of its value — an empty one too
+	// …else the Format its value is written in, instead of its column's — parsed once, when the rule was made ready
+	// (ibCompositionRulesOf), and shared by every cell it is laid on; the text a driver writes with it anyway.
+	std::shared_ptr<const ibFormatString> m_format;
+
+	bool IsDefault() const {
+		return !m_backgroundColour.IsOk() && !m_textColour.IsOk() && !m_font.IsSaid()
+			&& m_horizontalAlignment == wxALIGN_INVALID && !m_text && !m_format;
+	}
+
+	// …AND EVERYTHING ANOTHER SAYS, said over this — each thing `other` sets replaces this one's, the rest stands: how
+	// the rules that hold on a line lay over one another (the door ibParameterValuesDescription::Say is for a setting).
+	void Say(const ibCompositionAttr& other) {
+		if (other.m_backgroundColour.IsOk())
+			m_backgroundColour = other.m_backgroundColour;
+		if (other.m_textColour.IsOk())
+			m_textColour = other.m_textColour;
+		m_font.Say(other.m_font);
+		if (other.m_horizontalAlignment != wxALIGN_INVALID)
+			m_horizontalAlignment = other.m_horizontalAlignment;
+		if (other.m_text)
+			m_text = other.m_text;
+		if (other.m_format)
+			m_format = other.m_format;
+	}
+
+	// …AND WHAT A CELL SAYS UNDER IT — its Text where one is in force, else `value` in its Format. False where neither
+	// is: the cell says its value as its own column writes it (the driver's own format).
+	bool TextOf(const ibValue& value, wxString& text) const;
+};
+
+// …AS A DRIVER KEEPS A ROW OF THEM — the row's own and each column's under the id the reader files the column's value
+// under (a list: its fetch driver's row, then its node, the one moved into the other as it is). Held by pointer, null
+// where no rule held: a row with no conditional appearance carries nothing for it.
+struct ibCompositionRowAttr {
+	ibCompositionAttr                     m_line;
+	std::map<ibMetaID, ibCompositionAttr> m_columns;
+};
+
+// …A LINE OF THEM — the line's own, and those of the columns a rule of their own held on. The walk makes them per line
+// (ibDataComposer::ConditionalAppearance::AttrFor, compositionCondition.cpp) in a buffer it keeps, so a line allocates
+// nothing: a report reads a million of them.
+struct ibCompositionLineAttr {
+	ibCompositionAttr m_line;   // every cell of the line, where its column has nothing of its own
+	// …and a column's own, by its schema index — the line's with the column's over it. ONLY the columns that have one,
+	// never a slot per column: a line painted whole is one attribute however wide the report.
+	std::vector<std::pair<size_t, ibCompositionAttr>> m_cells;
+
+	// THE ATTRIBUTE OF ONE COLUMN, asked like the field appearance beside it (ibCompositionOutputInfo::AppearanceOf).
+	const ibCompositionAttr& AttrOf(size_t column) const {
+		for (const std::pair<size_t, ibCompositionAttr>& cell : m_cells)
+			if (cell.first == column)
+				return cell.second;
+		return m_line;
+	}
+};
+
 struct ibCompositionLine {
 	int                m_level  = 0;
 	int                m_indent = 0;
@@ -172,6 +322,18 @@ struct ibCompositionLine {
 	// …and the OUTPUT's promise: will what is under it actually be printed. Not the same question —
 	// see the note on OnGroupBegin.
 	bool               m_showsWhatIsUnder = false;
+	// …and the output's LADDER: does it read further down than this heading's rung — another level, or its
+	// records. A heading with nothing under it is still one of its level's headings: a period the fold filled in
+	// because nothing moved in it (PERIODS) reads as a month like its neighbours, not as a record (Max, 2026-09-29).
+	bool               m_levelReadsDeeper = false;
+	// …and the palette ITS NODE paints its lines in, where the node ticked a theme of its own — the way a node's
+	// own sort orders its headings. Null = the output's (ibCompositionOutputInfo::m_theme).
+	const ibCompositionTheme* m_theme = nullptr;
+	// …and the ATTRIBUTES its conditional appearance draws its cells with, where a rule's condition held. Null =
+	// nothing applied. Made by the walk for this call and lives as long as it. EACH DRIVER STORES ITS OWN (Max,
+	// 2026-09-30): one that keeps the line TAKES them — moves them into its own storage, never copies (a list's row,
+	// then its node, one to one); one that draws at once reads them (a report, onto its sheet's own properties).
+	ibCompositionLineAttr* m_attr = nullptr;
 
 	int Page() const { return m_level + m_indent; }
 };
@@ -305,15 +467,8 @@ public:
 	virtual bool GetPageRequest(ibReadPageRequest& /*request*/) const { return false; }
 };
 
-// COMPARE ONE VALUE THE WAY A FILTER LINE SPELLS IT — `=`, `<>` / `!=`, the four ordered ones, and
-// LIKE (whose `%` / `_` are the wildcards the query language uses). An operator nobody recognises
-// answers TRUE: a filter that cannot be read must not silently hide rows.
-//
-// One implementation, because there is one question. The RAM composer asks it per row, the walk
-// asks it per group, and a second copy of the spelling would answer one of them differently.
-BACKEND_API bool ibCompositionCompare(const ibValue& cell, const wxString& op, const ibValue& value);
-// …AND ASKED WITH THE KIND A STORED CONDITION ACTUALLY HOLDS — see the definition.
-BACKEND_API bool ibCompositionCompare(const ibValue& cell, ibComparisonKind kind, const ibValue& value);
+// (COMPARING A VALUE, and reading a condition or a rule against a row in hand, moved out on 2026-09-30 into the
+//  composer's evaluator, compositionCondition.h: none of it is anything a driver is handed.)
 
 // (⛔ A "trivial accumulating driver" — `ibCompositionRowSink`, rows kept in RAM "for validation /
 //  the RAM-model feed" — stood here with ONE mention in the whole tree: its own declaration. The two

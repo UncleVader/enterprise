@@ -1,7 +1,7 @@
 #ifndef _VALUETABLEPART_H__
 
 #include "backend/tabularModel.h"
-#include "backend/picturePredefined.h"                 // g_pic*CLSID — this model emits its own standard command icons
+#include "core/picturePredefined.h"                 // g_pic*CLSID — this model emits its own standard command icons
 #include "backend/valueInfo.h"
 
 #include "backend/metaCollection/table/metaTableObject.h"
@@ -92,6 +92,10 @@ public:
 			virtual wxString GetColumnName() const { return m_metaAttribute->GetName(); }
 			virtual wxString GetColumnCaption() const { return m_metaAttribute->GetSynonym(); }
 			virtual const ibTypeDescription GetColumnType() const { return m_metaAttribute->GetTypeDesc(); }
+			virtual const ibFormatString& GetColumnFormat() const {
+				return ibBackendTypeConfigFactory::GetFormatFromColumn(m_metaAttribute->GetFormat(), m_metaAttribute->GetTypeDesc());
+			}
+			virtual bool IsColumnAvailable() const override { return m_metaAttribute->IsAvailable(); }
 
 			ibValueTabularSectionColumnInfo();
 			ibValueTabularSectionColumnInfo(ibValueMetaObjectAttributeBase* attribute);
@@ -145,7 +149,7 @@ public:
 		virtual ibClassID GetClassType() const;
 
 		virtual wxString GetClassName() const;
-		virtual wxString GetString() const;
+		virtual ibString GetString() const;
 
 		friend class ibValueTabularSectionDataObjectBase;
 	private:
@@ -185,7 +189,12 @@ public:
 		m_recordColumnCollection(new ibValueTabularSectionDataObjectColumnCollection(this)) {
 		m_members.Bind(this, &ibValueTabularSectionDataObjectBase::FillMembers);
 		// (The RAM composer is auto-bound to this model's value-storage in ibValueModelStorage's ctor — no manual
-		// source binding needed; ibDataRamComposer reads the storage's nodes in place.)
+		// source binding needed; ibDataRamComposer reads the storage's nodes in place.) ⭐ AND IT KNOWS WHAT IT
+		// READS FROM THE START: the storage's columns — a question asked before the first page (IsGroupedModel, a
+		// quick filter) gets the answer a page gets — and the configuration its paths are walked in, the section's
+		// own (ibDataRamComposer::IsAvailable).
+		Storage().SetColumns(m_recordColumnCollection);
+		GetModelComposer().SetMetaData(tableObject != nullptr ? tableObject->GetMetaData() : nullptr);
 		// (No m_filterRow template population — the filter lives in L5 (ListSettings->Filter) now; the
 		// filter dialog offers the columns from the metadata / column collection directly.)
 	}
@@ -271,7 +280,7 @@ public:
 	virtual bool DeleteData() { return true; }
 
 	virtual bool LoadDataFromTable(ibValueModel* srcTable);
-	virtual ibValueModel* SaveDataToTable() const;
+	virtual ibValuePtr<ibValueModel> SaveDataToTable() const;
 
 	//****************************************************************************
 	//*                              Support methods                             *
@@ -287,7 +296,7 @@ public:
 	virtual ibClassID GetClassType() const;
 
 	virtual wxString GetClassName() const;
-	virtual wxString GetString() const;
+	virtual ibString GetString() const;
 
 	// Iterator runtime path lives on ibValueModel (cursor over Get*Fetch
 	// → BuildVisibleView for filter+sort consistency with the GUI).
@@ -322,6 +331,13 @@ class BACKEND_API ibValueTabularSectionDataObject : public ibValueTabularSection
 class BACKEND_API ibValueTabularSectionDataObjectRef : public ibValueTabularSectionDataObjectBase {
 	public:
 
+	// ⭐⭐ A READ IS STILL PENDING — there are rows in the database that have not been fetched into this
+	// section yet. True from birth for an EXISTING object (a new one has nothing to read), true again
+	// when a load could not run, and false once the rows are here. Whoever hands the section out reads on
+	// it, exactly once (reference.cpp, GetPropVal).
+	//
+	// ⚠ ASKED ONCE FOR A REASON: LoadData begins by CLEARING the model, and a cleared model detaches
+	// every row already handed out — including the row a `foreach` is standing on.
 	bool IsReadAfter() const { return m_readAfter; }
 
 	ibValueTabularSectionDataObjectRef();

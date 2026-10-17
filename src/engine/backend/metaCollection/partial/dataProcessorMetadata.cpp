@@ -4,7 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "dataProcessor.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/metaData.h"
 #include "backend/metadataDataProcessor.h"
 #include "backend/moduleManager/moduleManagerExt.h"
@@ -17,6 +17,7 @@
 
 ibValueMetaObjectDataProcessor::ibValueMetaObjectDataProcessor() : ibValueMetaObjectRecordDataExt()
 {
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
 }
 
 ibValueMetaObjectDataProcessor::~ibValueMetaObjectDataProcessor()
@@ -34,14 +35,14 @@ ibValueMetaObjectFormBase* ibValueMetaObjectDataProcessor::GetDefaultFormByID(co
 
 #include "dataProcessorManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectDataProcessor::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectDataProcessor::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectDataProcessor(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectDataProcessor(this));
 }
 
 #include "backend/appData.h"
 
-ibValueRecordDataObjectExt* ibValueMetaObjectDataProcessor::CreateObjectExtValue() const
+ibValuePtr<ibValueRecordDataObjectExt> ibValueMetaObjectDataProcessor::CreateObjectExtValue() const
 {
 	if (IsExternalCreate()) {
 		// External DP — m_objectValue lives on the DP's own moduleManager,
@@ -49,37 +50,36 @@ ibValueRecordDataObjectExt* ibValueMetaObjectDataProcessor::CreateObjectExtValue
 		// (= ibMetaDataDataProcessor for external DPs).
 		auto* extMeta = dynamic_cast<ibMetaDataDataProcessor*>(m_metaData);
 		ibValueModuleManager* mm = extMeta ? extMeta->GetManagerModule() : nullptr;
-		return mm ? dynamic_cast<ibValueRecordDataObjectExt*>(mm->GetObjectValue()) : nullptr;
+		return ibValuePtr<ibValueRecordDataObjectExt>(mm ? dynamic_cast<ibValueRecordDataObjectExt*>(mm->GetObjectValue()) : nullptr);
 	}
 
 	ibValueRecordDataObjectDataProcessor* pDataRef = nullptr;
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef))
-			return pDataRef;
+			return ibValuePtr<ibValueRecordDataObjectExt>(pDataRef);
 	}
-	return new ibValueRecordDataObjectDataProcessor(this);
+	return ibValuePtr<ibValueRecordDataObjectExt>(new ibValueRecordDataObjectDataProcessor(this));
 }
 
-ibSourceDataObject* ibValueMetaObjectDataProcessor::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectDataProcessor::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormDataProcessor:
-		return CreateObjectValue();
+		return ibSourcePtr<ibSourceDataObject>(CreateObjectValue());
 	}
 
 	return nullptr;
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectDataProcessor::GetObjectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectDataProcessor::GetObjectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectDataProcessor::eFormDataProcessor,
 		ownerControl,
-		CreateObjectValue(),
-		formGuid
+		CreateObjectValue()
 	);
 }
 #pragma endregion
@@ -210,7 +210,7 @@ bool ibValueMetaObjectDataProcessor::OnAfterRunMetaObject(int flags)
 
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (ibValueMetaObjectRecordDataExt::OnAfterRunMetaObject(flags))
-			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateObjectValue(); });
+			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateObjectValue(); });
 		return false;
 	}
 

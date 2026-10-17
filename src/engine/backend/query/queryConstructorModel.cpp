@@ -5,11 +5,15 @@
 #include "queryConstructorModel.h"
 
 #include "queryRender.h"                 // ibRenderQueryExpr — an unaliased projection is named by its own text
-#include "backend/appData.h"             // ibApplicationData::GetQueryableFactory (no config open)
+#include "queryParser.h"                 // ibQueryCastType / ibQueryMakeCast — a primitive CAST, both ways
+#include "queryable.h"                   // ibBackendQueryable::GetSourceMetaObject — a table's own reference type
+#include "backend/metaCollection/genericData.h"   // ResolveQueryConstant — …typed by its empty reference
+#include "backend/appData.h"             // ibApplicationInstance::GetQueryableFactory (no config open)
 #include "backend/metaData.h"            // ibMetaData::GetSourceFactory — the config the query runs on behalf of
 #include "backend/srcDataObject.h"       // ibSourceDataObject::ibSourceExplorer — what a source answers its fields with
 
 #include <algorithm>
+#include <functional>   // a computed projection is walked through for the fields it reads
 
 // ⚠ WHAT CAN BE WALKED THROUGH, and it is NOT "the field has a type". Every typed attribute carries
 // a clsid list — a string field's list holds the string's clsid — so "exactly one clsid" said yes
@@ -20,9 +24,12 @@
 // A COMPOSITE reference names several, so there is no ONE target — this stays the answer to "what
 // does it refer to", and it is zero for a composite. Whether the field can be WALKED is a different
 // question, asked below.
+//
+// A barrier (`AnyRef`, `CatalogRef`) is no target either: it names no table. A field declared with one holds
+// its members (FieldOfExplorer), and one with none to hold is a leaf.
 static ibClassID SingleReferenceOf(const std::vector<ibClassID>& clsids)
 {
-	return clsids.size() == 1 && IsReference(clsids.front()) ? clsids.front() : 0;
+	return clsids.size() == 1 && IsReference(clsids.front()) && !clsid_is_any(clsids.front()) ? clsids.front() : 0;
 }
 
 // ⭐ CAN IT BE WALKED — and the honest test is "is there ANY reference here", not "is there exactly
@@ -33,7 +40,7 @@ static ibClassID SingleReferenceOf(const std::vector<ibClassID>& clsids)
 static bool HasReference(const std::vector<ibClassID>& clsids)
 {
 	for (const ibClassID& clsid : clsids)
-		if (IsReference(clsid))
+		if (IsReference(clsid) && !clsid_is_any(clsid))
 			return true;
 	return false;
 }
@@ -52,13 +59,29 @@ static ibQueryConstructorField FieldOfExplorer(const ibSourceDataObject::ibSourc
 	ibQueryConstructorField field;
 	field.m_name           = node.GetSourceName();
 	field.m_presentation   = node.GetSourceName();
+	// ⭐ WHAT IT HOLDS (GetTypeValueDesc), the types the query walks it by (ResolveReferenceTargets): a field
+	// declared `AnyRef` unfolds into every reference of the configuration, a characteristic into its chart's.
+	// Read by the declaration, both were offered as a leaf, or as a [+] with nothing behind it.
+	const ibTypeDescription& held = node.GetTypeValueDesc();
 	// A reference field can be dot-walked further (Supplier.Region.Country) — the shell shows it with
 	// a [+] and asks again with the leaf's own source.
-	field.m_referenceClsid = SingleReferenceOf(node.GetClsidList());
-	field.m_reference      = HasReference(node.GetClsidList());
-	field.m_type           = node.GetTypeDesc();
+	field.m_referenceClsid = SingleReferenceOf(held.GetClsidList());
+	field.m_reference      = HasReference(held.GetClsidList());
+	field.m_type           = held;
 	field.m_icon           = node.GetSourceIcon();   // the column's own picture, asked not deduced
+	field.m_available      = node.GetColumn() == nullptr || node.GetColumn()->IsAvailable();
+	// …what a person calls it, and what it is in a balance — for the hosts that fill a field in from them.
+	field.m_caption        = node.GetSourceSynonym();
+	field.m_balanceRole    = node.GetColumn() != nullptr ? node.GetColumn()->GetBalanceRole() : ibBalanceRole::None;
 	return field;
+}
+
+// …AND A FIELD WHOSE TYPE A CAST SAYS — typed and walkable the same way, from the type the CAST names.
+static void TypeByCast(const ibQueryConstructorModel& model, const ibQueryAstExpr& cast, ibQueryConstructorField& field)
+{
+	field.m_type           = model.TypeOfCast(cast);
+	field.m_referenceClsid = SingleReferenceOf(field.m_type.GetClsidList());
+	field.m_reference      = HasReference(field.m_type.GetClsidList());
 }
 
 ibQueryConstructorModel::ibQueryConstructorModel(const ibMetaData* metaData)
@@ -71,7 +94,7 @@ ibQueryableFactory* ibQueryConstructorModel::Factory() const
 	// The config's OWN factory first (sources register per-config, and it descends to the global one
 	// on a miss); with no config open the global factory is the honest answer, not an error.
 	ibQueryableFactory* factory = m_metaData != nullptr ? m_metaData->GetSourceFactory() : nullptr;
-	return factory != nullptr ? factory : ibApplicationData::GetQueryableFactory();
+	return factory != nullptr ? factory : ibApplicationInstance::GetQueryableFactory();
 }
 
 std::vector<ibQueryConstructorSource> ibQueryConstructorModel::GetSources() const
@@ -211,24 +234,47 @@ ibQueryConstructorField ibQueryConstructorModel::FieldOfPath(const ibQuerySelect
 		}
 	}
 
-	// THE HOPS. Each segment must be found among the fields of the level above it; a segment that is
-	// not a single-target reference ends the walk, because there is nothing behind it to look in.
-	ibQueryConstructorField leaf;
-	for (size_t i = first; i < path.size(); ++i) {
-		const ibQueryConstructorField* found = nullptr;
-		for (const ibQueryConstructorField& field : fields)
-			if (field.m_name.IsSameAs(path[i], false)) { found = &field; break; }
-		if (found == nullptr)
-			return ibQueryConstructorField();   // a name this model cannot resolve — silence, never a guess
+	// WHERE THE PATH STARTS among the fields of that source, and the hops after it.
+	return WalkPath(fields, std::vector<wxString>(path.begin() + first, path.end()));
+}
 
-		leaf = *found;
-		if (i + 1 < path.size()) {
-			if (!leaf.m_reference)
-				return ibQueryConstructorField();   // asked to walk THROUGH something that is not a reference
-			// The whole type, not the single target: a composite hop offers what all its
-			// alternatives offer, merged the way the query merges them.
-			fields = GetReferenceFields(leaf.m_type);
+ibQueryConstructorField ibQueryConstructorModel::WalkPath(const std::vector<ibQueryConstructorField>& fields,
+                                                         const std::vector<wxString>& path) const
+{
+	for (size_t head = path.size(); head > 0; --head) {
+		wxString name = path.front();
+		for (size_t i = 1; i < head; ++i)
+			name += wxT(".") + path[i];
+		const auto start = std::find_if(fields.begin(), fields.end(),
+			[&name](const ibQueryConstructorField& field) { return field.m_name.IsSameAs(name, false); });
+		if (start != fields.end())
+			return WalkFrom(*start, std::vector<wxString>(path.begin() + head, path.end()));
+	}
+	return ibQueryConstructorField();   // a name this model cannot resolve — silence, never a guess
+}
+
+// THE HOPS. Each segment must be found among the fields of the level above it; a segment that is not a
+// reference ends the walk, because there is nothing behind it to look in.
+ibQueryConstructorField ibQueryConstructorModel::WalkFrom(const ibQueryConstructorField& from,
+                                                         const std::vector<wxString>& hops) const
+{
+	ibQueryConstructorField leaf = from;
+	for (const wxString& hop : hops) {
+		// The whole type, not the single target: a composite hop offers what all its alternatives offer,
+		// merged the way the query merges them — and nothing at all for what is not a reference.
+		const std::vector<ibQueryConstructorField> fields = GetReferenceFields(leaf.m_type);
+		const auto found = std::find_if(fields.begin(), fields.end(),
+			[&hop](const ibQueryConstructorField& field) { return field.m_name.IsSameAs(hop, false); });
+		if (found == fields.end()) {
+			// Silence, never a guess — but what the walk KNEW stands: a hop nobody answers past a hidden
+			// one does not bring the hidden one back.
+			ibQueryConstructorField unresolved;
+			unresolved.m_available = leaf.m_available;
+			return unresolved;
 		}
+		const bool available = leaf.m_available && found->m_available;   // one hidden hop hides the walk
+		leaf = *found;
+		leaf.m_available = available;
 	}
 	return leaf;
 }
@@ -288,7 +334,37 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::FieldsOfSelect(
 			field.m_type           = of.m_type;
 			if (of.m_icon.IsOk())
 				field.m_icon = of.m_icon;   // the column's own picture, when it has one
+			field.m_available = of.m_available;
+			// …and what it is in a balance travels with a plain reading, renamed or not:
+			// `T.AmountClosingBalance AS Amount` is still a closing balance. What the source CALLS it travels
+			// only while the query keeps the source's name — a field the author renamed is spoken for by
+			// that name.
+			field.m_balanceRole = of.m_balanceRole;
+			if (!projection.m_expr->m_path.empty() && field.m_name.IsSameAs(projection.m_expr->m_path.back(), false))
+				field.m_caption = of.m_caption;
 		}
+		else if (projection.m_expr) {
+			// ⭐ A COMPUTED ONE IS AVAILABLE WHILE EVERYTHING IT READS IS — each field asked the way a plain
+			// projection is. One the options take away takes the result with it: a value computed from a
+			// hidden field would show that field under another name.
+			std::function<bool(const ibQueryAstExpr&)> readsAvailable = [&](const ibQueryAstExpr& e) {
+				if (e.m_kind == ibQueryAstExprKind::Column)
+					return FieldOfPath(select, e.m_path, package, beforeStatement).m_available;
+				bool available = true;
+				ibQueryForEachOperand(e, [&](const ibQueryAstExprPtr& child) {
+					available = available && (!child || readsAvailable(*child));
+				});
+				return available;
+			};
+			field.m_available = readsAvailable(*projection.m_expr);
+			// ⭐ A CAST SAYS ITS TYPE, and a temporary table described by CASTs over a table handed in as a
+			// parameter has typed fields before that parameter holds a row — the next statement walks by them.
+			if (projection.m_expr->m_kind == ibQueryAstExprKind::Cast)
+				TypeByCast(*this, *projection.m_expr, field);
+		}
+		// …AND A ROLE THE QUERY SAYS ITSELF (`ROLE OPENING`) is what the field is, over whatever its source says.
+		if (projection.m_roleSaid)
+			field.m_balanceRole = projection.m_role;
 		out.push_back(std::move(field));
 	}
 	return out;
@@ -315,6 +391,33 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetFields(
 	if (source.m_name.empty())
 		return {};
 
+	// ⭐ A TABLE HANDED IN (`FROM &Goods`) — or a temporary table no statement of this package makes, which the
+	// temporary tables manager brings when the query runs — has no rows while the query is written: its fields
+	// are what the select READING it says of them (FieldsTakenFrom). That select is found by the source itself,
+	// which is one of its nodes; nothing else could answer before the query runs.
+	auto described = [&]() -> std::vector<ibQueryConstructorField> {
+		auto reads = [&source](const ibQuerySelect& select) {
+			if (&select.m_from == &source)
+				return true;
+			for (const ibQueryAstJoin& join : select.m_joins)
+				if (&join.m_source == &source)
+					return true;
+			return false;
+		};
+		for (const ibQueryAstStatement& statement : package.m_statements) {
+			if (!statement.m_select)
+				continue;
+			if (reads(*statement.m_select))
+				return stamp(FieldsTakenFrom(*statement.m_select, source));
+			for (const ibQuerySelectPtr& branch : statement.m_select->m_unions)
+				if (branch && reads(*branch))
+					return stamp(FieldsTakenFrom(*branch, source));
+		}
+		return {};
+	};
+	if (source.m_parameter)
+		return described();
+
 	// A TEMP TABLE is a bare name: find the statement that MADE it and read its projections. Same
 	// answer as a nested table's, and for the same reason — a select is what defines both.
 	if (source.m_name.size() == 1) {
@@ -330,7 +433,7 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetFields(
 				// BEFORE it, which is also what stops a temp table resolving through itself.
 				return stamp(FieldsOfSelect(*statement.m_select, package, i - 1));
 		}
-		return {};
+		return described();   // made by nobody here — the manager's, described where it is read
 	}
 
 	ibQueryableFactory* factory = Factory();
@@ -416,15 +519,15 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetReferenceFields
                                                                                 const wxString& sourceLabel) const
 {
 	std::vector<ibQueryConstructorField> out;
-	if (clsid == 0 || !IsReference(clsid))
-		return out;   // not a reference: nothing is behind it
+	if (clsid == 0 || !IsReference(clsid) || clsid_is_any(clsid))
+		return out;   // not a reference, or a barrier (`AnyRef`, `CatalogRef`): no one table is behind it
 
 	ibQueryableFactory* factory = Factory();
 	if (factory == nullptr)
 		return out;
 
 	ibQueryableSourceDescriptor* descriptor =
-		factory->ResolveDescriptorById(static_cast<ibMetaID>(clsid & kIbClsidBodyMask));
+		factory->ResolveDescriptorById(static_cast<ibMetaID>(clsid_metaID(clsid)));
 	if (descriptor == nullptr)
 		return out;   // a type with no queryable (a report, a data processor) — not a table
 
@@ -455,11 +558,11 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetReferenceBranch
 		return out;
 
 	for (const ibClassID& clsid : typeDesc.GetClsidList()) {
-		if (!IsReference(clsid))
-			continue;
+		if (!IsReference(clsid) || clsid_is_any(clsid))
+			continue;   // a barrier names no table; its metaID, 0, is what a source with no metaobject answers
 
 		ibQueryableSourceDescriptor* descriptor =
-			factory->ResolveDescriptorById(static_cast<ibMetaID>(clsid & kIbClsidBodyMask));
+			factory->ResolveDescriptorById(static_cast<ibMetaID>(clsid_metaID(clsid)));
 		if (descriptor == nullptr)
 			continue;   // a type with no queryable (a report, a data processor) — not a table
 
@@ -474,6 +577,66 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetReferenceBranch
 	}
 
 	return out;
+}
+
+ibQueryAstExprPtr ibQueryConstructorModel::CastTo(ibQueryAstExprPtr value, const ibTypeDescription& type) const
+{
+	if (ibQueryAstExprPtr primitive = ibQueryMakeCast(value, type))
+		return primitive;
+	const std::vector<ibQueryConstructorField> branches =
+		type.GetClsidCount() == 1 ? GetReferenceBranches(type) : std::vector<ibQueryConstructorField>();
+	if (branches.size() != 1)
+		return value;
+	auto cast = ibQueryAstExpr::Make(ibQueryAstExprKind::Cast);
+	cast->m_arg = std::move(value);
+	const wxString& table = branches.front().m_name;   // `Catalog.Goods`
+	cast->m_path = { table.BeforeFirst(wxT('.')), table.AfterFirst(wxT('.')) };
+	return cast;
+}
+
+std::vector<ibQueryConstructorField> ibQueryConstructorModel::FieldsTakenFrom(const ibQuerySelect& reader,
+                                                                               const ibQuerySource& source) const
+{
+	const wxString table = ibQuerySourceName(source);
+	std::vector<ibQueryConstructorField> out;
+	for (const ibQueryProjection& projection : reader.m_projections) {
+		const ibQueryAstExprPtr& e = projection.m_expr;
+		const bool cast = e && e->m_kind == ibQueryAstExprKind::Cast;
+		const ibQueryAstExprPtr& column = cast ? e->m_arg : e;
+		if (!column || column->m_kind != ibQueryAstExprKind::Column || column->m_arg || column->m_path.size() != 2
+		    || !column->m_path.front().IsSameAs(table, false))
+			continue;
+		const wxString& name = column->m_path.back();
+		if (std::any_of(out.begin(), out.end(), [&name](const ibQueryConstructorField& f) { return f.m_name.IsSameAs(name, false); }))
+			continue;
+		ibQueryConstructorField field;
+		field.m_name = field.m_presentation = name;
+		field.m_source = ibQuerySourceLabel(source);
+		if (cast)
+			TypeByCast(*this, *e, field);
+		out.push_back(std::move(field));
+	}
+	return out;
+}
+
+ibTypeDescription ibQueryConstructorModel::TypeOfCast(const ibQueryAstExpr& cast) const
+{
+	ibTypeDescription type;
+	if (ibQueryCastType(cast, type))
+		return type;
+	type = ibTypeDescription();
+	if (cast.m_kind != ibQueryAstExprKind::Cast || cast.m_path.size() < 2)
+		return type;
+	ibQueryableFactory* const factory = Factory();
+	wxString name = cast.m_path[1];
+	for (size_t i = 2; i < cast.m_path.size(); ++i)
+		name += wxT(".") + cast.m_path[i];
+	const ibBackendQueryable* const table = factory != nullptr ? factory->Resolve(cast.m_path[0], name) : nullptr;
+	const ibValueMetaObjectGenericData* const meta = table != nullptr ? table->GetSourceMetaObject() : nullptr;
+	ibValue emptyRef;
+	if (meta != nullptr && meta->ResolveQueryConstant(ibRefMember::EmptyRef, emptyRef) && emptyRef.GetClassType() != 0)
+		type.SetDefaultMetaType(emptyRef.GetClassType());
+	return type;
 }
 
 // EVERY ALTERNATIVE OF A TYPE, MERGED BY NAME — see the note on the declaration. The merge is the
@@ -508,6 +671,7 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetReferenceFields
 
 			same->m_reference = HasReference(same->m_type.GetClsidList());
 			same->m_referenceClsid = SingleReferenceOf(same->m_type.GetClsidList());
+			same->m_available = same->m_available || field.m_available;   // offered while any branch offers it
 		}
 	}
 
@@ -594,6 +758,53 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetQualifiedFields
 #include "queryable.h"                   // ibSourceMetaDataScope — names resolve against THIS config
 #include "queryLowering.h"               // PlacePackageLinks — where a linked selection stands, asked ONCE
 
+namespace {
+
+// EVERY ROLE A SELECT SAYS, FORGOTTEN — its own projections, its union's branches and what it reads FROM.
+// True when there was one.
+bool ForgetSaidRoles(ibQuerySelect& select)
+{
+	bool forgot = false;
+	for (ibQueryProjection& projection : select.m_projections) {
+		if (!projection.m_roleSaid)
+			continue;
+		projection.m_roleSaid   = false;
+		projection.m_role       = ibBalanceRole::None;
+		projection.m_periodRank = 0;
+		forgot = true;
+	}
+	if (select.m_from.m_subquery)
+		forgot = ForgetSaidRoles(*select.m_from.m_subquery) || forgot;
+	for (ibQueryAstJoin& join : select.m_joins)
+		if (join.m_source.m_subquery)
+			forgot = ForgetSaidRoles(*join.m_source.m_subquery) || forgot;
+	for (const ibQuerySelectPtr& branch : select.m_unions)
+		if (branch)
+			forgot = ForgetSaidRoles(*branch) || forgot;
+	return forgot;
+}
+
+} // namespace
+
+bool ibQueryDropRoles(ibQueryPackage& package)
+{
+	bool forgot = false;
+	for (ibQueryAstStatement& statement : package.m_statements)
+		if (statement.m_select)
+			forgot = ForgetSaidRoles(*statement.m_select) || forgot;
+	return forgot;
+}
+
+wxString ibQueryTextWithoutRoles(const wxString& text)
+{
+	if (text.IsEmpty())
+		return text;
+	ibQueryPackage package;
+	try { package = ibQueryParser().ParsePackage(text); }
+	catch (const ibCoreException&) { return text; }   // half-typed: whoever reads it says why, in the parser's words
+	return ibQueryDropRoles(package) ? ibRenderQueryPackage(package) : text;
+}
+
 std::vector<ibQueryConstructorField> ibQueryFieldsOfText(const wxString& text,
 	const ibMetaData* metaData, wxString* error)
 {
@@ -609,9 +820,10 @@ std::vector<ibQueryConstructorField> ibQueryFieldsOfText(const wxString& text,
 	const ibSourceMetaDataScope scope(metaData);
 	try {
 		ibQueryParser parser;
-		const ibQueryPackage package = parser.ParsePackage(text);
+		ibQueryPackage package = parser.ParsePackage(text);
 		if (package.m_statements.empty())
 			return fields;
+		ibQueryDropRoles(package);   // a composition's roles are its own word — see ibQueryTextWithoutRoles
 
 		// ⭐⭐ A LINKED PACKAGE OFFERS EVERY RELATED SELECTION'S FIELDS, QUALIFIED BY ITS NAME.
 		//
@@ -669,7 +881,7 @@ std::vector<ibQueryConstructorField> ibQueryFieldsOfText(const wxString& text,
 		const ibQueryConstructorModel model(metaData);
 		fields = model.FieldsOfSelect(*select, package, last);
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		// Half-typed text offers nothing YET — an empty list, and the complaint only if asked for.
 		fields.clear();
 		if (error != nullptr)

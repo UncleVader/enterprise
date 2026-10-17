@@ -13,9 +13,13 @@
 #include "backend/session/session.h"            // ibSession — the caller a rented run borrows from
 #include "backend/job/jobManager.h"             // ibJobManager / ibJobTenancy — the rented run a portion reads on
 #include "backend/backend_exception.h"          // ibBackendException — a refusal to rent falls back to inline
-#include "backend/tabularModelView.h"           // ibDataViewModel / ibDataViewItem — the base view types
+#include "backend/appHost.h"                    // ibApplicationInstanceScope — a plain-thread read works for the asker's base
+#include "backend/system/value/valueType.h"     // ibValueTypeDescription (a column's Types), ibBackendTypeConfigFactory (its format)
+#include "core/tabular/tabularModelView.h"      // ibDataViewModel / ibDataViewItem — the base view types
 #include "backend/composition/dataComposer.h"  // ibDataComposer — IsGroupedModel reads GroupCount() off the composer
 #include "backend/uniqueKey.h"                  // ibUniqueKey — GetItemKey return (base default = no key)
+
+#include <deque>   // GetCompositionAttrByRow — the values a condition is handed stay put while it is read
 
 // (ibValueModelRamTreeBase::PopulateFromTree + its MirrorQueryNodes helper were DELETED with the dead
 // RamTreeBase class — the in-memory mirror tree is superseded by hierarchy GROUPING over the composer.)
@@ -64,11 +68,19 @@ bool ibValueModel::ibComposerNode::SetValue(const ibMetaID& id, const ibValue& v
 	if (iterator == m_nodeValues.end())
 		return false;
 	ibValue& cValue = m_nodeValues.at(id);
-	if (notify && m_valueTable != nullptr && cValue != variant)
-		m_valueTable->RowValueChanged(this, id);
+
+	// 🛑 THE VALUE FIRST, THE NEWS AFTER IT. The notification went out while the cell still held the OLD
+	// value, and whatever reacts to it — the view recomputing the row, a handler reading the cell — read
+	// that. A cell being edited hides it, since its editor shows the chosen value by itself; a NEIGHBOUR
+	// emptied by a link did not: the kind changed, the value cell was cleared to `False`, and the grid kept
+	// drawing the old blank (2026-09-23: the row held `False` while the screen showed an empty cell).
+	const bool changed = cValue != variant;
 	cValue = variant;
+	if (notify && m_valueTable != nullptr && changed)
+		m_valueTable->RowValueChanged(this, id);
 	return true;
 }
+
 
 // Out-of-line (declared in tabularModel.h): driving the settings in needs the COMPOSER's complete
 // type, which the header has, and the DESCRIPTION's, which it also has — but the call belongs
@@ -141,6 +153,10 @@ ibValueModel::~ibValueModel()
 	//
 	// Cheap in the ordinary case: by the time a form closes its portion has long
 	// since landed, and a run that has finished returns from Wait immediately.
+	//
+	// ⚠ AND HERE IS TOO LATE FOR WHAT A SUBCLASS OWNS: a base destructor runs after the derived
+	// parts are gone, so a model whose read walks its own members waits in its OWN destructor
+	// (ibValueDynamicList, ibValueDataComposition). This one is the last line for the rest.
 	CancelFetch();
 
 	// The RAM node storage (ibRamValueStorage) is a member of ibValueModelStorage — its dtor DecRefs the nodes; the
@@ -174,6 +190,18 @@ void ibValueModel::CancelFetch()
 //  m_composer.GetSortAt + GetColumnIDByName inline, each at the point of use. Max: "ibSortModel is either part
 //  of L5, or removed entirely" — L5 is name-based, so it was removed.)
 
+void ibDataViewModelProvider::SubmitFetchAsync(std::function<void()> work)
+{
+	if (!work)
+		return;
+
+	ibApplicationInstance* const applicationInstance = ibApplicationInstance::Get(false);
+	ibDataViewModel::SubmitFetchAsync([work = std::move(work), applicationInstance]() {
+		ibApplicationInstanceScope working(applicationInstance);
+		work();
+	});
+}
+
 void ibValueModel::SubmitFetchAsync(std::function<void()> work)
 {
 	if (!work)
@@ -188,7 +216,7 @@ void ibValueModel::SubmitFetchAsync(std::function<void()> work)
 	// try/catch IS the fallback: StartBackground refuses out loud (no session to
 	// rent from, no free connection within the tenant's short wait, the manager
 	// stopping), and a refusal here means "read it here instead", never "no data".
-	if (ibJobManager* const jobs = ibApplicationData::GetJobManager()) {
+	if (ibJobManager* const jobs = ibApplicationInstance::GetJobManager()) {
 		try {
 			// The handle is KEPT, not dropped: it is what the destructor waits on so
 			// a read cannot outlive this model. One at a time by construction — the
@@ -199,7 +227,7 @@ void ibValueModel::SubmitFetchAsync(std::function<void()> work)
 				ibJobTenancy::Tenant);
 			return;
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			// Nothing to rent — fall through.
 		}
 	}
@@ -317,12 +345,131 @@ public:
 		return current.m_typeClass != ibValueTypes::TYPE_EMPTY;
 	}
 
+	long Remaining() const override {
+		const long rows = m_model != nullptr ? (long)m_model->GetRowCount() : 0;
+		return rows > m_pos ? rows - m_pos : 0;
+	}
+
 private:
 	ibValueModel* m_model;
 	long          m_pos = 0;
 };
 
 } // namespace
+
+// ⭐ DOES THIS ROW HAVE A CONDITIONAL APPEARANCE AT ALL — the one question asked before anything is built for it:
+// the node carries what the walk drew it with, or — for a row the walk never read — the model's setting declares a
+// rule. Neither — nothing to count, nothing made (Max, 2026-09-30: "no conditional appearance must cost nothing").
+// A row the walk read and found no rule for is the same "neither": it is not asked again.
+bool ibValueModel::HasAttrByRow(const ibDataViewItem& row) const
+{
+	const ibComposerNode* node = GetViewData<ibComposerNode>(row);
+	return node != nullptr
+		&& (node->HasCompositionAttr()
+			|| (!node->IsCompositionAttrKnown() && !GetModelComposer().GetCurrentConditionalAppearanceDesc().IsEmpty()));
+}
+
+// ⭐ WHAT A ROW'S CONDITIONAL APPEARANCE DRAWS A CELL WITH, in the composition's own structure — what the node carries
+// (moved in from the fetch as it is), or, for a row that carries none while the setting declares rules (a table in
+// memory, a heading folded in memory), the rules asked of the row now. The grid's attribute and the cell's text are
+// both read off it.
+bool ibValueModel::GetCompositionAttrByRow(const ibDataViewItem& row, unsigned int col, ibCompositionAttr& attr) const
+{
+	const ibComposerNode* node = GetViewData<ibComposerNode>(row);
+	if (node == nullptr)
+		return false;
+	if (const ibCompositionAttr* kept = node->GetCompositionAttr(static_cast<ibMetaID>(col))) {
+		attr = *kept;
+		return !attr.IsDefault();
+	}
+	if (node->IsCompositionAttrKnown())
+		return false;   // the walk read it and no rule held — that is the answer, not a question left open
+
+	// A ROW THE WALK NEVER READ — asked now, of the row in memory, by the walk's own reading (compositionCondition.h):
+	// the setting's rules made ready for the cell asked (a list asks for what fits on its screen, and can afford it),
+	// a field found among the model's columns by its name, a subtree by the composer that feeds this model.
+	const ibDataComposer& composer = GetModelComposer();
+	const std::vector<ibCompositionRule> rules = ibCompositionRulesOf(composer.GetCurrentConditionalAppearanceDesc());
+	std::deque<ibValue> read;   // what the engine is handed stays where it is while the condition is read
+	const ibCompositionValueOf valueOf = [this, node, &read](const wxString& path) -> const ibValue* {
+		const ibMetaID id = GetColumnIDByName(path);
+		ibValue value;
+		if (id == wxNOT_FOUND || !node->GetValue(id, value))
+			return nullptr;
+		read.push_back(value);
+		return &read.back();
+	};
+	attr = ibCompositionAttr();
+	ibCompositionAttr own;
+	const bool held = ibCompositionSayRules(rules, composer.GetMetaData(), valueOf, composer.SubtreeOf(), attr,
+		[this, col, &own](const wxString& field, const ibCompositionAttr& said) {
+			if (GetColumnIDByName(field) == static_cast<ibMetaID>(col))
+				own.Say(said);
+		});
+	attr.Say(own);   // the column's own over the line's, as the walk lays them
+	return held && !attr.IsDefault();
+}
+
+namespace {
+// ⭐ THE CONVERTER — the grid's widget attribute made from the composition's structure, value for value (Max,
+// 2026-09-30: "for lists just make a converter — they never hold more than fits on the screen"). The one place a list
+// speaks the widget's word, and only as the grid asks, cell by visible cell. (The text is not the widget's: GetValue
+// reads it off the composition's structure.)
+ibDataViewItemAttr ibWidgetAttrOf(const ibCompositionAttr& drawn)
+{
+	ibDataViewItemAttr attr;
+	if (drawn.m_backgroundColour.IsOk())
+		attr.SetBackgroundColour(drawn.m_backgroundColour);
+	if (drawn.m_textColour.IsOk())
+		attr.SetColour(drawn.m_textColour);
+	// …the font PART BY PART, over the row's own — the grid's flags where it has them.
+	const ibCompositionFont& font = drawn.m_font;
+	if (font.IsBold())
+		attr.SetBold(true);
+	if (font.IsItalic())
+		attr.SetItalic(true);
+	if (font.m_strikethrough)
+		attr.SetStrikethrough(true);
+	if (font.m_underlined)
+		attr.SetUnderlined(true);
+	if (font.m_pointSize > 0)
+		attr.SetPointSize(font.m_pointSize);
+	if (!font.m_face.IsEmpty())
+		attr.SetFaceName(font.m_face);
+	if (drawn.m_horizontalAlignment != wxALIGN_INVALID)
+		attr.SetAlignment(drawn.m_horizontalAlignment);
+	return attr;
+}
+} // namespace
+
+// ⭐ A ROW'S CONDITIONAL APPEARANCE, as the grid's attribute — see the header.
+bool ibValueModel::GetAttrByRow(const ibDataViewItem& row, unsigned int col, ibDataViewItemAttr& attr) const
+{
+	if (!HasAttrByRow(row))
+		return false;   // no conditional appearance — nothing made to ask
+	ibCompositionAttr drawn;
+	if (!GetCompositionAttrByRow(row, col, drawn))
+		return false;
+	attr = ibWidgetAttrOf(drawn);
+	return !attr.IsDefault();
+}
+
+void ibValueModel::GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const
+{
+	GetValueByRow(variant, item, col);
+	if (!HasAttrByRow(item))
+		return;   // no conditional appearance — the value as it is, nothing made to ask
+	// …and what its conditional appearance has the cell say instead — its Text, or its value in its Format.
+	ibCompositionAttr drawn;
+	if (!GetCompositionAttrByRow(item, col, drawn))
+		return;
+	ibValue value;
+	if (const ibComposerNode* node = GetViewData<ibComposerNode>(item))
+		node->GetValue(static_cast<ibMetaID>(col), value);
+	wxString text;
+	if (drawn.TextOf(value, text))
+		variant = new ibVariantDataValueModel(ibValue(text));
+}
 
 // RAM-backed models have NO source primary key (RunComposerPage stamps an EMPTY row-key for them) → restore by
 // index; a DB list / register has a PK → restore by key. Replaces the retired RamFetch flag, derived from source.
@@ -370,7 +517,7 @@ std::shared_ptr<ibValueIteratorState> ibValueModel::CreateIterator()
 	return ibValue::CreateIterator();
 }
 
-#include "backend/picturePredefined.h"   // g_pic*CLSID — the standard command icons
+#include "core/picturePredefined.h"   // g_pic*CLSID — the standard command icons
 
 ///////////////////////////////////////////////////////////////////////////////////////
 
@@ -436,6 +583,22 @@ bool ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo::SetProp
 	}
 
 	return false;
+}
+
+#include "backend/backend_localization.h"   // ibTranslateString — a column here has no format written on it
+#include "core/formatString.h"           // ibFormatString — what GetColumnFormat answers with
+
+const ibFormatString& ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo::GetColumnFormat() const
+{
+	static const ibTranslateString s_none;
+	return ibBackendTypeConfigFactory::GetFormatFromColumn(s_none, GetColumnType());
+}
+
+const ibFormatString& ibValueModel::ibValueModelColumnCollection::GetColumnFormat(unsigned int col) const
+{
+	static const ibFormatString s_none;
+	const ibValueModelColumnInfo* column = GetColumnByID(col);
+	return column != nullptr ? column->GetColumnFormat() : s_none;
 }
 
 ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* ibValueModel::ibValueModelColumnCollection::GetColumnByID(unsigned int col) const

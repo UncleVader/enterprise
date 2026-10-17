@@ -25,8 +25,9 @@
 #include "resultSource.h"                                             // ibDataResultSource — the backing ibRamTableResultSource derives
 #include "columnLayout.h"                                             // ibSqlAliasOf — what the STATEMENT calls an output, vs what its author does
 #include "tempTableManager.h"                                         // ibTempTableManager — promote a computed leaf to a DB temp table (+ ibDbTempTableQueryable)
+#include "queryException.h"                                           // ibBackendQueryException — a named hierarchy refused over rows in memory
+#include "queryHierarchy.h"                                           // ibQueryHierarchyScope — «IN HIERARCHY» resolved where rows are filtered in memory
 
-#include "backend/diagnostics/journal.h"                              // ibJournal — the technology journal
 
 #include <deque>                                                      // the streaming fold's pools — see ibStreamingFold
 #include <map>                                                        // dot-walk join dedup + col->attr cache
@@ -36,6 +37,7 @@
 #include <set>                                                        // DedupeRows — seen-row identity keys (plain UNION)
 #include <unordered_set>                                              // DISTINCT folds — keyed by value, see ibValueHash
 #include <unordered_map>                                              // RAM hash-join index
+#include <limits>                                                     // a value with no place in its kind's order sorts last
 
 namespace {
 // Build an empty RAM table with the given metadata columns (id / name / type), and append a src row to dst
@@ -81,6 +83,10 @@ ibQueryRamTable ResolveComputedDotWalks(ibQueryRamTable rows, const ibBackendQue
 // ComputeRows over the computed source + dot-walk resolution + dot-walk WHERE (shared read/aggregate).
 ibQueryRamTable ComputeRowsResolved(const ibDataQuerySpec& spec,
                                     std::vector<const ibBackendQueryColumn*>& present);
+// The spec with every «IN HIERARCHY» named on rows filtered here resolved into its subtree — defined below,
+// beside RefuseNamedHierarchy. `keep` holds the conditions the returned copy points at.
+ibDataQuerySpec WithSubtreesResolved(const ibDataQuerySpec& spec, const std::vector<const ibBackendQueryable*>& sources,
+                                     std::vector<ibQueryCondition>& keep);
 // Per-row RAM evaluation of a computed (arithmetic / CASE) expression — defined below; forward-declared
 // here so the computed read / WHERE / aggregate paths above can evaluate SELECT / WHERE / SUM expressions.
 // It takes a ROW, whoever holds it (a materialised table's row, a streaming cursor's current row): the
@@ -124,6 +130,29 @@ private:
 };
 } // namespace
 
+// ⭐ WHAT A SORT BY A REFERENCE COLUMN SORTS BY — the order column of what it points at (ibBackendColumnSortOrder).
+// A reference to one of SEVERAL kinds — a register's recorder, an analytics slot of goods and counterparties — sorts
+// by the one every kind has under ONE name: a walk through it finds it in each kind by that name, each kind's own,
+// and the fields of one role meet in one COALESCE. A kind with no order of its own leaves the reference its
+// identity's.
+const ibBackendQueryColumn* ibBackendQueryProvider::ResolveReferenceSortColumn(const ibBackendQueryable* queryable,
+                                                                               const ibBackendQueryColumn* refColumn) const
+{
+	if (refColumn == nullptr)
+		return nullptr;
+	if (const ibBackendQueryable* const target = ResolveReferenceTarget(queryable, refColumn))
+		return target->GetSortColumn();
+	const ibBackendQueryColumn* shared = nullptr;
+	for (const ibBackendQueryable* target : ResolveReferenceTargets(queryable, refColumn)) {
+		const ibBackendQueryColumn* by = target != nullptr ? target->GetSortColumn() : nullptr;
+		if (by == nullptr || (shared != nullptr && !by->GetName().IsSameAs(shared->GetName(), false)))
+			return nullptr;
+		if (shared == nullptr)
+			shared = by;
+	}
+	return shared;
+}
+
 // Reference dot-walk resolution over a COMPUTED source — this layer owns no metadata, so it FORWARDS
 // to the DB provider (the single metadata home). Resolution reads queryable->GetMetaData(), which a
 // computed register carries (it mirrors the register), so Balance.Item.Name resolves on the RAM path.
@@ -152,8 +181,12 @@ void ibComputedProvider::ReadReferences() const
 // L2. The flat conditions push into ComputeRows; the boolean predicate TREE, the ORDER BY
 // and the page row limit (TOP) apply on the materialised RAM rows HERE — without this they
 // would silently drop on a computed source.
-ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& spec, const ibReadPageRequest& req)
+ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, const ibReadPageRequest& req)
 {
+	// Every row here is filtered in memory, so a hierarchy named in the conditions is resolved first.
+	std::vector<ibQueryCondition> resolved;
+	const ibDataQuerySpec spec = WithSubtreesResolved(given, { given.m_queryable }, resolved);
+
 	// ComputeRows + dot-walk resolution + dot-walk WHERE: plain conditions push into ComputeRows, a dot-walk
 	// Ref.Field condition joins the reference leaf and filters in RAM. `cols` receives the source columns +
 	// every joined leaf, so the DISTINCT / sort / limit rebuilds below keep them.
@@ -270,8 +303,23 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& spec, c
 
 	// SELECT DISTINCT over a computed source (subquery / slice) -- dedup by the output columns while keeping
 	// ALL columns (the sort below may key on one not in the select list). First occurrence wins.
+	//
+	// ⭐ THE OUTPUTS ARE WHAT Distinct() WAS TOLD — the author's fields, a walk's leaf among them — and the computed
+	// ones, as the database provider projects them under DISTINCT. The select list alone missed the walks: a walk
+	// is no select column, so `SELECT DISTINCT T.Item.Parent` over a source in memory kept every row (2026-09-29).
 	distinct.Resume();
-	if (spec.m_distinct && spec.m_selectCols != nullptr && !spec.m_selectCols->empty()) {
+	std::vector<ibMetaID> distinctBy;
+	if (spec.m_distinct && spec.m_distinctBy != nullptr && !spec.m_distinctBy->empty()) {
+		for (const ibBackendQueryColumn* c : *spec.m_distinctBy)
+			if (c != nullptr)
+				distinctBy.push_back(c->GetColumnId());
+		for (const ibComputedExprColumn& e : exprCols)
+			distinctBy.push_back(e.GetColumnId());
+	}
+	else if (spec.m_distinct && spec.m_selectCols != nullptr)
+		for (const auto& sc : *spec.m_selectCols)
+			distinctBy.push_back(sc.first->GetColumnId());
+	if (!distinctBy.empty()) {
 		ibQueryRamTable deduped = RamTableOf(cols);
 		// A row identity is the SEQUENCE of its cells — see ibValueSeqHash (value.h).
 		// It used to be those cells folded into one string through GetHashKey and
@@ -280,9 +328,9 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& spec, c
 		std::unordered_set<std::vector<ibValue>, ibValueSeqHash, ibValueSeqEqual> seen;
 		for (long i = 0; i < rows.RowCount(); ++i) {
 			std::vector<ibValue> key;
-			key.reserve(spec.m_selectCols->size());
-			for (const auto& sc : *spec.m_selectCols)
-				key.push_back(rows.GetCell(i, sc.first->GetColumnId()));
+			key.reserve(distinctBy.size());
+			for (const ibMetaID id : distinctBy)
+				key.push_back(rows.GetCell(i, id));
 			if (!seen.insert(std::move(key)).second) continue;
 			AppendRowByCols(rows, i, deduped, cols);
 		}
@@ -377,11 +425,14 @@ namespace {
 class ibSubqueryAggColumn final : public ibBackendColumnRawDB
 {
 public:
-	ibSubqueryAggColumn(const wxString& alias, ibMetaID id)
-		: ibBackendColumnRawDB(alias, RawType::Number), m_id(id) {}
+	// `available` — whether what it folds may be shown (functional options), taken when it is made.
+	ibSubqueryAggColumn(const wxString& alias, ibMetaID id, bool available)
+		: ibBackendColumnRawDB(alias, RawType::Number), m_id(id), m_available(available) {}
 	ibMetaID GetColumnId() const override { return m_id; }
+	bool IsAvailable() const override { return m_available; }
 private:
 	ibMetaID m_id;
+	bool     m_available;
 };
 
 // ⭐⭐ A COLUMN OF THE INNER QUERY, SEEN UNDER ITS OUTPUT NAME.
@@ -403,23 +454,38 @@ public:
 	// wrapper's own column, which dies with that wrapper (see ibSubqueryQueryable::OwnsColumnStorage),
 	// while this alias is read for as long as the outer query runs. That is what crashed on 2026-08-19
 	// — `GetTypeDesc` through a freed column (0xdddddddd) while a report was being composed.
-	ibSubqueryAliasColumn(const wxString& alias, const ibBackendQueryColumn* from, ibMetaID id)
+	// `available` — what the road to `from` adds: a dot-walk's hops before its leaf (one of them hidden and
+	// the leaf goes with it).
+	// `role` — what the output is in a balance: the query's own `ROLE`, else the column's (the schema's answer).
+	ibSubqueryAliasColumn(const wxString& alias, const ibBackendQueryColumn* from, ibMetaID id, bool available,
+	                      ibBalanceRole role, int rank)
 		: m_alias(alias)
 		, m_physical(from != nullptr ? from->GetPhysicalName() : alias)
 		, m_type(from != nullptr ? from->GetTypeDesc() : ibTypeDescription())
-		, m_id(id) {}
+		, m_id(id)
+		, m_available(available && (from == nullptr || from->IsAvailable()))
+		, m_balanceRole(role)
+		, m_periodRank(rank) {}
 
 	wxString GetName() const override { return m_alias; }
 	wxString GetPhysicalName() const override { return m_physical; }
 	// The TYPE is the column's own — an alias renames, it does not re-type — taken at construction.
 	ibTypeDescription& GetTypeDesc() const override { return m_type; }
 	ibMetaID GetColumnId() const override { return m_id; }
+	// …and so is whether it may be shown (functional options), for the same reason: taken, not pointed at.
+	bool IsAvailable() const override { return m_available; }
+	// …and what it is in a balance: a renamed opening balance is still one.
+	ibBalanceRole GetBalanceRole() const override { return m_balanceRole; }
+	int           GetPeriodRank()  const override { return m_periodRank; }
 
 private:
 	wxString                  m_alias;
 	wxString                  m_physical;
 	mutable ibTypeDescription m_type;   // GetTypeDesc returns a non-const ref (engine-wide signature)
 	ibMetaID                  m_id;
+	bool                      m_available;
+	ibBalanceRole             m_balanceRole;
+	int                       m_periodRank;
 };
 
 // A COMPUTED projection of the inner query — `a * b`, a CASE — seen from outside under its alias.
@@ -431,22 +497,121 @@ private:
 class ibSubqueryExprColumn final : public ibBackendQueryColumn
 {
 public:
-	ibSubqueryExprColumn(const wxString& alias, ibMetaID id) : m_alias(alias), m_id(id) {}
 	// …and WITH a type where the schema knows one — an aggregate over a typed column, a constant
-	// projection. Empty stays "unknown"; what is known travels.
-	ibSubqueryExprColumn(const wxString& alias, ibMetaID id, const ibTypeDescription& type)
-		: m_alias(alias), m_type(type), m_id(id) {}
+	// projection. Empty stays "unknown"; what is known travels. `available` — whether what it is
+	// computed from may be shown (functional options), taken when it is made: it keeps no inputs.
+	ibSubqueryExprColumn(const wxString& alias, ibMetaID id, const ibTypeDescription& type = ibTypeDescription(),
+	                     bool available = true, ibBalanceRole role = ibBalanceRole::None, int rank = 0)
+		: m_alias(alias), m_type(type), m_id(id), m_available(available), m_balanceRole(role), m_periodRank(rank) {}
 
 	wxString GetName() const override { return m_alias; }
 	wxString GetPhysicalName() const override { return m_alias; }
 	ibTypeDescription& GetTypeDesc() const override { return m_type; }
 	ibMetaID GetColumnId() const override { return m_id; }
+	bool IsAvailable() const override { return m_available; }
+	// …and what the query SAID it is in a balance (`<expr> ROLE OPENING AS x`) — a computed field has no
+	// column of its own to say it.
+	ibBalanceRole GetBalanceRole() const override { return m_balanceRole; }
+	int           GetPeriodRank()  const override { return m_periodRank; }
 
 private:
 	wxString                  m_alias;
 	mutable ibTypeDescription m_type;   // empty = unknown; GetTypeDesc returns a non-const ref
 	ibMetaID                  m_id;
+	bool                      m_available;
+	ibBalanceRole             m_balanceRole;
+	int                       m_periodRank;
 };
+
+// «IN HIERARCHY» AS NAMED (ibQueryCondition::m_unfold) never reaches a cell: the side that filters rows in memory
+// resolves it first (SubtreeResolved, below). One that still does would be compared as named and every
+// subordinate lost, a total that looks right; refused in words instead.
+void RefuseNamedHierarchy(const ibQueryCondition& c)
+{
+	if (c.m_unfold != ibQueryDimUnfold::Elements)
+		ibBackendQueryException::Throw(ibBackendQueryException::Kind::TranslationFailure,
+			_("IN HIERARCHY reached a filter over rows held in memory, which cannot walk the subtree"));
+}
+
+// ⭐⭐ THE SIDE THAT FILTERS THE ROWS ANSWERS THE WORD. The lowering hands «IN HIERARCHY» down as named on every
+// road to the door, and what it costs is decided by whoever filters: the database provider has the server walk
+// the subtree (BuildSubtreeIn — WITH RECURSIVE); rows filtered HERE get it read once per condition, through the
+// column the condition tests, and the leaf goes on as the plain IN every evaluator below already understands.
+// It used to be decided above, in three places of the lowering that each asked «is this source in memory?» —
+// a question for the source, asked by everyone who reads it.
+//
+// The subtree is read through the column's own table: the source that owns the column, or — when the field
+// stands at the end of a walk — the table the walk reaches, one provider hop per segment (the lowering's
+// OwnerOfPathLeaf takes the same hops).
+const ibBackendQueryable* OwnerOfNamedLeaf(const ibQueryCondition& c, const std::vector<const ibBackendQueryable*>& sources)
+{
+	const ibBackendQueryColumn* head = c.m_path.empty() ? c.m_col : c.m_path.front();
+	const ibBackendQueryable* owner = nullptr;
+	for (const ibBackendQueryable* source : sources)
+		if (source != nullptr && head != nullptr && source->OwnsColumn(head)) {
+			owner = source;
+			break;
+		}
+	if (owner == nullptr && !sources.empty())
+		owner = sources.front();   // the target is the column's either way — a source only lends the metadata to find it
+	for (size_t i = 0; owner != nullptr && i + 1 < c.m_path.size(); ++i) {
+		const ibBackendQueryable* const next = owner->GetProvider().ResolveReferenceTarget(owner, c.m_path[i]);
+		owner = next != nullptr ? next : ibDbTableProvider::CastTarget(c.m_path[i + 1]);   // …or the type a CAST named
+	}
+	return owner;
+}
+
+ibQueryCondition SubtreeResolved(ibQueryCondition c, const std::vector<const ibBackendQueryable*>& sources)
+{
+	if (c.m_unfold == ibQueryDimUnfold::Elements)
+		return c;
+	const ibBackendQueryable* owner = OwnerOfNamedLeaf(c, sources);
+	if (owner == nullptr || c.m_col == nullptr)
+		ibBackendQueryException::Throw(ibBackendQueryException::Kind::TranslationFailure,
+			_("IN HIERARCHY names a field whose own table this reading cannot find"));
+	c.m_values = ibQueryHierarchyScope(owner, c.m_col, c.m_values, c.m_unfold).Accepted();
+	c.m_unfold = ibQueryDimUnfold::Elements;
+	return c;
+}
+
+bool NamesSubtree(const ibQueryPredicate* p)
+{
+	if (p == nullptr)
+		return false;
+	if (p->m_kind == ibQueryPredicateKind::Leaf && p->m_leaf.m_unfold != ibQueryDimUnfold::Elements)
+		return true;
+	for (const ibQueryPredicatePtr& child : p->m_children)
+		if (NamesSubtree(child.get()))
+			return true;
+	return false;
+}
+
+ibQueryPredicatePtr SubtreeResolved(const ibQueryPredicatePtr& p, const std::vector<const ibBackendQueryable*>& sources)
+{
+	if (!NamesSubtree(p.get()))
+		return p;   // shared as it is — nothing in it to resolve
+	auto here = std::make_shared<ibQueryPredicate>(*p);
+	for (ibQueryPredicatePtr& child : here->m_children)
+		child = SubtreeResolved(child, sources);
+	if (here->m_kind == ibQueryPredicateKind::Leaf)
+		here->m_leaf = SubtreeResolved(here->m_leaf, sources);
+	return here;
+}
+
+ibDataQuerySpec WithSubtreesResolved(const ibDataQuerySpec& spec, const std::vector<const ibBackendQueryable*>& sources,
+                                     std::vector<ibQueryCondition>& keep)
+{
+	ibDataQuerySpec out = spec;
+	out.m_predicate = SubtreeResolved(spec.m_predicate, sources);
+	if (spec.m_conditions != nullptr
+	    && std::any_of(spec.m_conditions->begin(), spec.m_conditions->end(),
+	                   [](const ibQueryCondition& c) { return c.m_unfold != ibQueryDimUnfold::Elements; })) {
+		for (const ibQueryCondition& c : *spec.m_conditions)
+			keep.push_back(SubtreeResolved(c, sources));
+		out.m_conditions = &keep;
+	}
+	return out;
+}
 
 // One pushed-down outer condition against a materialised RAM cell — the aggregate
 // subquery's post-filter (the condition references POST-aggregation output, HAVING
@@ -469,11 +634,26 @@ bool MatchRamCondition(const ibValue& cell, const ibQueryCondition& c)
 	// SET-valued: reads m_values, not m_value. An empty set matches nothing (same answer the SQL side
 	// renders), so the loop falling through to false is the correct empty-IN semantics, not an oversight.
 	case ibQueryFilterOp::In:
+		RefuseNamedHierarchy(c);
 		for (const ibValue& v : c.m_values)
 			if (cell == v) return true;
 		return false;
 	}
 	return false;
+}
+
+// (defined below — a derived nested query asks it which columns a computed projection reads)
+void GatherColumnExprColumns(const ibQueryColumnExpr* e, const std::function<void(const ibBackendQueryColumn*)>& add);
+
+// A computed input may be shown (functional options) while every column it reads may be. Asked when a nested
+// table's column is made: the column keeps no inputs of its own.
+bool IsColumnExprAvailable(const ibQueryColumnExpr* e)
+{
+	bool available = true;
+	GatherColumnExprColumns(e, [&available](const ibBackendQueryColumn* input) {
+		available = available && (input == nullptr || input->IsAvailable());
+	});
+	return available;
 }
 } // namespace
 
@@ -522,7 +702,11 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 		// stepping over the ids passed through (mintId, above). Four lists mint through one counter
 		// (aggregates, aliased selections, dot-walks, computed), so none of them needs a band of its own.
 		for (const ibDataQueryBuilder::AggregateItem& a : aggs) {
-			auto col = std::make_shared<ibSubqueryAggColumn>(a.m_alias, mintId());
+			// …available while what it folds is: every hop of its walk, its column, what its expression reads.
+			// COUNT(*) folds rows and reads none.
+			const bool available = ibIsWalkAvailable(a.m_path) && (a.m_col == nullptr || a.m_col->IsAvailable())
+				&& IsColumnExprAvailable(a.m_expr.get());
+			auto col = std::make_shared<ibSubqueryAggColumn>(a.m_alias, mintId(), available);
 			m_ownedColumns.push_back(col);
 			m_columns.push_back(col.get());
 			m_readFrom.push_back(nullptr);
@@ -553,7 +737,8 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 			if (sc.first == nullptr)
 				continue;
 			if (!sc.second.IsEmpty() && sc.second != sc.first->GetName()) {
-				auto col = std::make_shared<ibSubqueryAliasColumn>(sc.second, sc.first, mintId());
+				auto col = std::make_shared<ibSubqueryAliasColumn>(sc.second, sc.first, mintId(), true,
+					sc.first->GetBalanceRole(), sc.first->GetPeriodRank());
 				m_ownedColumns.push_back(col);
 				m_columns.push_back(col.get());
 			}
@@ -576,7 +761,9 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 	for (const ibDotWalkColumn& walk : m_inner->GetDotWalks()) {
 		if (walk.m_alias.IsEmpty() || walk.m_path.empty() || walk.m_path.back() == nullptr)
 			continue;
-		auto col = std::make_shared<ibSubqueryAliasColumn>(walk.m_alias, walk.m_path.back(), mintId());
+		// Every hop of the walk answers for the leaf — one the options take away takes the leaf with it.
+		auto col = std::make_shared<ibSubqueryAliasColumn>(walk.m_alias, walk.m_path.back(), mintId(),
+			ibIsWalkAvailable(walk.m_path), walk.m_path.back()->GetBalanceRole(), walk.m_path.back()->GetPeriodRank());
 		m_ownedColumns.push_back(col);
 		m_columns.push_back(col.get());
 		m_readFrom.push_back(nullptr);
@@ -595,7 +782,8 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 	for (const ibQueryColumnSelect& computed : m_inner->GetSelectExprs()) {
 		if (computed.m_alias.IsEmpty())
 			continue;
-		auto col = std::make_shared<ibSubqueryExprColumn>(computed.m_alias, mintId());
+		auto col = std::make_shared<ibSubqueryExprColumn>(computed.m_alias, mintId(), ibTypeDescription(),
+			IsColumnExprAvailable(computed.m_expr.get()));
 		m_ownedColumns.push_back(col);
 		m_columns.push_back(col.get());
 		m_readFrom.push_back(nullptr);
@@ -641,9 +829,14 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 		if (out.m_owned)
 			m_ownedColumns.push_back(out.m_owned);
 
-		// THE SIMPLE CASE: a real column that already answers to this name IS the published column.
+		// THE SIMPLE CASE: a real column that already answers to this name IS the published column —
+		// unless the schema knows it may not be shown while the column says it may (a walk's leaf):
+		// then it is published through a thin column that says so.
 		if (out.m_alias.IsEmpty() && out.m_objectPrefix.IsEmpty()
-		    && out.m_col != nullptr && out.m_col->GetName() == out.m_name) {
+		    && out.m_col != nullptr && out.m_col->GetName() == out.m_name
+		    && out.m_available == out.m_col->IsAvailable()
+		    && out.m_balanceRole == out.m_col->GetBalanceRole()      // …and it is what the column says it is
+		    && out.m_periodRank == out.m_col->GetPeriodRank()) {
 			m_columns.push_back(out.m_col);
 			m_readFrom.push_back(out.m_col);
 			m_readAlias.push_back(wxEmptyString);
@@ -657,9 +850,11 @@ ibSubqueryQueryable::ibSubqueryQueryable(const ibDataQueryBuilder& inner, long t
 		// a reference with no type is not a reference — the outer query could not walk into it.
 		std::shared_ptr<ibBackendQueryColumn> col = out.m_col != nullptr
 			? std::static_pointer_cast<ibBackendQueryColumn>(
-			      std::make_shared<ibSubqueryAliasColumn>(out.m_name, out.m_col, mintedId))
+			      std::make_shared<ibSubqueryAliasColumn>(out.m_name, out.m_col, mintedId, out.m_available,
+			                                              out.m_balanceRole, out.m_periodRank))
 			: std::static_pointer_cast<ibBackendQueryColumn>(
-			      std::make_shared<ibSubqueryExprColumn>(out.m_name, mintedId, out.m_type));
+			      std::make_shared<ibSubqueryExprColumn>(out.m_name, mintedId, out.m_type, out.m_available,
+			                                             out.m_balanceRole, out.m_periodRank));
 		m_ownedColumns.push_back(col);
 		m_columns.push_back(col.get());
 		m_readFrom.push_back(out.m_col);
@@ -718,6 +913,8 @@ ibQueryRamTable ibSubqueryQueryable::ComputeRows(const std::vector<ibQueryCondit
 		// name. The outer's pushed-down conditions reference POST-aggregation output (HAVING
 		// semantics), so they apply as a RAM post-filter here, never on the inner WHERE.
 		ibDataQueryResult sel = m_inner->SelectAggregate();
+		if (!m_computedOverRow.empty())
+			sel.SetComputedOverRow(m_computedOverRow);   // an output answered over the row is answered when read
 		long emitted = 0;
 		std::vector<ibValue> rowVals(m_columns.size());
 		while (sel.Next()) {
@@ -775,6 +972,10 @@ ibQueryRamTable ibSubqueryQueryable::ComputeRows(const std::vector<ibQueryCondit
 	execute.Resume();
 	ibDataQueryResult sel = q.Execute(page);
 	execute.Pause();
+	// An output answered over the row is answered when it is read — and a result that answers one hands no
+	// table over (GetTable), so the rows go through readCell below.
+	if (!m_computedOverRow.empty())
+		sel.SetComputedOverRow(m_computedOverRow);
 
 	// ⭐ AN INNER QUERY THAT CAME BACK AS A TABLE IS TAKEN WHOLE — its rows re-keyed under the columns
 	// this query publishes, not read out cell by cell into a second table while the first one dies. Each
@@ -991,11 +1192,14 @@ void AppendSemiJoinCondition(const ibBackendQueryColumn* col, std::vector<ibValu
 // GetColumnId. (docs/private/query-language-arc.md §22.1a, docs/private/temp-db.md)
 ibQueryRamTable MaterialiseLeafToRam(const ibBackendQueryable* leaf, ibDatabaseConnectionHolder* holder,
                                      const std::vector<ibQueryCondition>& conds,
-                                     const std::vector<const ibBackendQueryColumn*>& cols)
+                                     const std::vector<const ibBackendQueryColumn*>& cols,
+                                     const std::vector<ibValue>* keys = nullptr)
 {
 	ibQueryRamTable t;
 	for (const ibBackendQueryColumn* col : cols)
 		t.AddColumn(col->GetColumnId(), col->GetName(), col->GetTypeDesc());
+	if (keys != nullptr && keys->empty())
+		return t;   // asked for no row — nothing to read
 
 	// ⭐ AN ALIASED LEAF IS READ THROUGH THE TABLE IT ALIASES. `FROM T AS A JOIN T AS B` gives the
 	// second reading its own columns so the composer can tell the sides apart — but there is only one
@@ -1011,6 +1215,16 @@ ibQueryRamTable MaterialiseLeafToRam(const ibBackendQueryable* leaf, ibDatabaseC
 		ibQueryCondition rc = c;
 		rc.m_col = readCol(c.m_col);
 		q.Where(rc);   // VERBATIM but for the column — rebuilding from (col, op, value) drops m_values / m_path / m_expr
+	}
+	// ⭐ …AND ONLY THE ROWS ASKED FOR, WHERE THE CALLER KNOWS THEM: a walk reads its target for the references its
+	// rows hold — a read by keys that names its columns, which projects those and no others (the batch that says
+	// what references are reads the same way, ibValueReferenceDataObject::ReadBatch; the provider carries a long
+	// list in as many runs as its driver takes). Read whole, a sort by a reference over a register's turnovers
+	// brought every goods row with every attribute, and a recorder every document of every kind it may be.
+	if (keys != nullptr) {
+		q.WhereKeyIn(*keys);
+		for (const ibBackendQueryColumn* col : cols)
+			q.Select(readCol(col), wxEmptyString);
 	}
 	ibReadPageRequest page; page.m_count = 0;   // every matching row
 	ibJournalStopwatch execute, fetch, cells;
@@ -1126,9 +1340,41 @@ private:
 // not this function.
 ibQueryRamTable MaterialiseLeaf(const ibBackendQueryable* leaf, ibDatabaseConnectionHolder* holder,
                                 const std::vector<ibQueryCondition>& conds,
-                                const std::vector<const ibBackendQueryColumn*>& cols)
+                                const std::vector<const ibBackendQueryColumn*>& cols,
+                                const std::vector<ibValue>* keys = nullptr)
 {
-	return MaterialiseLeafToRam(leaf, holder, conds, cols);
+	return MaterialiseLeafToRam(leaf, holder, conds, cols, keys);
+}
+
+// ⭐ THE REFERENCES A COLUMN OF THESE ROWS HOLDS, each once — all a walk from it has to read of its target. An empty
+// reference points at no row and is left out.
+std::vector<ibValue> ReferencesIn(const ibQueryRamTable& rows, const ibBackendQueryColumn* refCol)
+{
+	std::vector<ibValue> keys;
+	std::unordered_set<ibValue, ibValueHash, ibValueEqual> seen;
+	for (long row = 0; row < rows.RowCount(); ++row) {
+		const ibValue v = rows.GetCell(row, refCol->GetColumnId());
+		if (v.IsEmpty() || v.IsNull())
+			continue;
+		if (seen.insert(v).second)
+			keys.push_back(v);
+	}
+	return keys;
+}
+
+// …and those of them ONE table can hold: a reference value carries its own type, and a table's own key is typed to
+// its kind (the Ref attribute, typed at run time) — so a recorder of fifteen kinds asks each kind for its own, not
+// every kind for all of them.
+std::vector<ibValue> ReferencesOf(const std::vector<ibValue>& keys, const ibBackendQueryColumn* targetKey)
+{
+	const std::vector<ibClassID>& kinds = targetKey->GetTypeDesc().GetClsidList();
+	if (kinds.empty())
+		return keys;   // a key that says no type narrows nothing
+	std::vector<ibValue> own;
+	for (const ibValue& v : keys)
+		if (std::find(kinds.begin(), kinds.end(), v.GetClassType()) != kinds.end())
+			own.push_back(v);
+	return own;
 }
 
 // One cell of a materialised RAM table at (row, column model-id).
@@ -1178,14 +1424,16 @@ const ibBackendQueryColumn* SelfReferenceColumn(const ibBackendQueryable* q)
 
 ibQueryRamTable WalkedLeafOfTargets(const ibBackendQueryable* owner, const ibBackendQueryColumn* refCol,
                                     const std::vector<const ibBackendQueryColumn*>& path, size_t seg,
-                                    ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& fileKey);
+                                    ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& fileKey,
+                                    const std::vector<ibValue>& keys);
 
-// The field a walk reaches, for every row of `owner`: a table of (owner's own key, the leaf under path.back()'s id),
-// path[seg] being a column of `owner`. The last segment is read as it stands; a reference is followed into every
-// table it may point at (WalkedLeafOfTargets) and joined back by its value. Empty, with `keyOut` null, when the
-// owner is no reference target or does not have the column.
+// The field a walk reaches, for the rows of `owner` that `keys` name: a table of (owner's own key, the leaf under
+// path.back()'s id), path[seg] being a column of `owner`. The last segment is read as it stands; a reference is
+// followed into every table it may point at (WalkedLeafOfTargets) and joined back by its value. Empty, with `keyOut`
+// null, when the owner is no reference target or does not have the column.
 ibQueryRamTable WalkedLeafByKey(const ibBackendQueryable* owner, const std::vector<const ibBackendQueryColumn*>& path,
-                                size_t seg, ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& keyOut)
+                                size_t seg, ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& keyOut,
+                                const std::vector<ibValue>& keys)
 {
 	keyOut = nullptr;
 	const ibBackendQueryColumn* key  = SelfReferenceColumn(owner);
@@ -1194,7 +1442,7 @@ ibQueryRamTable WalkedLeafByKey(const ibBackendQueryable* owner, const std::vect
 		return ibQueryRamTable();
 	const ibBackendQueryColumn* leaf = path.back();
 
-	ibQueryRamTable own = MaterialiseLeaf(owner, holder, {}, { key, here });
+	ibQueryRamTable own = MaterialiseLeaf(owner, holder, {}, { key, here }, &keys);
 	if (seg + 1 == path.size()) {
 		ibQueryRamTable filed;
 		filed.AddColumn(key->GetColumnId(), key->GetName(), key->GetTypeDesc());
@@ -1209,7 +1457,7 @@ ibQueryRamTable WalkedLeafByKey(const ibBackendQueryable* owner, const std::vect
 	}
 
 	const ibBackendQueryColumn* targetKey = nullptr;
-	const ibQueryRamTable reached = WalkedLeafOfTargets(owner, here, path, seg + 1, holder, targetKey);
+	const ibQueryRamTable reached = WalkedLeafOfTargets(owner, here, path, seg + 1, holder, targetKey, ReferencesIn(own, here));
 	if (targetKey == nullptr)
 		return ibQueryRamTable();
 	keyOut = key;
@@ -1217,10 +1465,12 @@ ibQueryRamTable WalkedLeafByKey(const ibBackendQueryable* owner, const std::vect
 }
 
 // …and the same over EVERY table the reference `refCol` of `owner` may point at, laid into one table filed under the
-// first target's key: a reference value carries its own type, so a row of one table can only meet its own.
+// first target's key: a reference value carries its own type, so a row of one table can only meet its own — and
+// each table is read for its own among `keys` (ReferencesOf).
 ibQueryRamTable WalkedLeafOfTargets(const ibBackendQueryable* owner, const ibBackendQueryColumn* refCol,
                                     const std::vector<const ibBackendQueryColumn*>& path, size_t seg,
-                                    ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& fileKey)
+                                    ibDatabaseConnectionHolder* holder, const ibBackendQueryColumn*& fileKey,
+                                    const std::vector<ibValue>& keys)
 {
 	fileKey = nullptr;
 	std::vector<const ibBackendQueryable*> targets;
@@ -1234,8 +1484,11 @@ ibQueryRamTable WalkedLeafOfTargets(const ibBackendQueryable* owner, const ibBac
 	for (const ibBackendQueryable* target : targets) {
 		if (seg < path.size() && !ibDbTableProvider::WalkEnters(target, path[seg]))
 			continue;   // a CAST names the one type the walk goes into
+		const ibBackendQueryColumn* const targetKey = SelfReferenceColumn(target);
+		if (targetKey == nullptr)
+			continue;   // not a reference target — nothing to walk into
 		const ibBackendQueryColumn* key = nullptr;
-		ibQueryRamTable part = WalkedLeafByKey(target, path, seg, holder, key);
+		ibQueryRamTable part = WalkedLeafByKey(target, path, seg, holder, key, ReferencesOf(keys, targetKey));
 		if (key == nullptr)
 			continue;
 		if (fileKey == nullptr) {
@@ -1335,7 +1588,8 @@ ibQueryRamTable ResolveComputedDotWalks(ibQueryRamTable rows, const ibBackendQue
 				const wxString joinKey = prefixKey + wxString::Format(wxT("%p|%p"), (const void*)refCol, (const void*)bring);
 				if (joined.find(joinKey) == joined.end()) {
 					const ibBackendQueryColumn* fileKey = nullptr;
-					ibQueryRamTable filed = WalkedLeafOfTargets(curQ, refCol, path, i + 1, spec.m_holder, fileKey);
+					ibQueryRamTable filed = WalkedLeafOfTargets(curQ, refCol, path, i + 1, spec.m_holder, fileKey,
+						ReferencesIn(rows, refCol));
 					if (fileKey == nullptr)
 						break;   // no table this reference may point at reaches the field — the cell stays empty
 					std::vector<const ibBackendQueryColumn*> outCols = present;
@@ -1369,7 +1623,9 @@ ibQueryRamTable ResolveComputedDotWalks(ibQueryRamTable rows, const ibBackendQue
 				if (!tgtQ->OwnsColumn(bring))
 					if (const ibBackendQueryColumn* own = tgtQ->ResolveColumnByName(bring->GetName()))
 						readLeaf = own;
-				ibQueryRamTable tgt = MaterialiseLeaf(tgtQ, spec.m_holder, {}, { tgtKey, readLeaf });
+				// …for the references these rows hold, and no others (MaterialiseLeafToRam)
+				const std::vector<ibValue> keys = ReferencesIn(rows, refCol);
+				ibQueryRamTable tgt = MaterialiseLeaf(tgtQ, spec.m_holder, {}, { tgtKey, readLeaf }, &keys);
 				if (readLeaf != bring) {
 					ibQueryRamTable filed;
 					filed.AddColumn(tgtKey->GetColumnId(), tgtKey->GetName(), tgtKey->GetTypeDesc());
@@ -1518,6 +1774,13 @@ bool RamIsNullValue(const ibValue& v)
 
 RamTri RamEvalLeaf(const ibQueryCondition& c, const ibQueryRow& row)
 {
+	// A SEMI-JOIN IS THE SERVER'S TO ANSWER — an `IN (SELECT …)` said as EXISTS, or a policy's restriction. Rows in
+	// memory have no inner table to look in, and the empty column below would answer FALSE for every row (TRUE under
+	// a NOT): a filter that looks applied. Refused in words instead.
+	if (c.m_semiJoin)
+		ibBackendQueryException::Throw(ibBackendQueryException::Kind::TranslationFailure,
+			_("a condition the server was to answer (EXISTS over a nested query) reached a filter over rows held in memory"));
+
 	// A COMPUTED lhs (WHERE Qty * Price > 100, a CASE) evaluates its expression per row; else read the column.
 	ibValue cell;
 	if (c.m_expr)                cell = EvalColumnExprRow(c.m_expr.get(), row);
@@ -1529,6 +1792,7 @@ RamTri RamEvalLeaf(const ibQueryCondition& c, const ibQueryRow& row)
 	// NULL and answer UNKNOWN for every row. Semantics match SQL: a NULL probe is UNKNOWN, an empty set is
 	// FALSE, otherwise membership. (m_values itself never carries NULL — the producer strips them.)
 	if (c.m_op == ibQueryFilterOp::In) {
+		RefuseNamedHierarchy(c);
 		if (RamIsNullValue(cell)) return RamTri::Unknown;
 		for (const ibValue& v : c.m_values)
 			if (cell.CompareValueEQ(v)) return RamTri::True;
@@ -1595,10 +1859,11 @@ RamTri RamEvalPredicate(const ibQueryPredicate* p, const ibQueryRow& row)
 		//
 		// DEFINITE like IS NULL: an empty cell simply is not of that type, which is FALSE (or TRUE
 		// under NOT) rather than UNKNOWN — "it does not point there" is a complete answer.
+		// A barrier (`CatalogRef`, `AnyRef`) is answered off the two ids, as the SQL road answers it with a range.
 		case ibQueryPredicateKind::RefType: {
 			if (p->m_col == nullptr) return RamTri::False;
 			const ibValue cell = row.Get(p->m_col);
-			const bool same = !RamIsNullValue(cell) && cell.GetClassType() == p->m_refTypeClsid;
+			const bool same = !RamIsNullValue(cell) && clsid_admits(p->m_refTypeClsid, cell.GetClassType());
 			return (p->m_negated ? !same : same) ? RamTri::True : RamTri::False;
 		}
 	}
@@ -1729,33 +1994,33 @@ ibValue EvalColumnExprRow(const ibQueryColumnExpr* e, const ibQueryRow& row, con
 			// this walks the calendar rather than approximating (no "30-day month" arithmetic).
 			const ibValue v = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			if (RamAnyNull({ &v })) return RamNullValue();
-			return ibValue(ibTruncateToPeriod(v.GetDateTime(), e->m_periodUnit));
+			return ibValue(v.GetDate().BeginOfPeriod(e->m_periodUnit));
 		}
 		// ⭐ AND THE REST OF THE CALENDAR, under the same obligation: each of these is the twin of a
 		// dialect template, and the two must answer identically or one query gives two numbers
-		// depending on the road it took. The arithmetic itself lives in ONE place (databaseLayer),
+		// depending on the road it took. The arithmetic itself lives in ONE place (ibDateTime, fdatetime.h),
 		// which is what makes that promise keepable rather than merely intended.
 		case ibQueryColumnExprKind::PeriodEnd: {
 			const ibValue v = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			if (RamAnyNull({ &v })) return RamNullValue();
-			return ibValue(ibEndOfPeriod(v.GetDateTime(), e->m_periodUnit));
+			return ibValue(v.GetDate().EndOfPeriod(e->m_periodUnit));
 		}
 		case ibQueryColumnExprKind::DateAdd: {
 			const ibValue v = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			const ibValue n = e->m_args.empty() ? ibValue(0) : EvalColumnExprRow(e->m_args.front().get(), row, win);
 			if (RamAnyNull({ &v, &n })) return RamNullValue();
-			return ibValue(ibDateAddUnits(v.GetDateTime(), e->m_periodUnit, static_cast<long>(n.GetNumber().ToInt())));
+			return ibValue(v.GetDate().AddPeriods(e->m_periodUnit, static_cast<long>(n.GetNumber().ToInt())));
 		}
 		case ibQueryColumnExprKind::DateDiff: {
 			const ibValue a = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			const ibValue b = EvalColumnExprRow(e->m_rhs.get(), row, win);
 			if (RamAnyNull({ &a, &b })) return RamNullValue();
-			return ibValue(ibNumber(ibDateDiffUnits(a.GetDateTime(), b.GetDateTime(), e->m_periodUnit)));
+			return ibValue(ibNumber(a.GetDate().PeriodsUntil(b.GetDate(), e->m_periodUnit)));
 		}
 		case ibQueryColumnExprKind::DatePart: {
 			const ibValue v = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			if (RamAnyNull({ &v })) return RamNullValue();
-			return ibValue(ibNumber(ibReadDatePart(v.GetDateTime(), e->m_datePart)));
+			return ibValue(ibNumber(v.GetDate().GetPart(e->m_datePart)));
 		}
 		case ibQueryColumnExprKind::Substring: {
 			// 1-BASED, like the SQL it mirrors and like the language a person writes — the C++ one
@@ -1789,6 +2054,10 @@ ibValue EvalColumnExprRow(const ibQueryColumnExpr* e, const ibQueryRow& row, con
 				// carries a type, and reaching into the runtime's value zoo to build one is the leak
 				// that door exists to close.
 				return (RamIsNullValue(v) || v.IsEmpty()) ? RamNullValue() : ibTypeValueOf(v.GetClassType());
+			case ibQueryValueAsk::AsType:
+				// The value AS the type a CAST named — through the same door, for the same reason. NULL stays NULL:
+				// a missing value converted is still missing, not a zero nobody wrote.
+				return RamIsNullValue(v) ? RamNullValue() : ibValueAsType(v, e->m_asType);
 			case ibQueryValueAsk::Presentation:
 			case ibQueryValueAsk::RefPresentation:
 			default:
@@ -2043,6 +2312,14 @@ void GatherColumnExprColumns(const ibQueryColumnExpr* e, const std::function<voi
 			GatherColumnExprColumns(e->m_lhs.get(), add);
 			for (const ibQueryColumnExprPtr& key : e->m_partition)
 				GatherColumnExprColumns(key.get(), add);
+			break;
+		// A published result column is not a source column — the row answers it by name.
+		case ibQueryColumnExprKind::OutputRef:
+			break;
+		// The question reads the value it is asked of. A nested query's PRESENTATION(Field) is offered
+		// out here only while Field is: a functional option that hides Field hides that column too.
+		case ibQueryColumnExprKind::ValueAsk:
+			GatherColumnExprColumns(e->m_lhs.get(), add);
 			break;
 	}
 }
@@ -2711,10 +2988,72 @@ std::vector<const ibBackendQueryColumn*> AggregateRefCols(const ibDataQuerySpec&
 	if (spec.m_groupExprs != nullptr)
 		for (const ibQueryColumnExprPtr& e : *spec.m_groupExprs)
 			if (e) GatherColumnExprColumns(e.get(), add);
-	for (const auto& a : *spec.m_aggregates)                     add(a.m_col);
+	for (const auto& a : *spec.m_aggregates) {
+		add(a.m_col);
+		// A balance reads its moment and its keys off every row — carried like the figure itself.
+		if (a.m_balance != ibBalanceRole::None) {
+			for (const ibBackendQueryColumn* period : a.m_balanceMoments)
+				add(period);
+			for (const ibBackendQueryColumn* key : a.m_balanceKeys)
+				add(key);
+		}
+	}
 	for (const ibQueryCondition& c : *spec.m_conditions)         add(c.m_col);
 	CollectJoinKeys(spec.m_root, cols);
 	return cols;
+}
+
+// A LEVEL'S KEY — the values of its fields, in the level's own order. One field is the ordinary
+// case and stays a one-element key rather than a shape of its own, so nothing downstream branches
+// on how many fields a level has. (A balance keys its readings by one too — see ibAggAcc.)
+using ibLevelKey = std::vector<ibValue>;
+
+struct ibLevelKeyHash
+{
+	std::size_t operator()(const ibLevelKey& key) const
+	{
+		// Mixed in 64 bits and folded down at the end: on a 32-bit build std::size_t is half the
+		// width, and mixing IN it silently throws away the upper half of every value's hash.
+		const ibValueHash one;
+		wxULongLong_t h = 0xcbf29ce484222325ull;
+		for (const ibValue& value : key) {
+			h ^= static_cast<wxULongLong_t>(one(value));
+			h *= 0x100000001b3ull;
+		}
+		return static_cast<std::size_t>(h ^ (h >> 32));
+	}
+};
+
+struct ibLevelKeyEqual
+{
+	bool operator()(const ibLevelKey& left, const ibLevelKey& right) const
+	{
+		if (left.size() != right.size()) return false;
+		const ibValueEqual same;
+		for (std::size_t i = 0; i < left.size(); ++i)
+			if (!same(left[i], right[i])) return false;
+		return true;
+	}
+};
+
+// ⭐ WHERE A BALANCE READING STANDS — the key it is a reading of and the moment it was taken at (every period
+// field, the senior first). Read off the row once, beside the operand, and only for an aggregate that is a
+// balance (m_balance).
+struct ibBalanceMark
+{
+	ibLevelKey m_key;
+	ibLevelKey m_moment;
+};
+
+// EARLIER IN TIME — the period fields compared one after another, the senior first: a later field decides
+// only where every one before it is the same.
+inline bool ibMomentBefore(const ibLevelKey& left, const ibLevelKey& right)
+{
+	const ibValueEqual same;
+	for (std::size_t i = 0; i < left.size() && i < right.size(); ++i)
+		if (!same(left[i], right[i]))
+			return left[i] < right[i];
+	return false;
 }
 
 // ⭐⭐ AN AGGREGATE IS AN ACCUMULATOR — it always was, and holding the rows was how it hid.
@@ -2747,9 +3086,81 @@ struct ibAggAcc
 	// those sets stood in the stack samples of its fold (MEASURED 2026-09-12, Debug).
 	std::unique_ptr<std::unordered_set<ibValue, ibValueHash, ibValueEqual>> m_seen;
 
+	// ⭐⭐ A BALANCE only (a SUM over a `ROLE OPENING` / `ROLE CLOSING` field) — each KEY's reading at its first
+	// (opening) or last (closing) moment. A group's balance is the sum of those, never of every row: the opening of a month
+	// is not the openings of its thirty days added up. Rows of one key at one moment add up — they are
+	// parts of that key the read did not tell apart. Made on the first reading, like the DISTINCT set.
+	struct Reading { ibLevelKey m_moment; ibNumber m_sum{ 0 }; };
+	std::unique_ptr<std::unordered_map<ibLevelKey, Reading, ibLevelKeyHash, ibLevelKeyEqual>> m_readings;
+
+	// A KEY'S READING, or null — what ibStreamingFold::CarryBalancesByKey asks of a period.
+	const Reading* ReadingOf(const ibLevelKey& key) const
+	{
+		if (!m_readings)
+			return nullptr;
+		const auto found = m_readings->find(key);
+		return found != m_readings->end() ? &found->second : nullptr;
+	}
+
+	// …AND A KEY'S BALANCE CARRIED INTO A PERIOD IT DID NOT MOVE IN: a reading with no moment of its own, since
+	// the key has no row here to be read at.
+	void CarryBalance(const ibLevelKey& key, const ibNumber& balance)
+	{
+		if (!m_readings)
+			m_readings = std::make_unique<std::unordered_map<ibLevelKey, Reading, ibLevelKeyHash, ibLevelKeyEqual>>();
+		if (m_readings->emplace(key, Reading{ ibLevelKey(), balance }).second)
+			++m_n;
+	}
+
 	void Feed(const ibDataQueryBuilder::AggregateItem& a, const ibQueryRow& row)
 	{
-		FeedOperand(a, Operand(a, row));
+		if (a.m_balance != ibBalanceRole::None)
+			FeedBalance(a, Operand(a, row), MarkOf(a, row));
+		else
+			FeedOperand(a, Operand(a, row));
+	}
+
+	// WHERE THIS ROW'S READING STANDS, for a balance — read once, like the operand.
+	static ibBalanceMark MarkOf(const ibDataQueryBuilder::AggregateItem& a, const ibQueryRow& row)
+	{
+		ibBalanceMark mark;
+		mark.m_key.reserve(a.m_balanceKeys.size());
+		for (const ibBackendQueryColumn* key : a.m_balanceKeys)
+			mark.m_key.push_back(row.Get(key));
+		mark.m_moment.reserve(a.m_balanceMoments.size());
+		for (const ibBackendQueryColumn* period : a.m_balanceMoments)
+			mark.m_moment.push_back(row.Get(period));
+		return mark;
+	}
+
+	// ONE ENTRY FOR A FOLD THAT READ THE ROW ITSELF — the operand, and the mark when the aggregate is a balance.
+	void FeedRead(const ibDataQueryBuilder::AggregateItem& a, const ibValue& v, const ibBalanceMark& mark)
+	{
+		if (a.m_balance != ibBalanceRole::None)
+			FeedBalance(a, v, mark);
+		else
+			FeedOperand(a, v);
+	}
+
+	void FeedBalance(const ibDataQueryBuilder::AggregateItem& a, const ibValue& v, const ibBalanceMark& mark)
+	{
+		++m_rows;
+		if (RamIsNullValue(v))
+			return;
+		++m_n;
+		if (!m_readings)
+			m_readings = std::make_unique<std::unordered_map<ibLevelKey, Reading, ibLevelKeyHash, ibLevelKeyEqual>>();
+		const auto found = m_readings->find(mark.m_key);
+		if (found == m_readings->end()) {
+			m_readings->emplace(mark.m_key, Reading{ mark.m_moment, v.GetNumber() });
+			return;
+		}
+		Reading& reading = found->second;
+		if (ibLevelKeyEqual()(mark.m_moment, reading.m_moment))
+			reading.m_sum += v.GetNumber();                              // the same moment: another part of it
+		else if (a.m_balance == ibBalanceRole::Opening ? ibMomentBefore(mark.m_moment, reading.m_moment)
+		                                                : ibMomentBefore(reading.m_moment, mark.m_moment))
+			reading = Reading{ mark.m_moment, v.GetNumber() };         // an earlier (opening) / later (closing) one
 	}
 
 	// WHAT ONE ROW GIVES THIS AGGREGATE — read off the row once. COUNT(*) — no source column AND no
@@ -2813,6 +3224,16 @@ struct ibAggAcc
 		// zero. It is also what the server answers for the same SUM (a computed output that came back NULL
 		// is read as NULL, columnLayout.cpp), so the report no longer depends on which road its totals took.
 		using Fn = ibDataQueryBuilder::AggregateFn;
+		// A BALANCE is the sum of its keys' readings — read the way a SUM is: nothing kept is NULL, nothing fed is zero.
+		if (a.m_balance != ibBalanceRole::None) {
+			if (m_rows > 0 && m_n == 0)
+				return RamNullValue();
+			ibNumber total{ 0 };
+			if (m_readings)
+				for (const auto& reading : *m_readings)
+					total += reading.second.m_sum;
+			return ibValue(total);
+		}
 		switch (a.m_fn) {
 		case Fn::Count: return ibValue(ibNumber((a.m_col == nullptr && !a.m_expr) ? m_rows : m_n));
 		case Fn::Sum: return (m_rows > 0 && m_n == 0) ? RamNullValue() : ibValue(m_sum);
@@ -2954,40 +3375,7 @@ void AddSyntheticAggColumns(ibSelectorTree& tree, const std::vector<ibDataQueryB
 // nothing is rendered to text per row to say so.
 using ibRowsByValue    = std::unordered_map<ibValue, std::vector<long>,    ibValueHash, ibValueEqual>;
 using ibRefChildren    = std::unordered_map<ibValue, std::vector<ibValue>, ibValueHash, ibValueEqual>;
-
-// A LEVEL'S KEY — the values of its fields, in the level's own order. One field is the ordinary
-// case and stays a one-element key rather than a shape of its own, so nothing downstream branches
-// on how many fields a level has.
-using ibLevelKey = std::vector<ibValue>;
-
-struct ibLevelKeyHash
-{
-	std::size_t operator()(const ibLevelKey& key) const
-	{
-		// Mixed in 64 bits and folded down at the end: on a 32-bit build std::size_t is half the
-		// width, and mixing IN it silently throws away the upper half of every value's hash.
-		const ibValueHash one;
-		wxULongLong_t h = 0xcbf29ce484222325ull;
-		for (const ibValue& value : key) {
-			h ^= static_cast<wxULongLong_t>(one(value));
-			h *= 0x100000001b3ull;
-		}
-		return static_cast<std::size_t>(h ^ (h >> 32));
-	}
-};
-
-struct ibLevelKeyEqual
-{
-	bool operator()(const ibLevelKey& left, const ibLevelKey& right) const
-	{
-		if (left.size() != right.size()) return false;
-		const ibValueEqual same;
-		for (std::size_t i = 0; i < left.size(); ++i)
-			if (!same(left[i], right[i])) return false;
-		return true;
-	}
-};
-
+// (ibLevelKey and its hash stand above ibAggAcc now — a balance keys its readings by one.)
 using ibRowsByLevelKey = std::unordered_map<ibLevelKey, std::vector<long>, ibLevelKeyHash, ibLevelKeyEqual>;
 using ibValueSeen      = std::unordered_map<ibValue, char,                 ibValueHash, ibValueEqual>;
 using ibValueParentMap = std::unordered_map<ibValue, ibValue,              ibValueHash, ibValueEqual>;
@@ -2998,6 +3386,111 @@ inline bool IsNoKey(const ibValue& v)
 {
 	return v.IsEmpty() || v.IsNull()
 		|| (v.GetType() == ibValueTypes::TYPE_STRING && v.GetString().IsEmpty());
+}
+
+// ⭐ THE TREE A REFERENCE'S TARGET IS ARRANGED IN — read once and whole, for both roads that build a hierarchy
+// level: each value's parent, its PLACE in its kind's order, and whether the kind keeps folders apart from items.
+// The read is sorted by the target's own key, which the door sorts by the kind's order (a catalog by what it is
+// presented by, a chart by its code), so the place is the order the kind's own list shows. Empty when the target
+// has no parent column or there is no connection.
+struct ibValueHierarchy {
+	ibValueParentMap                                             parentOf;
+	std::unordered_map<ibValue, long, ibValueHash, ibValueEqual> place;
+	bool                                                         foldersFirst = false;
+};
+
+ibValueHierarchy ReadValueHierarchy(const ibBackendQueryable* target, ibDatabaseConnectionHolder* holder)
+{
+	ibValueHierarchy tree;
+	if (target == nullptr || holder == nullptr)
+		return tree;
+	const std::vector<const ibBackendQueryColumn*> keys = target->GetPrimaryKeyColumns();
+	const ibBackendQueryColumn* rk = keys.empty() ? nullptr : keys.front();
+	const ibBackendQueryColumn* pk = target->GetHierarchyColumn();
+	if (rk == nullptr || pk == nullptr)
+		return tree;
+	tree.foldersFirst = target->GetHierarchyType() == eFolders;
+	ibDataQueryBuilder q(holder);
+	q.From(target).Select(rk, wxEmptyString).Select(pk, wxEmptyString).OrderBy(rk, /*ascending*/ true);
+	ibSelector ts = q.Execute(ibReadPageRequest{}).Select(ibSelectKind::ibSelectKind_Direct);
+	long place = 0;
+	while (ts.Next()) {
+		const ibValue key = ts.GetValue(rk);
+		tree.parentOf[key] = ts.GetValue(pk);
+		tree.place.emplace(key, place++);
+	}
+	return tree;
+}
+
+// ⭐⭐ THE VALUES OF A HIERARCHY LEVEL, FILED UNDER THEIR PARENTS IN THE ORDER THEIR ROWS ARRIVED — one
+// arrangement for both roads that build such a tree (BuildReferenceHierarchy and the dimension combiner).
+//
+// A value stands where its own row stood — the fold's rule everywhere, so the read's order (a sort by a reference
+// is its kind's order: a chart by its code) is the order of the tree. A folder with NO row of its own — every
+// account of class 6 posted, the class itself never — stands where its FIRST descendant did. Appended after
+// everything instead, a chart's class 6 printed below class 9; and walked from an unordered map, the whole level
+// came out in the order of its hashes (Max, 2026-09-29: "the hierarchical output puts class 6 at the bottom").
+// A folder that HAS a row keeps its own turn: filed from a child, a folder whose contents sort early jumped ahead
+// of its own row.
+//
+// ⭐ …THAT IS A TREE OF PEERS — an account under an account, each an element in its own right. A catalog of
+// FOLDERS AND ITEMS keeps them apart the way its list does: under every parent the folders first, among
+// themselves in their kind's order (their place in the read above), then the items as their rows came (Max,
+// 2026-09-29: "folders always go on top; subordinate accounts are peers"). A folder is what has children here —
+// an item of such a catalog never does.
+ibRefChildren ibArrangeUnderParents(const std::vector<ibValue>& keyOrder, const ibValueHierarchy& tree,
+                                    const std::function<bool(const ibValue&)>& hasRow)
+{
+	const ibValueParentMap& parentOf = tree.parentOf;
+	ibRefChildren childrenOf;
+	ibValueSeen   seen;
+	// "No parent" arrives as two values — a key the map does not mention, and an empty reference — and the root
+	// is one bucket: both are filed under `ibValue()`, where the roots are looked up.
+	const auto parentOfKey = [&parentOf](const ibValue& key) {
+		const auto pit = parentOf.find(key);
+		const ibValue par = pit != parentOf.end() ? pit->second : ibValue();
+		return IsNoKey(par) ? ibValue() : par;
+	};
+	for (const ibValue& key : keyOrder) {
+		if (IsNoKey(key) || seen[key])
+			continue;
+		seen[key] = 1;
+		ibValue par = parentOfKey(key);
+		childrenOf[par].push_back(key);
+		// …and the folders above it that have no row of their own, at this moment
+		while (!IsNoKey(par) && !seen[par] && !hasRow(par)) {
+			seen[par] = 1;
+			const ibValue up = parentOfKey(par);
+			childrenOf[up].push_back(par);
+			par = up;
+		}
+	}
+	// Whatever is still unfiled above them follows — an ancestor the walk up stopped at.
+	std::function<void(const ibValue&)> chainUp = [&](const ibValue& key) {
+		if (IsNoKey(key) || seen[key])
+			return;
+		seen[key] = 1;
+		const ibValue par = parentOfKey(key);
+		childrenOf[par].push_back(key);
+		chainUp(par);
+	};
+	for (const ibValue& key : keyOrder)
+		chainUp(parentOfKey(key));
+	// …the folders first, in their kind's order, where the kind keeps folders and items apart (see above)
+	if (tree.foldersFirst) {
+		const auto isFolder = [&childrenOf](const ibValue& v) { return childrenOf.find(v) != childrenOf.end(); };
+		const auto placeOf  = [&tree](const ibValue& v) {
+			const auto it = tree.place.find(v);
+			return it != tree.place.end() ? it->second : std::numeric_limits<long>::max();
+		};
+		for (auto& under : childrenOf) {
+			std::vector<ibValue>& kids = under.second;
+			const auto items = std::stable_partition(kids.begin(), kids.end(), isFolder);
+			std::stable_sort(kids.begin(), items,
+				[&placeOf](const ibValue& a, const ibValue& b) { return placeOf(a) < placeOf(b); });
+		}
+	}
+	return childrenOf;
 }
 
 struct HierBuildCtx {
@@ -3107,10 +3600,14 @@ ibDataQueryResult RamAggregate(const ibQueryRamTable& TC, const ibDataQuerySpec&
 		if (it == buckets.end()) { keyOrder.push_back(key); buckets.emplace(std::move(key), std::vector<long>{ i }); }
 		else it->second.push_back(i);
 	}
-	if (spec.m_groupBy->empty() && rows > 0) {          // aggregate with no GROUP BY = one bucket
-		std::vector<long> all; all.reserve(static_cast<size_t>(rows));
-		for (long i = 0; i < rows; ++i) all.push_back(i);
-		buckets.emplace(std::vector<ibValue>(), all); keyOrder.push_back(std::vector<ibValue>());
+	// ⭐ AN AGGREGATE WITH NO GROUP BY IS ONE GROUP, over whatever rows there are — none included: SQL answers
+	// COUNT(*) over nothing with one row holding 0, not with no row. The loop above already filed every row
+	// under the empty key; this used to file them there AGAIN and list the key twice, so every such fold in
+	// memory came back as two identical rows (since 2026-06-09 — every check read the first), and over no rows
+	// it came back empty.
+	if (spec.m_groupBy->empty() && keyOrder.empty()) {
+		buckets.emplace(std::vector<ibValue>(), std::vector<long>());
+		keyOrder.push_back(std::vector<ibValue>());
 	}
 
 	// A computed key has no model column to take an id / name from, so it gets a synthetic id in its
@@ -3131,6 +3628,19 @@ ibDataQueryResult RamAggregate(const ibQueryRamTable& TC, const ibDataQuerySpec&
 		TO.AddColumn(ibSynthSlotId(ibSynthKind::Aggregate, ai), a.m_alias,
 		             a.m_col != nullptr ? a.m_col->GetTypeDesc() : ibTypeDescription());
 	}
+	// ⭐ …AND WHAT IS COMPUTED BESIDE THE GROUPS — a constant (`7 AS Seven`), read by alias like the aggregates.
+	// The SQL road projects these (ibDbTableProvider::BuildAggregateQuery); this fold left them out, and the column
+	// came back empty without a word. A WINDOW is the server's to compute, and a fold in memory has none to
+	// offer: refused out loud, never an empty column.
+	static const std::vector<ibQueryColumnSelect> kNoComputed;
+	const std::vector<ibQueryColumnSelect>& computed = spec.m_selectExprs != nullptr ? *spec.m_selectExprs : kNoComputed;
+	for (size_t k = 0; k < computed.size(); ++k) {
+		if (computed[k].m_expr && computed[k].m_expr->m_kind == ibQueryColumnExprKind::WindowAgg)
+			ibBackendQueryException::Throw(ibBackendQueryException::Kind::TranslationFailure,
+				wxString::Format(_("'%s' is a window over rows grouped in memory, which cannot compute one"),
+					computed[k].m_alias));
+		TO.AddColumn(ibSynthSlotId(ibSynthKind::Stitch, k), computed[k].m_alias, ibTypeDescription());
+	}
 
 	for (const std::vector<ibValue>& key : keyOrder) {
 		const std::vector<long>& idx = buckets[key];
@@ -3147,6 +3657,13 @@ ibDataQueryResult RamAggregate(const ibQueryRamTable& TC, const ibDataQuerySpec&
 		for (size_t ai = 0; ai < spec.m_aggregates->size(); ++ai)
 			TO.SetCell(r, ibSynthSlotId(ibSynthKind::Aggregate, ai),
 			           AggregateOne((*spec.m_aggregates)[ai], TC, idx));
+		// The same in every row of the group — the first one answers; a group of no rows (an aggregate with no
+		// GROUP BY over nothing) has only a constant to give.
+		for (size_t k = 0; k < computed.size(); ++k) {
+			const ibQueryColumnExpr* e = computed[k].m_expr.get();
+			TO.SetCell(r, ibSynthSlotId(ibSynthKind::Stitch, k), !idx.empty() ? EvalColumnExprRow(e, TC, idx.front())
+				: e != nullptr && e->m_kind == ibQueryColumnExprKind::Const ? e->m_const : ibValue());
+		}
 	}
 
 	// ⭐⭐ ORDER BY OVER THE GROUPS, then TOP — what the SQL road says in one statement (ibDbTableProvider::
@@ -3256,10 +3773,16 @@ std::unique_ptr<ibTempTableManager> PromoteComputedLeaf(
 	}
 
 	// Materialise the computed leaf (its ctor filters are baked in; the door conditions IT owns are
-	// pushed down as compute filters) into a DB temp table.
+	// pushed down as compute filters) into a DB temp table. Its rows are filtered in memory first, so a
+	// hierarchy named on them is resolved here, once, for the compute filter and the temp alike.
+	std::vector<ibQueryCondition> conds;
 	std::vector<ibQueryCondition> computedConds;
-	for (const ibQueryCondition& c : *spec.m_conditions)
-		if (c.m_col != nullptr && computed->OwnsColumn(c.m_col)) computedConds.push_back(c);
+	for (const ibQueryCondition& c : *spec.m_conditions) {
+		const bool owned = c.m_col != nullptr && computed->OwnsColumn(c.m_col);
+		conds.push_back(owned ? SubtreeResolved(c, { computed }) : c);
+		if (owned)
+			computedConds.push_back(conds.back());
+	}
 	ibQueryRamTable rows = computed->ComputeRows(computedConds);
 
 	// SHOULD-gate (temp-db.md §7) with the exact materialised count; CAN lives in Materialise.
@@ -3300,7 +3823,7 @@ std::unique_ptr<ibTempTableManager> PromoteComputedLeaf(
 	};
 
 	outConds.clear();
-	for (const ibQueryCondition& c : *spec.m_conditions) { ibQueryCondition nc = c; nc.m_col = remap(c.m_col); outConds.push_back(nc); }
+	for (const ibQueryCondition& c : conds) { ibQueryCondition nc = c; nc.m_col = remap(c.m_col); outConds.push_back(nc); }
 	outSorts.clear();
 	for (const ibQuerySortItem& s : *spec.m_sorts)       { ibQuerySortItem ns = s; ns.m_col = remap(s.m_col); outSorts.push_back(ns); }
 	outSelects.clear();
@@ -3459,8 +3982,16 @@ ibDataQueryResult ComposeMultiSource(const ibDataQuerySpec& spec, const ibReadPa
 	              root->m_kind == ibQueryNode::Kind::Union ? wxT("union") : wxT("join"));
 
 	ibQueryRamTable composed = Compose(spec, ReferencedColumns(spec));
-	if (spec.m_predicate)
-		composed = RamFilter(composed, spec.m_predicate.get());
+	if (spec.m_predicate) {
+		// The tree is answered over the stitched rows, so a hierarchy named in it is resolved through the
+		// leaves those rows came from — database tables included: none of them sees this filter.
+		std::vector<const ibQueryNode*> leaves;
+		CollectLeaves(root, leaves);
+		std::vector<const ibBackendQueryable*> sources;
+		for (const ibQueryNode* leaf : leaves)
+			sources.push_back(leaf->m_queryable);
+		composed = RamFilter(composed, SubtreeResolved(spec.m_predicate, sources).get());
+	}
 	return ProjectToAliases(std::move(composed), spec, page);   // the composed rows are handed on, not copied
 }
 
@@ -3598,8 +4129,11 @@ std::unique_ptr<ibTempTableManager> PromoteSingleComputed(
 // (door conditions pushed as compute filters), then the RAM GROUP-BY fold. Without this
 // override the base default would return the RAW rows — silently dropping the aggregation.
 // HAVING is not folded on the RAM path (the lowering gates it).
-ibDataQueryResult ibComputedProvider::ExecuteAggregate(const ibDataQuerySpec& spec)
+ibDataQueryResult ibComputedProvider::ExecuteAggregate(const ibDataQuerySpec& given)
 {
+	std::vector<ibQueryCondition> resolved;   // a named hierarchy, resolved as in ExecuteRead
+	const ibDataQuerySpec spec = WithSubtreesResolved(given, { given.m_queryable }, resolved);
+
 	// ComputeRows + dot-walk resolution + dot-walk WHERE: GROUP BY Ref.Field, SUM(Ref.Field) and WHERE
 	// Ref.Field = X over the computed source all resolve the reference leaves in RAM before the fold.
 	std::vector<const ibBackendQueryColumn*> cols;
@@ -3621,19 +4155,28 @@ ibDataQueryResult ibQueryComposer::ExecuteRead(const ibDataQuerySpec& spec, cons
 }
 
 ibDataQueryResult ibQueryComposer::ExecuteReadCached(const ibDataQuerySpec& spec, const ibReadPageRequest& page,
-                                                     ibRenderedPageCache& cache, const wxString& signature)
+                                                     ibRenderedPageCache& cache, const ibPageSignature& signature)
 {
 	if (IsSingleSource(spec))
 		return spec.m_queryable->GetProvider().ExecuteReadCached(spec, page, cache, signature);
 	return ComposeMultiSource(spec, page);   // a join has no single rendered-SQL cache
 }
 
-ibDataQueryResult ibQueryComposer::ExecuteAggregate(const ibDataQuerySpec& spec)
+ibDataQueryResult ibQueryComposer::ExecuteAggregate(const ibDataQuerySpec& given)
 {
+	// A computed source is read in memory whichever road the aggregate then takes, so a hierarchy named on it
+	// is resolved ONCE, here, for the temp table and for the RAM fold alike (SubtreeResolved).
+	std::vector<ibQueryCondition> resolved;
+	const bool computedSource = IsSingleSource(given) && given.m_queryable != nullptr && given.m_queryable->IsComputedInRam();
+	const ibDataQuerySpec spec = computedSource ? WithSubtreesResolved(given, { given.m_queryable }, resolved) : given;
+
 	if (IsSingleSource(spec)) {
 		// Push to server: materialise the computed source into a DB temp table and run the aggregate as
 		// server-side SQL (GROUP BY / SUM(expr) / HAVING over a real table). On any miss -> the RAM fold.
-		if (spec.m_queryable != nullptr && spec.m_queryable->IsComputedInRam()) {
+		// Not with something computed beside the groups (a constant, a window): the promotion remaps neither
+		// onto the temp table and drains keys and figures alone — the RAM fold carries them.
+		const bool computedBeside = spec.m_selectExprs != nullptr && !spec.m_selectExprs->empty();
+		if (computedSource && !computedBeside) {
 			std::vector<ibQueryCondition> pConds; std::vector<ibQuerySortItem> pSorts;
 			std::vector<std::pair<const ibBackendQueryColumn*, wxString>> pSelects;
 			std::vector<const ibBackendQueryColumn*>       pGroupBy;
@@ -3727,7 +4270,7 @@ ibDataQueryResult ibQueryComposer::ExecuteAggregate(const ibDataQuerySpec& spec)
 namespace {
 
 // ⭐ WHAT A LEVEL FIELD CONTRIBUTES TO THE KEY — its cell, or the START OF THE PERIOD containing it
-// when the field is read BY PERIODS. `ibTruncateToPeriod` is the RAM twin of the expression the SQL
+// when the field is read BY PERIODS. `ibDateTime::BeginOfPeriod` is the RAM twin of the expression the SQL
 // road groups by, walking the calendar rather than approximating it — so a row lands in the same
 // bucket whichever road read it, which is the only way two roads may exist at all.
 ibValue LevelKeyValue(const ibTotalField& field, const ibQueryRow& row)
@@ -3735,7 +4278,7 @@ ibValue LevelKeyValue(const ibTotalField& field, const ibQueryRow& row)
 	const ibValue v = row.Get(field.m_col);
 	if (!field.ByPeriods() || v.GetType() != TYPE_DATE)
 		return v;
-	return ibValue(ibTruncateToPeriod(v.GetDateTime(), field.m_periods->m_unit));
+	return ibValue(v.GetDate().BeginOfPeriod(field.m_periods->m_unit));
 }
 
 // ⭐⭐ THE STREAMING FOLD — rows in, tree out, ONE PASS, and nothing kept but the tree.
@@ -3839,6 +4382,7 @@ public:
 		m_pool.emplace_back(&tree.Root(), NewAccs());   // the root IS the grand total
 		m_rowKeys.resize(m_levels.size());
 		m_operands.resize(m_aggs.size());
+		m_marks.resize(m_aggs.size());
 	}
 
 	void Feed(const ibQueryRow& row)
@@ -3853,8 +4397,11 @@ public:
 			for (const ibTotalField& field : m_levels[li].m_fields)
 				key.push_back(LevelKeyValue(field, row));      // one field is the degenerate one-element key
 		}
-		for (std::size_t i = 0; i < m_aggs.size(); ++i)
+		for (std::size_t i = 0; i < m_aggs.size(); ++i) {
 			m_operands[i] = ibAggAcc::Operand(m_aggs[i], row);
+			if (m_aggs[i].m_balance != ibBalanceRole::None)
+				m_marks[i] = ibAggAcc::MarkOf(m_aggs[i], row);   // …and where a balance's reading stands, once too
+		}
 
 		std::size_t cur = 0;
 		FeedNode(cur);                                        // the grand total takes every row
@@ -3980,10 +4527,130 @@ public:
 	// headings and never touches the ones that share their column with a measure.
 	void Finish()
 	{
+		CarryBalancesByKey();
 		for (FoldNode& n : m_pool) {
 			for (std::size_t i = 0; i < m_aggs.size(); ++i)
 				n.m_node->m_values[AggSlotId(m_aggs, i)] = m_accPool[n.m_accs + i].Result(m_aggs[i]);
 			n.m_node->m_hasChildren = !n.m_node->m_children.empty();
+		}
+	}
+
+	// ⭐⭐ A KEY'S BALANCE IN A PERIOD IT DID NOT MOVE IN IS CARRIED, NOT LEFT OUT — the rule PadPeriodChildren keeps
+	// for a period nobody moved in, said for one key. A source read by movement (Periodicity = Recorder / Record)
+	// has a row only where a key moved, so a month heading added up only the keys that moved that month: a key
+	// holding 6 000 on account 90 through a quiet August left August's opening 6 000 short (2026-09-29, the ROLE
+	// battery). So under every heading whose children are a PERIOD level, a key missing from a period takes, as
+	// its closing AND its opening there, its last closing before it — what stood at the end of its last movement
+	// stands through the quiet period; before its first reading, its first opening after is what stood all along.
+	// The two edges of one figure are paired in the order TOTALS names them (the first opening with the first
+	// closing); a figure with only one edge carries the way PadPeriodChildren does: an opening from after, a
+	// closing from before. (A source that has a row for every period a key holds a balance in — a daily or a
+	// monthly reading — leaves nothing to carry: a key missing there held nothing.)
+	void CarryBalancesByKey()
+	{
+		std::vector<std::size_t> openings, closings;
+		for (std::size_t i = 0; i < m_aggs.size(); ++i) {
+			if (m_aggs[i].m_balance == ibBalanceRole::Opening) openings.push_back(i);
+			else if (m_aggs[i].m_balance == ibBalanceRole::Closing) closings.push_back(i);
+		}
+		if (openings.empty() && closings.empty())
+			return;
+
+		std::unordered_map<const ibSelectorTree::Node*, std::size_t> accsOf;   // a node's first accumulator
+		for (const FoldNode& n : m_pool)
+			accsOf[n.m_node] = n.m_accs;
+
+		const std::size_t none = static_cast<std::size_t>(-1);
+		for (const FoldNode& n : m_pool) {
+			// THE CHILDREN THAT ARE ONE PERIOD LEVEL, in time order
+			std::vector<std::pair<ibDateTime, std::size_t>> periods;
+			int level = -1;
+			for (const std::unique_ptr<ibSelectorTree::Node>& child : n.m_node->m_children) {
+				if (child == nullptr || child->m_kind == ibSelectorNodeKind::Detail)
+					continue;
+				const int li = child->m_level - 1;
+				if (li < 0 || static_cast<std::size_t>(li) >= m_levels.size() || m_levels[li].m_fields.empty())
+					continue;
+				const ibTotalField& head = m_levels[li].m_fields.front();
+				if (head.m_col == nullptr
+				    || (!head.ByPeriods() && head.m_col->GetBalanceRole() != ibBalanceRole::Moment))
+					continue;
+				if (level == -1)
+					level = child->m_level;
+				else if (child->m_level != level)
+					continue;
+				const auto value = child->m_values.find(head.m_col->GetColumnId());
+				const auto accs  = accsOf.find(child.get());
+				if (value == child->m_values.end() || value->second.GetType() != TYPE_DATE || accs == accsOf.end())
+					continue;
+				periods.emplace_back(value->second.GetDate(), accs->second);
+			}
+			if (periods.size() < 2)
+				continue;
+			std::stable_sort(periods.begin(), periods.end(),
+				[](const auto& a, const auto& b) { return a.first < b.first; });
+
+			const std::size_t pairs = std::max(openings.size(), closings.size());
+			for (std::size_t k = 0; k < pairs; ++k) {
+				const std::size_t o = k < openings.size() ? openings[k] : none;
+				const std::size_t c = k < closings.size() ? closings[k] : none;
+				const auto accOf = [&](std::size_t accs, std::size_t agg) -> ibAggAcc* {
+					return agg != none ? &m_accPool[accs + agg] : nullptr;
+				};
+
+				// every key read in any of these periods, by either edge
+				std::unordered_set<ibLevelKey, ibLevelKeyHash, ibLevelKeyEqual> keys;
+				for (const auto& period : periods)
+					for (const std::size_t agg : { o, c })
+						if (const ibAggAcc* acc = accOf(period.second, agg))
+							if (acc->m_readings)
+								for (const auto& reading : *acc->m_readings)
+									keys.insert(reading.first);
+
+				for (const ibLevelKey& key : keys) {
+					std::vector<bool> moved(periods.size(), false);
+					for (std::size_t p = 0; p < periods.size(); ++p) {
+						const ibAggAcc* oa = accOf(periods[p].second, o);
+						const ibAggAcc* ca = accOf(periods[p].second, c);
+						moved[p] = (oa != nullptr && oa->ReadingOf(key) != nullptr) || (ca != nullptr && ca->ReadingOf(key) != nullptr);
+					}
+					// FORWARD — the last closing, into every quiet period after it
+					if (c != none) {
+						bool have = false;
+						ibNumber last{ 0 };
+						for (std::size_t p = 0; p < periods.size(); ++p) {
+							ibAggAcc* ca = accOf(periods[p].second, c);
+							if (moved[p]) {
+								if (const ibAggAcc::Reading* r = ca->ReadingOf(key)) { have = true; last = r->m_sum; }
+								continue;
+							}
+							if (!have)
+								continue;
+							ca->CarryBalance(key, last);
+							if (ibAggAcc* oa = accOf(periods[p].second, o))
+								oa->CarryBalance(key, last);
+							moved[p] = true;
+						}
+					}
+					// BACKWARD — the first opening, into every quiet period before it
+					if (o != none) {
+						bool have = false;
+						ibNumber next{ 0 };
+						for (std::size_t p = periods.size(); p-- > 0;) {
+							ibAggAcc* oa = accOf(periods[p].second, o);
+							if (moved[p]) {
+								if (const ibAggAcc::Reading* r = oa->ReadingOf(key)) { have = true; next = r->m_sum; }
+								continue;
+							}
+							if (!have)
+								continue;
+							oa->CarryBalance(key, next);
+							if (ibAggAcc* ca = accOf(periods[p].second, c))
+								ca->CarryBalance(key, next);
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -4103,7 +4770,7 @@ private:
 	{
 		const std::size_t at = m_pool[idx].m_accs;
 		for (std::size_t i = 0; i < m_aggs.size(); ++i)
-			m_accPool[at + i].FeedOperand(m_aggs[i], m_operands[i]);
+			m_accPool[at + i].FeedRead(m_aggs[i], m_operands[i], m_marks[i]);
 	}
 
 	// A node's accumulators, one per aggregate, taken from the pool — see FoldNode.
@@ -4287,6 +4954,7 @@ private:
 	// per row by Feed and handed to every node on its path. Kept between rows so their storage is reused.
 	std::vector<ibLevelKey>                               m_rowKeys;
 	std::vector<ibValue>                                  m_operands;
+	std::vector<ibBalanceMark>                            m_marks;      // a balance's key and moment, per aggregate
 	// THE LADDERS THIS FOLD BUILDS — one without `SPLIT`, and then one per branch. What used to be
 	// three fields about "the levels" now belongs to each section, because with branches there is no
 	// longer a single answer to "where do the columns start".
@@ -4309,6 +4977,8 @@ private:
 ibValue EmptyPeriodFigure(const ibDataQueryBuilder::AggregateItem& a)
 {
 	using Fn = ibDataQueryBuilder::AggregateFn;
+	if (a.m_balance != ibBalanceRole::None)
+		return ibValue();   // a balance is not nought on a quiet month — it is carried (PadPeriodChildren)
 	return (a.m_fn == Fn::Sum || a.m_fn == Fn::Count) ? ibValue(ibNumber(0L)) : ibValue();
 }
 
@@ -4327,28 +4997,30 @@ void PadPeriodChildren(ibSelectorTree::Node& parent, const ibTotalField& field, 
 	// about the period this level pads. Taken by their LEVEL, which is the one thing that says
 	// which of them this call is about; without it the first cell answered "not a period level
 	// after all" and the quiet months were silently never filled in.
-	std::map<wxDateTime, ibSelectorTree::Node*> have;   // ordered by the moment itself
+	std::map<ibDateTime, ibSelectorTree::Node*> have;   // ordered by the moment itself
 	std::vector<ibSelectorTree::Node*>          others; // …the ones this level does not speak for
 	for (const std::unique_ptr<ibSelectorTree::Node>& child : parent.m_children) {
 		if (child == nullptr) continue;
 		if (child->m_level != childLevel) { others.push_back(child.get()); continue; }
 		const auto it = child->m_values.find(id);
 		if (it == child->m_values.end() || it->second.GetType() != TYPE_DATE) return;   // not a period level after all
-		have[it->second.GetDateTime()] = child.get();
+		have[it->second.GetDate()] = child.get();
 	}
 
-	wxDateTime from = !periods.m_from.IsEmpty() ? ibTruncateToPeriod(periods.m_from.GetDateTime(), periods.m_unit)
-	                                            : (have.empty() ? wxDateTime() : have.begin()->first);
-	wxDateTime to   = !periods.m_to.IsEmpty()   ? ibTruncateToPeriod(periods.m_to.GetDateTime(),   periods.m_unit)
-	                                            : (have.empty() ? wxDateTime() : have.rbegin()->first);
-	if (!from.IsValid() || !to.IsValid() || from > to)
+	if (have.empty() && (periods.m_from.IsEmpty() || periods.m_to.IsEmpty()))
 		return;                                        // nothing to pad between — and saying so is not a failure
+	const ibDateTime from = !periods.m_from.IsEmpty() ? periods.m_from.GetDate().BeginOfPeriod(periods.m_unit)
+	                                                  : have.begin()->first;
+	const ibDateTime to   = !periods.m_to.IsEmpty()   ? periods.m_to.GetDate().BeginOfPeriod(periods.m_unit)
+	                                                  : have.rbegin()->first;
+	if (from > to)
+		return;
 
 	// ⚠ THE BOUNDS PAD, THEY DO NOT FILTER. A period OUTSIDE them that the data produced is still a
 	// period that happened; dropping it here would turn a display setting into a silent WHERE.
-	std::map<wxDateTime, ibSelectorTree::Node*> series = have;
+	std::map<ibDateTime, ibSelectorTree::Node*> series = have;
 	std::vector<std::unique_ptr<ibSelectorTree::Node>> made;
-	for (wxDateTime t = from; t <= to; t = ibNextPeriodStart(t, periods.m_unit)) {
+	for (ibDateTime t = from; t <= to; t = t.BeginOfNextPeriod(periods.m_unit)) {
 		if (series.find(t) != series.end())
 			continue;
 		auto node = std::make_unique<ibSelectorTree::Node>();
@@ -4363,13 +5035,38 @@ void PadPeriodChildren(ibSelectorTree::Node& parent, const ibTotalField& field, 
 	if (made.empty())
 		return;
 
+	// ⭐ …AND A BALANCE IS CARRIED INTO A QUIET PERIOD, never zeroed. Nothing moved there, so what stood at
+	// its START is what stood at the start of the next period that has rows, and what stands at its END is
+	// what stood at the end of the last one before it. Beyond the data on the far side the figure itself has
+	// no neighbour to take it from (the other edge would — that is the pair of a balance), and it is left
+	// empty there rather than invented.
+	for (size_t i = 0; i < aggregates.size(); ++i) {
+		const ibDataQueryBuilder::AggregateItem& a = aggregates[i];
+		if (a.m_balance == ibBalanceRole::None)
+			continue;
+		const ibMetaID slot = AggSlotId(aggregates, i);
+		const ibValue* carried = nullptr;
+		const auto visit = [&](const ibDateTime& at, ibSelectorTree::Node* node) {
+			if (have.count(at) != 0) {
+				const auto it = node->m_values.find(slot);
+				carried = it != node->m_values.end() ? &it->second : nullptr;
+			}
+			else
+				node->m_values[slot] = carried != nullptr ? *carried : ibValue();
+		};
+		if (a.m_balance == ibBalanceRole::Opening)
+			for (auto it = series.rbegin(); it != series.rend(); ++it) visit(it->first, it->second);
+		else
+			for (auto it = series.begin(); it != series.end(); ++it) visit(it->first, it->second);
+	}
+
 	// Rebuild the child list along the SERIES, keeping the direction the data came in: a report that
 	// reads newest-first must not have its filled months arrive ascending in the middle of it.
 	const bool descending = parent.m_children.size() > 1 && have.size() > 1
 	                     && parent.m_children.front() != nullptr && parent.m_children.back() != nullptr
 	                     && parent.m_children.front()->m_values.count(id) && parent.m_children.back()->m_values.count(id)
-	                     && parent.m_children.front()->m_values.at(id).GetDateTime()
-	                        > parent.m_children.back()->m_values.at(id).GetDateTime();
+	                     && parent.m_children.front()->m_values.at(id).GetDate()
+	                        > parent.m_children.back()->m_values.at(id).GetDate();
 
 	std::map<ibSelectorTree::Node*, std::unique_ptr<ibSelectorTree::Node>> owned;
 	for (std::unique_ptr<ibSelectorTree::Node>& child : parent.m_children)
@@ -4422,6 +5119,186 @@ bool LevelsUnfoldHierarchy(const std::vector<ibTotalLevel>& levels)
 			if (field.m_dim != ibDimensionKind::Elements)
 				return true;
 	return false;
+}
+
+// ⭐⭐ …BUT IT NEEDS EVERY VALUE, NOT EVERY ROW. The unfold arranges the level's VALUES into the parent chain,
+// and a heading's figures are its rows folded — so where no line of the sheet IS a row, the rows that agree on
+// every key of every level can be folded into one first, while they are read, and the tree built over those.
+// A report of a million movements by the goods hierarchy then holds one line per item and warehouse instead of
+// the million (it drained them all until 2026-09-29).
+//
+// Exact only where each figure can be folded again from its parts, and where nothing but the keys and the
+// figures is read off a row. So not when:
+//   * a level lists the RECORDS (a level with no fields) — the rows are what is printed;
+//   * a level is keyed by the ROW'S IDENTITY — its heading carries the row's own cells (AttachDimValue);
+//   * a level is read BY PERIODS — padded from its figures by a pass of its own;
+//   * an aggregate is DISTINCT (different values are not a sum of parts), has an AREA (OVER — folded over
+//     nodes), is a BALANCE (a key's reading at its first or last moment — the rows folded first would have
+//     lost the moment they stood at), or shares its slot with another one or with a key (the part would
+//     overwrite what the other reads). AVG is folded from two parts — a sum in its slot, a count beside it —
+//     and divided once the tree is built (FoldByKeysFirst's `averages`).
+bool CanFoldByKeysFirst(const std::vector<ibTotalLevel>& levels,
+	const std::vector<ibDataQueryBuilder::AggregateItem>& aggregates, const ibBackendQueryable* source)
+{
+	ibMetaID identity = 0;
+	if (source != nullptr) {
+		const std::vector<const ibBackendQueryColumn*> keys = source->GetPrimaryKeyColumns();
+		if (keys.size() == 1 && keys.front() != nullptr)
+			identity = keys.front()->GetColumnId();
+	}
+	std::vector<ibMetaID> taken;   // the key columns and the slots, each read by one thing only
+	for (const ibTotalLevel& level : levels) {
+		if (level.m_fields.empty())
+			return false;
+		for (const ibTotalField& field : level.m_fields) {
+			if (field.m_col == nullptr || field.ByPeriods() || (identity != 0 && field.m_col->GetColumnId() == identity))
+				return false;
+			taken.push_back(field.m_col->GetColumnId());
+		}
+	}
+	for (size_t i = 0; i < aggregates.size(); ++i) {
+		const ibDataQueryBuilder::AggregateItem& a = aggregates[i];
+		if (a.m_distinct || a.m_scopeDepth > 0 || a.m_balance != ibBalanceRole::None)
+			return false;
+		const ibMetaID slot = AggSlotId(aggregates, i);
+		if (std::find(taken.begin(), taken.end(), slot) != taken.end())
+			return false;
+		taken.push_back(slot);
+	}
+	return true;
+}
+
+// The fold of CanFoldByKeysFirst: one row per distinct key tuple — the FIRST row read with it, so every group
+// stands where its first row stood (the fold's rule), and a level's values come in the order they were first
+// met — with each aggregate's PART in the aggregate's own slot. `rolled` folds those parts again: a count's
+// parts are ADDED, a computed input is read from its slot; the slots do not move, so the tree's figures land
+// exactly where the full fold puts them.
+//
+// ⭐ AN AVERAGE IS TWO PARTS: the sum in its slot and the count in a cell of its own beside it (an aggregate id
+// past the last real one, declared as no column, so it never reaches the tree's columns). Both are added by
+// the fold; `averages` names the pairs, and DivideAverages turns each into the average once the tree is built.
+ibQueryRamTable FoldByKeysFirst(ibQueryRowCursor& rows, const std::vector<ibTotalLevel>& levels,
+	const std::vector<ibDataQueryBuilder::AggregateItem>& aggregates,
+	std::vector<ibDataQueryBuilder::AggregateItem>& rolled,
+	std::vector<std::unique_ptr<ibBackendQueryColumn>>& owned,
+	std::vector<std::pair<ibMetaID, ibMetaID>>& averages, long& read)
+{
+	ibQueryRamTable table;
+	for (const ibQueryRamColumn& c : rows.Columns())
+		table.AddColumn(c.m_id, c.m_name, c.m_type, c.m_caption);
+
+	rolled = aggregates;
+	for (size_t i = 0; i < aggregates.size(); ++i) {
+		ibDataQueryBuilder::AggregateItem& a = rolled[i];
+		if (AggNeedsOwnSlot(aggregates[i])) {
+			// A COUNT(*) or a computed input has no column to fold in place: its part gets a column under the
+			// slot's own id, so the slot is the same one whichever fold wrote it.
+			const ibMetaID slot = AggSlotId(aggregates, i);
+			owned.push_back(std::make_unique<ibSubqueryExprColumn>(aggregates[i].m_alias, slot));
+			table.AddColumn(slot, aggregates[i].m_alias, ibTypeDescription());
+			a.m_col = owned.back().get();
+		}
+		a.m_expr.reset();
+		if (a.m_fn == ibDataQueryBuilder::AggregateFn::Count)
+			a.m_fn = ibDataQueryBuilder::AggregateFn::Sum;
+	}
+	std::vector<size_t> averaged;   // which aggregates are averages, in the order their counts were numbered
+	for (size_t i = 0; i < aggregates.size(); ++i) {
+		if (aggregates[i].m_fn != ibDataQueryBuilder::AggregateFn::Avg)
+			continue;
+		const ibMetaID counted = ibSynthId(ibSynthKind::Aggregate, static_cast<ibMetaID>(aggregates.size() + averaged.size()));
+		owned.push_back(std::make_unique<ibSubqueryExprColumn>(wxString(), counted));
+		rolled[i].m_fn = ibDataQueryBuilder::AggregateFn::Sum;   // the sums of the parts…
+		ibDataQueryBuilder::AggregateItem count{ ibDataQueryBuilder::AggregateFn::Sum, owned.back().get(), wxString() };
+		rolled.push_back(count);                                  // …and their counts, beside them
+		averages.emplace_back(AggSlotId(aggregates, i), counted);
+		averaged.push_back(i);
+	}
+
+	std::vector<ibMetaID> keyIds;
+	for (const ibTotalLevel& level : levels)
+		for (const ibTotalField& field : level.m_fields)
+			if (std::find(keyIds.begin(), keyIds.end(), field.m_col->GetColumnId()) == keyIds.end())
+				keyIds.push_back(field.m_col->GetColumnId());
+
+	struct KeyHash {
+		size_t operator()(const std::vector<ibValue>& key) const {
+			std::uint64_t h = kIbHashBasis;
+			for (const ibValue& v : key)
+				h = ibHashCombine(h, static_cast<std::uint64_t>(ibValueHash()(v)));
+			return static_cast<size_t>(h);
+		}
+	};
+	struct KeyEqual {
+		bool operator()(const std::vector<ibValue>& a, const std::vector<ibValue>& b) const {
+			if (a.size() != b.size())
+				return false;
+			for (size_t i = 0; i < a.size(); ++i)
+				if (!ibValueEqual()(a[i], b[i]))
+					return false;
+			return true;
+		}
+	};
+	struct Group { long m_row; std::vector<ibAggAcc> m_parts; };
+	std::unordered_map<std::vector<ibValue>, size_t, KeyHash, KeyEqual> index;
+	std::vector<Group> groups;
+
+	while (rows.Next()) {
+		++read;
+		std::vector<ibValue> key;
+		key.reserve(keyIds.size());
+		for (const ibMetaID id : keyIds)
+			key.push_back(rows.Get(id));
+		size_t g;
+		const auto found = index.find(key);
+		if (found == index.end()) {
+			g = groups.size();
+			index.emplace(std::move(key), g);
+			const long r = table.AppendRow();
+			for (const ibQueryRamColumn& c : rows.Columns())
+				table.SetCell(r, c.m_id, rows.Get(c.m_id));
+			groups.push_back(Group{ r, std::vector<ibAggAcc>(aggregates.size()) });
+		}
+		else {
+			g = found->second;
+		}
+		for (size_t i = 0; i < aggregates.size(); ++i)
+			groups[g].m_parts[i].Feed(aggregates[i], rows);
+	}
+
+	for (const Group& group : groups) {
+		for (size_t i = 0; i < aggregates.size(); ++i)
+			if (aggregates[i].m_fn != ibDataQueryBuilder::AggregateFn::Avg)
+				table.SetCell(group.m_row, AggSlotId(aggregates, i), group.m_parts[i].Result(aggregates[i]));
+		for (size_t k = 0; k < averaged.size(); ++k) {
+			const ibAggAcc& part = group.m_parts[averaged[k]];
+			table.SetCell(group.m_row, averages[k].first, part.m_n > 0 ? ibValue(part.m_sum) : RamNullValue());
+			table.SetCell(group.m_row, averages[k].second, ibValue(ibNumber(part.m_n)));
+		}
+	}
+	return table;
+}
+
+// …and each average made from its two parts, on every heading of the finished tree: the sum over the count,
+// or NULL where nothing was counted — what an average of no values is (ibAggAcc::Result). The count's cell is
+// taken away again; it was never a figure of the report.
+void DivideAverages(ibSelectorTree::Node& node, const std::vector<std::pair<ibMetaID, ibMetaID>>& averages)
+{
+	for (const std::pair<ibMetaID, ibMetaID>& average : averages) {
+		const auto counted = node.m_values.find(average.second);
+		if (counted == node.m_values.end())
+			continue;
+		const auto summed = node.m_values.find(average.first);
+		const bool any = counted->second > ibValue(ibNumber(0));
+		const ibValue value = (any && summed != node.m_values.end() && !RamIsNullValue(summed->second))
+			? ibValue(summed->second.GetNumber() / counted->second.GetNumber())
+			: RamNullValue();
+		node.m_values.erase(average.second);
+		node.m_values[average.first] = value;
+	}
+	for (const std::unique_ptr<ibSelectorTree::Node>& child : node.m_children)
+		if (child != nullptr)
+			DivideAverages(*child, averages);
 }
 
 } // namespace
@@ -4500,6 +5377,14 @@ ibSelectorTree ibQueryComposer::BuildHierarchyTree(const ibQueryRamTable& detail
 	AddSyntheticAggColumns(tree, aggregates);              // + COUNT(*) receivers
 
 	const long n = detail.RowCount();
+
+	// No row key or parent key: there is no tree. Select(ByGroups) on a query without
+	// TOTALS arrives here with both null, and reading them is a null dereference.
+	// The records themselves are the walk — the Elements placement, which does not
+	// use the keys. A by-groups walk of a result that named no grouping reads like
+	// the direct walk.
+	if (rowKeyCol == nullptr || parentKeyCol == nullptr)
+		mode = ibDimensionKind::Elements;
 
 	// Elements: every row as a leaf NODE under the root, in order, no nesting. A grand total (if
 	// aggregates) on the root. (The tree carries no flat rows — a leaf is a one-level node.)
@@ -4626,17 +5511,10 @@ ibSelectorTree ibQueryComposer::BuildReferenceHierarchy(const ibQueryRamTable& s
 	if (target == nullptr || holder == nullptr || tRowKey == nullptr || tParent == nullptr)
 		return BuildTotalsTree(snapshot, { refCol }, aggregates);
 
-	// Materialise the target's parent-map (value -> parent value) through the door.
-	ibValueParentMap parentOf;
-	{
-		ibDataQueryBuilder q(holder);
-		q.From(source->GetProvider().ResolveReferenceTarget(source, refCol)).Select(tRowKey, wxEmptyString).Select(tParent, wxEmptyString);
-		ibSelector ts = q.Execute(ibReadPageRequest{}).Select(ibSelectKind::ibSelectKind_Direct);
-		while (ts.Next())
-			parentOf[ts.GetValue(tRowKey)] = ts.GetValue(tParent);
-	}
+	// The target's tree (value -> parent value, and each one's place in its kind's order), through the door.
+	const ibValueHierarchy hierarchy = ReadValueHierarchy(target, holder);
 
-	// Index the snapshot rows by the refCol value; build the value->children map from parentOf.
+	// Index the snapshot rows by the refCol value; build the value->children map from the tree.
 	ibSelectorTree tree;
 	for (const ibQueryRamColumn& col : snapshot.Columns())
 		tree.AddColumn(col.m_id, col.m_name, col.m_type);
@@ -4644,22 +5522,24 @@ ibSelectorTree ibQueryComposer::BuildReferenceHierarchy(const ibQueryRamTable& s
 
 	// `valOf` is gone: it existed only to map a rendered key back to the value it came from, and the
 	// value is the key now.
+	// …the values in the order their rows came, which the map does not keep (see ibArrangeUnderParents).
 	ibRowsByValue rowsByVal;
+	std::vector<ibValue> keyOrder;
 	const long n = snapshot.RowCount();
-	for (long r = 0; r < n; ++r)
-		rowsByVal[snapshot.GetCell(r, refCol->GetColumnId())].push_back(r);
+	for (long r = 0; r < n; ++r) {
+		const ibValue key = snapshot.GetCell(r, refCol->GetColumnId());
+		auto it = rowsByVal.find(key);
+		if (it == rowsByVal.end()) {
+			keyOrder.push_back(key);
+			rowsByVal.emplace(key, std::vector<long>{ r });
+		}
+		else
+			it->second.push_back(r);
+	}
 
-	ibRefChildren childrenOf;   // among VALUES PRESENT (+ their ancestors)
-	ibValueSeen   seen;
-	std::function<void(const ibValue&)> chainUp = [&](const ibValue& key) {
-		if (IsNoKey(key) || seen[key]) return;
-		seen[key] = 1;
-		const auto pit = parentOf.find(key);
-		const ibValue par = (pit != parentOf.end()) ? pit->second : ibValue();
-		childrenOf[par].push_back(key);   // an absent parent => a root
-		chainUp(par);
-	};
-	for (const auto& kv : rowsByVal) chainUp(kv.first);
+	// Among VALUES PRESENT (+ their ancestors), each where its row stood.
+	ibRefChildren childrenOf = ibArrangeUnderParents(keyOrder, hierarchy,
+		[&rowsByVal](const ibValue& key) { return rowsByVal.find(key) != rowsByVal.end(); });
 
 	RefHierCtx ctx{ &snapshot, refCol, &rowsByVal, &childrenOf, &aggregates, dim };
 	ibValueSeen visited;
@@ -4693,28 +5573,24 @@ struct DimCtx {
 	// table, a join). A level grouped BY it holds one row per group by construction, so its headings are
 	// the rows themselves; see AttachDimValue. Read once, here, rather than per node.
 	ibMetaID                                              identity = 0;
+	// ⭐ …AND THE TREES, ONE PER LEVEL FIELD, READ ONCE PER FOLD (HierarchyForField). A hierarchy level under another
+	// is folded once per heading above it, and every one of those folds read its catalog's whole tree again — all the
+	// goods, for each warehouse.
+	mutable std::map<const ibBackendQueryColumn*, ibValueHierarchy> trees;
 };
 
-// Parent-map (value-key -> parent value-key) for a level field: the target catalog of the reference
-// field (cross), or the source itself when the field is the source's OWN parent column (self). Read
-// through the door. Empty when there is no hierarchy target / no holder.
-ibValueParentMap ParentMapForField(const DimCtx& ctx, const ibBackendQueryColumn* field)
+// The tree a level field's values stand in (ReadValueHierarchy): the target catalog of the reference field (cross),
+// or the source itself when the field is the source's OWN parent column (self) — read once per fold (DimCtx::trees).
+// Empty when there is no hierarchy target / no holder.
+const ibValueHierarchy& HierarchyForField(const DimCtx& ctx, const ibBackendQueryColumn* field)
 {
-	ibValueParentMap pm;
+	const auto known = ctx.trees.find(field);
+	if (known != ctx.trees.end())
+		return known->second;
 	const ibBackendQueryable* target = (ctx.source != nullptr) ? ctx.source->GetProvider().ResolveReferenceTarget(ctx.source, field) : nullptr;
 	if (target == nullptr && ctx.source != nullptr && field == ctx.source->GetHierarchyColumn())
 		target = ctx.source;
-	if (target == nullptr || ctx.holder == nullptr) return pm;
-	const std::vector<const ibBackendQueryColumn*> keys = target->GetPrimaryKeyColumns();
-	const ibBackendQueryColumn* rk = keys.empty() ? nullptr : keys.front();
-	const ibBackendQueryColumn* pk = target->GetHierarchyColumn();
-	if (rk == nullptr || pk == nullptr) return pm;
-	ibDataQueryBuilder q(ctx.holder);
-	q.From(target).Select(rk, wxEmptyString).Select(pk, wxEmptyString);
-	ibSelector ts = q.Execute(ibReadPageRequest{}).Select(ibSelectKind::ibSelectKind_Direct);
-	while (ts.Next())
-		pm[ts.GetValue(rk)] = ts.GetValue(pk);
-	return pm;
+	return ctx.trees.emplace(field, ReadValueHierarchy(target, ctx.holder)).first->second;
 }
 
 // `across` — this call is building the COLUMN branch of a cross-table: the levels past the seam,
@@ -5032,9 +5908,11 @@ void FoldDimLevel(const DimCtx& ctx, ibSelectorTree::Node* node, const std::vect
 	//
 	// The parent map is read FIRST and its emptiness IS the answer, so this asks the same authority the
 	// walk would have asked anyway and costs nothing extra.
-	const ibValueParentMap parentOf = (level.IsSingleField() && level.HeadDim() != ibDimensionKind::Elements)
-		? ParentMapForField(ctx, level.HeadCol())
-		: ibValueParentMap{};
+	static const ibValueHierarchy kNoHierarchy;
+	const ibValueHierarchy& hierarchy = (level.IsSingleField() && level.HeadDim() != ibDimensionKind::Elements)
+		? HierarchyForField(ctx, level.HeadCol())
+		: kNoHierarchy;
+	const ibValueParentMap& parentOf = hierarchy.parentOf;
 
 	if (level.IsSingleField() && level.HeadDim() != ibDimensionKind::Elements && !parentOf.empty()) {
 		// Grouped by the VALUE, in first-seen order. `valOf` is gone with the string key — it only ever
@@ -5066,48 +5944,16 @@ void FoldDimLevel(const DimCtx& ctx, ibSelectorTree::Node* node, const std::vect
 
 		// Hierarchy / HierarchyOnly — arrange the values into the catalog's parent-ref tree. (`parentOf`
 		// was read above the branch: its emptiness is what decides whether this road is taken at all.)
-		ibRefChildren childrenOf;
-		ibValueSeen   seen;
-		std::function<void(const ibValue&)> chainUp = [&](const ibValue& key) {
-			if (IsNoKey(key) || seen[key]) return;
-			seen[key] = 1;
-			const auto pit = parentOf.find(key);
-			const ibValue par = (pit != parentOf.end()) ? pit->second : ibValue();
-			// ⭐⭐ "NO PARENT" ARRIVES AS TWO DIFFERENT VALUES, AND THE ROOT BUCKET IS ONE. A key the
-			// parent-map does not mention gives a default `ibValue()`; a key it DOES mention as
-			// top-level gives an EMPTY REFERENCE — a reference value with a null guid, which is not
-			// equal to `ibValue()` and hashes elsewhere. `IsNoKey` already reads both as "root", so
-			// they are filed under the same key here; the roots are looked up under `ibValue()` below.
-			//
-			// 🛑 Filed under whatever came, a hierarchical catalog lost its whole tree: every top-level
-			// element went into the empty-REFERENCE bucket, the root lookup read the empty-VALUE one and
-			// found nobody, and the only node that survived was the one whose parent happened to be
-			// missing from the map altogether. One node out of five rows — which is exactly what the
-			// walk saw (Max, 2026-08-29: the hierarchical sheet came out blank, twice).
-			childrenOf[IsNoKey(par) ? ibValue() : par].push_back(key);
-			chainUp(par);
-		};
-		// ⭐⭐ …AND A KEY STANDS WHERE ITS OWN ROW STOOD, NOT WHERE ITS FIRST CHILD DID. `chainUp` walks
-		// UPWARD, so filing straight from it puts a folder in its parent's list the moment the first row
-		// UNDER it is met — and a folder whose contents sort early jumped to the front while its own row
-		// sat further down the read. Two passes say it properly:
 		//
-		//   1. every key that HAS a row, in the order the rows arrived — the fold's rule everywhere else;
-		//   2. only then the ancestors that have NO row of their own (pulled in by a filter that kept a
-		//      child and dropped the folder). They have nothing to be ordered by, so they follow.
-		for (const ibValue& key : keyOrder) {
-			if (IsNoKey(key) || seen[key])
-				continue;
-			seen[key] = 1;
-			const auto pit = parentOf.find(key);
-			const ibValue par = (pit != parentOf.end()) ? pit->second : ibValue();
-			childrenOf[IsNoKey(par) ? ibValue() : par].push_back(key);
-		}
-		for (const ibValue& key : keyOrder) {
-			const auto pit = parentOf.find(key);
-			if (pit != parentOf.end())
-				chainUp(pit->second);
-		}
+		// ⭐⭐ "NO PARENT" ARRIVES AS TWO DIFFERENT VALUES, AND THE ROOT BUCKET IS ONE — a key the map does not
+		// mention, and an empty reference; both are filed under `ibValue()`, where the roots are looked up below.
+		// 🛑 Filed under whatever came, a hierarchical catalog lost its whole tree: every top-level element went
+		// into the empty-REFERENCE bucket and the root lookup read the empty-VALUE one (Max, 2026-08-29: the
+		// hierarchical sheet came out blank, twice).
+		// ⭐⭐ …AND A KEY STANDS WHERE ITS OWN ROW STOOD, NOT WHERE ITS FIRST CHILD DID; a folder with no row of
+		// its own, where its first descendant did (ibArrangeUnderParents — the other hierarchy road says it too).
+		ibRefChildren childrenOf = ibArrangeUnderParents(keyOrder, hierarchy,
+			[&byVal](const ibValue& key) { return byVal.find(key) != byVal.end(); });
 		ibValueSeen visited;
 		// Rows of ROOT values that HIERARCHYONLY folded away: an element standing at the top has no
 		// folder to be read under, so its rows join the level's remainder below rather than vanishing
@@ -5124,7 +5970,7 @@ void FoldDimLevel(const DimCtx& ctx, ibSelectorTree::Node* node, const std::vect
 			}
 
 		// ⭐⭐ …AND THE ROWS THAT HAVE NO KEY AT THIS LEVEL BELONG TO THE NODE ITSELF. Grouping a catalog by
-		// its PARENT makes "no parent" a real group — it means the TOP LEVEL — and `chainUp` refuses such a
+		// its PARENT makes "no parent" a real group — it means the TOP LEVEL — and the arrangement refuses such a
 		// key at the door (it is what ends the walk up the chain), so those rows had no heading to hang
 		// under and simply vanished: a catalog printed one folder and lost every element standing beside it
 		// (Max, 2026-08-29). They are not a heading either — the top level of a tree has no caption — so
@@ -5300,6 +6146,19 @@ ibSelectorTree ibQueryComposer::BuildDimensionTree(ibQueryRowCursor& rows,
 		ibDatabaseConnectionHolder* holder, const ibBackendQueryable* source)
 {
 	if (LevelsUnfoldHierarchy(levels)) {
+		if (CanFoldByKeysFirst(levels, aggregates, source)) {
+			std::vector<ibDataQueryBuilder::AggregateItem> rolled;
+			std::vector<std::unique_ptr<ibBackendQueryColumn>> owned;   // the parts' columns, alive through the fold
+			std::vector<std::pair<ibMetaID, ibMetaID>> averages;         // an average's sum slot and its count's
+			long read = 0;
+			ibQueryRamTable grouped = FoldByKeysFirst(rows, levels, aggregates, rolled, owned, averages, read);
+			ibJournalInfo(wxT("query.road"), wxT("RAM: folded %ld detail rows into %ld groups by their keys - a level unfolds a reference hierarchy"),
+			              read, grouped.RowCount());
+			ibSelectorTree tree = BuildDimensionTree(grouped, levels, rolled, holder, source);
+			if (!averages.empty())
+				DivideAverages(tree.Root(), averages);
+			return tree;
+		}
 		ibQueryRamTable snapshot = ibDrainToRamTable(rows);
 		ibJournalInfo(wxT("query.road"), wxT("RAM: drained %ld detail rows - a level unfolds a reference hierarchy"),
 		              snapshot.RowCount());
@@ -5726,6 +6585,11 @@ ibDataQueryResult ibQueryComposer::ExecuteGroupLevelPage(const ibDataQuerySpec& 
 // not. False = nothing was read; the caller proceeds exactly as before.
 bool ibQueryComposer::TryFoldTotalsInDbms(const ibDataQuerySpec& spec, ibSelectorTree& out)
 {
+	if (IsSingleSource(spec) && ibDbTableProvider::CanFoldOneLevelTotals(spec)) {
+		ibJournalInfo(wxT("query.road"), wxT("SERVER: one level folded by GROUP BY (single source)"));
+		out = ibDbTableProvider::ExecuteOneLevelTotals(spec);
+		return true;
+	}
 	if (IsSingleSource(spec) && ibDbTableProvider::CanPushRollupTotals(spec)) {
 		out = ibDbTableProvider::ExecuteRollupTotals(spec);
 		return true;
@@ -5748,6 +6612,12 @@ bool ibQueryComposer::CanDeclareNamedQuery(ibDatabaseConnectionHolder* holder)
 ibSelectorTree ibQueryComposer::ExecuteTotals(const ibDataQuerySpec& spec)
 {
 	// The one that needs it most: totals read the detail AND fold it, often in more than one pass.
+
+	// ONE level of headings is a plain GROUP BY, on any engine — ROLLUP or not (CanFoldOneLevelTotals).
+	if (IsSingleSource(spec) && ibDbTableProvider::CanFoldOneLevelTotals(spec)) {
+		ibJournalInfo(wxT("query.road"), wxT("SERVER: one level folded by GROUP BY (single source)"));
+		return ibDbTableProvider::ExecuteOneLevelTotals(spec);
+	}
 
 	// Push-down: a single-source totals on a ROLLUP-capable DBMS runs server-side (GROUP BY ROLLUP),
 	// the DBMS computing every subtotal level — only the aggregated rows transit, no raw detail.
@@ -5827,10 +6697,12 @@ public:
 	ibValue Value(const ibBackendQueryColumn* col) const override {
 		return (m_row >= 0 && col != nullptr) ? m_table.GetCell(m_row, col->GetColumnId()) : ibValue();
 	}
-	using ibDataResultSource::Column;   // the prefix-and-column read keeps the base's answer
-	ibValue Column(const wxString& alias) const override {
+	// A COMPOSED TABLE HOLDS VALUES, NOT FIELDS — whatever was spread on the way here was reassembled
+	// before it was poured, so both shapes are one lookup by name and `col` has nothing to add. Said here
+	// rather than inherited, because the same sentence is false of a cursor (dbTableProvider.cpp).
+	ibValue Column(const wxString& name, const ibBackendQueryColumn* /*col*/ = nullptr) const override {
 		for (const ibQueryRamColumn& c : m_table.Columns())
-			if (c.m_name == alias) return m_table.GetCell(m_row, c.m_id);
+			if (c.m_name == name) return m_table.GetCell(m_row, c.m_id);
 		return ibValue();
 	}
 
@@ -5870,6 +6742,15 @@ ibValue  ibDataQueryResult::GetColumn(const wxString& alias)                    
 	for (const ibQueryColumnSelect& c : m_computedOverRow)
 		if (c.m_alias.IsSameAs(alias, false) && c.m_expr)
 			return EvalOverResultRow(c, *m_source);
+	// …then an output that came back as a SPREAD: a computed value of a composite type is projected field
+	// by field under a prefix, so it is reassembled by the reader that reassembles every other object
+	// output. Asked by name here, it looks like any other column — which is the whole point.
+	// …then an output that came back as a SPREAD: the result knows it, because the same question decided
+	// how to project it. The backing is only told WHICH shape to read — one door, and no caller anywhere
+	// has to know that an output was ever spread.
+	for (const ibComputedSpread& s : m_computedSpreads)
+		if (s.m_alias.IsSameAs(alias, false) && s.m_col != nullptr)
+			return m_source->Column(s.m_prefix, s.m_col);
 	return m_source->Column(alias);
 }
 ibValue  ibDataQueryResult::GetColumn(const wxString& prefix, const ibBackendQueryColumn* col) const { return m_source->Column(prefix, col); }
@@ -5888,6 +6769,11 @@ void ibDataQueryResult::SetMaterialiseColumns(std::vector<const ibBackendQueryCo
 void ibDataQueryResult::SetComputedOverRow(std::vector<ibQueryColumnSelect> columns)
 {
 	m_computedOverRow = std::move(columns);
+}
+
+void ibDataQueryResult::SetComputedSpreads(std::vector<ibComputedSpread> spreads)
+{
+	m_computedSpreads = std::move(spreads);
 }
 
 void ibDataQueryResult::SetTotals(std::vector<ibTotalLevel> levels, std::vector<ibAggregateItem> aggregates,
@@ -5949,7 +6835,7 @@ public:
 	{
 		for (const ibBackendQueryColumn* c : cols)
 			if (c != nullptr) {
-				m_columns.push_back(ibQueryRamColumn{ c->GetColumnId(), c->GetName(), c->GetTypeDesc() });
+				m_columns.push_back(ibQueryRamColumn{ c->GetColumnId(), c->GetName(), c->GetTypeDesc(), c->GetSynonym() });
 				m_cols.push_back(c);
 			}
 	}
@@ -6004,7 +6890,12 @@ ibSelector ibDataQueryResult::Select(ibSelectKind mode)
 		objectReads.emplace(kv.first, std::make_pair(kv.second.m_prefix, kv.second.m_leaf));
 
 	ibSelector s(std::make_unique<ibResultRowCursor>(m_source, m_matColumns, std::move(objectReads)), mode);
-	s.WithTotals(m_totalLevels, m_totalAggregates, m_totalsOverall);            // fold by the door's TotalBy config
+	// ⚠ …AND A DIRECT WALK IS NOT TOLD OF THE OVERALL ROW, because it folds nothing: its tree is the RECORDS, one flat
+	// layer under a root that holds no figure. Told of it, the walk visited that root and nothing else — a totals
+	// query read directly (`Select()`, `Unload()`) came back as ONE row with every column blank, over a register as
+	// over a value table (2026-09-29). The totals are the grouped walk's.
+	s.WithTotals(m_totalLevels, m_totalAggregates,
+	             m_totalsOverall && mode != ibSelectKind::ibSelectKind_Direct);   // fold by the door's TotalBy config
 	s.WithSource(m_srcHolder, m_srcQueryable, m_srcSelectCols, m_srcConditions);  // enable lazy sub-selections
 	// ⚠ AND IT IS NOT FOLDED HERE. A selection is configured AFTER it is made — MakeChild adds
 	// ByParentRef / ByGroups / Aggregating to what this hands back — so folding at this point would

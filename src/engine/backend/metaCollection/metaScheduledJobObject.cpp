@@ -86,7 +86,7 @@ bool ibValueMetaObjectScheduledJob::RegisterJob()
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		return true;   // launcher / pre-bootstrap — nothing to declare against
 
@@ -97,7 +97,7 @@ bool ibValueMetaObjectScheduledJob::RegisterJob()
 	// on a job is its name, script's Execute resolves that name by key, and an unregistered job has
 	// none — so "run this once and watch what happens", the very next thing one does after
 	// switching a job off, answered false and did nothing. Registered-but-inactive is a different
-	// state from not-there: IsDue refuses it, RunNow still finds it.
+	// state from not-there: IsDue refuses it, Execute still finds it.
 	ibJobDescription desc;
 	desc.m_active   = IsUsed();
 	desc.m_origin   = ibJobOrigin::Configuration;
@@ -152,17 +152,10 @@ bool ibValueMetaObjectScheduledJob::UnregisterJob()
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
 
-	if (ibJobManager* const manager = ibApplicationData::GetJobManager())
+	if (ibJobManager* const manager = ibApplicationInstance::GetJobManager())
 		manager->Unregister(GetJobName());
 
 	return true;
-}
-
-bool ibValueMetaObjectScheduledJob::RunNow() const
-{
-	if (ibJobManager* const manager = ibApplicationData::GetJobManager())
-		return manager->RunNow(GetJobName());
-	return false;
 }
 
 //***********************************************************************

@@ -2,7 +2,7 @@
 #define __PROPERTY_CALC_SCHEDULE_H__
 
 #include "backend/propertyManager/propertyObject.h"
-#include "backend/calcScheduleDescription.h"
+#include "core/description/calcScheduleDescription.h"
 
 class ibValueMetaObjectRegisterData;
 
@@ -14,7 +14,7 @@ class ibValueMetaObjectRegisterData;
 // ⭐ WHAT EACH PART MAY BE IS ANSWERED HERE, and nowhere else: the inspector's rows and metadata_set_schedule both
 // ask. The fields a link may name are the owner register's own (GetScheduleFieldList).
 class BACKEND_API ibPropertyCalcSchedule : public ibProperty {
-	wxVariantData* CreateVariantData(ibPropertyObject* property, const ibCalcScheduleDescription& scheduleDesc = ibCalcScheduleDescription()) const;
+	static wxVariantData* CreateVariantData(ibPropertyObject* property, const ibCalcScheduleDescription& scheduleDesc = ibCalcScheduleDescription());
 	const ibValueMetaObjectRegisterData* GetScheduleRegister(const ibCalcScheduleDescription& scheduleDesc) const;
 public:
 

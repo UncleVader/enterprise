@@ -21,7 +21,7 @@
 
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/compileContext.h"   // CODE_VES / CODE_CES
-#include "backend/compiler/codeDef.h"
+#include "core/compiler/codeDef.h"
 #include "backend/compiler/byteCode.h"
 #include "backend/compiler/value.h"
 
@@ -105,7 +105,7 @@ public:
 		delete wxLog::SetActiveTarget(new wxLogStderr());
 
 		// Image handlers are NOT registered here. backend.dll already does it from
-		// a static ctor at DLL load (picturePredefined.cpp), and the initializer
+		// a static ctor at DLL load (backend_picture.cpp), and the initializer
 		// above is what makes that hold — with wx up for the whole run, nothing
 		// calls wxEntryCleanup mid-suite to wipe them. Registering again only
 		// prints a screenful of "Adding duplicate image handler".
@@ -162,7 +162,7 @@ TEST(LexerTest, EmptySourceProducesEndProgramOnly) {
 	ASSERT_TRUE(cc.PrepareLexem());
 	// At least the ENDPROGRAM sentinel — exact number depends on lexer
 	// implementation, but it must be non-empty.
-	EXPECT_GE(cc.GetLexemCount(), 1u);
+	EXPECT_GE(cc.m_translateCode.GetLexCount(), 1u);
 }
 
 TEST(LexerTest, SimpleAssignmentTokenizes) {
@@ -170,14 +170,14 @@ TEST(LexerTest, SimpleAssignmentTokenizes) {
 	cc.Load(wxT("a = 1;"));
 	ASSERT_TRUE(cc.PrepareLexem());
 	// Identifier 'a', '=', number '1', ';', ENDPROGRAM — at least 5.
-	EXPECT_GE(cc.GetLexemCount(), 4u);
+	EXPECT_GE(cc.m_translateCode.GetLexCount(), 4u);
 }
 
 TEST(LexerTest, StringLiteralLexes) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	cc.Load(wxT("s = \"hello\";"));
 	ASSERT_TRUE(cc.PrepareLexem());
-	EXPECT_GE(cc.GetLexemCount(), 4u);
+	EXPECT_GE(cc.m_translateCode.GetLexCount(), 4u);
 }
 
 // ===========================================================================
@@ -327,7 +327,7 @@ TEST(CompilerTest, SyntaxErrorReturnsFalse) {
 // Compile + AOT round-trip — checks the AOT layer with real compiler output
 // ===========================================================================
 
-#include "backend/fileSystem/fs.h"
+#include "core/fileSystem/fs.h"
 
 TEST(CompilerAOT, RealCompileOutputRoundTrips) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
@@ -763,7 +763,7 @@ TEST(BarrierTypes, CreateNothing) {
 	// No value is ever "an AnyRef" — the name exists to be declared.
 	const ibCtorAbstractType* ctor = ibValue::GetAvailableCtor(wxT("AnyRef"));
 	ASSERT_NE(nullptr, ctor);
-	EXPECT_EQ(nullptr, ctor->CreateObject());
+	EXPECT_FALSE(ctor->CreateObject().IsReference());
 }
 
 TEST(BarrierTypes, CarryOrdinaryIdsOfTheirOwn) {
@@ -815,7 +815,7 @@ TEST(BarrierTypes, AMetatypeFamilyExistsWithoutAConfiguration) {
 	const ibCtorAbstractType* catalogRef = ibValue::GetAvailableCtor(wxT("CatalogRef"));
 	ASSERT_NE(nullptr, catalogRef) << "the family did not arrive with its metatype";
 
-	EXPECT_EQ(nullptr, catalogRef->CreateObject())
+	EXPECT_FALSE(catalogRef->CreateObject().IsReference())
 		<< "no value is ever a CatalogRef";
 }
 
@@ -880,8 +880,8 @@ TEST(AnyKinds, TypedParameterOfAKindCompiles) {
 #include "backend/metaData.h"
 #include "backend/system/value/valueArray.h"
 #include "backend/system/value/valueMap.h"
-#include "backend/system/value/valueColour.h"
-#include "backend/serialize/dataBuilder.h"
+#include "backend/system/value/valuePoint.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/backend_exception.h"
 
 namespace {
@@ -981,12 +981,13 @@ TEST(ValueSerialize, EmptyArrayRoundTrips) {
 }
 
 TEST(ValueSerialize, AValueWithNoPackedFormIsRefused) {
-	// A colour is a perfectly ordinary registered value with no payload form.
+	// A point is a perfectly ordinary registered value with no payload form (a
+	// colour was, until it packed itself for a conditional appearance).
 	// Refusing is the contract: writing it as something else would produce a
 	// blob that restores into the wrong thing.
-	ibValuePtr<ibValueColour> colour(new ibValueColour());
-	ibDataNode node(colour->GetClassType(), 0);
-	EXPECT_FALSE(ibValue(colour).Serialize(node));
+	ibValuePtr<ibValuePoint> point(new ibValuePoint());
+	ibDataNode node(point->GetClassType(), 0);
+	EXPECT_FALSE(ibValue(point).Serialize(node));
 }
 
 TEST(ValueSerialize, ANodeWithoutATypeReadsAsUndefined) {
@@ -1156,7 +1157,7 @@ TEST(MetaDataSerialize, TheTreeIS_WhatTravels) {
 TEST(MetaDataSerialize, WhatItDoesNotKnowGoesToTheValueFactory) {
 	// The redirect, from the side where it is visible: this stand-in claims
 	// nothing, so every type on the way through is the factory's answer —
-	// reached inside IsRegisterCtor / CreateObjectRef, not around them.
+	// reached inside IsRegisterCtor / CreateObject, not around them.
 	StandInMetaData metaData;
 	const ibValue original(wxT("through the factory"));
 
@@ -1196,10 +1197,74 @@ TEST(MetaDataSerialize, AValueWithNoPackedFormIsRefused) {
 	// The refusal reaches the caller as an exception rather than as a tree that
 	// would restore into nothing.
 	StandInMetaData metaData;
-	ibValuePtr<ibValueColour> colour(new ibValueColour());
+	ibValuePtr<ibValuePoint> point(new ibValuePoint());
 
-	ibDataNode node(colour->GetClassType(), 0);
-	EXPECT_THROW(metaData.Serialize(ibValue(colour), node), ibBackendException);
+	ibDataNode node(point->GetClassType(), 0);
+	EXPECT_THROW(metaData.Serialize(ibValue(point), node), ibBackendException);
+}
+
+// ===========================================================================
+// A column's TYPED EMPTY value is made by the configuration that owns the type
+// ===========================================================================
+//
+// ibValueTypeDescription::AdjustValue answers "what does an empty cell of this
+// column look like". For a reference of a catalog that answer is the catalog's
+// empty reference, and the class that makes it is registered in the
+// CONFIGURATION'S image - never in the value registry, which knows the built-in
+// types only.
+//
+// 🛑 The question "is this class registered?" was put to the value registry
+// (2026-09-24), so every reference type of a configuration came back as the
+// untyped empty value. A ledger balance split one item into two rows: a currency
+// never written read as Undefined, one written empty read as the empty
+// reference, and the key a server read groups by (KeyFieldsAsRead) could no
+// longer say they are the same. Measured 2026-09-26 on account 28 of a ledger
+// whose currency was added after its first postings.
+
+#include "backend/system/value/valueType.h"
+
+namespace {
+
+// Makes ONE class of its own, the way a configuration makes the empty reference of
+// its catalog: a class id the value registry has never heard of.
+class MakingStandIn : public StandInMetaData {
+public:
+	explicit MakingStandIn(const ibClassID& own) : m_own(own) {}
+
+	bool IsRegisterCtor(const ibClassID& clsid) const override {
+		return clsid == m_own || StandInMetaData::IsRegisterCtor(clsid);
+	}
+	ibValue CreateObject(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const override {
+		if (clsid == m_own)
+			return ibValue(wxT("the catalog's empty reference"));
+		return StandInMetaData::CreateObject(clsid, paParams, lSizeArray);
+	}
+
+private:
+	ibClassID m_own;
+};
+
+} // namespace
+
+TEST(TypedEmpty, AReferenceOfTheConfigurationIsMadeByTheConfiguration) {
+	const ibClassID catalogRef = reference_to_clsid(987654);
+	ASSERT_FALSE(ibValue::IsRegisterCtor(catalogRef)) << "the value registry must not know it - that is the case";
+
+	MakingStandIn metaData(catalogRef);
+	const ibValue empty = ibValueTypeDescription::AdjustValue(ibTypeDescription(catalogRef), &metaData);
+
+	EXPECT_EQ(empty.GetString(), wxString(wxT("the catalog's empty reference")));
+}
+
+TEST(TypedEmpty, ATypeNobodyHasIsTheEmptyValueNotARefusal) {
+	// The other half, kept: a type described but registered NOWHERE (a configuration built without its
+	// runtime objects) still answers with the untyped empty value rather than a raise.
+	const ibClassID catalogRef = reference_to_clsid(987655);
+	StandInMetaData metaData;
+
+	ibValue empty(ibNumber(7));
+	ASSERT_NO_THROW(empty = ibValueTypeDescription::AdjustValue(ibTypeDescription(catalogRef), &metaData));
+	EXPECT_EQ(empty.GetType(), ibValueTypes::TYPE_EMPTY);
 }
 
 // ===========================================================================
@@ -1211,7 +1276,7 @@ TEST(MetaDataSerialize, AValueWithNoPackedFormIsRefused) {
 // ===========================================================================
 
 #include "backend/system/value/composition/valueComposerField.h"
-#include "backend/compositionDescription.h"
+#include "backend/backend_composition.h"
 #include "backend/composition/dataComposer.h"
 #include "backend/query/queryRender.h"   // ibRenderQueryExpr — the text IS the expression rendered
 
@@ -1228,6 +1293,14 @@ TEST(CompositionField, ShowsThePresentationAndFallsBackToThePath) {
 	// Built from script — no presentation, so the path is what there is to show.
 	ibValuePtr<ibValueCompositionField> bare(new ibValueCompositionField(wxT("Supplier.Region")));
 	EXPECT_EQ(wxT("Supplier.Region"), bare->GetString());
+}
+
+// A presentation kept in every language it was written in — a field's title is — reads in the reader's
+// (English under the tests), never in its stored form: a filter line showed `en = 'Period'; ru = …`.
+TEST(CompositionField, ShowsThePresentationInTheReadersLanguage) {
+	ibValuePtr<ibValueCompositionField> named(
+		new ibValueCompositionField(wxT("Period"), wxT("en = 'Period'; ru = 'Period RU';")));
+	EXPECT_EQ(wxT("Period"), named->GetString());
 }
 
 TEST(CompositionField, EmptyMeansNoPath) {
@@ -1299,7 +1372,7 @@ TEST(FilterTree, GroupsAreTheOnlyNodes) {
 	// Conditions are leaves. Only a group can hold children — which is what
 	// makes the shape a tree rather than a list of lists.
 	ibFilterDescription filter;
-	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 	ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Or);
 
 	ASSERT_EQ(2u, filter.m_nodes.size());
@@ -1313,10 +1386,10 @@ TEST(FilterTree, AGroupOwnsItsChildren) {
 	// parent and the two can never disagree. Copying the filter deep-copies the whole tree, which is
 	// what every window relies on — edit a copy, put it back on OK.
 	ibFilterDescription filter;
-	filter.Append(wxT("A"), ibComparisonKind_Equal, ibValue(1));
+	filter.Append(wxT("A"), ibComparisonKind_Equal, ibStoreValue(ibValue(1)));
 	ibFilterNodeDescription& either = ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Or);
-	ibFilterDescription::Append(either.m_children, wxT("B"), ibComparisonKind_Equal, ibValue(2));
-	ibFilterDescription::Append(either.m_children, wxT("C"), ibComparisonKind_Equal, ibValue(3));
+	ibFilterDescription::Append(either.m_children, wxT("B"), ibComparisonKind_Equal, ibStoreValue(ibValue(2)));
+	ibFilterDescription::Append(either.m_children, wxT("C"), ibComparisonKind_Equal, ibStoreValue(ibValue(3)));
 
 	ASSERT_EQ(2u, filter.m_nodes.size()) << "the children landed beside the group instead of inside it";
 	ASSERT_EQ(2u, filter.m_nodes[1].m_children.size());
@@ -1331,14 +1404,14 @@ TEST(FilterTree, ASideIsAFieldOrAValue) {
 	// `Price > Cost` — both sides are the same shape, which is what lets a condition compare two
 	// fields and not only a field with a literal.
 	ibFilterDescription filter;
-	ibFilterNodeDescription& node = filter.Append(wxT("Price"), ibComparisonKind_Greater, ibValue());
+	ibFilterNodeDescription& node = filter.Append(wxT("Price"), ibComparisonKind_Greater, ibDataNode());
 	node.m_right.m_path = wxT("Cost");
 
 	EXPECT_TRUE(node.m_left.IsField());
 	EXPECT_TRUE(node.m_right.IsField());
 
 	ibFilterDescription other;
-	ibFilterNodeDescription& literal = other.Append(wxT("Price"), ibComparisonKind_Greater, ibValue(100));
+	ibFilterNodeDescription& literal = other.Append(wxT("Price"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 	EXPECT_TRUE(literal.m_left.IsField());
 	EXPECT_FALSE(literal.m_right.IsField()) << "a literal side must not read as a path";
 }
@@ -1347,7 +1420,7 @@ TEST(FilterTree, ALineHoldsWhatThePickerResolved) {
 	// What the picker resolved must survive being put into a condition: the leaf id and the type are
 	// what make the OTHER side editable, and the presentation is what a person reads.
 	ibFilterDescription filter;
-	ibFilterNodeDescription& node = filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	ibFilterNodeDescription& node = filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 	node.m_left.m_leafId       = 7;
 	node.m_left.m_type         = ibTypeDescription(g_valueNumberCLSID);
 	node.m_left.m_presentation = wxT("Sum");
@@ -1364,13 +1437,13 @@ TEST(FilterTree, ALineHoldsWhatThePickerResolved) {
 
 TEST(FilterTreePersist, ANestedTreeSurvivesTheRoundTrip) {
 	ibFilterDescription filter;
-	ibFilterNodeDescription& first = filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	ibFilterNodeDescription& first = filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 	first.m_left.m_presentation = wxT("Sum");
 
 	ibFilterNodeDescription& either = ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Or);
-	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibValue(wxT("north")));
+	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("north"))));
 	ibFilterNodeDescription& pair =
-		ibFilterDescription::Append(either.m_children, wxT("Price"), ibComparisonKind_Greater, ibValue());
+		ibFilterDescription::Append(either.m_children, wxT("Price"), ibComparisonKind_Greater, ibDataNode());
 	pair.m_right.m_path = wxT("Cost");
 
 	ibDataNode node(make_clsid("CompositionFilter", ibClassKind_None), 0);
@@ -1415,7 +1488,7 @@ TEST(FilterTreePersist, ARecordWithoutATreeReadsAsAnEmptyFilter) {
 TEST(FilterAst, AConditionBecomesACompareNode) {
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1438,7 +1511,7 @@ TEST(FilterAst, AConditionBecomesACompareNode) {
 TEST(FilterAst, ADottedPathTravelsAsSegments) {
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	filter.Append(wxT("Supplier.Region.Country"), ibComparisonKind_Equal, ibValue(wxT("PL")));
+	filter.Append(wxT("Supplier.Region.Country"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("PL"))));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr && ast->m_lhs != nullptr);
@@ -1451,11 +1524,11 @@ TEST(FilterAst, GroupsBecomeLogicalNodes) {
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
 	filter.m_rootKind = ibFilterGroupKind_And;
-	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 
 	ibFilterNodeDescription& either = ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Or);
-	ibFilterDescription::Append(either.m_children, wxT("A"), ibComparisonKind_Equal, ibValue(1));
-	ibFilterDescription::Append(either.m_children, wxT("B"), ibComparisonKind_Equal, ibValue(2));
+	ibFilterDescription::Append(either.m_children, wxT("A"), ibComparisonKind_Equal, ibStoreValue(ibValue(1)));
+	ibFilterDescription::Append(either.m_children, wxT("B"), ibComparisonKind_Equal, ibStoreValue(ibValue(2)));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1474,7 +1547,7 @@ TEST(FilterAst, NotWrapsTheWholeGroup) {
 	ibFilterDescription filter;
 	ibFilterNodeDescription& negated =
 		ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Not);
-	ibFilterDescription::Append(negated.m_children, wxT("Deleted"), ibComparisonKind_Equal, ibValue(true));
+	ibFilterDescription::Append(negated.m_children, wxT("Deleted"), ibComparisonKind_Equal, ibStoreValue(ibValue(true)));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1488,7 +1561,7 @@ TEST(FilterAst, ContainsIsALikeNotAComparison) {
 	// has no meaning for would push the problem one layer down.
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	filter.Append(wxT("Name"), ibComparisonKind_Contains, ibValue(wxT("ab")));
+	filter.Append(wxT("Name"), ibComparisonKind_Contains, ibStoreValue(ibValue(wxT("ab"))));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1502,14 +1575,14 @@ TEST(FilterAst, InAndInHierarchyAreOneNodeAndAWord) {
 	ibDataDBComposer composer;
 
 	ibFilterDescription plain;
-	plain.Append(wxT("Item"), ibComparisonKind_In, ibValue(wxT("x")));
+	plain.Append(wxT("Item"), ibComparisonKind_In, ibStoreValue(ibValue(wxT("x"))));
 	const ibQueryAstExprPtr flat = composer.BuildFilterAst(plain);
 	ASSERT_TRUE(flat != nullptr);
 	EXPECT_EQ(ibQueryAstExprKind::In, flat->m_kind);
 	EXPECT_EQ(ibQueryDimUnfold::Elements, flat->m_unfold);
 
 	ibFilterDescription deep;
-	deep.Append(wxT("Item"), ibComparisonKind_InHierarchy, ibValue(wxT("x")));
+	deep.Append(wxT("Item"), ibComparisonKind_InHierarchy, ibStoreValue(ibValue(wxT("x"))));
 	const ibQueryAstExprPtr tree = composer.BuildFilterAst(deep);
 	ASSERT_TRUE(tree != nullptr);
 	EXPECT_EQ(ibQueryAstExprKind::In, tree->m_kind) << "a second node kind for one question";
@@ -1520,7 +1593,7 @@ TEST(FilterAst, ASwitchedOffLineSaysNothing) {
 	// Not written, rather than written and then ignored: a condition switched off narrows nothing.
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100), /*use*/ false);
+	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)), /*use*/ false);
 
 	EXPECT_TRUE(composer.BuildFilterAst(filter) == nullptr);
 }
@@ -1533,11 +1606,11 @@ TEST(FilterAst, NestedGroupsRenderWithParentheses) {
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
 	filter.m_rootKind = ibFilterGroupKind_And;
-	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibValue(100));
+	filter.Append(wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(100)));
 
 	ibFilterNodeDescription& either = ibFilterDescription::AppendGroup(filter.m_nodes, ibFilterGroupKind_Or);
-	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibValue(wxT("north")));
-	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibValue(wxT("south")));
+	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("north"))));
+	ibFilterDescription::Append(either.m_children, wxT("Region"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("south"))));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1554,7 +1627,7 @@ TEST(FilterAst, AFieldOnBothSidesRendersAsTwoPaths) {
 	// `Price > Cost` — no parameter at all, because neither side is a value.
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	ibFilterNodeDescription& node = filter.Append(wxT("Price"), ibComparisonKind_Greater, ibValue());
+	ibFilterNodeDescription& node = filter.Append(wxT("Price"), ibComparisonKind_Greater, ibDataNode());
 	node.m_right.m_path = wxT("Cost");
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
@@ -1570,7 +1643,7 @@ TEST(FilterAst, AValueRendersAsAParameter) {
 	// in somebody's locale.
 	ibDataDBComposer composer;
 	ibFilterDescription filter;
-	filter.Append(wxT("Name"), ibComparisonKind_Equal, ibValue(wxT("O'Brien")));
+	filter.Append(wxT("Name"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("O'Brien"))));
 
 	const ibQueryAstExprPtr ast = composer.BuildFilterAst(filter);
 	ASSERT_TRUE(ast != nullptr);
@@ -1620,7 +1693,7 @@ TEST(ListSettingsLines, AGroupingLineCarriesItsUnfoldKind) {
 
 TEST(ListSettingsLines, SettingsCarryAllThreeParts) {
 	ibSettingsDescription settings;
-	settings.m_filter.Append(wxT("Number"), ibComparisonKind_Equal, ibValue(wxT("00001")));
+	settings.m_filter.Append(wxT("Number"), ibComparisonKind_Equal, ibStoreValue(ibValue(wxT("00001"))));
 	settings.m_sort.Append(wxT("Date"), false);
 	settings.m_group.Append(wxT("Warehouse"), ibQueryDimUnfold::Hierarchy);
 
@@ -1789,4 +1862,48 @@ TEST(CompilerTest, AVariableTakesItsModifierAfterTheNameToo) {
 				<< access.ToStdString() << " (leading) must not parse";
 		}
 	}
+}
+
+// A date literal followed by a SPACE and a word is two lexems — `If d <> '20200101' Then` is the
+// ordinary VES comparison. The guard after the closing quote asked IsWord(), which skips spaces
+// first, and refused it as "Constant date expected"; an assignment ending in `;` slipped through,
+// which is why it read as a format problem. A word TOUCHING the quote is still a malformed literal.
+TEST(CompilerTest, ADateLiteralBeforeAKeywordIsTwoLexems) {
+	{
+		ibCompileCode cc(wxT("test"), wxT("memory"), false);
+		EXPECT_TRUE(TryCompile(cc,
+			wxT("Var d public; Var r public; d = '20200101';\n")
+			wxT("If d <> '20200101' Then r = 1; EndIf;\n")))
+			<< "a date literal followed by Then must compile";
+	}
+	{
+		ibCompileCode cc(wxT("test"), wxT("memory"), false);
+		EXPECT_FALSE(TryCompile(cc, wxT("Var d public; d = '20200101'abc;\n")))
+			<< "a word touching the closing quote is a malformed literal";
+	}
+}
+
+// A NESTED EXPRESSION IS A NESTED CALL: every level of parentheses is a GetExpression frame on the
+// native stack. Two thousand of them overflowed it and the process went down with no diagnostic;
+// past the ceiling (400) the expression is refused as a compile error. The point of the first test
+// is that the assertion is REACHED at all.
+static wxString NestedInParentheses(int depth)
+{
+	wxString src = wxT("Var a public; a = ");
+	for (int i = 0; i < depth; ++i) src += wxT('(');
+	src += wxT('1');
+	for (int i = 0; i < depth; ++i) src += wxT(')');
+	return src + wxT(";\n");
+}
+
+TEST(CompilerTest, AnExpressionNestedPastTheCeilingIsRefusedNotACrash) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	EXPECT_FALSE(TryCompile(cc, NestedInParentheses(2000)))
+		<< "2000 levels of parentheses must be a compile error, not a stack overflow";
+}
+
+TEST(CompilerTest, AnExpressionNestedWithinTheCeilingStillCompiles) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	EXPECT_TRUE(TryCompile(cc, NestedInParentheses(100)))
+		<< "generous but ordinary nesting must still compile";
 }

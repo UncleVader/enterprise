@@ -20,10 +20,11 @@
 #include <wx/mstream.h>
 
 #include "backend/appData.h"
-#include "backend/guid.h"
+#include "backend/appHost.h"   // ibApplicationInstanceScope — the HTTP and sweep threads work for the served base
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/backend_exception.h"
+#include "core/diagnostics/journal.h"
 #include "backend/databaseLayer/connectionHolder.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — the meta-watch sys_config read (ibQueryResult, no raw L1)
@@ -31,8 +32,10 @@
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaObject.h"
 #include "backend/metaCollection/metaObjectMetadata.h"
+#include "backend/functionalOption/functionalOptionGate.h"   // ibFunctionalOptionGate::IsAvailable — the all-functions list
 #include "backend/metaCollection/metaFormObject.h"
 #include "backend/metaCollection/metaSectionObject.h"
+#include "backend/metaCollection/metaCommandGroupObject.h"   // the section's groups, in the desktop's order
 #include "backend/interfaceHelper.h"
 #include "backend/backend_picture.h"
 
@@ -59,6 +62,9 @@ namespace {
 // even after the session itself was evicted (in which case /session
 // returns the unauthenticated stub but still carries the current gen).
 std::atomic<std::uint64_t> g_metaGeneration{ 1 };
+
+// The web server's own session, while it has one — defined below, beside the holder.
+ibSession* ServerSession();
 
 class SessionManager {
 public:
@@ -120,18 +126,9 @@ public:
 			it->second->Touch();
 	}
 
-	// Allocate a fresh unauthenticated session. The returned id is
-	// handed back as a cookie so subsequent requests (in particular
-	// POST /login) can identify the client.
-	std::string Create()
-	{
-		return CreateWith(MakeRandomId());
-	}
-
-	// Same, but the caller supplies the id — used when the JS client
-	// minted a per-tab id in sessionStorage (so every browser tab
-	// gets its own ibWebSession instead of sharing one via cookie).
-	// If the id already exists, reuses; otherwise creates.
+	// Allocate an unauthenticated session under the id the JS client
+	// minted per tab in sessionStorage, so every browser tab gets its
+	// own ibWebSession. If the id already exists, reuses; otherwise creates.
 	std::string CreateWith(const std::string& id)
 	{
 		{
@@ -286,18 +283,6 @@ public:
 	}
 
 private:
-	static std::string MakeRandomId()
-	{
-		// Shared format with ibGuid / sys_session.session — dashed UUID
-		// so browser cookie, X-OES-Session header, SessionManager map
-		// key, and the registry's session guid all read as the same
-		// string (no extra parse step when one crosses layers).
-		// Explicit wxString→std::string conversion: without ToStdString()
-		// MSVC chains two user-defined conversions (wxString → const char*
-		// → std::string) and warns C4927.
-		return ibGuid(ibGuid::newGuid()).str().ToStdString();
-	}
-
 	// Idle-session sweep + metadata-change watch. Wakes every sweep
 	// interval, collects session ids whose LastActiveMs is older than
 	// the idle cutoff, destroys them outside the map-lock (OnExit runs
@@ -313,20 +298,32 @@ private:
 		// the reaper + metadata watch stay cheap, fine enough that
 		// deployed-config changes propagate within a Designer→try-it
 		// roundtrip.
-		// 2-minute idle cutoff — faster reclamation of cookie sessions
-		// after browser tab close. The JS client fires a beforeunload
-		// beacon to /logout (best-effort; some browsers drop it); this
-		// cutoff is the guaranteed upper bound if the beacon misses.
-		constexpr std::int64_t kIdleMs   = 2 * 60 * 1000;
+		// A closed tab does not wait for this: the JS client fires a
+		// beforeunload beacon to /logout, and the cutoff is only the
+		// backstop for a beacon the browser dropped. It was 2 minutes
+		// for a while, and that evicted a user who was simply READING a
+		// form (or whose background tab had its poll paused): the next
+		// action found no session and every unsaved edit was gone. A
+		// generous backstop costs a stale session for half an hour, a
+		// short one costs somebody's work.
+		constexpr std::int64_t kIdleMs   = 30 * 60 * 1000;
 		constexpr auto         kInterval = seconds(15);
 
 		// Capture the metadata guid observed at server start. Compared
 		// to the live sys_config.file_guid on every tick — any diff
 		// means Designer pushed a new config; evict all user sessions
 		// so their stale compiled state can't leak into responses.
+		//
+		// ⭐ THE SWEEP WORKS FOR THE BASE THE SERVER SERVES — this thread has no session of its own. Bound to
+		// the server session's base, its metadata and its pool answer, and ibSession::Current answers the
+		// server's own session through the registry, as it always did. Bound per tick (the session comes after
+		// the thread and goes before it) and thread-local: nothing the rest of the process has to notice.
 		wxString lastObservedMetaGuid;
-		if (activeMetaData != nullptr)
-			lastObservedMetaGuid = activeMetaData->GetConfigGuid().str();
+		if (ibSession* const server = ServerSession()) {
+			ibApplicationInstanceScope serving(server->GetApplicationInstance());
+			if (activeMetaData != nullptr)
+				lastObservedMetaGuid = activeMetaData->GetConfigGuid().str();
+		}
 
 		for (;;) {
 			std::vector<std::string> requested;
@@ -352,14 +349,13 @@ private:
 			}
 
 			// Guard against shutdown that landed between wait and the
-			// registry / metadata accesses below. wfrontendShutdown
-			// destroys appData; with the post-2026-05-26 nullable
-			// Instance() this branch is no longer the only safety net
-			// (each Instance() callsite null-checks too), but bailing
-			// early avoids the metadata-watch + signal-check work when
-			// we already know there's nothing left to do.
-			if (appData == nullptr)
+			// registry / metadata accesses below: wfrontendShutdown lets
+			// the server's session go before it destroys the base, and
+			// with no session there is no base to sweep.
+			ibSession* const server = ServerSession();
+			if (server == nullptr)
 				return;
+			ibApplicationInstanceScope serving(server->GetApplicationInstance());
 
 			// 1) Idle eviction.
 			const std::int64_t nowMs = duration_cast<milliseconds>(
@@ -395,7 +391,7 @@ private:
 			//    watch so an operator can force a re-login cycle even
 			//    if the file_guid hasn't changed (e.g. ad-hoc kick-all
 			//    from an admin console).
-			auto* reloadReg = ibApplicationData::GetSessionRegistry();
+			auto* reloadReg = ibApplicationInstance::GetSessionRegistry();
 			if (reloadReg != nullptr && reloadReg->ConsumeReloadRequest()) {
 				std::cerr << "[signal] reload directive - evicting "
 				          << "all user sessions" << std::endl;
@@ -549,6 +545,13 @@ std::string       g_lastError;
 // shutdown is what removes the technical sys_session row.
 ibSessionHolder   g_serverSession;
 
+// Null before wfrontendInit* has finished and after wfrontendShutdown has begun: the flag is raised after
+// the session is made and lowered before it is let go.
+ibSession* ServerSession()
+{
+	return g_initialized.load() ? g_serverSession.Get() : nullptr;
+}
+
 // HTTP host:port the container is bound on. Set by
 // wfrontendSetServerAddress from the host (wenterprise-server main);
 // read by ibWebSession::Login to stamp `sys_session.address` when a
@@ -601,7 +604,7 @@ bool RunBringUp(Step&& step)
 		if (step())
 			return true;
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Its ctor pushed the description onto this thread's chain.
 	}
 	catch (const std::exception& err) {
@@ -642,18 +645,17 @@ namespace {
 bool FinishConnect(const std::string& ibUser, const std::string& ibPassword)
 {
 	// CreateSession + Authenticate. Registry's lifecycle event listeners
-	// (wired in ibApplicationData ctor) drive metadata load, root mm
+	// (wired in ibApplicationInstance ctor) drive metadata load, root mm
 	// allocation/compile and runtime init through OnFirstConnect /
 	// OnAuthenticated; nothing to do here beyond auth.
 	//
-	// Kind == WebServer (default for eWEB_RUNTIME_MODE through the
-	// no-arg CreateSession overload) registers this session as the
-	// process's server in ibSessionRegistry::ServerSession(); subsequent
-	// per-tab WebClient sessions auto-link to it.
+	// Kind == WebServer registers this session as the process's server in
+	// ibSessionRegistry::ServerSession(); subsequent per-tab WebClient
+	// sessions auto-link to it.
 	// This session has no window, so the process itself is its owner: the
 	// holder lives in a process-lifetime global and the technical
 	// sys_session row disappears when wfrontend shuts down.
-	g_serverSession = appData->CreateSession();
+	g_serverSession = appData->CreateSession(ibSessionKind::WebServer);
 	if (!g_serverSession ||
 	    g_serverSession->Open(
 	        wxString::FromUTF8(ibUser.c_str()),
@@ -695,9 +697,10 @@ WFRONTEND_API bool wfrontendInitFile(
 	g_lastError.clear();
 
 	if (!RunBringUp([&] {
-		return appDataCreateFile(ibRunMode::eWEB_RUNTIME_MODE,
-			wxString::FromUTF8(filePath.c_str()),
-			wxString::FromUTF8(locale.c_str()));
+		ibFileInstanceRequest request;
+		request.m_directory = wxString::FromUTF8(filePath.c_str());
+		request.m_locale    = wxString::FromUTF8(locale.c_str());
+		return ibApplicationInstance::CreateAppDataEnv(request) != nullptr;
 	}))
 		return false;
 
@@ -734,13 +737,14 @@ WFRONTEND_API bool wfrontendInitServer(
 	g_lastError.clear();
 
 	if (!RunBringUp([&] {
-		return appDataCreateServer(ibRunMode::eWEB_RUNTIME_MODE,
-			wxString::FromUTF8(server.c_str()),
-			wxString::FromUTF8(port.c_str()),
-			wxString::FromUTF8(user.c_str()),
-			wxString::FromUTF8(password.c_str()),
-			wxString::FromUTF8(database.c_str()),
-			wxString::FromUTF8(locale.c_str()));
+		ibFileInstanceRequest request;
+		request.m_server   = wxString::FromUTF8(server.c_str());
+		request.m_port     = wxString::FromUTF8(port.c_str());
+		request.m_user     = wxString::FromUTF8(user.c_str());
+		request.m_password = wxString::FromUTF8(password.c_str());
+		request.m_database = wxString::FromUTF8(database.c_str());
+		request.m_locale   = wxString::FromUTF8(locale.c_str());
+		return ibApplicationInstance::CreateAppDataEnv(request) != nullptr;
 	}))
 		return false;
 
@@ -759,13 +763,13 @@ WFRONTEND_API bool wfrontendKickSessionByGuid(const std::string& sessionGuid)
 	// Delegates to the registry's admin helper — same UPDATE path the
 	// designer dialog uses, so kick-via-HTTP and kick-via-designer share
 	// exactly one implementation.
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	return reg != nullptr && reg->Kick(wxString::FromUTF8(sessionGuid.c_str()));
 }
 
 WFRONTEND_API bool wfrontendReloadSessionByGuid(const std::string& sessionGuid)
 {
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	return reg != nullptr && reg->Reload(wxString::FromUTF8(sessionGuid.c_str()));
 }
 
@@ -781,7 +785,7 @@ WFRONTEND_API std::string wfrontendDiagJSON()
 	};
 
 	// --- Worker pool (headless impl carries the size counters) -----
-	if (auto* registry = ibApplicationData::GetSessionRegistry()) {
+	if (auto* registry = ibApplicationInstance::GetSessionRegistry()) {
 		if (auto* base = registry->GetWorkerPool()) {
 			if (auto* hl = dynamic_cast<ibWorkerPoolHeadless*>(base)) {
 				root["workerPool"] = {
@@ -794,7 +798,7 @@ WFRONTEND_API std::string wfrontendDiagJSON()
 	}
 
 	// --- Connection pool ------------------------------------------
-	if (auto* pool = ibApplicationData::GetConnectionPool()) {
+	if (auto* pool = ibApplicationInstance::GetConnectionPool()) {
 		root["connectionPool"] = {
 			{ "live",    static_cast<unsigned>(pool->LiveSize()) },
 			{ "idle",    static_cast<unsigned>(pool->IdleSize()) },
@@ -804,7 +808,7 @@ WFRONTEND_API std::string wfrontendDiagJSON()
 	}
 
 	// --- Sessions snapshot ---------------------------------------
-	auto* snapReg = ibApplicationData::GetSessionRegistry();
+	auto* snapReg = ibApplicationInstance::GetSessionRegistry();
 	const ibSessionSnapshot snap = snapReg != nullptr
 		? snapReg->GetClusterSnapshot()
 		: ibSessionSnapshot();
@@ -832,7 +836,7 @@ WFRONTEND_API std::string wfrontendLocksJSON()
 {
 	nlohmann::json arr = nlohmann::json::array();
 	try {
-		auto* lm = ibApplicationData::GetLockManager();
+		auto* lm = ibApplicationInstance::GetLockManager();
 		const auto rows = lm != nullptr ? lm->GetSnapshot() : std::vector<ibLockSnapshotRow>{};
 		for (const auto& r : rows) {
 			// Render key as "field1=val1, field2=val2" for at-a-glance UI.
@@ -844,8 +848,8 @@ WFRONTEND_API std::string wfrontendLocksJSON()
 				{ "namespace",   r.namespaceName.ToStdString(wxConvUTF8) },
 				{ "key",         r.keyData.ToStdString(wxConvUTF8) },
 				{ "mode",        r.lockMode == ibLockMode::Shared ? "Shared" : "Exclusive" },
-				{ "acquiredAt",  r.acquiredAt.IsValid()
-				                    ? r.acquiredAt.FormatISOCombined().ToStdString(wxConvUTF8)
+				{ "acquiredAt",  !r.acquiredAt.IsEmpty()
+				                    ? r.acquiredAt.ToWxDateTime().FormatISOCombined().ToStdString(wxConvUTF8)
 				                    : std::string() },
 				{ "user",        r.userName.ToStdString(wxConvUTF8) },
 				{ "computer",    r.computer.ToStdString(wxConvUTF8) },
@@ -853,7 +857,7 @@ WFRONTEND_API std::string wfrontendLocksJSON()
 			arr.push_back(std::move(row));
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Snapshot is best-effort observability — never propagate.
 	}
 	catch (...) { /* swallowed: same as above, observability endpoint must not throw */ }
@@ -866,12 +870,12 @@ WFRONTEND_API bool wfrontendForceReleaseLockByGuid(const std::string& lockGuid)
 		const ibGuid g(wxString::FromUTF8(lockGuid.c_str()));
 		if (!g.isValid()) return false;
 		std::vector<ibGuid> one{ g };
-		auto* lm = ibApplicationData::GetLockManager();
+		auto* lm = ibApplicationInstance::GetLockManager();
 		if (lm == nullptr) return false;
 		lm->ReleaseRows(one);
 		return true;
 	}
-	catch (const ibBackendException&) { return false; }
+	catch (const ibCoreException&) { return false; }
 	catch (...)                        { return false; }
 }
 
@@ -891,6 +895,15 @@ WFRONTEND_API void wfrontendShutdown()
 	g_serverSession.Reset();
 	appDataDestroy();
 	g_lastError.clear();
+}
+
+WFRONTEND_API void wfrontendServe(const std::function<void()>& work)
+{
+	// The base the server serves, bound for the connection — thread-local, so a request costs the rest of the
+	// process nothing: a session binding moves the epoch every thread's cached binding is read at.
+	ibSession* const server = ServerSession();
+	ibApplicationInstanceScope serving(server != nullptr ? server->GetApplicationInstance() : nullptr);
+	work();
 }
 
 WFRONTEND_API std::string wfrontendLastError()
@@ -947,13 +960,13 @@ WFRONTEND_API void wfrontendSetProcessExitHook(void (*hook)())
 		// is called from main() after InitBackend, so the registry is alive
 		// here — null-check is defensive against a future caller that wires
 		// hooks before InitBackend.
-		auto* reg = ibApplicationData::GetSessionRegistry();
+		auto* reg = ibApplicationInstance::GetSessionRegistry();
 		if (reg == nullptr) return;
 
 		// Keep-alive predicate: wes process stays up while at least
 		// one WebClient session is registered against the WebServer.
 		reg->OnShouldKeepAlive([]() {
-			auto* r = ibApplicationData::GetSessionRegistry();
+			auto* r = ibApplicationInstance::GetSessionRegistry();
 			return r != nullptr && r->HasClients();
 		});
 
@@ -994,7 +1007,7 @@ WFRONTEND_API bool wfrontendSessionPaused(const std::string& sessionId)
 {
 	if (!g_initialized.load() || appData == nullptr)
 		return false;
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	if (reg == nullptr) return false;
 	auto sess = reg->Find(wxString::FromUTF8(sessionId.c_str())).Share();
 	if (!sess) return false;
@@ -1007,7 +1020,19 @@ WFRONTEND_API bool wfrontendHasUsers()
 {
 	if (!g_initialized.load() || appData == nullptr)
 		return false;
-	return ibUserInfo::HasAny();
+	try {
+		return ibUserInfo::HasAny();
+	}
+	catch (const ibBackendInterruptException&) {
+		throw;
+	}
+	catch (const ibCoreException& err) {
+		// Ask for credentials. A 500 from an uncaught read is not an answer
+		// the login page can show, and "no users" would be the open door.
+		ibJournalError(wxT("auth"), wxT("the user list could not be read; asking for credentials: %s"),
+			err.GetErrorDescription());
+		return true;
+	}
 }
 
 namespace {
@@ -1062,11 +1087,6 @@ WFRONTEND_API std::string wfrontendMenuJSON()
 	return root.dump(2);
 }
 
-WFRONTEND_API std::string wfrontendCreateSession()
-{
-	return Sessions().Create();
-}
-
 WFRONTEND_API std::string wfrontendCreateSessionWithId(const std::string& id)
 {
 	return Sessions().CreateWith(id);
@@ -1107,19 +1127,17 @@ WFRONTEND_API std::string wfrontendTabIconPNG(const std::string& sessionId, int 
 
 namespace {
 
-// Open-form implementation, reached via the session manager's slot.
-std::string OpenFormInSession(ibWebSession* session, int metaID)
+// The form opened in the application's frame — on the session's worker (OpenFormInSession).
+std::string OpenFormInFrame(ibWebApplication* app, int metaID)
 {
-	if (session == nullptr || !session->IsAuthenticated() || activeMetaData == nullptr)
-		return "{}";
+	ibWebFrame* frame = app->GetFrame();
+	if (frame == nullptr) return "{}";
 
-	// Pin the tab's ibSession as Current() on this HTTP worker thread so
-	// moduleManager->GetProcUnit() resolves via session->GetProcUnitFor
-	// (the main / common module ProcUnits AttachRuntime attached
-	// at Login). Without the scope, Current() is null on worker threads,
-	// the form's parent-ProcUnit comes up nullptr, and Execute throws
-	// "compilation failed (#2)" at form-open.
-	ibSessionScope scope(session->Session());
+	// A question is open (see ibWebApplication::Dispatch): nothing opens under it.
+	if (frame->HasPendingModal()) {
+		ibVisualHostClient* host = app->GetActiveHost();
+		return host != nullptr ? host->ToJSON().dump(2) : std::string("{}");
+	}
 
 	// Forms live one or two levels deep under the configuration (common
 	// forms directly, object-owned forms under their catalog/document).
@@ -1147,12 +1165,6 @@ std::string OpenFormInSession(ibWebSession* session, int metaID)
 	if (metaForm == nullptr)
 		return "{}";
 
-	ibWebApplication* app = session->App();
-	if (app == nullptr) return "{}";
-
-	ibWebFrame* frame = app->GetFrame();
-	if (frame == nullptr) return "{}";
-
 	// CreateAndBuildForm runs the LoadFormData / BuildForm fallback for
 	// forms without a designer-drawn layout (empty tabs otherwise). It
 	// lands back in ibWebFrame::CreateNewForm via ibBackendValueForm::
@@ -1165,9 +1177,9 @@ std::string OpenFormInSession(ibWebSession* session, int metaID)
 	// subsection maps to a command type (FormList / FormSelect / etc.).
 	// The web sidebar opens a specific form by metaID — closer to
 	// designer's metadata-tree "open form" click.
-	ibBackendValueForm* form = metaForm->CreateAndBuildForm(
-		metaForm, nullptr, nullptr, wxNullUniqueKey);
-	if (form == nullptr)
+	const ibFormPtr<ibBackendValueForm> form = metaForm->CreateAndBuildForm(
+		ibFormRequest(), metaForm, nullptr, nullptr);
+	if (!form)
 		return "{}";
 	form->ShowForm();
 
@@ -1184,6 +1196,21 @@ std::string OpenFormInSession(ibWebSession* session, int metaID)
 	app->MarkDirty();
 
 	return host->ToJSON().dump(2);
+}
+
+// Open-form implementation, reached via the session manager's slot.
+std::string OpenFormInSession(ibWebSession* session, int metaID)
+{
+	if (session == nullptr || !session->IsAuthenticated() || activeMetaData == nullptr)
+		return "{}";
+	ibWebApplication* app = session->App();
+	if (app == nullptr) return "{}";
+
+	// On the session's own worker, as every other request of this session — opening a form runs its script.
+	// The worker binds the session, so moduleManager->GetProcUnit() resolves via session->GetProcUnitFor (the
+	// main / common module ProcUnits AttachRuntime attached at Login); unbound, the form's parent ProcUnit comes
+	// up nullptr and Execute throws "compilation failed (#2)" at form-open.
+	return app->RunOnWorker([app, metaID]() { return OpenFormInFrame(app, metaID); }).get();
 }
 
 } // namespace
@@ -1230,7 +1257,7 @@ namespace {
 //     UX: generic error toast carrying the actual text — never lose info
 //
 // See docs/private/record-locks.md for the lock-specific shape.
-std::string ExceptionToJson(const ibBackendException& e)
+std::string ExceptionToJson(const ibCoreException& e)
 {
 	nlohmann::json j;
 
@@ -1302,7 +1329,7 @@ std::string FireActionInSession(ibWebSession* session, int controlID)
 			if (!app->DispatchControlAction(controlID))
 				return "{}";
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
 		}
 		catch (...) {
@@ -1349,7 +1376,7 @@ std::string FireKindInSession(ibWebSession* session, int controlID,
 			if (!app->Dispatch(controlID, wkind, wxString()))
 				return "{}";
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
 		}
 		catch (...) {
@@ -1397,7 +1424,7 @@ std::string FireTextChangeInSession(ibWebSession* session, int controlID,
 			if (!app->DispatchTextChange(controlID, w))
 				return "{}";
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
 		}
 		catch (...) {
@@ -1443,7 +1470,7 @@ std::string FireToggleInSession(ibWebSession* session, int controlID, bool check
 			if (!app->DispatchToggle(controlID, checked))
 				return "{}";
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			return ExceptionToJson(e);
 		}
 		catch (...) {
@@ -1524,6 +1551,7 @@ WFRONTEND_API std::string wfrontendAllFunctionsJSON(const std::string& sessionId
 	nlohmann::json groups = nlohmann::json::array();
 	struct GroupSpec { ibClassID clsid; const char* name; };
 	const GroupSpec specs[] = {
+		{ g_metaFunctionalOptionCLSID,            "Functional options" },   // first, above the constants: they decide what is there at all
 		{ g_metaConstantCLSID,                    "Constants" },
 		{ g_metaCatalogCLSID,                     "Catalogs" },
 		{ g_metaDocumentCLSID,                    "Documents" },
@@ -1552,7 +1580,8 @@ WFRONTEND_API std::string wfrontendAllFunctionsJSON(const std::string& sessionId
 		}
 		nlohmann::json items = nlohmann::json::array();
 		for (auto obj : activeMetaData->GetAnyArrayObject(s.clsid)) {
-			if (obj == nullptr || obj->IsDeleted()) continue;
+			// …nor a part of the system a functional option has switched off (functionalOptionGate.h).
+			if (obj == nullptr || obj->IsDeleted() || !ibFunctionalOptionGate::IsAvailable(obj)) continue;
 			nlohmann::json it;
 			it["id"]      = (int)obj->GetMetaID();
 			it["name"]    = std::string(obj->GetName().utf8_str());
@@ -1591,16 +1620,19 @@ WFRONTEND_API std::string wfrontendInterfacesJSON()
 		if (!icon.IsOk()) return std::string();
 		return iconToDataUri(wxBitmap(icon));
 	};
-	// Command sections per interface — desktop's subsystem popup groups
-	// items by these. Listing them all so the web popup can mirror the
-	// structure.
-	struct SectionSpec { ibInterfaceCommandSection section; const char* name; };
-	const SectionSpec sectionSpecs[] = {
-		{ ibInterfaceCommandSection::ibInterfaceCommandSection_Default,  "Default"  },
-		{ ibInterfaceCommandSection::ibInterfaceCommandSection_Create,   "Create"   },
-		{ ibInterfaceCommandSection::ibInterfaceCommandSection_Combined, "Combined" },
-		{ ibInterfaceCommandSection::ibInterfaceCommandSection_Report,   "Reports"  },
-		{ ibInterfaceCommandSection::ibInterfaceCommandSection_Service,  "Service"  },
+	// ⭐ THE GROUPS OF A SECTION, as the desktop's section page shows them: the platform's (Important, Normal,
+	// Create, Reports, Service — g_platformCommandGroups, the one list) and then the ones the configuration
+	// declares for a section page. A group of the FORM command bar is not one of them.
+	//
+	// `section` is what the client sends back as the COMMAND TYPE when an item is opened (client.html:
+	// showInterfacePopup) — so it is Create for the Create group and Default for every other, Important and
+	// the declared ones included; `name` is the heading it shows. This list used to be written out here by hand
+	// as five areas, one of them Combined — the catalogs a second time, a block the desktop never had — and
+	// without Important, so a command marked Important and every command in a declared group was on no web page.
+	struct SectionSpec {
+		std::vector<ibValueMetaObject*> items;
+		ibInterfaceCommandType type;
+		wxString caption;
 	};
 	nlohmann::json arr = nlohmann::json::array();
 	for (auto* obj0 : activeMetaData->GetAnyArrayObject(g_metaSectionCLSID)) {
@@ -1613,26 +1645,39 @@ WFRONTEND_API std::string wfrontendInterfacesJSON()
 		o["synonym"] = std::string(iface->GetSynonym().utf8_str());
 		const std::string uri = iconToDataUri(iface->GetPictureAsBitmap());
 		if (!uri.empty()) o["icon"] = uri;
+		std::vector<SectionSpec> sectionSpecs;
+		for (const ibInterfaceCommandSection area : g_platformCommandGroups) {
+			SectionSpec spec{ {}, area == ibInterfaceCommandSection_Create
+				? ibInterfaceCommandType_Create : ibInterfaceCommandType_Default, ibCommandGroupCaption(area) };
+			iface->GetInterfaceItemArrayObject(area, spec.items);
+			sectionSpecs.push_back(std::move(spec));
+		}
+		for (const ibValueMetaObjectCommandGroup* group :
+				activeMetaData->GetAnyArrayObject<ibValueMetaObjectCommandGroup>(g_metaCommandGroupCLSID)) {
+			if (group == nullptr || group->IsDeleted() || group->GetCategory() == ibCommandGroupCategory_FormCommandBar)
+				continue;
+			SectionSpec spec{ {}, ibInterfaceCommandType_Default, group->GetSynonym() };
+			iface->GetInterfaceItemArrayObject(group, spec.items);
+			sectionSpecs.push_back(std::move(spec));
+		}
+
 		nlohmann::json sections = nlohmann::json::array();
 		for (const auto& spec : sectionSpecs) {
 			nlohmann::json items = nlohmann::json::array();
-			std::vector<ibValueMetaObject*> objs;
-			if (iface->GetInterfaceItemArrayObject(spec.section, objs)) {
-				for (auto* obj : objs) {
-					if (obj == nullptr || obj->IsDeleted()) continue;
-					nlohmann::json it;
-					it["id"]      = (int)obj->GetMetaID();
-					it["name"]    = std::string(obj->GetName().utf8_str());
-					it["synonym"] = std::string(obj->GetSynonym().utf8_str());
-					const std::string iconUri = iconFromIcon(obj->GetIcon());
-					if (!iconUri.empty()) it["icon"] = iconUri;
-					items.push_back(std::move(it));
-				}
+			for (auto* obj : spec.items) {
+				if (obj == nullptr || obj->IsDeleted()) continue;
+				nlohmann::json it;
+				it["id"]      = (int)obj->GetMetaID();
+				it["name"]    = std::string(obj->GetName().utf8_str());
+				it["synonym"] = std::string(obj->GetSynonym().utf8_str());
+				const std::string iconUri = iconFromIcon(obj->GetIcon());
+				if (!iconUri.empty()) it["icon"] = iconUri;
+				items.push_back(std::move(it));
 			}
 			if (items.empty()) continue;
 			nlohmann::json sec;
-			sec["section"] = (int)spec.section;
-			sec["name"]    = spec.name;
+			sec["section"] = (int)spec.type;
+			sec["name"]    = std::string(spec.caption.utf8_str());
 			sec["items"]   = std::move(items);
 			sections.push_back(std::move(sec));
 		}
@@ -1673,6 +1718,11 @@ WFRONTEND_API std::string wfrontendOpenMetaObject(const std::string& sessionId,
 	ibWebApplication* app = Sessions().FindApp(sessionId);
 	if (app == nullptr) return "{}";
 	return app->RunOnWorker([app, metaID, cmdType]() -> std::string {
+		// A question is open (see ibWebApplication::Dispatch): nothing opens under it.
+		if (app->GetFrame() != nullptr && app->GetFrame()->HasPendingModal()) {
+			ibVisualHostClient* host = app->GetActiveHost();
+			return host != nullptr ? host->ToJSON().dump(2) : std::string("{}");
+		}
 		auto* metaObject = activeMetaData->FindAnyObjectByFilter<ibValueMetaObject, ibMetaID>(metaID);
 		if (metaObject == nullptr) return "{}";
 		auto* cmdItem = dynamic_cast<ibBackendCommandItem*>(metaObject);
@@ -1702,9 +1752,9 @@ bool SessionManager::ModalReply(const std::string& id,
 	const std::string& modalId, int result)
 {
 	// Resolve the modal via the session's frame — no worker hop needed
-	// (ResolveModal just sets a promise's value under a small mutex;
-	// safe to call from the HTTP thread). The parked script worker
-	// wakes inside ShowModalMessage and returns this result.
+	// (ResolveModal records the answer under a small mutex and rings the
+	// session's pool; safe to call from the HTTP thread). The script
+	// waiting in ShowModalMessage wakes and returns this result.
 	std::shared_ptr<ibWebSession> keeper;
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -1831,8 +1881,9 @@ std::string SessionInfoFromSession(ibWebSession* s)
 		}
 		j["messages"] = std::move(arr);
 	}
-	// Pending modal — backend's ShowModalMessage parked a worker on a
-	// promise; surface the topmost modal here so the client can render
+	// Pending modal — a script waits in ShowModalMessage (in its pool's
+	// Await, which runs this very request meanwhile); surface the
+	// topmost modal here so the client can render
 	// a dialog with appropriate buttons. style is raw wx bitmask
 	// (wxOK / wxYES_NO / wxCANCEL / wxICON_*); the client decides
 	// button set + iconography from it. The modal stays in the queue
@@ -1977,6 +2028,13 @@ std::string CloseTabInSession(ibWebSession* session, int tabIndex)
 		if (frame == nullptr) return "{}";
 		if (tabIndex < 0 || static_cast<std::size_t>(tabIndex) >= frame->TabCount())
 			return "{}";
+
+		// A question is open (see ibWebApplication::Dispatch): the tab stays — it may hold the asking form. The
+		// active tree goes back so the client puts back the tab it removed.
+		if (frame->HasPendingModal()) {
+			ibVisualHostClient* host = app->GetActiveHost();
+			return host != nullptr ? host->ToJSON().dump(2) : std::string("{}");
+		}
 
 		// CloseTab fires beforeClose/onClose on the dying form and
 		// returns false if beforeClose vetoed. On veto the tab stays

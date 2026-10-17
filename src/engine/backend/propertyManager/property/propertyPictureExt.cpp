@@ -1,10 +1,10 @@
 #include "propertyPicture.h"
 #include "backend/propertyManager/property/variant/variantPicture.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyExternalPicture::CreateVariantData(const ibExternalPictureDescription& id) const
+wxVariantData* ibPropertyExternalPicture::CreateVariantData(const ibExternalPictureDescription& id)
 {
 	return new ibVariantDataExternalPicture(id);
 }

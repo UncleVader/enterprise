@@ -3,12 +3,13 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "gridBox.h"
-#include "backend/picturePredefined.h"                   // the standard pictures for this control's two verbs
+#include "core/picturePredefined.h"                   // the standard pictures for this control's two verbs
 #include "backend/system/value/valueDataComposition.h"   // the composition the Generate verb runs
 #include "backend/spreadsheetModel.h"   // the model this control is moving onto
 #include "frontend/win/dlgs/settings/composer/composerSettings.h"  // the Settings verb opens the composition's own window
 #include "backend/settings/settingsComposer.h"            // ibSettingsCategory — which shelf a report's settings sit on
 #include "frontend/win/editor/gridEditor/gridPrintout.h"
+#include "frontend/docView/templates/docViewSpreadsheet.h"
 
 // (No ids of its own any more: the verbs are the MODEL's and their ids are named there —
 //  ibSpreadsheetModelCommand in spreadsheetModel.h. This control lays them out and hands them back.)
@@ -85,7 +86,7 @@ void ibValueGridBox::CallAsAction(const ibActionID& lNumAction, ibBackendValueFo
 				// Nothing to report: whoever cancelled it is the one who asked.
 				cancelled = true;
 			}
-			catch (const ibBackendException& error) {
+			catch (const ibCoreException& error) {
 				failure = error.GetErrorDescription();
 			}
 
@@ -110,8 +111,7 @@ void ibValueGridBox::CallAsAction(const ibActionID& lNumAction, ibBackendValueFo
 				}
 
 				// The composer swapped the sheet it holds, so the window is re-pointed at it once.
-				if (target != nullptr)
-					target->LoadDocument(keepModel->GetSpreadsheetDocument());
+				self->m_gridDocument->SetSpreadsheetDocument(keepModel->GetSpreadsheetDocument());
 			});
 		});
 		break;

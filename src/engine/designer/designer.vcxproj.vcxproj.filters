@@ -63,6 +63,9 @@
     <ClCompile Include="win\editor\commonAttributeEditor\commonAttributeEditor.cpp">
       <Filter>win\editor\commonAttributeEditor</Filter>
     </ClCompile>
+    <ClCompile Include="win\editor\functionalOptionEditor\functionalOptionEditor.cpp">
+      <Filter>win\editor\functionalOptionEditor</Filter>
+    </ClCompile>
     <ClCompile Include="win\editor\roleEditor\roleEditor.cpp">
       <Filter>win\editor\roleEditor</Filter>
     </ClCompile>
@@ -130,6 +133,9 @@
       <Filter>docManager\templates</Filter>
     </ClCompile>
     <ClCompile Include="docManager\templates\docViewCommonAttribute.cpp">
+      <Filter>docManager\templates</Filter>
+    </ClCompile>
+    <ClCompile Include="docManager\templates\docViewFunctionalOption.cpp">
       <Filter>docManager\templates</Filter>
     </ClCompile>
     <ClCompile Include="docManager\templates\docViewMetaFile.cpp">
@@ -216,6 +222,9 @@
     <ClInclude Include="win\editor\commonAttributeEditor\commonAttributeEditor.h">
       <Filter>win\editor\commonAttributeEditor</Filter>
     </ClInclude>
+    <ClInclude Include="win\editor\functionalOptionEditor\functionalOptionEditor.h">
+      <Filter>win\editor\functionalOptionEditor</Filter>
+    </ClInclude>
     <ClInclude Include="win\editor\roleEditor\roleEditor.h">
       <Filter>win\editor\roleEditor</Filter>
     </ClInclude>
@@ -270,6 +279,9 @@
     <ClInclude Include="docManager\templates\docViewCommonAttribute.h">
       <Filter>docManager\templates</Filter>
     </ClInclude>
+    <ClInclude Include="docManager\templates\docViewFunctionalOption.h">
+      <Filter>docManager\templates</Filter>
+    </ClInclude>
     <ClInclude Include="docManager\templates\docViewMetaFile.h">
       <Filter>docManager\templates</Filter>
     </ClInclude>
@@ -304,9 +316,6 @@
     </Filter>
     <Filter Include="res">
       <UniqueIdentifier>{d3f4bf29-6f86-43b3-b079-064ad3a64eb7}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="res\xpm">
-      <UniqueIdentifier>{c2556e89-bf77-4e37-b5b5-1d1202759bad}</UniqueIdentifier>
     </Filter>
     <Filter Include="mainFrame">
       <UniqueIdentifier>{c4ad9574-1344-4c87-b10d-e8d80991c467}</UniqueIdentifier>
@@ -347,6 +356,9 @@
     <Filter Include="win\editor\commonAttributeEditor">
       <UniqueIdentifier>{3f6c1a84-9b52-4a37-8d1e-27c4f0b6a915}</UniqueIdentifier>
     </Filter>
+    <Filter Include="win\editor\functionalOptionEditor">
+      <UniqueIdentifier>{67ac34b8-842d-4167-bc36-84edcc78fa26}</UniqueIdentifier>
+    </Filter>
     <Filter Include="win\editor\roleEditor">
       <UniqueIdentifier>{1ad7d1dd-d4f4-4d64-b86d-649c849b6089}</UniqueIdentifier>
     </Filter>
@@ -377,11 +389,6 @@
     <Filter Include="mainFrame\metaTree">
       <UniqueIdentifier>{826f5b9e-e0db-4825-ba90-b3d0442b3ff5}</UniqueIdentifier>
     </Filter>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="resources\splashLogo.xpm">
-      <Filter>res\xpm</Filter>
-    </None>
   </ItemGroup>
   <ItemGroup>
     <Image Include="designer.ico">

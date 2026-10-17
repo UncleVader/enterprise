@@ -18,7 +18,7 @@
 // invisible the other.
 //
 // What is left is the single answer: the DESCRIPTION is the model
-// (backend/compositionDescription.h). Filters, sorts, groupings, resources,
+// (core/description/compositionDescription.h). Filters, sorts, groupings, resources,
 // levels and variants are data with arrays that can be walked, copied, compared
 // and written out. A window edits a COPY of it and puts the copy back on OK; the
 // composer reads it to build the query.
@@ -35,7 +35,7 @@
 // the way the description already does.
 
 #include "backend/compiler/enumUnit.h"        // ibValueEnumeration — a registered word IS a picker
-#include "backend/compositionDescription.h"   // the words themselves, and the data they describe
+#include "core/description/compositionDescription.h"   // the words themselves, and the data they describe
 #include "backend/system/value/composition/valueComposerField.h"   // the other half of the surface
 
 // ============================ the pickers ==================================
@@ -98,6 +98,8 @@ public:
 		// these long before a filter could.
 		AddEnumeration(ibComparisonKind_In,           wxT("In"),           _("In"));
 		AddEnumeration(ibComparisonKind_InHierarchy,  wxT("InHierarchy"),  _("In hierarchy"));
+		AddEnumeration(ibComparisonKind_Filled,       wxT("Filled"),       _("Filled"));
+		AddEnumeration(ibComparisonKind_NotFilled,    wxT("NotFilled"),    _("Not filled"));
 	}
 };
 

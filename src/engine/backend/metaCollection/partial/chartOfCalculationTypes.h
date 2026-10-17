@@ -114,11 +114,11 @@ public:
 
 #pragma region _form_builder_h_
 	//support form
-	virtual ibBackendValueForm* GetObjectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
-	virtual ibBackendValueForm* GetFolderForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
-	virtual ibBackendValueForm* GetListForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
-	virtual ibBackendValueForm* GetSelectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
-	virtual ibBackendValueForm* GetFolderSelectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const;
+	virtual ibFormPtr<ibBackendValueForm> GetObjectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
+	virtual ibFormPtr<ibBackendValueForm> GetFolderForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
+	virtual ibFormPtr<ibBackendValueForm> GetListForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
+	virtual ibFormPtr<ibBackendValueForm> GetSelectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
+	virtual ibFormPtr<ibBackendValueForm> GetFolderSelectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
 #pragma endregion
 
 	//descriptions...
@@ -160,13 +160,13 @@ protected:
 	}
 
 	//create manager
-	virtual ibValueManagerDataObject* CreateManagerDataObjectValue() const;
+	virtual ibValuePtr<ibValueManagerDataObject> CreateManagerDataObjectValue() const;
 
 	//create empty object
-	virtual ibValueRecordDataObjectHierarchyRef* CreateObjectRefValue(ibObjectMode mode, const ibGuid& guid = wxNullGuid) const;
+	virtual ibValuePtr<ibValueRecordDataObjectHierarchyRef> CreateObjectRefValue(ibObjectMode mode, const ibGuid& guid = wxNullGuid) const;
 
 	//create object data with meta form
-	virtual ibSourceDataObject* CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const;
+	virtual ibSourcePtr<ibSourceDataObject> CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const;
 
 	//load & save metaData from DB
 
@@ -198,7 +198,7 @@ private:
 		for (auto object : GetFormArrayObject()) {
 			if (!object->IsAllowed()) continue;
 			if (eFormObject == object->GetTypeForm()) {
-				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetIcon(), object);
+				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetClassType(), object);
 			}
 		}
 		return true;
@@ -208,7 +208,7 @@ private:
 		for (auto object : GetFormArrayObject()) {
 			if (!object->IsAllowed()) continue;
 			if (eFormFolder == object->GetTypeForm()) {
-				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetIcon(), object);
+				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetClassType(), object);
 			}
 		}
 		return true;
@@ -218,7 +218,7 @@ private:
 		for (auto object : GetFormArrayObject()) {
 			if (!object->IsAllowed()) continue;
 			if (eFormList == object->GetTypeForm()) {
-				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetIcon(), object);
+				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetClassType(), object);
 			}
 		}
 		return true;
@@ -228,7 +228,7 @@ private:
 		for (auto object : GetFormArrayObject()) {
 			if (!object->IsAllowed()) continue;
 			if (eFormSelect == object->GetTypeForm()) {
-				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetIcon(), object);
+				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetClassType(), object);
 			}
 		}
 		return true;
@@ -238,7 +238,7 @@ private:
 		for (auto object : GetFormArrayObject()) {
 			if (!object->IsAllowed()) continue;
 			if (eFormFolderSelect == object->GetTypeForm()) {
-				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetIcon(), object);
+				prop->AppendItem(object->GetName(), object->GetMetaID(), object->GetClassType(), object);
 			}
 		}
 		return true;

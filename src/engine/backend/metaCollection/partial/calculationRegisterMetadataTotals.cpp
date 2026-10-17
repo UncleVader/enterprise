@@ -20,9 +20,8 @@
 #include "backend/query/dbTableProvider.h"                           // the base: a field's value off a row (GetValueAttribute)
 #include "backend/system/value/valueArray.h"                         // the base: GetBase's arguments
 #include "backend/system/value/valueMap.h"
-#include "backend/system/value/valueTable.h"                         // the base: the table GetBase answers
+#include "backend/query/queryRamTable.h"                             // the base: the table GetBase answers, filled fast
 #include "backend/metaData.h"                                        // the schedule data: the schedule register, by its id
-#include "backend/diagnostics/journal.h"                             // the schedule data: what each read brought, and how long
 
 #include <algorithm>
 #include <map>
@@ -495,7 +494,7 @@ ibCalcNarrowing ibCalcNarrowingOf(const ibValueMetaObjectCalculationRegister* re
 
 	// FOR WHICH DAYS OF ACTION (ibCalcViewArg): the subject's own action period meets them — it ends on
 	// BeginOfActionPeriod or later and begins on EndOfActionPeriod or earlier.
-	const auto dated = [](const ibValue& v) { return v.GetType() == TYPE_DATE && v.GetDateTime().IsValid(); };
+	const auto dated = [](const ibValue& v) { return v.GetType() == TYPE_DATE; };
 	if (dated(actionFrom))
 		terms.push_back({ recordEnd, actionFrom, ibQueryBinOp::Ge, false });
 	if (dated(actionTo))
@@ -546,7 +545,7 @@ ibCalcNarrowing ibCalcNarrowingOf(const ibValueMetaObjectCalculationRegister* re
 	// its displacers alike, the registration period under the register's field name.
 	ibQueryExprPtr before;
 	if (dated(moment))
-		before = ibConst(ibValue(ibNextPeriodStart(moment.GetDateTime(), reg->GetPeriodicityUnit())));
+		before = ibConst(ibValue(moment.GetDate().BeginOfNextPeriod(reg->GetPeriodicityUnit())));
 
 	if (terms.empty() && !before)
 		return nullptr;
@@ -717,22 +716,6 @@ void ibCalcFactSourceDescriptor::FillConditionExplorer(ibSourceDataObject::ibSou
 
 namespace {
 
-// A calendar day as a number: whole days between two dates, whatever the clock did in between — a difference of
-// local times across a daylight-saving change is an hour short of a day. Days from the civil calendar (y, m, d),
-// so a date read back from the database counts the day it names.
-long long ibCalcCalendarDay(const wxDateTime& t)
-{
-	int y = t.GetYear();
-	const unsigned m = static_cast<unsigned>(t.GetMonth()) + 1;
-	const unsigned d = t.GetDay();
-	y -= m <= 2 ? 1 : 0;
-	const long long era = (y >= 0 ? y : y - 399) / 400;
-	const unsigned yoe = static_cast<unsigned>(y - era * 400);
-	const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
-	const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-	return era * 146097 + static_cast<long long>(doe) - 719468;
-}
-
 // Each item of a comma-separated list, trimmed; empty items dropped.
 std::vector<wxString> ibCalcBaseItemsOf(const wxString& list)
 {
@@ -845,18 +828,23 @@ ibCalcBaseAsked ibCalcBaseAskedOf(const ibValueMetaObjectCalculationRegister* re
 ibValue ibCalcReadBase(const ibValueMetaObjectCalculationRegister* reg, const ibCalcBaseAsked& asked,
 	const std::vector<ibCalcBaseRecord>& records)
 {
-	ibValueModelTable* table = new ibValueModelTable();
-	const ibValue keep(table);   // held while its rows are made, as every builder of a table holds it
-	ibValueModelTable::ibValueModelColumnCollection* columns = table->GetColumnCollection();
-	const ibMetaID lineColumn = columns->AddColumn(wxT("LineNumber"), reg->GetRegisterLineNumber()->GetTypeDesc(),
-		reg->GetRegisterLineNumber()->GetSynonym())->GetColumnID();
+	// The fast table the answer is filled into (ibQueryRamTable::ToValueTable loads it), its columns numbered in the
+	// order they stand: the line, a figure each, a section each.
+	ibQueryRamTable table;
+	const ibMetaID lineColumn = 1;
+	table.AddColumn(lineColumn, wxT("LineNumber"), reg->GetRegisterLineNumber()->GetTypeDesc(),
+		reg->GetRegisterLineNumber()->GetSynonym());
 	std::vector<ibMetaID> figureColumns, sectionColumns;
-	for (const ibCalcBaseAsked::ibFigure& figure : asked.m_figures)
-		figureColumns.push_back(columns->AddColumn(figure.m_name, figure.m_resources.front().second->GetTypeDesc(),
-			figure.m_resources.front().second->GetSynonym())->GetColumnID());
-	for (const auto& section : asked.m_sections)
-		sectionColumns.push_back(columns->AddColumn(section.second->GetName(), section.second->GetTypeDesc(),
-			section.second->GetSynonym())->GetColumnID());
+	for (const ibCalcBaseAsked::ibFigure& figure : asked.m_figures) {
+		figureColumns.push_back(static_cast<ibMetaID>(table.Columns().size() + 1));
+		table.AddColumn(figureColumns.back(), figure.m_name, figure.m_resources.front().second->GetTypeDesc(),
+			figure.m_resources.front().second->GetSynonym());
+	}
+	for (const auto& section : asked.m_sections) {
+		sectionColumns.push_back(static_cast<ibMetaID>(table.Columns().size() + 1));
+		table.AddColumn(sectionColumns.back(), section.second->GetName(), section.second->GetTypeDesc(),
+			section.second->GetSynonym());
+	}
 
 	// What each record gathers: its breakdowns (the section values, in the order first met) and a sum a figure each.
 	struct ibGathered {
@@ -887,21 +875,22 @@ ibValue ibCalcReadBase(const ibValueMetaObjectCalculationRegister* reg, const ib
 	const bool ownBasePeriod = reg->IsUseBasePeriod();
 	const ibTotalsPeriod unit = reg->GetPeriodicityUnit();
 	std::vector<std::pair<long long, long long>> spans(records.size(), { 0, -1 });
-	wxDateTime windowFrom, windowTo;
+	ibDateTime windowFrom, windowTo;   // the empty date is "no window yet"
 	for (size_t i = 0; i < records.size(); ++i) {
-		wxDateTime from = records[i].m_from, to = records[i].m_to;
-		if (!ownBasePeriod && records[i].m_registration.IsValid()) {
-			from = ibTruncateToPeriod(records[i].m_registration, unit);
-			to = ibNextPeriodStart(from, unit) - wxDateSpan::Day();
+		ibDateTime from = records[i].m_from, to = records[i].m_to;
+		if (!ownBasePeriod && !records[i].m_registration.IsEmpty()) {
+			from = records[i].m_registration.BeginOfPeriod(unit);
+			to = from.BeginOfNextPeriod(unit).AddDays(-1);
 		}
-		if (!from.IsValid() || !to.IsValid() || from.GetYear() <= 1 || to < from)
+		if (from < ibDateTime(2, 1, 1) || to < from)   // a date in year 1 is not set
 			continue;
-		spans[i] = { ibCalcCalendarDay(from), ibCalcCalendarDay(to) };
-		if (!windowFrom.IsValid() || from < windowFrom) windowFrom = from;
-		if (!windowTo.IsValid() || to > windowTo) windowTo = to;
+		// A calendar day as a number: the date's day count, whatever any clock did in between.
+		spans[i] = { from.GetDays(), to.GetDays() };
+		if (windowFrom.IsEmpty() || from < windowFrom) windowFrom = from;
+		if (windowTo.IsEmpty() || to > windowTo) windowTo = to;
 	}
 
-	if (feeds != nullptr && feeds->IsAllowed() && feeds->GetCalculationType() != nullptr && windowFrom.IsValid()) {
+	if (feeds != nullptr && feeds->IsAllowed() && feeds->GetCalculationType() != nullptr && !windowFrom.IsEmpty()) {
 		// ---- which types a type takes its base from: the Base rows it owns ----------------------------------------
 		std::unordered_map<std::vector<ibValue>, std::vector<ibValue>, ibValueSeqHash, ibValueSeqEqual> namedBy;
 		{
@@ -1064,8 +1053,8 @@ ibValue ibCalcReadBase(const ibValueMetaObjectCalculationRegister* reg, const ib
 				for (size_t c = 0; c < figureResources.size(); ++c)
 					for (const ibValueMetaObjectResource* resource : figureResources[c])
 						item.m_figures[c] += rs.GetResultNumber(ibRegValueField(resource));
-				item.m_first = ibCalcCalendarDay(rs.GetResultDate(firstField));
-				item.m_last = ibCalcCalendarDay(rs.GetResultDate(lastField));
+				item.m_first = rs.GetResultDate(firstField).GetDays();
+				item.m_last = rs.GetResultDate(lastField).GetDays();
 				if (byAction) {
 					ibValue recorder, line;
 					ibDbTableProvider::GetValueAttribute(base->GetRegisterRecorder(), recorder, rs);
@@ -1111,21 +1100,19 @@ ibValue ibCalcReadBase(const ibValueMetaObjectCalculationRegister* reg, const ib
 	}
 
 	// ---- one row a record — or a record and a section — in the records' order ---------------------------------------
-	std::vector<std::pair<ibMetaID, ibValue>> row;
 	for (size_t i = 0; i < records.size(); ++i) {
 		if (gathered[i].m_rows.empty())
 			gathered[i].Row(std::vector<ibValue>(asked.m_sections.size()), asked.m_figures.size());
 		for (const auto& breakdown : gathered[i].m_rows) {
-			row.clear();
-			row.emplace_back(lineColumn, records[i].m_line);
+			const long at = table.AppendRow();
+			table.SetCell(at, lineColumn, records[i].m_line);
 			for (size_t c = 0; c < asked.m_figures.size(); ++c)
-				row.emplace_back(figureColumns[c], asked.m_figures[c].m_resources.front().second->AdjustValue(ibValue(breakdown.second[c])));
+				table.SetCell(at, figureColumns[c], ibValue(breakdown.second[c]));   // to the figure's type as it is loaded
 			for (size_t s = 0; s < asked.m_sections.size(); ++s)
-				row.emplace_back(sectionColumns[s], breakdown.first[s]);
-			table->AppendRow(row);
+				table.SetCell(at, sectionColumns[s], breakdown.first[s]);
 		}
 	}
-	return table;
+	return table.ToValueTable();
 }
 
 // ============================================================================
@@ -1257,7 +1244,7 @@ const ibBackendQueryable* ibValueMetaObjectCalculationRegister::GetScheduleDataS
 				const wxString name = resource->GetName() + ibCalcSchedulePeriodName(period);
 				columns.push_back(ibTempColumn(name, name, resource->GetTypeDesc(), ibRegDerivedColumnId(resource->GetMetaID(), period),
 					ibRegColumnCaptionOf(resource->GetSynonym(), ibCalcSchedulePeriodCaption(period)),
-					ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()));
+					ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()).StandsFor(resource));
 			}
 		}
 	});
@@ -1472,14 +1459,14 @@ ibQueryRamTable ibCalcScheduleDataQueryable::ComputeRows(const std::vector<ibQue
 	// employee for every record, three times over: 162 s for a July of 40 000 employees in Release, against 57.6 s
 	// for bringing the rows home (2026-09-17). The tag is said the way a comparison to a value says it
 	// (ibRegCompositeIR), with the earliest day any record reads as that value.
-	wxDateTime earliest;
+	ibDateTime earliest;
 	const auto widen = [&](const ibValueMetaObjectAttributeBase* field) {
 		const size_t at = placeOf(field);
 		if (at >= record.size())
 			return;
 		for (const std::vector<ibValue>& one : records)
-			if (!one[at].IsEmpty() && (!earliest.IsValid() || one[at].GetDateTime().IsEarlierThan(earliest)))
-				earliest = one[at].GetDateTime();
+			if (!one[at].IsEmpty() && (earliest.IsEmpty() || one[at].GetDate() < earliest))
+				earliest = one[at].GetDate();
 	};
 	if (readsAction)
 		widen(m_reg->GetActionPeriodStart());
@@ -1487,8 +1474,8 @@ ibQueryRamTable ibCalcScheduleDataQueryable::ComputeRows(const std::vector<ibQue
 		widen(m_reg->GetRegistrationPeriod());
 	if (readsBase && m_reg->IsUseBasePeriod())
 		widen(m_reg->GetBasePeriodStart());
-	const ibQueryExprPtr tagged = earliest.IsValid()
-		? ibRegCompositeIR(scheduleDate->GetQueryColumn(), metaData, ibValue(earliest.GetDateOnly()), ibQueryBinOp::Ge, s) : nullptr;
+	const ibQueryExprPtr tagged = !earliest.IsEmpty()
+		? ibRegCompositeIR(scheduleDate->GetQueryColumn(), metaData, ibValue(earliest.BeginOfPeriod(ibTotalsPeriod::Day)), ibQueryBinOp::Ge, s) : nullptr;
 
 	long sumRows = 0;
 	// One period a query sums over: the days [from, next) a row of the source names.

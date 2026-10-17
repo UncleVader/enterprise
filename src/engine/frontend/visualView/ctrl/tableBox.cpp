@@ -1,5 +1,5 @@
 #include "tableBox.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifndef OES_USE_WEB
 // Renderer pulls in dataview.h (wxDataView heavy). Web stubs don't
 // touch the renderer at all.
@@ -12,6 +12,7 @@
 #include "backend/system/value/valueTable.h"
 #include "backend/metaCollection/partial/commonObject.h"
 #include "backend/metaData.h"                 // FindAnyObjectByFilter (dot-path metaID -> name)
+#include "backend/functionalOption/functionalOptionGate.h"   // ibFunctionalOptionGate::IsAvailable — a tabular section this base does not use
 #include "frontend/win/dlgs/settings/savedSettings.h"   // the setting marked "restore on open" goes on here
 #include "backend/settings/settingsComposer.h"          // ibSettingsCategory — which shelf these settings sit on
 #include "formAttribute.h"                              // the attribute this box is bound to — its source IS the address
@@ -323,7 +324,7 @@ void ibValueModelTableBox::CreateTable(bool recreateModel) {
 
 	if (m_tableModel == nullptr) {
 
-		m_tableModel = ibTypeControlFactory::CreateAndConvertValueRef<ibValueModel>();
+		m_tableModel = ibTypeControlFactory::CreateValue();
 
 		if (m_tableModel != nullptr) {
 			// Through the WALK, not the children: a column inside a group is still a
@@ -474,6 +475,20 @@ bool ibValueModelTableBox::GetSourceList(std::vector<ibBackendFormAttributeValue
 	return m_formOwner != nullptr ? m_formOwner->GetSourceList(GetFilterSourceDataType(), out) : false;
 }
 
+// The binding answers for a field, but a tabular section is no column — its node in the source carries none —
+// so for it the SECTION the table shows answers. Only for a NESTED source (the table stands on a field of the
+// form's object, [head, section]): the form's own list is always available, since a list form of an object
+// the base does not use may still be opened from a reference to it, and must not come up empty. (Unbound is
+// the other question — IsUnbound.)
+bool ibValueModelTableBox::IsAvailable() const
+{
+	if (!m_propertySource->IsAvailable() || !ibValueWindowComposite::IsAvailable())
+		return false;
+	if (m_tableModel == nullptr || m_propertySource->GetValueAsSourceDesc().GetHopCount() < 2)
+		return true;
+	return ibFunctionalOptionGate::IsAvailable(m_tableModel->GetSourceMetaObject());
+}
+
 const ibValueMetaObjectCompositeData* ibValueModelTableBox::GetSourceMetaObject() const
 {
 	wxASSERT(m_tableModel);
@@ -504,8 +519,8 @@ m_tableModel(nullptr), m_tableCurrentLine(nullptr)
 	m_propertySource->SetValue(ibTypeDescription(g_valueTableCLSID));
 
 	//set default params
-	m_propertyMinSize->SetValue(wxSize(150, 75));
-	m_propertyBG->SetValue(wxColour(255, 255, 255));
+	m_propertyMinSize->SetValue(ibSize(150, 75));
+	m_propertyBG->SetValue(ibColour(255, 255, 255));
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -774,7 +789,7 @@ void ibValueModelTableBox::OnUpdated(wxObject* wxobject, ibFrontendWindow* wxpar
 					line = ResolveLineByValue(m_tableModel, createdValue);
 				}
 				else if (!m_dataViewSelected) {
-					ibValueFrame* ownerControl = m_formOwner->GetOwnerControl();
+					ibControlFrame* ownerControl = m_formOwner->GetOwnerControl();
 					if (ownerControl != nullptr && m_tableCurrentLine == nullptr) {
 						ibValue retValue; ownerControl->GetControlValue(retValue);
 						line = ResolveLineByValue(m_tableModel, retValue);

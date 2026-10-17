@@ -2,7 +2,7 @@
 #include "backend/system/value/valueEvent.h"
 #include "backend/compiler/procUnitLambda.h"   // AsFunction / ibValueFunction — a lambda value (IS-A dispatcher)
 #include "backend/eventDispatcher.h"           // ibEventDispatcher — the facet GetDispatcher vends
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
 
 
 // THE control event's dispatcher = the held value as its ibEventDispatcher facet. A function assigned from script is
@@ -67,14 +67,14 @@ bool ibEventControl::GetDataValue(ibValue& pvarPropVal) const
 	return true;
 }
 
-// A child node with named properties (Name + handler Value) — no opaque bytes.
+// A child node with named properties (Name + handler Value) — no opaque bytes. Only the handler is read: the name is
+// the event's own, given when it was made and keyed by in its owner's events — a node pasted from another event, or a
+// client's edit that carries the handler alone, must not rename it.
 bool ibEventControl::ReadNodeValue(const ibDataValue& value)
 {
 	const std::shared_ptr<ibDataNode>& node = value.AsChild();
-	if (node) {
-		m_propName = node->GetValue<wxString>(wxT("Name"));
+	if (node)
 		m_propValue = node->GetValue<wxString>(wxT("Value"));
-	}
 	return true;
 }
 

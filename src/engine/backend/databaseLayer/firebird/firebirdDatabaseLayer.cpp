@@ -21,6 +21,7 @@
 #include <ctime>
 
 #include <wx/file.h>
+#include <wx/filename.h>
 #include <wx/stdpaths.h>
 #include <wx/tokenzr.h>
 #include <wx/regex.h>
@@ -45,6 +46,7 @@ const ibDialectDictionary& ibDatabaseLayerFirebird::Dialect()
 		// 2026-09-16 failure as aliases sharing their first 31 characters; the 31 fixed it by shortening the path.)
 		// Twelve — three of the head and the hash — keeps ten levels near 130.
 		d.m_maxAliasLength = 12;
+		d.m_maxParameters = 32767;                    // measured on the vendored 5.0.5 (2026-10-05): 30 000 ran, 50 000 refused
 		d.m_groupByPosition = true;                   // GROUP BY 2 — a key that binds a value is named by its position
 		// A `?` in a SELECT list is untyped here (-804), and the batched INSERT is spelled as
 		// SELECTs — so each one names the column it is going into and lets FB look the type up.
@@ -95,6 +97,7 @@ const ibDialectDictionary& ibDatabaseLayerFirebird::Dialect()
 		d.m_features.m_rollup   = false;
 		d.m_features.m_grouping = false;
 		d.m_features.m_cte    = true;                 // WITH … AS (…) — FB 2.1+
+		d.m_features.m_recursiveCte = true;           // WITH RECURSIVE — FB 2.1+, recursive part by UNION ALL only
 		// m_multiRowValues stays FALSE — Firebird has no multi-row VALUES at any version. A batched
 		// INSERT is rendered as INSERT … SELECT … UNION ALL SELECT … instead (see RenderDML)…
 		// …except where the rows reach L2 as one batch: there they go as ONE one-row INSERT prepared once
@@ -118,11 +121,13 @@ const ibDialectDictionary& ibDatabaseLayerFirebird::Dialect()
 		// It does NOT ask RDB$INDICES — reading the physical schema to decide what to emit is banned
 		// (docs/private/schema-authority.md § 3); the introspection this line used to describe, and the
 		// `m_indexListQuery` behind it, were removed 2026-08-14. Do not revive either.
+		d.m_descendingIndexWord = wxT("DESCENDING");   // FB walks an ascending index forward only — measured 2026-10-01: 1100 ms a page backwards, 235 forwards
 		d.m_rowIdColumn    = wxT("RDB$DB_KEY");         // physical row id for the pre-UNIQUE dedup (keep one row per key)
 		d.m_maxIndexSegments = 16;                     // "too many keys defined for index" past this — and a failed DDL rolls the apply back
 		// …and the BYTE ceiling beside it: Firebird bounds an index key at roughly page_size/4, and the
 		// base is created at m_pageSize = 16384, so ~4096. Kept a little under it — a hashed key costs
-		// one column, an overflowed CREATE INDEX costs the whole apply.
+		// one column, an overflowed CREATE INDEX costs the whole apply. A base ATTACHED with another page
+		// answers from its own (ibDatabaseLayerFirebird::GetMaxIndexKeyBytes, read at Open).
 		d.m_maxIndexKeyBytes = 4000;
 
 		// --- period truncation: no date_trunc here, so every unit is arithmetic ---
@@ -158,8 +163,8 @@ const ibDialectDictionary& ibDatabaseLayerFirebird::Dialect()
 
 		// ⭐ THE END OF A PERIOD IS THE START OF THE NEXT ONE, LESS A SECOND — written that way rather
 		// than as ten more hand-built expressions, so the boundary rule lives in ONE place and the
-		// truncations above stay the single authority on where a period begins. (ibEndOfPeriod, the
-		// RAM twin, says the same sentence in C++.)
+		// truncations above stay the single authority on where a period begins. (ibDateTime::EndOfPeriod,
+		// the RAM twin, says the same sentence in C++.)
 		auto endOf = [&d](ibTotalsPeriod unit, const wxString& step) {
 			return wxT("DATEADD(-1 SECOND TO DATEADD(1 ") + step + wxT(" TO ") + d.m_periodTrunc[unit] + wxT("))");
 		};
@@ -329,7 +334,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird()
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	
@@ -342,6 +346,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird()
 	}
 
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = wxT("");  // assume embedded database in this case
 	m_strUser = wxT("sysdba");
@@ -356,7 +361,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strDatabase)
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	
@@ -369,6 +373,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strDatabase)
 	}
 
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = wxT("");  // assume embedded database in this case
 	m_strUser = wxT("sysdba");
@@ -384,7 +389,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strDatabase, co
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	if (!m_pInterface->Init())
@@ -395,6 +399,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strDatabase, co
 		return;
 	}
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = wxT("");  // assume embedded database in this case
 	m_strUser = strUser;
@@ -410,7 +415,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strServer, cons
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	if (!m_pInterface->Init())
@@ -421,6 +425,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strServer, cons
 		return;
 	}
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = strServer;
 	m_strUser = strUser;
@@ -436,7 +441,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strServer, cons
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	if (!m_pInterface->Init())
@@ -447,6 +451,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const wxString& strServer, cons
 		return;
 	}
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = strServer;
 	m_strUser = strUser;
@@ -461,7 +466,6 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const ibDatabaseLayerFirebird& 
 	m_pDatabase = 0;
 	m_pTransaction = 0;
 
-	m_pStatus = new ISC_STATUS_ARRAY();
 #if _USE_DYNAMIC_DATABASE_LAYER_LINKING == 1
 	m_pInterface = std::make_shared<ibInterfaceFirebird>();
 	if (!m_pInterface->Init())
@@ -472,6 +476,7 @@ ibDatabaseLayerFirebird::ibDatabaseLayerFirebird(const ibDatabaseLayerFirebird& 
 		return;
 	}
 #endif
+	m_pStatus = new ISC_STATUS_ARRAY();
 
 	m_strServer = src.m_strServer;
 	m_strUser = src.m_strUser;
@@ -569,14 +574,18 @@ bool ibDatabaseLayerFirebird::Open()
 		dpbBuffer.push_back(SQL_DIALECT_CURRENT);
 
 		// page_size DPB: only honoured by isc_create_database (ignored on
-		// attach). Encoded as big-endian 2 bytes per legacy DPB. FB 5
-		// supports up to 32768; widen via uint32 before shifting so
-		// 32768 doesn't sign-overflow.
+		// attach). A numeric DPB item is a LITTLE-endian integer, like
+		// num_buffers below. It was written big-endian: 16384 (0x4000) reached
+		// the engine as 64, was rejected without a word, and every base came
+		// up at the 4096 default — where an index key ends near 1 KB, not the
+		// ~4 KB the dialect's m_maxIndexKeyBytes counts on. FB 5 supports up
+		// to 32768; widen via uint32 before shifting so 32768 doesn't
+		// sign-overflow.
 		const uint32_t pageSize = (uint32_t)m_pageSize;
 		dpbBuffer.push_back(isc_dpb_page_size);
 		dpbBuffer.push_back(2);
-		dpbBuffer.push_back((char)((pageSize >> 8) & 0xFF));
 		dpbBuffer.push_back((char)(pageSize & 0xFF));
+		dpbBuffer.push_back((char)((pageSize >> 8) & 0xFF));
 
 		// UTF8 character set:
 		//   isc_dpb_set_db_charset — only honoured on CREATE DATABASE; sets
@@ -814,6 +823,34 @@ bool ibDatabaseLayerFirebird::Open()
 	ibJournalInfo(wxT("db.firebird"), wxT("ibDatabaseLayerFirebird: attached to %s"),
 	           strDatabaseUrl);
 
+	// THE BASE'S OWN PAGE, not the one this driver creates bases with: a base made before the page size was
+	// written right (the little-endian DPB above) is 4 KB for life, and its index keys end near 1 KB, not 4.
+	// The ceiling is a quarter of the page, kept as far under it as the dialect's is (16 KB -> 4000).
+	m_maxIndexKeyBytes = 0;
+	ibPreparedStatement* pageStatement = nullptr;
+	ibDatabaseResultSet* pageResult = nullptr;
+	try {
+		pageStatement = DoPrepareStatement(wxT("SELECT MON$PAGE_SIZE FROM MON$DATABASE"));
+		if (pageStatement != nullptr)
+			pageResult = pageStatement->ExecuteQuery();
+		if (pageResult != nullptr && pageResult->Next()) {
+			const int pageSize = pageResult->GetResultInt(1);
+			if (pageSize >= 1024)
+				m_maxIndexKeyBytes = (unsigned int)(pageSize / 4 - 96);
+			if (pageSize < m_pageSize)
+				ibJournalInfo(wxT("db.firebird"), wxT("%s has %d-byte pages: an index key is kept under %u bytes ")
+					wxT("(a backup and restore at %d bytes lifts it)"), strDatabaseUrl, pageSize, m_maxIndexKeyBytes,
+					(int)m_pageSize);
+		}
+	}
+	catch (const ibCoreException&) {
+		// Not read: the dialect's ceiling stands (GetMaxIndexKeyBytes).
+	}
+	if (pageResult != nullptr)
+		CloseResultSet(pageResult);
+	if (pageStatement != nullptr)
+		CloseStatement(pageStatement);
+
 	// Spin up the maintenance scheduler — ONLY for Standalone single-
 	// process embedded. Leader-mode (our own spawned firebird.exe
 	// holds the .fdb via TCP) cannot do gbak BR-cycle's atomic SWAP:
@@ -825,14 +862,14 @@ bool ibDatabaseLayerFirebird::Open()
 	// ⚠⚠ THE REGISTRATION USED TO HAPPEN HERE, AND IT COULD NOT WORK FROM HERE.
 	//
 	// Declaring a job WRITES to the database: the manager reads sys_job for a stored schedule and
-	// seeds a row when there is none. This is `Open()` — it runs before ibApplicationData exists,
+	// seeds a row when there is none. This is `Open()` — it runs before ibApplicationInstance exists,
 	// before the connection pool is initialised, and long before the startup sequence creates
 	// sys_job. So the very first thing a fresh base did was fail to record `firebird.sweep`, out of
 	// a call stack that has no business writing rows at all.
 	//
 	// Eligibility is still the DRIVER's knowledge (a local standalone file base, not leader-mode,
 	// not a remote server), so the test stays; only the ACTION moved. See
-	// ibApplicationData::CreateFileAppDataEnv — it registers after the tables, which is the only
+	// ibApplicationInstance::Open (the Firebird base) — it registers after the tables, which is the only
 	// place that can honestly promise they exist.
 	m_localMaintenanceEligible = m_strServer.IsEmpty()
 		&& ibFirebirdLeaderMode::CurrentRole() == ibFirebirdLeaderMode::Role::Standalone;
@@ -874,7 +911,7 @@ bool ibDatabaseLayerFirebird::GetSweepBacklog(long long& transactions)
 	try {
 		rs = RunQueryWithResults(wxT("SELECT MON$OLDEST_TRANSACTION, MON$OLDEST_SNAPSHOT FROM MON$DATABASE"));
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		ResetErrorCodes();
 		return false;
 	}
@@ -1510,7 +1547,7 @@ ibDatabaseResultSet* ibDatabaseLayerFirebird::DoRunQueryWithResults(const wxStri
 			ibDatabaseResultSetFirebird* pResultSet = new ibDatabaseResultSetFirebird(m_pInterface.get(), m_pDatabase, pQueryTransaction, pStatement, pOutputSqlda, true, bManageTransaction);
 			if (pResultSet->GetErrorCode() != DATABASE_LAYER_OK)
 			{
-				SetErrorCode(pResultSet->GetErrorCode());
+				SetErrorCode(pResultSet->GetErrorCode(), pResultSet->GetErrorKind());
 				SetErrorMessage(pResultSet->GetErrorMessage());
 
 				// OURS TO CLOSE, or nobody's: bManageTransaction is true only when this call started
@@ -1533,7 +1570,7 @@ ibDatabaseResultSet* ibDatabaseLayerFirebird::DoRunQueryWithResults(const wxStri
 				// already on the error path; the original isc_dsql_*
 				// failure is what we want the caller to see, not a
 				// secondary cleanup exception.
-				try { delete pResultSet; } catch (const ibBackendException&) {}
+				try { delete pResultSet; } catch (const ibCoreException&) {}
 
 				ThrowDatabaseException();
 				return NULL;   // unreachable today (the throw above always throws) — but the code below
@@ -1563,7 +1600,7 @@ ibDatabaseResultSet* ibDatabaseLayerFirebird::DoRunQueryWithResults(const wxStri
 				// Swallow any throw from the result-set dtor — the
 				// isc_dsql_execute failure above is the user-visible
 				// error; a secondary cleanup exception would mask it.
-				try { delete pResultSet; } catch (const ibBackendException&) {}
+				try { delete pResultSet; } catch (const ibCoreException&) {}
 
 				ThrowDatabaseException();
 				return NULL;
@@ -1619,7 +1656,7 @@ ibPreparedStatement* ibDatabaseLayerFirebird::DoPrepareStatement(const wxString&
 	ibPreparedStatementFirebird* pStatement = ibPreparedStatementFirebird::CreateStatement(m_pInterface.get(), m_pDatabase, m_pTransaction, strQuery);
 	if (pStatement && (pStatement->GetErrorCode() != DATABASE_LAYER_OK))
 	{
-		SetErrorCode(pStatement->GetErrorCode());
+		SetErrorCode(pStatement->GetErrorCode(), pStatement->GetErrorKind());
 		SetErrorMessage(pStatement->GetErrorMessage());
 		wxDELETE(pStatement); // This sets the pointer to NULL after deleting it
 
@@ -1671,7 +1708,7 @@ bool ibDatabaseLayerFirebird::TableExists(const wxString& table)
 			pStatement = NULL;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != NULL) {
@@ -1728,7 +1765,7 @@ bool ibDatabaseLayerFirebird::ViewExists(const wxString& view)
 			pStatement = NULL;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != NULL) {
@@ -1765,7 +1802,7 @@ wxArrayString ibDatabaseLayerFirebird::GetTables()
 			pResult = NULL;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != NULL) {
@@ -1798,7 +1835,7 @@ wxArrayString ibDatabaseLayerFirebird::GetViews()
 			pResult = NULL;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != NULL) {
@@ -1849,7 +1886,7 @@ wxArrayString ibDatabaseLayerFirebird::GetColumns(const wxString& table)
 			pStatement = NULL;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open resources before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != NULL) {
@@ -1875,64 +1912,6 @@ int ibDatabaseLayerFirebird::TranslateErrorCode(int nCode)
 	// Ultimately, this will probably be a map of Firebird database error code values to ibDatabaseLayer values
 	// For now though, we'll just return the original error code
 	return nCode;
-}
-
-ibBackendDatabaseException::Kind ibDatabaseLayerFirebird::ClassifyDatabaseError(int nativeCode) const
-{
-	// Firebird stashes the primary `isc_*` gds code into m_nErrorCode
-	// via SetErrorCode(...) at every error path. The full status
-	// vector (isc_status[]) carries detail, but the primary code is
-	// what callers branch on.
-	//
-	// Symbolic names from interbase/ibase.h — we use the raw integer
-	// values to avoid pulling the FB headers into this classifier.
-	// They are part of FB's stable ABI (isc_*. macros are in iberror.h
-	// and don't change between minor versions).
-	using Kind = ibBackendDatabaseException::Kind;
-
-	switch (nativeCode) {
-		// --- ConnectionLost ---
-		case 335544721: // isc_network_error
-		case 335544722: // isc_net_connect_err
-		case 335544723: // isc_net_connect_listen_err
-		case 335544724: // isc_net_event_connect_err
-		case 335544725: // isc_net_event_listen_err
-		case 335544726: // isc_net_read_err
-		case 335544727: // isc_net_write_err
-		case 335544741: // isc_server_misconfigured
-		case 335544856: // isc_att_shutdown
-			return Kind::ConnectionLost;
-
-		// --- Deadlock / lock conflict ---
-		case 335544336: // isc_deadlock
-		case 335544345: // isc_lock_conflict
-		case 335544510: // isc_lock_timeout — but FB labels this as a
-		                // *conflict* (the wait actually expired); we
-		                // surface as Timeout below.
-			return Kind::Deadlock;
-
-		// (isc_cancelled is no failure — TranslateErrorCode records it as the cancel. The number that stood here
-		// under that name, 335544855, is isc_collation_not_installed: it filed a missing collation as a timeout.)
-
-		// --- Constraint violations ---
-		case 335544349: // isc_no_dup
-		case 335544466: // isc_foreign_key
-		case 335544347: // isc_not_valid (CHECK violation)
-		case 335544665: // isc_unique_key_violation
-		case 335544558: // isc_check_constraint
-			return Kind::Constraint;
-
-		// --- Syntax / DSQL parse errors ---
-		case 335544343: // isc_dsql_error
-		case 336397208: // isc_dsql_command_err
-		case 336397210: // isc_dsql_token_unk_err
-		case 336003075: // isc_dsql_relation_err
-		case 336003085: // isc_dsql_field_err
-			return Kind::Syntax;
-
-		default:
-			return Kind::Unknown;
-	}
 }
 
 //wxString ibDatabaseLayerFirebird::TranslateErrorCodeToString(ibInterfaceFirebird* pInterface, int nCode, ISC_STATUS_ARRAY status)
@@ -1992,13 +1971,61 @@ void ibDatabaseLayerFirebird::InterpretErrorCodes()
 
 	long nSqlCode = m_pInterface->GetIscSqlcode()(*(ISC_STATUS_ARRAY*)m_pStatus);
 	SetErrorMessage(ibDatabaseLayerFirebird::TranslateErrorCodeToString(m_pInterface.get(), nSqlCode, *(ISC_STATUS_ARRAY*)m_pStatus));
-	if (nSqlCode < -900)  // Error codes less than -900 indicate that it wasn't a SQL error but an ibase system error
-	{
-		SetErrorCode(ibDatabaseLayerFirebird::TranslateErrorCode(*((ISC_STATUS_ARRAY*)m_pStatus)[1]));
-	}
-	else
-	{
-		SetErrorCode(ibDatabaseLayerFirebird::TranslateErrorCode(nSqlCode));
+	const int code = ibDatabaseLayerFirebird::TranslateErrorCode(m_pStatus);
+	SetErrorCode(code, ClassifyDatabaseError(code));
+}
+
+int ibDatabaseLayerFirebird::TranslateErrorCode(const void* status)
+{
+	return TranslateErrorCode(static_cast<int>(static_cast<const ISC_STATUS*>(status)[1]));
+}
+
+ibBackendDatabaseException::Kind ibDatabaseLayerFirebird::ClassifyDatabaseError(int code)
+{
+	// Raw integers from iberror.h, so the classifier pulls no FB headers. They are FB's stable ABI.
+	using Kind = ibBackendDatabaseException::Kind;
+	switch (code) {
+		// --- ConnectionLost ---
+		case 335544721: // isc_network_error
+		case 335544722: // isc_net_connect_err
+		case 335544723: // isc_net_connect_listen_err
+		case 335544724: // isc_net_event_connect_err
+		case 335544725: // isc_net_event_listen_err
+		case 335544726: // isc_net_read_err
+		case 335544727: // isc_net_write_err
+		case 335544741: // isc_server_misconfigured
+		case 335544856: // isc_att_shutdown
+			return Kind::ConnectionLost;
+
+		// --- Deadlock / lock conflict ---
+		case 335544336: // isc_deadlock
+		case 335544345: // isc_lock_conflict
+		case 335544451: // isc_update_conflict — a waiter on a row another transaction changed
+		                // (outside read-committed read-consistency)
+		case 335544510: // isc_lock_timeout — FB labels the expired wait a conflict
+			return Kind::Deadlock;
+
+		// (isc_cancelled is no failure — TranslateErrorCode records it as the cancel. The number that stood here
+		// under that name, 335544855, is isc_collation_not_installed: it filed a missing collation as a timeout.)
+
+		// --- Constraint violations ---
+		case 335544349: // isc_no_dup
+		case 335544466: // isc_foreign_key
+		case 335544347: // isc_not_valid (CHECK violation)
+		case 335544665: // isc_unique_key_violation
+		case 335544558: // isc_check_constraint
+			return Kind::Constraint;
+
+		// --- Syntax / DSQL parse errors ---
+		case 335544343: // isc_dsql_error
+		case 336397208: // isc_dsql_command_err
+		case 336397210: // isc_dsql_token_unk_err
+		case 336003075: // isc_dsql_relation_err
+		case 336003085: // isc_dsql_field_err
+			return Kind::Syntax;
+
+		default:
+			return Kind::Unknown;
 	}
 }
 

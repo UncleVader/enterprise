@@ -39,8 +39,12 @@
 #include <gtest/gtest.h>
 
 #include "backend/composition/dataComposer.h"     // ibDataDBComposer — the two sections live on the base
-#include "backend/compositionDescription.h"       // the description + its Memory (read/write) pair
-#include "backend/serialize/dataBuilder.h"        // ibDataNode — what a description is written into
+#include "core/composition/compositionTheme.h"    // ibCompositionThemes — the palettes a setting names
+#include "backend/system/value/valueColour.h"     // a conditional appearance's colour, packed and read back
+#include "backend/system/value/valueArray.h"      // …and the list an «in» condition reads
+#include "backend/query/queryHierarchy.h"         // …and the subtree an «in hierarchy» one is handed
+#include "backend/backend_composition.h"         // the description + its Memory (read/write) pair, its values packed
+#include "core/serialize/dataBuilder.h"        // ibDataNode — what a description is written into
 
 namespace {
 
@@ -303,7 +307,7 @@ TEST(ComposerSettings, Projection_OwesWhatEveryLevelNamesByName)
 	level.m_settings.m_group.Append(wxT("Partner"));
 	level.m_selected = Fields({ wxT("Partner.Region") });               // shown by the level
 	level.m_settings.m_filter.Append(wxT("Partner.IsActive"),
-		ibComparisonKind_Equal, ibValue(true));                         // hidden on by the level
+		ibComparisonKind_Equal, ibStoreValue(ibValue(true)));           // hidden on by the level
 	level.m_settings.m_sort.Append(wxT("Partner.Rating"), /*ascending*/false);   // ordered on
 	output.m_rowGroups.push_back(level);
 
@@ -332,7 +336,7 @@ TEST(ComposerSettings, Projection_OwesTheColumnOfASwitchedOffLine)
 
 	ibDataComposer::GroupNode level;
 	level.m_settings.m_filter.Append(wxT("Partner.IsActive"),
-		ibComparisonKind_Equal, ibValue(true), /*use*/false);
+		ibComparisonKind_Equal, ibStoreValue(ibValue(true)), /*use*/false);
 	output.m_rowGroups.push_back(level);
 
 	const std::vector<wxString> owed = composer.ProjectionFor(output);
@@ -363,6 +367,28 @@ TEST(ComposerSettings, Projection_AsksTheColumnAxisToo)
 	ASSERT_EQ(2u, owed.size());
 	EXPECT_EQ(wxT("Partner.Region"), owed[0]);
 	EXPECT_EQ(wxT("Warehouse.Kind"), owed[1]);
+}
+
+// ⭐ A RULE'S FIELD IS READ BESIDE THE SELECTION, NEVER IN ITS PLACE. An empty selection is answered by what is read
+// when nothing is chosen — a list reads every field — and a rule on AccountDr turned it into "AccountDr alone": the
+// list read one column and blanked every other cell, on every row, the rule's or not (2026-09-30).
+TEST(ComposerSettings, Projection_ARuleFieldIsReadBesideTheSelectionNotInsteadOfIt)
+{
+	ibDataDBComposer composer;
+	ibSettingsDescription zeroth;
+	ibConditionalAppearanceRuleDescription rule;
+	ibFilterDescription::Append(rule.m_condition.m_nodes, wxT("AccountDr"), ibComparisonKind_Equal, ibStoreValue(ibValue(28)));
+	zeroth.m_conditionalAppearance.m_rules.push_back(rule);
+	DeclareZeroth(composer, zeroth);
+	ibDataComposer::Output& output = composer.Outputs().front();
+
+	EXPECT_TRUE(composer.ProjectionFor(output).empty());   // nothing chosen stays nothing chosen
+
+	output.m_selected = { ibSelectedFieldDescription::Field(wxT("Code")) };
+	const std::vector<wxString> owed = composer.ProjectionFor(output);
+	ASSERT_EQ(2u, owed.size());
+	EXPECT_EQ(wxT("Code"), owed[0]);
+	EXPECT_EQ(wxT("AccountDr"), owed[1]);
 }
 
 // ===========================================================================
@@ -803,6 +829,415 @@ TEST(CompositionFields, AnUnqualifiedPathNamesNothingOnceThereAreTwoSelects)
 	// ⭐ A QUALIFIER IS MATCHED BY IDENTITY FIRST — so a path that carries the id finds its select
 	// whatever the select is currently called. That is the property a rename has to preserve.
 	EXPECT_EQ(wxT("Sold"), composition.TitleForPath(sales.m_id + wxT(".Qty")));
+}
+
+// ⭐ ONE DOOR FOR EVERY WRITER — the settings window's Fields page and report_field both go through
+// ibFieldEntryForPath. It finds the entry a field already has rather than adding a second one, makes
+// the first select of a composition that said nothing yet, and refuses a path that could be either of
+// two selects. An entry made and left saying nothing is not stored.
+TEST(CompositionFields, OneDoorFindsOrMakesTheEntryAFieldIsDescribedIn)
+{
+	ibCompositionDescription composition;
+
+	ibFieldDescription* made = ibFieldEntryForPath(composition.m_selects, wxT("Qty"));
+	ASSERT_NE(nullptr, made);
+	ASSERT_EQ(1u, composition.m_selects.size());
+	EXPECT_EQ(made, ibFieldEntryForPath(composition.m_selects, wxT("Qty")));   // found, not made twice
+	EXPECT_EQ(1u, composition.m_selects.front().m_fields.size());
+
+	// Said nothing yet — the store writes no such entry.
+	{
+		ibDataNode node;
+		ibCompositionDescriptionMemory::WriteNode(node, composition);
+		ibCompositionDescription read;
+		ibCompositionDescriptionMemory::ReadNode(node, read);
+		EXPECT_TRUE(read.m_selects.empty());
+	}
+
+	made->m_useTitle = true;
+	made->m_title    = wxT("Sold");
+	EXPECT_EQ(wxT("Sold"), composition.TitleForPath(wxT("Qty")));
+
+	// Two selects: unqualified names nothing, qualified finds its own.
+	ibSelectDescription stock;
+	stock.m_id   = ibSelectDescription::NewId();
+	stock.m_name = wxT("Stock");
+	composition.m_selects.front().m_name = wxT("Sales");
+	composition.m_selects.push_back(stock);
+	EXPECT_EQ(nullptr, ibFieldEntryForPath(composition.m_selects, wxT("Amount")));
+	ibFieldDescription* onHand = ibFieldEntryForPath(composition.m_selects, wxT("Stock.Qty"));
+	ASSERT_NE(nullptr, onHand);
+	EXPECT_EQ(1u, composition.m_selects.back().m_fields.size());
+	EXPECT_EQ(wxT("Sold"), composition.TitleForPath(wxT("Sales.Qty")));   // the other select's entry untouched
+}
+
+// ⭐ A ROLE IS A PERSON'S WORD OVER THE SOURCE'S, kept only where it differs — SayRole, the door the Fields
+// page and report_field both say it through — and it survives the store.
+TEST(CompositionFields, ARoleIsKeptOnlyWhereItDiffersFromTheSource)
+{
+	ibCompositionDescription composition;
+	ibFieldDescription* field = ibFieldEntryForPath(composition.m_selects, wxT("Start"));
+	ASSERT_NE(nullptr, field);
+
+	field->SayRole(ibBalanceRole::Opening, ibBalanceRole::Opening);   // what the source says already
+	EXPECT_FALSE(field->m_useRole);
+	EXPECT_EQ(ibBalanceRole::Opening, ibRoleForPath(composition.m_selects, wxT("Start"), ibBalanceRole::Opening));
+
+	field->SayRole(ibBalanceRole::None, ibBalanceRole::Opening);      // taken away — a word of its own
+	EXPECT_TRUE(field->m_useRole);
+	EXPECT_EQ(ibBalanceRole::None, ibRoleForPath(composition.m_selects, wxT("Start"), ibBalanceRole::Opening));
+
+	ibDataNode node;
+	ibCompositionDescriptionMemory::WriteNode(node, composition);
+	ibCompositionDescription read;
+	ibCompositionDescriptionMemory::ReadNode(node, read);
+	EXPECT_EQ(ibBalanceRole::None, ibRoleForPath(read.m_selects, wxT("Start"), ibBalanceRole::Opening));
+	// …and a field nobody spoke of follows its source.
+	EXPECT_EQ(ibBalanceRole::Moment, ibRoleForPath(read.m_selects, wxT("Day"), ibBalanceRole::Moment));
+
+	// A PERIOD'S NUMBER is always a person's word — even over a source that says "period" already — and it
+	// is what a report numbers its periods with, its query saying no roles.
+	ibFieldDescription* day = ibFieldEntryForPath(composition.m_selects, wxT("Day"));
+	ASSERT_NE(nullptr, day);
+	day->SayRole(ibBalanceRole::Moment, ibBalanceRole::Moment, 2);
+	EXPECT_TRUE(day->m_useRole);
+	ibDataNode ranked;
+	ibCompositionDescriptionMemory::WriteNode(ranked, composition);
+	ibCompositionDescription back;
+	ibCompositionDescriptionMemory::ReadNode(ranked, back);
+	const ibFieldDescription* dayBack = back.m_selects.front().Find(wxT("Day"));
+	ASSERT_NE(nullptr, dayBack);
+	EXPECT_EQ(2, dayBack->m_periodRank);
+	day->SayRole(ibBalanceRole::Moment, ibBalanceRole::Moment, 0);   // no number, the source's word — back to it
+	EXPECT_FALSE(day->m_useRole);
+}
+
+// ⭐ A FIELD POINTS AT AN APPEARANCE — the platform's parameters, each ticked and given a value through one door
+// (Say). Unticked is kept and not applied; unticked and emptied is forgotten, and an entry left saying nothing
+// else is not stored. What is set survives the store.
+TEST(CompositionFields, AnAppearanceKeepsWhatWasTickedThroughTheStore)
+{
+	const wxString format = wxT("en = 'NFD=2'; ru = 'NFD=3'");
+	ibCompositionDescription composition;
+	ibFieldDescription* field = ibFieldEntryForPath(composition.m_selects, wxT("Amount"));
+	ASSERT_NE(nullptr, field);
+
+	field->m_appearance.Say(ibAppearanceParameter::Format, true, ibStoreValue(ibValue(format)));
+	EXPECT_EQ(format, ibStoredValue(ibAppearanceForPath(composition.m_selects, wxT("Amount"))
+		.ValueInForce(ibAppearanceParameter::Format), nullptr).GetString());
+	EXPECT_TRUE(ibAppearanceForPath(composition.m_selects, wxT("Qty")).IsEmpty());   // nobody spoke of it
+
+	{
+		ibDataNode node;
+		ibCompositionDescriptionMemory::WriteNode(node, composition);
+		ibCompositionDescription read;
+		ibCompositionDescriptionMemory::ReadNode(node, read);
+		EXPECT_EQ(composition.m_selects, read.m_selects);
+	}
+
+	field->m_appearance.Say(ibAppearanceParameter::Format, false, ibStoreValue(ibValue(format)));
+	EXPECT_TRUE(field->m_appearance.ValueInForce(ibAppearanceParameter::Format).Fields().empty());
+	EXPECT_NE(nullptr, field->m_appearance.Find(ibAppearanceParameter::Format));   // kept
+
+	field->m_appearance.Say(ibAppearanceParameter::Format, false, ibDataNode());
+	EXPECT_TRUE(field->m_appearance.IsEmpty());
+	{
+		ibDataNode node;
+		ibCompositionDescriptionMemory::WriteNode(node, composition);
+		ibCompositionDescription read;
+		ibCompositionDescriptionMemory::ReadNode(node, read);
+		EXPECT_TRUE(read.m_selects.empty());
+	}
+}
+
+// ⭐⭐ THE OTHER SETTINGS TRAVEL WITH THE SETTING — the report's own and a node's alike, through the store, and
+// a setting that says nothing writes nothing (Max, 2026-09-29: the page after Sort, on every node).
+TEST(CompositionOtherSettings, AreKeptOnTheReportAndOnANodeThroughTheStore)
+{
+	ibCompositionDescription written;
+	ibSettingsDescription& settings = written.m_variants[0].m_settings;
+	settings.m_outputParameters.Say(ibOutputParameter::Theme, true, ibStoreValue(ibValue(wxString(wxT("Sea")))));
+	settings.m_outputParameters.Say(ibOutputParameter::ShowParameters, true,
+		ibStoreValue(ibValue(static_cast<int>(ibShowMode::Show))));
+
+	ibOutputDescription output;
+	ibLevelDescription level;
+	level.m_settings.m_group.Append(wxT("Partner"));
+	level.m_settings.m_outputParameters.Say(ibOutputParameter::Theme, true, ibStoreValue(ibValue(wxString(wxT("Sand")))));
+	output.m_rowGroups.push_back(level);
+	settings.m_structure.push_back(output);
+
+	ibDataNode node;
+	ASSERT_TRUE(ibCompositionDescriptionMemory::WriteNode(node, written));
+	ibCompositionDescription read;
+	ASSERT_TRUE(ibCompositionDescriptionMemory::ReadNode(node, read));
+
+	// EQUALITY IS HOW "MODIFIED" IS DECIDED — a part left out of it is a page that never saves.
+	EXPECT_EQ(written.m_variants[0].m_settings, read.m_variants[0].m_settings);
+	const ibOutputParametersDescription& back = read.m_variants[0].m_settings.m_outputParameters;
+	EXPECT_EQ(wxT("Sea"), ibStoredValue(back.ValueInForce(ibOutputParameter::Theme), nullptr).GetString());
+	EXPECT_EQ(static_cast<int>(ibShowMode::Show),
+		ibStoredValue(back.ValueInForce(ibOutputParameter::ShowParameters), nullptr).GetInteger());
+	EXPECT_FALSE(back.Says(ibOutputParameter::Title));   // nobody said it
+
+	settings.m_outputParameters.Clear();
+	settings.m_structure.clear();
+	EXPECT_FALSE(settings.IsOk());   // …and a setting that says nothing is no setting at all
+}
+
+// ⭐⭐ INHERITED THE WAY A SORT IS: a node's own where it ticked one, else its output's, else the setting in force.
+// An unticked word is kept and says nothing — the storey above answers.
+TEST(CompositionOtherSettings, ANodeSaysItsOwnElseTheOutputElseTheSetting)
+{
+	ibDataDBComposer composer;
+	ibSettingsDescription zeroth;
+	zeroth.m_outputParameters.Say(ibOutputParameter::Theme, true, ibStoreValue(ibValue(wxString(wxT("Neutral")))));
+	DeclareZeroth(composer, zeroth);
+
+	ibDataComposer::Output& output = composer.Outputs().front();
+	ibLevelDescription node;
+
+	EXPECT_EQ(wxT("Neutral"), composer.OutputParameterFor(output, &node, ibOutputParameter::Theme).GetString());
+
+	output.m_settings.m_outputParameters.Say(ibOutputParameter::Theme, true, ibStoreValue(ibValue(wxString(wxT("Sea")))));
+	EXPECT_EQ(wxT("Sea"), composer.OutputParameterFor(output, &node, ibOutputParameter::Theme).GetString());
+
+	node.m_settings.m_outputParameters.Say(ibOutputParameter::Theme, false, ibStoreValue(ibValue(wxString(wxT("Sand")))));
+	EXPECT_EQ(wxT("Sea"), composer.OutputParameterFor(output, &node, ibOutputParameter::Theme).GetString());
+
+	node.m_settings.m_outputParameters.Say(ibOutputParameter::Theme, true, ibStoreValue(ibValue(wxString(wxT("Sand")))));
+	EXPECT_EQ(wxT("Sand"), wxString(composer.ThemeFor(output, &node).m_id));
+
+	// A THEME NOBODY KNOWS PAINTS IN THE FIRST — the way a field that has gone still prints under its name.
+	EXPECT_EQ(ibCompositionThemes().front(), &ibCompositionThemeById(wxT("NoSuchTheme")));
+}
+
+// ⭐⭐ A CONDITIONAL APPEARANCE TRAVELS WITH THE SETTING — its condition, its fields and its appearance, a
+// colour included (a colour packs itself since 2026-09-30).
+TEST(CompositionConditionalAppearance, ARuleIsKeptThroughTheStore)
+{
+	ibCompositionDescription written;
+	ibConditionalAppearanceRuleDescription rule;
+	ibFilterDescription::Append(rule.m_condition.m_nodes, wxT("Amount"), ibComparisonKind_Less, ibStoreValue(ibValue(0)));
+	rule.m_fields = { wxT("Amount") };
+	rule.m_appearance.Say(ibAppearanceParameter::TextColour, true, ibStoreValue(ibValue(new ibValueColour(ibColour(0xC0, 0, 0)))));
+	written.m_variants[0].m_settings.m_conditionalAppearance.m_rules.push_back(rule);
+
+	ibDataNode node;
+	ASSERT_TRUE(ibCompositionDescriptionMemory::WriteNode(node, written));
+	ibCompositionDescription read;
+	ASSERT_TRUE(ibCompositionDescriptionMemory::ReadNode(node, read));
+
+	EXPECT_EQ(written.m_variants[0].m_settings, read.m_variants[0].m_settings);
+	const ibConditionalAppearanceDescription& back = read.m_variants[0].m_settings.m_conditionalAppearance;
+	ASSERT_EQ(1u, back.m_rules.size());
+	ibValue colour = ibStoredValue(back.m_rules[0].m_appearance.ValueInForce(ibAppearanceParameter::TextColour), nullptr);
+	ibValueColour* asColour = nullptr;
+	ASSERT_TRUE(colour.ConvertToValue(asColour) && asColour != nullptr);
+	EXPECT_EQ(0xC0, asColour->m_colour.m_red);
+}
+
+// ⭐⭐ ONE ENGINE, READ IN THREE VALUES — a field the row does not carry is UNKNOWN, and the caller says what
+// unknown means: a filter that hides shows the row, a rule that marks does not mark it. A switched-off line of
+// an OR group decides nothing for the group.
+TEST(CompositionConditionalAppearance, TheEngineReadsWhatItCannotSeeAsTheCallerSays)
+{
+	const ibValue amount(-5);
+	const ibCompositionValueOf valueOf = [&amount](const wxString& path) -> const ibValue* {
+		return path.IsSameAs(wxT("Amount"), false) ? &amount : nullptr;
+	};
+
+	ibFilterDescription below;
+	ibFilterDescription::Append(below.m_nodes, wxT("Amount"), ibComparisonKind_Less, ibStoreValue(ibValue(0)));
+	EXPECT_TRUE(ibCompositionFilterHolds(below, nullptr, valueOf, nullptr, false));
+
+	ibFilterDescription unseen;
+	ibFilterDescription::Append(unseen.m_nodes, wxT("Qty"), ibComparisonKind_Greater, ibStoreValue(ibValue(0)));
+	EXPECT_TRUE(ibCompositionFilterHolds(unseen, nullptr, valueOf, nullptr, /*whenUnknown*/ true));
+	EXPECT_FALSE(ibCompositionFilterHolds(unseen, nullptr, valueOf, nullptr, /*whenUnknown*/ false));
+
+	ibFilterDescription either;
+	either.m_rootKind = ibFilterGroupKind_Or;
+	ibFilterDescription::Append(either.m_nodes, wxT("Amount"), ibComparisonKind_Greater, ibStoreValue(ibValue(0)));
+	ibFilterDescription::Append(either.m_nodes, wxT("Amount"), ibComparisonKind_Less, ibStoreValue(ibValue(-100))).m_use = false;
+	EXPECT_FALSE(ibCompositionFilterHolds(either, nullptr, valueOf, nullptr, true));
+
+	EXPECT_TRUE(ibCompositionFilterHolds(ibFilterDescription(), nullptr, valueOf, nullptr, false));   // no condition — always
+}
+
+// ⭐ A LIST IS READ HERE, AND A NULL IS NOT A VALUE — «in» holds on any value its operand lists (or on the operand
+// itself where it lists nothing), and a column the row does not hold arrives as NULL (the fold's word for it) and is
+// unknown: `<>` does not mark a heading that has no such field at all.
+TEST(CompositionConditionalAppearance, AListIsReadHereAndANullIsNotAValue)
+{
+	const ibValue amount(3);
+	const ibValue comment(ibValueTypes::TYPE_NULL);
+	const ibCompositionValueOf valueOf = [&amount, &comment](const wxString& path) -> const ibValue* {
+		if (path.IsSameAs(wxT("Amount"), false))
+			return &amount;
+		return path.IsSameAs(wxT("Comment"), false) ? &comment : nullptr;
+	};
+
+	ibFilterDescription inList;
+	ibFilterDescription::Append(inList.m_nodes, wxT("Amount"), ibComparisonKind_In,
+		ibStoreValue(ibValue(new ibValueArray({ ibValue(1), ibValue(3) }))));
+	EXPECT_TRUE(ibCompositionFilterHolds(inList, nullptr, valueOf, nullptr, false));
+
+	ibFilterDescription inOne;
+	ibFilterDescription::Append(inOne.m_nodes, wxT("Amount"), ibComparisonKind_In, ibStoreValue(ibValue(4)));
+	EXPECT_FALSE(ibCompositionFilterHolds(inOne, nullptr, valueOf, nullptr, true));
+
+	ibFilterDescription notX;
+	ibFilterDescription::Append(notX.m_nodes, wxT("Comment"), ibComparisonKind_NotEqual, ibStoreValue(ibValue(wxString(wxT("x")))));
+	EXPECT_FALSE(ibCompositionFilterHolds(notX, nullptr, valueOf, nullptr, /*whenUnknown*/ false));
+	EXPECT_TRUE(ibCompositionFilterHolds(notX, nullptr, valueOf, nullptr, /*whenUnknown*/ true));
+}
+
+// ⭐ «FILLED» ASKS WHETHER THERE IS A VALUE AT ALL — a NULL (a recorder of a kind without that attribute) and the empty
+// value of its type are both "not filled", and that is an answer, not an unknown: `Supplier <> X OR Supplier not
+// filled` holds on a row with no supplier, which `<>` alone never does (2026-09-30). A field the row does not carry at
+// all stays unknown — «filled» asks the value, not whether the column exists.
+TEST(CompositionConditionalAppearance, NotFilledHoldsOnANullAndOnAnEmptyValue)
+{
+	const ibValue none(ibValueTypes::TYPE_NULL), blank{ wxString() }, named(wxString(wxT("Grain")));   // braces: `blank(wxString())` declares a function
+	const ibValue* supplier = &none;
+	const ibCompositionValueOf valueOf = [&supplier](const wxString& path) -> const ibValue* {
+		return path.IsSameAs(wxT("Supplier"), false) ? supplier : nullptr;
+	};
+
+	ibFilterDescription notFilled, filled, notXOrNone, elsewhere;
+	ibFilterDescription::Append(notFilled.m_nodes, wxT("Supplier"), ibComparisonKind_NotFilled, ibDataNode());
+	ibFilterDescription::Append(filled.m_nodes, wxT("Supplier"), ibComparisonKind_Filled, ibDataNode());
+	notXOrNone.m_rootKind = ibFilterGroupKind_Or;
+	ibFilterDescription::Append(notXOrNone.m_nodes, wxT("Supplier"), ibComparisonKind_NotEqual,
+		ibStoreValue(ibValue(wxString(wxT("Sweets")))));
+	ibFilterDescription::Append(notXOrNone.m_nodes, wxT("Supplier"), ibComparisonKind_NotFilled, ibDataNode());
+	ibFilterDescription::Append(elsewhere.m_nodes, wxT("Comment"), ibComparisonKind_NotFilled, ibDataNode());
+
+	for (const ibValue* held : { &none, &blank }) {
+		supplier = held;
+		EXPECT_TRUE(ibCompositionFilterHolds(notFilled, nullptr, valueOf, nullptr, false));
+		EXPECT_FALSE(ibCompositionFilterHolds(filled, nullptr, valueOf, nullptr, true));
+		EXPECT_TRUE(ibCompositionFilterHolds(notXOrNone, nullptr, valueOf, nullptr, false));
+	}
+	supplier = &named;
+	EXPECT_FALSE(ibCompositionFilterHolds(notFilled, nullptr, valueOf, nullptr, true));
+	EXPECT_TRUE(ibCompositionFilterHolds(filled, nullptr, valueOf, nullptr, false));
+
+	EXPECT_FALSE(ibCompositionFilterHolds(elsewhere, nullptr, valueOf, nullptr, false));
+	EXPECT_TRUE(ibCompositionFilterHolds(elsewhere, nullptr, valueOf, nullptr, true));
+}
+
+// ⭐ A RULE'S FONT IS SAID PART BY PART — an italic rule and a bold one on one line make it bold AND italic, and what
+// neither says (the size, the face) stays the cell's own: a whole font took a heading's bold and turned the report's
+// 8pt into the system's 9 (2026-09-30, the run). (Built from parts, not from a wxFont: a font asked for its sizes
+// wants a toolkit, and this suite runs without one.)
+TEST(CompositionConditionalAppearance, AFontIsSaidPartByPart)
+{
+	ibCompositionAttr line;
+	EXPECT_TRUE(line.IsDefault());
+
+	ibCompositionAttr italic, bold;
+	italic.m_font.m_style = wxFONTSTYLE_ITALIC;
+	bold.m_font.m_weight = wxFONTWEIGHT_BOLD;
+	EXPECT_FALSE(italic.IsDefault());
+
+	line.Say(italic);
+	line.Say(bold);
+	EXPECT_EQ(wxFONTSTYLE_ITALIC, line.m_font.m_style);
+	EXPECT_EQ(static_cast<int>(wxFONTWEIGHT_BOLD), line.m_font.m_weight);
+	EXPECT_EQ(0, line.m_font.m_pointSize);     // not said — the cell's own size
+	EXPECT_TRUE(line.m_font.m_face.IsEmpty()); // …and its own face
+}
+
+// ⭐ A FIELD IS READ AGAINST A FIELD OF THE SAME ROW, AND A SUBTREE AS THE CALLER READ IT — a table in memory has no
+// server to answer `Amount > Limit` for it; «in hierarchy» is admitted by the scope the caller hands over
+// (ibCompositionSubtreeOf), and with none handed over it is unknown. A scope over no catalog admits the named
+// value alone — what «in hierarchy» of a flat list is.
+TEST(CompositionConditionalAppearance, AFieldIsReadAgainstAFieldAndASubtreeAsTheCallerReadsIt)
+{
+	const ibValue amount(3), limit(2), account(wxString(wxT("60")));
+	const ibCompositionValueOf valueOf = [&](const wxString& path) -> const ibValue* {
+		if (path.IsSameAs(wxT("Amount"), false))
+			return &amount;
+		if (path.IsSameAs(wxT("Limit"), false))
+			return &limit;
+		return path.IsSameAs(wxT("Account"), false) ? &account : nullptr;
+	};
+
+	ibFilterDescription overLimit;
+	ibFilterDescription::Append(overLimit.m_nodes, wxT("Amount"), ibComparisonKind_Greater, ibDataNode()).m_right.m_path = wxT("Limit");
+	EXPECT_TRUE(ibCompositionFilterHolds(overLimit, nullptr, valueOf, nullptr, false));
+
+	ibFilterDescription under;
+	ibFilterDescription::Append(under.m_nodes, wxT("Account"), ibComparisonKind_InHierarchy, ibStoreValue(ibValue(wxString(wxT("60")))));
+	EXPECT_FALSE(ibCompositionFilterHolds(under, nullptr, valueOf, nullptr, /*whenUnknown*/ false));   // nobody read the tree
+
+	const ibQueryHierarchyScope flat(nullptr, ibTypeDescription(), { ibValue(wxString(wxT("60"))) }, ibQueryDimUnfold::Hierarchy);
+	const ibCompositionSubtreeOf subtreeOf = [&flat](const wxString&, const ibValue&) { return &flat; };
+	EXPECT_TRUE(ibCompositionFilterHolds(under, nullptr, valueOf, subtreeOf, false));
+
+	ibFilterDescription elsewhere;
+	ibFilterDescription::Append(elsewhere.m_nodes, wxT("Account"), ibComparisonKind_InHierarchy, ibStoreValue(ibValue(wxString(wxT("41")))));
+	const ibQueryHierarchyScope other(nullptr, ibTypeDescription(), { ibValue(wxString(wxT("41"))) }, ibQueryDimUnfold::Hierarchy);
+	EXPECT_FALSE(ibCompositionFilterHolds(elsewhere, nullptr, valueOf,
+		[&other](const wxString&, const ibValue&) { return &other; }, true));
+}
+
+// ⭐⭐ THE STOREYS PAINT OVER ONE ANOTHER — the setting's rule, then the output's, then the node's; a rule naming a
+// field dresses that column, one naming none dresses the line. Made ready once for the output, read per line — and
+// only the column a rule of its own held on keeps an attribute of its own.
+TEST(CompositionConditionalAppearance, ADeeperSettingPaintsOverAndAFieldFindsItsColumn)
+{
+	ibDataDBComposer composer;
+	ibSettingsDescription zeroth;
+	ibConditionalAppearanceRuleDescription everyRow;
+	everyRow.m_appearance.Say(ibAppearanceParameter::Text, true, ibStoreValue(ibValue(wxString(wxT("setting")))));
+	zeroth.m_conditionalAppearance.m_rules.push_back(everyRow);
+	DeclareZeroth(composer, zeroth);
+
+	ibDataComposer::Output& output = composer.Outputs().front();
+	ibLevelDescription node;
+	ibConditionalAppearanceRuleDescription onAmount;
+	onAmount.m_fields = { wxT("Amount") };
+	onAmount.m_appearance.Say(ibAppearanceParameter::Text, true, ibStoreValue(ibValue(wxString(wxT("node")))));
+	node.m_settings.m_conditionalAppearance.m_rules.push_back(onAmount);
+	output.m_rowGroups.push_back(node);
+
+	std::vector<ibQueryLowering::OutputColumn> schema(2);
+	schema[0].m_name = wxT("Item");
+	schema[1].m_name = wxT("Amount");
+	const std::vector<ibValue> row = { ibValue(wxString(wxT("Sugar"))), ibValue(3) };
+
+	const ibDataComposer::ConditionalAppearance appearance = composer.ConditionalAppearanceFor(output);
+	ASSERT_FALSE(appearance.IsEmpty());
+	ibCompositionLineAttr attr;
+	ASSERT_TRUE(appearance.AttrFor(&output.m_rowGroups.back(), schema, row, attr));
+	EXPECT_EQ(wxT("setting"), attr.AttrOf(0).m_text.value_or(wxString()));
+	EXPECT_EQ(wxT("node"), attr.AttrOf(1).m_text.value_or(wxString()));
+	EXPECT_EQ(1u, attr.m_cells.size());
+}
+
+// ⭐ A FIELD THROUGH A REFERENCE IS FOUND BY THE COLUMN IT IS READ AS — `Recorder.Supplier` comes back as
+// `RecorderSupplier`; asked by its literal name it was never in the row, and its rule never held (2026-09-30).
+TEST(CompositionConditionalAppearance, AFieldThroughAReferenceIsFoundByTheColumnItIsReadAs)
+{
+	ibDataDBComposer composer;
+	ibSettingsDescription zeroth;
+	ibConditionalAppearanceRuleDescription rule;
+	ibFilterDescription::Append(rule.m_condition.m_nodes, wxT("Recorder.Supplier"), ibComparisonKind_Equal,
+		ibStoreValue(ibValue(wxString(wxT("Grain")))));
+	rule.m_appearance.Say(ibAppearanceParameter::Text, true, ibStoreValue(ibValue(wxString(wxT("marked")))));
+	zeroth.m_conditionalAppearance.m_rules.push_back(rule);
+	DeclareZeroth(composer, zeroth);
+	ibDataComposer::Output& output = composer.Outputs().front();
+
+	std::vector<ibQueryLowering::OutputColumn> schema(1);
+	schema[0].m_name = wxT("RecorderSupplier");
+	const ibDataComposer::ConditionalAppearance appearance = composer.ConditionalAppearanceFor(output);
+	ibCompositionLineAttr attr;
+	EXPECT_TRUE(appearance.AttrFor(nullptr, schema, { ibValue(wxString(wxT("Grain"))) }, attr));
+	EXPECT_FALSE(appearance.AttrFor(nullptr, schema, { ibValue(wxString(wxT("Coffee"))) }, attr));
 }
 
 // ⭐⭐ A RENAME IS ONE WRITE, and everything that referred to the select BY ID still does. The name

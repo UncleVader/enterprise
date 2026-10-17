@@ -55,6 +55,8 @@
 // ibValueMetaObjectRegisterData implement it so the query builder is family-blind.
 #include "backend/query/queryable.h"
 
+#include <functional>   // ibBackendColumnSortOrder asks its kind, every time, which columns it lies in
+
 //********************************************************************************************
 //*                                     Defines                                              *
 //********************************************************************************************
@@ -91,61 +93,10 @@ class BACKEND_API ibValueRecordSetObject;
 
 #include "backend/metaCollection/genericData.h"   // ibFormTypeList + ibValueMetaObjectGenericData (extracted so srcDataObject.h gets the covariant GenericData* return)
 
-// The metaobject-coupled SOURCE-DESCRIPTOR templates — moved here from queryableFactory.h so the L4 factory header
-// stays metadata-agnostic (base descriptor + factory only) and these live WITH the metaobjects that instantiate them.
-// The base ibQueryableSourceDescriptor + ibValue / ibBackendQueryable / ibSourceExplorer / command signatures come in
-// via queryableFactory.h (included above).
-
-// The QUERY descriptor — the query-identity HALF, TEMPLATED on the queryable type TQueryable + the metaobject type
-// TMeta. It CONTAINS the metaobject's queryable (built from it) AND carries the L4 source identity (GetNamespace /
-// GetName / CreateQueryable). This is ALL a pure QUERY source needs — a constant is registered only so From(constant)
-// resolves; it is NEVER shown as a list, so it leaves the command + row surface at the base's neutral defaults.
-template <typename TQueryable, typename TMeta>
-class ibMetaQueryDescriptor : public ibQueryableSourceDescriptor
-{
-public:
-	explicit ibMetaQueryDescriptor(TMeta* meta) : m_meta(meta), m_queryable(meta) {}
-
-	wxString GetNamespace() const override { return ibValue::GetNameObjectFromID(m_meta->GetClassType()); }
-	wxString GetName() const override { return m_meta->GetName(); }
-	const ibBackendQueryable* CreateQueryable(ibValue** /*paParams*/, long /*lSizeArray*/) override { return &m_queryable; }
-
-	// The contained queryable — the metaobject's GetQueryable() forwards here (stable for the object's life).
-	const ibBackendQueryable* GetQueryable() const { return &m_queryable; }
-
-	// WHAT COLUMNS THIS SOURCE HAS — forwarded to the metaobject, which is the only one that knows.
-	//
-	// ⚠ THIS BELONGS TO THE QUERY HALF, not to the command one. It used to live on
-	// ibMetaCommandDescriptor, so every source that is ONLY queryable — a constant, first among
-	// them — answered the base's empty default: it appeared in a catalogue as a table with no
-	// fields, could be added to a query and offered nothing to select. Asking what a source holds
-	// has nothing to do with whether it can be shown as a list.
-	void FillSourceExplorer(ibSourceDataObject::ibSourceExplorer& explorer) const override {
-		m_meta->FillSourceExplorer(explorer);
-	}
-
-	// Restore ROW-KEY from a row's identity VALUE — read the source's PRIMARY-KEY columns off it (the SAME columns
-	// the fetch stamps into a node's m_rowKey, so the restore stub matches). UNIVERSAL via the source hop gate: a
-	// record's reference yields its self-reference, a register's record-manager decomposes into its composite key.
-	// Empty value / no PK columns → the base fallback (the value IS the key).
-	std::vector<ibValue> GetRowKeyByValue(const ibValue& value) const override {
-		ibSourceDataObject* src = nullptr;
-		if (value.IsEmpty() || !value.ConvertToValue(src) || src == nullptr)
-			return ibQueryableSourceDescriptor::GetRowKeyByValue(value);
-		std::vector<ibValue> rowKey;
-		for (const ibBackendQueryColumn* kc : m_queryable.GetPrimaryKeyColumns()) {
-			if (kc == nullptr) continue;
-			ibValue v;
-			src->GetValueBySourceHop(ibSourceHop{ kc->GetColumnId() }, v);
-			rowKey.push_back(v);
-		}
-		return rowKey.empty() ? ibQueryableSourceDescriptor::GetRowKeyByValue(value) : rowKey;
-	}
-
-protected:
-	TMeta*     m_meta;        // for name / clsid + to build the queryable (non-const, like the old `this`)
-	TQueryable m_queryable;   // the contained queryable (ibRecordQueryable / ibRegisterDataQueryable / ibConstantQueryable / …)
-};
+// The metaobject-coupled SOURCE-DESCRIPTOR templates live WITH the metaobjects that instantiate them, so the L4
+// factory header stays metadata-agnostic. The QUERY half is shared with the stored values beside genericData.h
+// (metaQueryDescriptor.h); the LIST half below needs the record machinery and stays here.
+#include "backend/metaCollection/metaQueryDescriptor.h"
 
 // The full SOURCE descriptor — a LIST source (record / register): the query descriptor PLUS the command + row surface,
 // each call FORWARDED to the metaobject (which the descriptor knows by type). The metaobject carries the real
@@ -161,6 +112,7 @@ public:
 	// ROW DATA / presentation
 	ibValue GetSelectValue(const ibRowMetaValues& rowValues) const override { return this->m_meta->GetSelectValue(rowValues); }
 	ibUniqueKey GetItemKey(const ibRowMetaValues& rowValues) const override { return this->m_meta->GetItemKey(rowValues); }
+	ibPictureID GetRowPicture(const ibRowMetaValues& rowValues) const override { return this->m_meta->GetRowPicture(rowValues); }
 	// (FillSourceExplorer is INHERITED from the query descriptor — asking a source what it holds is
 	//  a query question, and a source that is not a list has it too.)
 	// COMMAND INTERFACE
@@ -200,10 +152,6 @@ public:
 	virtual ibSelectorDataType GetFilterDataType() const {
 		return ibSelectorDataType::ibSelectorDataType_any;
 	}
-
-	//get module object in compose object 
-	virtual const ibValueMetaObjectModule* GetObjectModule() const { return nullptr; }
-	virtual const ibValueMetaObjectCommonModule* GetManagerModule() const { return nullptr; }
 
 	//meta events
 	virtual bool OnLoadMetaObject(ibMetaData* metaData);
@@ -330,12 +278,15 @@ public:
 
 #pragma endregion 
 
-	//create single object
-	virtual ibValueRecordDataObject* CreateRecordDataObjectValue() const = 0;
+	// create single object — BORN OWNED, like every creator of a data object below: the answer holds the
+	// object before InitializeObject runs the module, whose code may take `ThisObject` and let it go again
+	// (issue #154). Empty means nothing was created. Keep the answer in a holder, never in a raw pointer:
+	// the temporary is the only owner.
+	virtual ibValuePtr<ibValueRecordDataObject> CreateRecordDataObjectValue() const = 0;
 
 #pragma region _form_builder_h_
 	//support form 
-	virtual ibBackendValueForm* GetObjectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetObjectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
 #pragma endregion 
 
 protected:
@@ -346,7 +297,7 @@ protected:
 	}
 
 	//get default form 
-	virtual ibBackendValueForm* GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
+	virtual ibFormPtr<ibBackendValueForm> GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
 
 		if (cmdType == ibInterfaceCommandType::ibInterfaceCommandType_Create) {
 			return GetObjectForm();
@@ -403,11 +354,11 @@ class BACKEND_API ibValueMetaObjectRecordDataExt : public ibValueMetaObjectRecor
 	virtual bool OnAfterCloseMetaObject();
 
 	//create associate value
-	ibValueRecordDataObjectExt* CreateObjectValue() const;
-	ibValueRecordDataObjectExt* CreateObjectValue(ibValueRecordDataObjectExt* objSrc) const;
+	ibValuePtr<ibValueRecordDataObjectExt> CreateObjectValue() const;
+	ibValuePtr<ibValueRecordDataObjectExt> CreateObjectValue(ibValueRecordDataObjectExt* objSrc) const;
 
 	//create single object
-	virtual ibValueRecordDataObject* CreateRecordDataObjectValue() const;
+	virtual ibValuePtr<ibValueRecordDataObject> CreateRecordDataObjectValue() const;
 
 	//get command section
 	virtual ibInterfaceCommandSection GetCommandSection() const { return ibInterfaceCommandSection::ibInterfaceCommandSection_Service; }
@@ -415,19 +366,64 @@ class BACKEND_API ibValueMetaObjectRecordDataExt : public ibValueMetaObjectRecor
 protected:
 
 	//create empty object
-	virtual ibValueRecordDataObjectExt* CreateObjectExtValue() const = 0;  //create object
+	virtual ibValuePtr<ibValueRecordDataObjectExt> CreateObjectExtValue() const = 0;  //create object — born owned, as its creators are
 
 private:
 #pragma region role
-	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), _("Use"));
+	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), wxGETTEXT_IN_CONTEXT("access right", "Use"));
 #pragma endregion
+};
+
+// ==========================================================================
+// ibBackendColumnSortOrder — WHAT THE ROWS OF A REFERENCE KIND ARE ORDERED BY, AS A COLUMN.
+//
+// Not one field: a document comes by its date and then by the reference standing at it — its MOMENT — a catalog
+// by what it is presented by and then by the reference, an enumeration by the order its author declared and then
+// by the reference (Max, 2026-09-29: "documents by the date and the guid, catalogs by the description and the
+// guid"; "a sort by a reference must be understood by the engine without a tambourine"). So it is a column made
+// the way the moment is (ibRecorderQueryable::ibBackendColumnPointInTime): stored nowhere, lying in the columns it
+// is made of, one after the other, and sorting by it IS sorting by those fields — through the machinery that sorts
+// any column by its layout, on the server and in memory alike.
+//
+// ⭐ ONE NAME FOR THE WHOLE FAMILY, which is what lets a reference to one of SEVERAL kinds — a register's recorder,
+// an analytics slot holding goods and counterparties — be sorted at all: a walk through it finds this column in
+// every kind under that name, each kind's own, and the fields of one role meet in one COALESCE.
+//
+// Which columns — its PARTS — is the KIND's statement (ibRecordQueryable::GetSortParts), asked every time rather than
+// kept: what a catalog is presented by is its author's setting, and changes while the configuration is open.
+// ==========================================================================
+class BACKEND_API ibBackendColumnSortOrder : public ibBackendQueryColumn {
+public:
+	using Parts = std::function<std::vector<const ibBackendQueryColumn*>()>;
+
+	ibBackendColumnSortOrder(const ibValueMetaObjectRecordDataRef* owner, Parts parts)
+		: m_owner(owner), m_parts(std::move(parts)) {}
+
+	wxString GetName()         const override;
+	wxString GetSynonym()      const override;
+	wxString GetPhysicalName() const override;
+	ibMetaID GetColumnId()     const override;   // nothing declared it — a synthetic id over its kind's own
+	ibTypeDescription& GetTypeDesc() const override { return m_typeDesc; }   // none: it holds a row of values
+
+	// WHERE IT LIES: in the fields of its parts, one after the other — without their type tags, as the moment.
+	std::vector<ibColumnSlot> DescribeLayout() const override;
+	Kind GetColumnKind() const override { return Kind::Synthetic; }
+
+	// …and it READS as its parts' values in that order: an array, which a sort in memory compares element by
+	// element — the same order the server gives the fields.
+	bool ReadValue(const wxString& fieldName, const class ibMetaData* metaData,
+	               class ibValue& retValue, class ibQueryResult& result, bool createData = false) const override;
+
+private:
+	const ibValueMetaObjectRecordDataRef* m_owner;
+	Parts                                 m_parts;
+	mutable ibTypeDescription             m_typeDesc;
 };
 
 // ibRecordQueryable — the L3 queryable for the catalog / document / charts / enums
 // family. The metaobject no longer IS a queryable; it VENDS this adapter (a stable
 // member), which forwards navigation to the metaobject's own query methods — so the
 // concrete leaf (catalog / document / …) behaviour comes through virtual dispatch.
-class ibValueMetaObjectRecordDataRef;
 // A record source — a DB-family L3 queryable. It names NO attribute / L1: it returns its
 // own COLUMNS (which happen to be metaobject attributes), and the DB provider does the
 // physical materialisation by static_cast'ing those columns back to the attribute.
@@ -446,7 +442,8 @@ class ibValueMetaObjectRecordDataRef;
 template <typename TMeta>
 class ibRecordQueryable : public ibBackendQueryable {
 public:
-	explicit ibRecordQueryable(const TMeta* meta) : m_meta(meta) {}
+	explicit ibRecordQueryable(const TMeta* meta)
+		: m_meta(meta), m_sortOrder(meta, [this] { return GetSortParts(); }) {}
 
 	// The attribute by name, answered with ITS QUERY FACE. An attribute is not a query column: it
 	// HOLDS one, because the two live under different ownerships (docs/private/ownership-authority.md). The
@@ -457,7 +454,10 @@ public:
 	// new kind of attribute: a chart of accounts declares ACCOUNTING KINDS, they went into the schema,
 	// into the account's form and into `SELECT *`, and a query naming one was refused with "unknown
 	// attribute 'Quantitative'" (measured over MCP on a copy, 2026-09-16).
+	// (The ORDER answers first — the one column here nothing declared; a walk through a reference finds it by name.)
 	virtual const ibBackendQueryColumn* ResolveColumnByName(const wxString& name) const override {
+		if (name.IsSameAs(m_sortOrder.GetName(), false))
+			return &m_sortOrder;
 		const ibValueMetaObjectAttributeBase* attribute = m_meta->FindAnyAttributeObjectByFilter(name);
 		return attribute != nullptr ? attribute->GetQueryColumn() : nullptr;
 	}
@@ -500,8 +500,27 @@ public:
 	// dynamic list's GetSourceMetaObject → GetSourceQueryable → here).
 	virtual const ibValueMetaObjectGenericData* GetSourceMetaObject() const override { return m_meta; }
 
+	// …and what its rows are ordered by — the column above (ibBackendColumnSortOrder), which a sort by a
+	// reference to this kind sorts by.
+	virtual const ibBackendQueryColumn* GetSortColumn() const override { return &m_sortOrder; }
+
+	// ⭐ …LYING IN THESE COLUMNS, its parts — each kind's own statement of its order, and the only one. By default
+	// what a row is PRESENTED by, then its reference: the kind's template already says it (GenerateDataDesc), so a
+	// catalog sorts by its Description and a chart of accounts by its Code with nothing said of their own. A document
+	// and an enumeration are ordered otherwise and say so (ibRecorderQueryable, ibEnumQueryable).
+	virtual std::vector<const ibBackendQueryColumn*> GetSortParts() const {
+		std::vector<const ibBackendQueryColumn*> parts;
+		typename TMeta::ibDataDescParameter presented;
+		if (m_meta->GenerateDataDesc(presented) && presented.m_first != nullptr)
+			parts.push_back(presented.m_first->GetQueryColumn());
+		if (const ibValueMetaObjectAttributeBase* reference = m_meta->GetDataReference())
+			parts.push_back(reference->GetQueryColumn());
+		return parts;
+	}
+
 protected:
 	const TMeta* m_meta;   // …already the type a specialisation needs — no second pointer beside it
+	ibBackendColumnSortOrder m_sortOrder;   // after m_meta: made with it
 };
 
 // (NO ALIAS FOR ONE SPECIALISATION. Each KIND names the one it reads through, spelled out where it
@@ -572,6 +591,9 @@ public:
 	// ROW DATA / presentation — what a row IS and how it shows:
 	virtual ibValue GetSelectValue(const ibRowMetaValues& rowValues) const;                        // the row's REFERENCE cell
 	virtual ibUniqueKey GetItemKey(const ibRowMetaValues& rowValues) const;                        // the row's REFERENCE guid
+	// The row's state picture — none here: an enumeration's value is declared, it has no state to show. The
+	// writeable levels answer by their own cells (commonObjectAction.cpp).
+	virtual ibPictureID GetRowPicture(const ibRowMetaValues& /*rowValues*/) const { return 0; }
 	virtual void FillSourceExplorer(ibSourceDataObject::ibSourceExplorer& explorer) const;         // enum: reference VISIBLE, rest hidden
 	// COMMAND INTERFACE — the command band (the writeable levels override to fill these):
 	virtual void GetCommandCollection(const ibFormID& /*formType*/, std::vector<ibCommandItem>& /*commands*/) const {}
@@ -626,14 +648,14 @@ public:
 	virtual bool OnAfterCloseMetaObject();
 
 	//create single object
-	virtual ibValueRecordDataObject* CreateRecordDataObjectValue() const {
+	virtual ibValuePtr<ibValueRecordDataObject> CreateRecordDataObjectValue() const {
 		wxASSERT_MSG(false, "ibValueMetaObjectRecordDataRef::CreateRecordDataObjectValue");
 		return nullptr;
 	}
 
 	//process choice
 	virtual bool ProcessChoice(ibBackendControlFrame* ownerValue,
-		const wxString& strFormName = wxEmptyString, ibSelectMode selMode = ibSelectMode::ibSelectMode_Items) const;
+		const ibFormRequest& request = ibFormRequest()) const;
 
 #pragma region __generic_h__
 
@@ -654,8 +676,8 @@ public:
 
 #pragma region _form_builder_h_
 	//support form 
-	virtual ibBackendValueForm* GetListForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
-	virtual ibBackendValueForm* GetSelectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetListForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetSelectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
 #pragma endregion 
 
 	// ⭐⭐ HOW A METATYPE'S OWN VALUES ARE READ, AND HOW THEY ARE ORDERED. Two questions of one kind: both
@@ -687,6 +709,13 @@ public:
 	// allowed to end at 0. A catalog says exactly that; an ENUMERATION does not, because its members are
 	// a sequence the author wrote down and the platform keeps as data.
 	//
+	// ⚠ AND NOT THE ORDER ITS QUERY SOURCE SORTS BY (ibRecordQueryable::GetSortColumn), FOR A KIND WHOSE ROWS ARE
+	// READ. This is asked only when BOTH references are read, and a sort mixes read and unread ones — ordered by the
+	// fields when both are in hand and by the guid otherwise, three references can order themselves in a circle,
+	// which `std::sort` answers by asserting in Debug and by corrupting its range in Release. An enumeration's
+	// members are always in hand; a catalog's rows are not. The engine sorts a reference by its kind's order by
+	// READING those fields for every row (the walk ibDataQueryBuilder::OrderBy makes), whatever was read before.
+	//
 	// 🛑 This used to be asked INSIDE the reference value: a `dynamic_cast` to the enumeration metaobject
 	// and a reach for its `Order` attribute, sitting in a class that has no business knowing what an
 	// enumeration is — and the next metatype with a sequence of its own would have joined the same chain
@@ -703,7 +732,7 @@ protected:
 
 
 	//get default form
-	virtual ibBackendValueForm* GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
+	virtual ibFormPtr<ibBackendValueForm> GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
 
 		if (cmdType == ibInterfaceCommandType::ibInterfaceCommandType_Create)
 			return GetObjectForm();
@@ -750,6 +779,21 @@ protected:
 		array.push_back(m_propertyAttributeReference->GetMetaObject());
 		return true;
 	}
+};
+
+class BACKEND_API ibValueMetaObjectRecordDataEnumRef;
+
+// ==========================================================================
+// ibEnumQueryable — THE ENUMERATION'S READING SURFACE: the record queryable, ordered as its author declared.
+//
+// Its members are a SEQUENCE kept as DATA, in the predefined `Order` attribute, and what they are presented by is
+// no field at all (GenerateDataDesc says so) — so the family's order, by the presentation, has nothing to go on
+// here. It says its own: the order, then the reference. (Body in commonObjectMetaQuery.cpp.)
+// ==========================================================================
+class BACKEND_API ibEnumQueryable : public ibRecordQueryable<ibValueMetaObjectRecordDataEnumRef> {
+public:
+	explicit ibEnumQueryable(const ibValueMetaObjectRecordDataEnumRef* meta);
+	virtual std::vector<const ibBackendQueryColumn*> GetSortParts() const override;
 };
 
 //meta object with reference - for enumeration
@@ -862,7 +906,7 @@ private:
 	ibPropertyContainer<>* m_propertyAttributeOrder = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateNumber(wxT("Order"), _("Order"), _("The position of the value in its enumeration, as the values are listed in the configuration. Values compare and sort by it, so a query ordering by an enumeration field orders by the declared order, not by the name."), 6, true));
 
 	// …and this kind's own source descriptor — typed to the ENUMERATION kind, registered by it.
-	ibMetaCommandDescriptor<ibRecordQueryable<ibValueMetaObjectRecordDataEnumRef>, ibValueMetaObjectRecordDataEnumRef> m_queryable{ this };
+	ibMetaCommandDescriptor<ibEnumQueryable, ibValueMetaObjectRecordDataEnumRef> m_queryable{ this };
 };
 
 // Helper macro — emits the Read/Write/Delete role triplet + their
@@ -876,7 +920,7 @@ private:
 private: \
 	ibRole* m_roleRead   = ibValueMetaObject::CreateRole(wxT("Read"),   _("Read")); \
 	ibRole* m_roleWrite  = ibValueMetaObject::CreateRole(wxT(writeStorageName), _("Write")); \
-	ibRole* m_roleDelete = ibValueMetaObject::CreateRole(wxT("Delete"), _("Delete")); \
+	ibRole* m_roleDelete = ibValueMetaObject::CreateRole(wxT("Delete"), wxGETTEXT_IN_CONTEXT("access right", "Delete")); \
 public: \
 	bool AccessRight_Read()   const { return IsFullAccess() || AccessRight(m_roleRead);   } \
 	bool AccessRight_Write()  const { return IsFullAccess() || AccessRight(m_roleWrite);  } \
@@ -953,12 +997,12 @@ public:
 	virtual bool OnAfterCloseMetaObject();
 
 	//create associate value
-	ibValueRecordDataObjectRef* CreateObjectValue() const;
-	ibValueRecordDataObjectRef* CreateObjectValue(const ibGuid& guid) const;
-	ibValueRecordDataObjectRef* CreateObjectValue(ibValueRecordDataObjectRef* objSrc, bool generate = false) const;
+	ibValuePtr<ibValueRecordDataObjectRef> CreateObjectValue() const;
+	ibValuePtr<ibValueRecordDataObjectRef> CreateObjectValue(const ibGuid& guid) const;
+	ibValuePtr<ibValueRecordDataObjectRef> CreateObjectValue(ibValueRecordDataObjectRef* objSrc, bool generate = false) const;
 
 	//copy associate value
-	ibValueRecordDataObjectRef* CopyObjectValue(const ibGuid& guid) const;
+	ibValuePtr<ibValueRecordDataObjectRef> CopyObjectValue(const ibGuid& guid) const;
 
 	// This source's OWN command ids (class-scoped — no global enum, no collision with the action system). eEditValue
 	// bakes the front inline-edit flag (standardCommand.h eStartEditingFlag). Ids < 32767 (wxMenuItem), band 1..27.
@@ -976,11 +1020,13 @@ public:
 	// by id against `key` (create/copy/open/delete/mark) and refreshes `srcForm`; ShowValueByKey opens the row's form.
 	// Bodies in objectList.cpp (next to the list models they were lifted from). Document overrides to add Post.
 	virtual void GetCommandCollection(const ibFormID& formType, std::vector<ibCommandItem>& commands) const override;
+	// The row's state picture: the record, or the record marked for deletion (commonObjectAction.cpp).
+	virtual ibPictureID GetRowPicture(const ibRowMetaValues& rowValues) const override;
 	virtual void CallAsCommand(ibActionID id, const ibUniqueKey& anchor, const ibUniqueKey& key, ibBackendValueForm* srcForm) const override;
 	virtual void ShowValueByKey(const ibUniqueKey& key, ibBackendValueForm* srcForm) const override;
 
 	//create single object
-	virtual ibValueRecordDataObject* CreateRecordDataObjectValue() const;
+	virtual ibValuePtr<ibValueRecordDataObject> CreateRecordDataObjectValue() const;
 
 	//get command section
 	virtual ibInterfaceCommandSection GetCommandSection() const { return ibInterfaceCommandSection::ibInterfaceCommandSection_Combined; }
@@ -1020,7 +1066,7 @@ protected:
 	virtual bool WriteData(ibDataNode& node) const override;
 
 	//create empty object
-	virtual ibValueRecordDataObjectRef* CreateObjectRefValue(const ibGuid& objGuid = wxNullGuid) const = 0; //create object and read by guid
+	virtual ibValuePtr<ibValueRecordDataObjectRef> CreateObjectRefValue(const ibGuid& objGuid = wxNullGuid) const = 0; //create object and read by guid — born owned
 
 protected:
 
@@ -1053,6 +1099,10 @@ public:
 	virtual const ibBackendQueryColumn* ResolveColumnByName(const wxString& name) const override;
 	virtual std::vector<const ibBackendQueryColumn*> GetColumns() const override;
 
+	// ⭐ …AND ITS RECORDS ARE ORDERED BY THE MOMENT: the date, then the reference standing at it — the moment's own
+	// two columns (Max, 2026-09-29: "the reference takes all its sorting from the point in time").
+	virtual std::vector<const ibBackendQueryColumn*> GetSortParts() const override;
+
 	// ⭐⭐ THE MOMENT AS A COLUMN — and it reads ITSELF.
 	//
 	// There is no such thing as a "synthetic column" in general: this one is the moment and nothing
@@ -1070,6 +1120,7 @@ public:
 		wxString GetPhysicalName() const override;
 		ibMetaID GetColumnId()     const override;
 		ibTypeDescription& GetTypeDesc() const override;
+		bool     IsAvailable()     const override;   // the moment attribute's too — and so its document's
 
 		// WHERE IT LIES: nowhere of its own — in the DATE, then in the REFERENCE. Answering with their
 		// layouts is what makes the existing mechanisms work on it: a sort emits date, then identifier
@@ -1188,7 +1239,8 @@ public:
 		return true;
 	}
 
-	// …and it has no order of its own: two records are told apart by identity.
+	// …and two records in memory are told apart by identity: whether a record is read is no order (see the base).
+	// The engine orders them by their moment (ibRecorderQueryable::GetSortParts), read for every row.
 	virtual int CompareDataValues(const ibValueDataObject* lhs, const ibValueDataObject* rhs) const override;
 
 protected:
@@ -1230,8 +1282,8 @@ protected:
 	// a configuration that has not set it posts as it always has.
 	ibPropertyEnum<ibValueEnumDocumentRecordsDeletion>* m_propertyRegisterRecordsDeletion =ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumDocumentRecordsDeletion>>(m_categoryData,
 		wxT("RegisterRecordsDeletion"), _("Register records deletion"), _("What the platform does with the document's movements when it is posted again or its posting is undone. Automatically (the default): cleared before the posting handler runs and when the posting is undone. On undo posting: kept when posted again, cleared on undo. Never: the configuration clears them. A deleted document always takes its movements with it."), ibDocumentRecordsDeletion::ibDocumentRecordsDeletion_Automatically);
-	ibPropertyContainer<>* m_propertyAttributeNumber = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Number"), _("Number"), _("The document's number - what a person finds it by. Indexed; shown with the date in lists and links. Left empty, it is generated when the document is written; the object module's SetNewNumber handler may give it a prefix or take the numbering over."), 11, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_Index));
-	ibPropertyContainer<>* m_propertyAttributeDate = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateDate(wxT("Date"), _("Date"), _("The document's date and time - when the fact happened. Documents are ordered by it, and it is the moment its movements stand at in the registers: a balance as of a moment counts the documents up to it."), ibDateFractions::ibDateFractions_DateTime, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_Index));
+	ibPropertyContainer<>* m_propertyAttributeNumber = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Number"), wxGETTEXT_IN_CONTEXT("document attribute", "Number"), _("The document's number - what a person finds it by. Indexed; shown with the date in lists and links. Left empty, it is generated when the document is written; the object module's SetNewNumber handler may give it a prefix or take the numbering over."), 11, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
+	ibPropertyContainer<>* m_propertyAttributeDate = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateDate(wxT("Date"), _("Date"), _("The document's date and time - when the fact happened. Documents are ordered by it, and it is the moment its movements stand at in the registers: a balance as of a moment counts the documents up to it."), ibDateFractions::ibDateFractions_DateTime, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
 	// The moment — registered like the date above, typed as the PointInTime value. See GetPointInTime
 	// for why it never joins the predefined list.
 	ibPropertyContainer<>* m_propertyAttributePointInTime = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateSpecialType(wxT("PointInTime"), _("Point in time"), _("The document's moment: its date together with the document itself, so two documents of the same second are still ordered. Not stored - built from the date and the reference; passed to a register's virtual table it reads everything up to (or before) this very document."), value_to_clsid(wxT("PointInTime"))));
@@ -1335,17 +1387,18 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	// shows, and whether a list walks levels at all.
 	virtual ibHierarchyType GetHierarchyType() const override { return m_propertyHierarchyType->GetValueAsEnum(); }
 
-	// An item-subordinated hierarchy (a chart of accounts) has no separate container kind: every
-	// node is the same thing, and any node may hold children. Asking this instead of comparing the
-	// enum keeps the question readable at the call sites that only care which of the two it is.
+	// A hierarchy of ITEMS — a chart of accounts — has no separate container kind: every node is the same
+	// thing, and any node may hold children. Asking this instead of comparing the enum keeps the question
+	// readable at the call sites that only care which of the two it is.
 	bool IsItemHierarchy() const { return GetHierarchyType() == ibHierarchyType::eItems; }
 
 	// Does the ENGINE navigate a tree here — level fetch, drill, hierarchy folding? Only the two real
-	// hierarchies. SUBORDINATION keeps its parent as ordinary data and answers NO: nothing is built on
-	// it unless someone asks for it in a query or a grouping.
+	// hierarchies: items, and folders (the same tree with a folder kind). A parent recorded without a
+	// hierarchy (ParentOnly, no longer offered) answers NO: nothing is built on it unless someone asks
+	// for it in a query or a grouping.
 	bool IsHierarchical() const {
 		const ibHierarchyType type = GetHierarchyType();
-		return type == ibHierarchyType::eItems || type == ibHierarchyType::eFoldersAndItems;
+		return type == ibHierarchyType::eItems || type == ibHierarchyType::eFolders;
 	}
 
 	// Is there a PARENT FIELD at all? True for the three arrangements that record one; only `None`
@@ -1355,7 +1408,7 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 
 	// Are there FOLDERS — a second kind of node whose whole purpose is to contain? Only the
 	// folders-and-items arrangement has them.
-	bool HasFolders() const { return GetHierarchyType() == ibHierarchyType::eFoldersAndItems; }
+	bool HasFolders() const { return GetHierarchyType() == ibHierarchyType::eFolders; }
 
 	// TURN THE DECLARATION INTO THE TWO PREDEFINED ATTRIBUTES IT GOVERNS.
 	//
@@ -1366,8 +1419,9 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	// And PRESENCE, which is the part a boolean-plus-enum could not express: an attribute that this
 	// arrangement has no use for is not present in this configuration, which is exactly what
 	// metaDisableFlag says (the same flag a catalog with no owner puts on Owner, and an independent
-	// register on Recorder). Being absent, it leaves every metadata walk — so its column leaves the
-	// schema too, and a flat catalog stops carrying a parent it can never fill.
+	// register on Recorder). The flag alone does not reach the schema — the list that becomes columns
+	// asks the same two questions itself (FillArrayObjectByPredefinedAttribute), so a flat catalog
+	// stops carrying a parent it can never fill.
 	void ApplyHierarchyType() {
 		(*m_propertyAttributeParent)->SetSelectMode(HasFolders()
 			? ibSelectMode::ibSelectMode_Folders
@@ -1420,11 +1474,14 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	// flat catalog reaching here shows no folder command). CallAsCommand handles eAddFolder (new folder) and
 	// delegates the rest to the base. Bodies in objectList.cpp.
 	virtual void GetCommandCollection(const ibFormID& formType, std::vector<ibCommandItem>& commands) const override;
+	// The row's state picture: a group is the folder, the rest the base's record — each marked for deletion or not.
+	// An arrangement without groups has no folder cell, and its rows are records (commonObjectAction.cpp).
+	virtual ibPictureID GetRowPicture(const ibRowMetaValues& rowValues) const override;
 	virtual void CallAsCommand(ibActionID id, const ibUniqueKey& anchor, const ibUniqueKey& key, ibBackendValueForm* srcForm) const override;
 
 	//process choice
 	virtual bool ProcessChoice(ibBackendControlFrame* ownerValue,
-		const wxString& strFormName = wxEmptyString, ibSelectMode selMode = ibSelectMode::ibSelectMode_Items) const;
+		const ibFormRequest& request = ibFormRequest()) const;
 
 	// ResolveChild — inherited from ibValueMetaObjectRecordDataRef unchanged (it was copied here verbatim,
 	// comments included, and neither intermediate class re-declares it).
@@ -1460,10 +1517,9 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 		return true;
 	}
 
-	// …and no order of its own: the rows of a catalog, a chart of accounts or a chart of characteristic
-	// types are told apart by identity.
+	// …and two rows in memory are told apart by identity (see the base); the engine orders them by what they are
+	// presented by (ibRecordQueryable::GetSortParts, from the template above), read for every row.
 	virtual int CompareDataValues(const ibValueDataObject* lhs, const ibValueDataObject* rhs) const override;
-
 
 	//is predefined value?
 	bool HasPredefinedValue(const ibGuid& valueGuid) const { return FindPredefinedValue(valueGuid) != nullptr; }
@@ -1475,17 +1531,17 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	virtual bool ResolveQueryConstant(const wxString& member, ibValue& out) const override;
 
 	//create associate value
-	ibValueRecordDataObjectHierarchyRef* CreateObjectValue(ibObjectMode mode) const;
-	ibValueRecordDataObjectHierarchyRef* CreateObjectValue(ibObjectMode mode, const ibGuid& guid) const;
-	ibValueRecordDataObjectHierarchyRef* CreateObjectValue(ibObjectMode mode, ibValueRecordDataObjectRef* objSrc, bool generate = false) const;
+	ibValuePtr<ibValueRecordDataObjectHierarchyRef> CreateObjectValue(ibObjectMode mode) const;
+	ibValuePtr<ibValueRecordDataObjectHierarchyRef> CreateObjectValue(ibObjectMode mode, const ibGuid& guid) const;
+	ibValuePtr<ibValueRecordDataObjectHierarchyRef> CreateObjectValue(ibObjectMode mode, ibValueRecordDataObjectRef* objSrc, bool generate = false) const;
 
 	//copy associate value
-	ibValueRecordDataObjectHierarchyRef* CopyObjectValue(ibObjectMode mode, const ibGuid& guid) const;
+	ibValuePtr<ibValueRecordDataObjectHierarchyRef> CopyObjectValue(ibObjectMode mode, const ibGuid& guid) const;
 
 #pragma region _form_builder_h_
 	//support form 
-	virtual ibBackendValueForm* GetFolderForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
-	virtual ibBackendValueForm* GetFolderSelectForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetFolderForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetFolderSelectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
 #pragma endregion 
 
 	//append predefined value
@@ -1539,8 +1595,8 @@ protected:
 	virtual bool WriteData(ibDataNode& node) const override;
 
 	//create empty object
-	virtual ibValueRecordDataObjectHierarchyRef* CreateObjectRefValue(ibObjectMode mode, const ibGuid& objGuid = wxNullGuid) const = 0; //create object and read by guid
-	virtual ibValueRecordDataObjectRef* CreateObjectRefValue(const ibGuid& objGuid = wxNullGuid) const final;
+	virtual ibValuePtr<ibValueRecordDataObjectHierarchyRef> CreateObjectRefValue(ibObjectMode mode, const ibGuid& objGuid = wxNullGuid) const = 0; //create object and read by guid — born owned
+	virtual ibValuePtr<ibValueRecordDataObjectRef> CreateObjectRefValue(const ibGuid& objGuid = wxNullGuid) const final;
 
 protected:
 
@@ -1552,15 +1608,22 @@ protected:
 		array.push_back(m_propertyAttributePredefined->GetMetaObject());
 		array.push_back(m_propertyAttributeCode->GetMetaObject());
 		array.push_back(m_propertyAttributeDescription->GetMetaObject());
-		// Parent / IsFolder are pushed UNCONDITIONALLY, and that is deliberate for now. ApplyHierarchyType
-		// marks the unused one with metaDisableFlag, but making THIS list obey the mark is not a one-line
-		// change: the readers of the list do not obey it either. ibValueRecordDataObjectHierarchyRef::
-		// ReadData asks GetValueByMetaID for IsFolder on every record it loads, and the schema differ
-		// compares a snapshot built from this list against one taken before the mark was applied - so
-		// dropping the column here asserted on open and emitted an ALTER for a column the table already
-		// had. Retiring a predefined column is its own arc: every walker has to agree at once.
-		array.push_back(m_propertyAttributeParent->GetMetaObject());
-		array.push_back(m_propertyAttributeIsFolder->GetMetaObject());
+		// PARENT ONLY WHERE THERE IS A PARENT LINK — the same question IsFolder below answers, one step up. A
+		// flat catalog points at nothing, yet it offered Parent in its field tree and kept a column nobody
+		// could fill. The readers ask the same HasParentLink() (the Add command, the delete that re-parents the
+		// children); the object forms' explorers drop it by the flag (ApplyHierarchyType, AppendColumn).
+		if (HasParentLink())
+			array.push_back(m_propertyAttributeParent->GetMetaObject());
+		// ⭐ ISFOLDER ONLY WHERE THERE ARE FOLDERS — the way every register's list says what it is made of
+		// (an accumulation register lists RecordType only for balances, a catalog its Owner only when it has
+		// one). Listed always, a chart of accounts offered `IsFolder` in every field tree while a query's find
+		// by name refused it, and a filter on it answered "unknown attribute 'IsFolder'" (2026-09-29).
+		//
+		// The readers ask the same question: a record without folders is always an item (ReadData, the
+		// object's own values, the Add command's anchor), and the schema stops declaring the column — the
+		// differ drops it, like any attribute that leaves.
+		if (HasFolders())
+			array.push_back(m_propertyAttributeIsFolder->GetMetaObject());
 		return true;
 	}
 
@@ -1583,22 +1646,22 @@ protected:
 	// children. What differs is only what a Parent field ACCEPTS, so this is a declaration rather
 	// than a second mechanism, and switching it is not a restructuring.
 	//
-	// Default is FoldersAndItems, which is what every existing metaobject already behaves like.
+	// Default is Folders, which is what every existing metaobject already behaves like.
 	//
 	// A CATEGORY OF ITS OWN: under Common this read as one more field beside Name / Synonym / Comment,
 	// while it is the single declaration that decides whether the object has a tree at all, what a
 	// parent may be, and whether Parent and IsFolder exist as columns. It governs an area, so it is
 	// shown as one — and the settings that belong to the same subject have a place to land next to it.
 	ibPropertyCategory* m_categoryHierarchy = ibPropertyObject::CreatePropertyCategory(wxT("Hierarchy"), _("Hierarchy"));
-	ibPropertyEnum<ibValueEnumHierarchyType>* m_propertyHierarchyType = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumHierarchyType>>(m_categoryHierarchy, wxT("HierarchyType"), _("Hierarchy type"), _("How the items are arranged. Folders and items (the default): folders hold items and other folders, and the list walks them as a tree. Items: any item may hold others (a chart of accounts). Subordination: a Parent is recorded but the list stays flat. None: no parent at all. It decides what Parent may point to and whether IsFolder exists."), ibHierarchyType::eFoldersAndItems);
+	ibPropertyEnum<ibValueEnumHierarchyType>* m_propertyHierarchyType = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumHierarchyType>>(m_categoryHierarchy, wxT("HierarchyType"), _("Hierarchy type"), _("How the values are arranged. Folders (the default): folders hold items and other folders, and the list walks them as a tree. Items: every value is an item, and any item may stand under another (a chart of accounts) - the same tree without folders. No hierarchy: no parent at all. It decides what Parent may point to and whether IsFolder exists."), ibHierarchyType::eFolders);
 
 	// HOW AN ITEM READS wherever a reference to it is shown - see ibDataPresentation.
 	ibPropertyEnum<ibValueEnumDataPresentation>* m_propertyDataPresentation = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumDataPresentation>>(m_categoryPresentation, wxT("DataPresentation"), _("Data presentation"), _("How a reference to an item reads wherever it is shown - in a field, a list, a report: by its Description (the default for a catalog) or by its Code (the default for a chart of accounts, whose accounts are named by their numbers)."), ibDataPresentation_Description);
 
 	//create default attributes
 	ibPropertyContainer<>* m_propertyAttributePredefined = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("PredefinedName"), _("Predefined name"), _("The name of an item the configuration itself declares (a predefined item) - what code refers to it by, as Catalogs.<Name>.<PredefinedName>. Empty for items created by users; a predefined item cannot be deleted."), 150, ibItemMode::ibItemMode_Folder_Item));
-	ibPropertyContainer<>* m_propertyAttributeCode = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Code"), _("Code"), _("The item's code - a short identifier a person types or searches by. Indexed. Left empty, it is generated when the item is written; the object module's SetNewCode handler may give it a prefix or take the numbering over."), 8, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_Index));
-	ibPropertyContainer<>* m_propertyAttributeDescription = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Description"), _("Description"), _("The item's name - what it is shown as wherever a reference to it appears: in fields, lists, reports and printed forms. Indexed, and searched by in quick choice."), 150, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_Index));
+	ibPropertyContainer<>* m_propertyAttributeCode = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Code"), _("Code"), _("The item's code - a short identifier a person types or searches by. Indexed. Left empty, it is generated when the item is written; the object module's SetNewCode handler may give it a prefix or take the numbering over."), 8, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
+	ibPropertyContainer<>* m_propertyAttributeDescription = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(wxT("Description"), wxGETTEXT_IN_CONTEXT("item name", "Description"), _("The item's name - what it is shown as wherever a reference to it appears: in fields, lists, reports and printed forms. Indexed, and searched by in quick choice."), 150, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
 	ibPropertyContainer<>* m_propertyAttributeParent = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateEmptyType(wxT("Parent"), _("Parent"), _("The folder or item this one sits under. What it may point to follows the hierarchy type: a folder in a folders-and-items hierarchy, any item in an items hierarchy. Empty: the item is at the top level."), ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Folders, ibIndexingMode::ibIndexingMode_Index));
 	ibPropertyContainer<>* m_propertyAttributeIsFolder = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateBoolean(wxT("IsFolder"), _("Is folder"), _("Set on a folder of a folders-and-items hierarchy: a folder only holds other items and folders, and carries only the attributes whose use says folders. Decided when the object is created and not changed afterwards."), ibItemMode::ibItemMode_Folder_Item));
 
@@ -1831,21 +1894,22 @@ public:
 	// The unit a record's period is kept to — as written, to the second, unless the register says otherwise.
 	virtual ibTotalsPeriod GetPeriodicityUnit() const { return ibTotalsPeriod::Second; }
 
-	ibValueRecordKeyObject* CreateRecordKeyObjectValue() const;
+	// Born owned, like the record data objects above (CreateRecordDataObjectValue says why).
+	ibValuePtr<ibValueRecordKeyObject> CreateRecordKeyObjectValue() const;
 	// Build a record key POPULATED from a set of dimension values (a register-list row → its key).
-	ibValueRecordKeyObject* CreateRecordKeyObjectValue(const ibRowMetaValues& keyValues) const;
+	ibValuePtr<ibValueRecordKeyObject> CreateRecordKeyObjectValue(const ibRowMetaValues& keyValues) const;
 
-	ibValueRecordSetObject* CreateRecordSetObjectValue(bool needInitialize = true) const;
-	ibValueRecordSetObject* CreateRecordSetObjectValue(const ibUniqueKeyPair& uniqueKey, bool needInitialize = true) const;
-	ibValueRecordSetObject* CreateRecordSetObjectValue(ibValueRecordSetObject* source, bool needInitialize = true) const;
+	ibValuePtr<ibValueRecordSetObject> CreateRecordSetObjectValue(bool needInitialize = true) const;
+	ibValuePtr<ibValueRecordSetObject> CreateRecordSetObjectValue(const ibUniqueKeyPair& uniqueKey, bool needInitialize = true) const;
+	ibValuePtr<ibValueRecordSetObject> CreateRecordSetObjectValue(ibValueRecordSetObject* source, bool needInitialize = true) const;
 
-	ibValueRecordSetObject* CopyRecordSetObjectValue(const ibUniqueKeyPair& uniqueKey);
+	ibValuePtr<ibValueRecordSetObject> CopyRecordSetObjectValue(const ibUniqueKeyPair& uniqueKey);
 
-	ibValueRecordManagerObject* CreateRecordManagerObjectValue() const;
-	ibValueRecordManagerObject* CreateRecordManagerObjectValue(const ibUniqueKeyPair& uniqueKey) const;
-	ibValueRecordManagerObject* CreateRecordManagerObjectValue(ibValueRecordManagerObject* source) const;
+	ibValuePtr<ibValueRecordManagerObject> CreateRecordManagerObjectValue() const;
+	ibValuePtr<ibValueRecordManagerObject> CreateRecordManagerObjectValue(const ibUniqueKeyPair& uniqueKey) const;
+	ibValuePtr<ibValueRecordManagerObject> CreateRecordManagerObjectValue(ibValueRecordManagerObject* source) const;
 
-	ibValueRecordManagerObject* CopyRecordManagerObjectValue(const ibUniqueKeyPair& uniqueKey) const;
+	ibValuePtr<ibValueRecordManagerObject> CopyRecordManagerObjectValue(const ibUniqueKeyPair& uniqueKey) const;
 
 	// This register's OWN command ids (class-scoped). eEditValue bakes the front inline-edit flag.
 	enum {
@@ -1868,12 +1932,10 @@ public:
 	// ITEM KEY — a register has SEVERAL key columns; its identity is the COMPOSITE record key built from the row's
 	// dimension cells (CreateUniqueKeyPair). commonObjectAction.cpp.
 	virtual ibUniqueKey GetItemKey(const ibRowMetaValues& rowValues) const;
+	// The row's state picture: the record, or the same shaded when it is not active. commonObjectAction.cpp.
+	virtual ibPictureID GetRowPicture(const ibRowMetaValues& rowValues) const;
 	// REGISTER variant — all columns (dimensions / resources / period …) visible by default. commonObjectAction.cpp.
 	virtual void FillSourceExplorer(ibSourceDataObject::ibSourceExplorer& explorer) const;
-
-	//get module object in compose object 
-	virtual const ibValueMetaObjectModule* GetObjectModule() const { return nullptr; }
-	virtual const ibValueMetaObjectCommonModule* GetManagerModule() const { return nullptr; }
 
 	virtual ibClassID ResolveChild(const ibClassID& clsid) const {
 		if (clsid == g_metaDimensionCLSID ||
@@ -1895,7 +1957,7 @@ public:
 
 #pragma region _form_builder_h_
 	//support form 
-	virtual ibBackendValueForm* GetListForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullGuid) const = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetListForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
 #pragma endregion 
 
 	//special functions for DB
@@ -1907,7 +1969,7 @@ public:
 protected:
 
 	//get default form
-	virtual ibBackendValueForm* GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
+	virtual ibFormPtr<ibBackendValueForm> GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
 
 		//if (cmdType == ibInterfaceCommandType::ibInterfaceCommandType_Create)
 		//	return GetObjectRecord();
@@ -1933,8 +1995,9 @@ protected:
 
 	///////////////////////////////////////////////////////////////////
 
-	virtual ibValueRecordSetObject* CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const = 0;
-	virtual ibValueRecordManagerObject* CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const { return nullptr; }
+	// born owned, as their creators are
+	virtual ibValuePtr<ibValueRecordSetObject> CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const = 0;
+	virtual ibValuePtr<ibValueRecordManagerObject> CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const { return nullptr; }
 
 	// Declare the register table (dimension / resource columns + the lookup index).
 	virtual void ContributeTables(ibSchemaSnapshot& out) const override;
@@ -2030,7 +2093,7 @@ class BACKEND_API ibValueManagerDataObject : public ibValueManagerObject {
 	virtual ibClassID GetClassType() const;
 
 	virtual wxString GetClassName() const;
-	virtual wxString GetString() const;
+	virtual ibString GetString() const;
 
 protected:
 
@@ -2060,12 +2123,14 @@ class BACKEND_API ibValueManagerDataObjectPredefined : public ibValueManagerData
 
 	virtual const ibValueMetaObjectRecordDataHierarchyMutableRef* GetMetaObject() const = 0;
 
-	// THE FIRST ITEM WHOSE CODE / DESCRIPTION IS LIKE THE PATTERN, as a reference — empty when none is.
+	// THE FIRST ITEM WITH THIS CODE / DESCRIPTION, as a reference — empty when none has it. A description may
+	// be asked for not exactly (`exact` False): then it is the first item whose description BEGINS with it.
+	// `exact` arrives as the script's VALUE and is read once, in the body — not given (Undefined) is exact.
 	// Here once, for every manager whose items have both (catalog, the three charts, the parameterized
 	// job): each of them carried its own copy, and every copy handed back freed memory (see the body).
 	// A VALUE, not a pointer — the reference found is held by the value that carries it out.
 	ibValue FindByCode(const ibValue& code) const;
-	ibValue FindByDescription(const ibValue& description) const;
+	ibValue FindByDescription(const ibValue& description, const ibValue& exact) const;
 
 	void FillPredefined(ibMemberTable& helper) const;    // predefined-value props (composes onto FillMembers)
 
@@ -2137,7 +2202,9 @@ public:
 		return nullptr;
 	}
 
-	virtual ibValueRecordDataObject* CopyObjectValue() = 0;
+	// born owned — see ibValueMetaObjectRecordData::CreateRecordDataObjectValue. One return type for every
+	// override: a holder is a class, so it cannot narrow the way a pointer did (CopyObject narrows it).
+	virtual ibValuePtr<ibValueRecordDataObject> CopyObjectValue() = 0;
 
 	// Composed name surface (replaces the old monolithic PrepareNames). The surface
 	// is split so the common part lives once on the base and each leaf adds only its
@@ -2172,7 +2239,7 @@ public:
 
 	//Get presentation 
 	virtual wxString GetSourceCaption() const override {
-		return GetMetaObject() ? stringUtils::GenerateSynonym(GetMetaObject()->GetClassName()) + wxT(": ") + GetMetaObject()->GetSynonym() : GetString();
+		return GetMetaObject() ? stringUtils::GenerateSynonym(GetMetaObject()->GetClassName()) + wxT(": ") + GetMetaObject()->GetSynonym() : GetString().ToWxString();
 	}
 
 	//support source data
@@ -2219,8 +2286,8 @@ public:
 	// on ref-flavour leaves, no-op on Ext). valueForm->Modify uses the
 	// virtual IsModified() — Ref leaves return m_objModified, Ext keeps
 	// the default `false` from ibSourceDataObject.
-	virtual void ShowFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr);
-	virtual ibBackendValueForm* GetFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr);
+	virtual void ShowFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr);
+	virtual ibFormPtr<ibBackendValueForm> GetFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr);
 
 protected:
 	// Leaf-specific form-id enum value for the current object state.
@@ -2241,7 +2308,7 @@ public:
 	virtual ibClassID GetClassType() const override;
 
 	virtual wxString GetClassName() const override;
-	virtual wxString GetString() const override;
+	virtual ibString GetString() const override;
 
 	//Working with iterators — walks named properties via GetPropVal
 	virtual std::shared_ptr<ibValueIteratorState> CreateIterator() override {
@@ -2276,20 +2343,15 @@ protected:
 };
 
 //Object with file
-// RAII mix-in for external DP/Report value objects: takes the transient external
-// metadata container in its ctor and drops it (CloseDatabase + delete) in its dtor.
-// Mixed into ibValueRecordDataObjectExternal* alongside the regular DP/Report value
-// class; embedded / config value objects don't inherit it. Generic ibMetaData* —
-// CloseDatabase + delete go through the polymorphic base, so no concrete container
-// type is needed and the inline dtor compiles in every TU.
+// Mix-in for external DP/Report value objects: HOLDS the external metadata container the object works in, as every
+// metadata is held (ibMetaData::MakeShared) — at runtime the object's life keeps the container, and its last holder
+// closes it. Mixed into ibValueRecordDataObjectExternal* alongside the regular DP/Report value class; embedded /
+// config value objects don't inherit it. A copy holds it too.
 class BACKEND_API ibExternalOwnerHelper {
 public:
-	ibExternalOwnerHelper(ibMetaData* externalMetadata = nullptr) : m_externalMetadata(externalMetadata) {}
-	// A copy never owns the source's container — only one object drops it.
-	ibExternalOwnerHelper(const ibExternalOwnerHelper&) : m_externalMetadata(nullptr) {}
-	~ibExternalOwnerHelper();   // out-of-line in commonObject.cpp — ibMetaData is only forward-declared here
+	ibExternalOwnerHelper(std::shared_ptr<ibMetaData> externalMetadata = nullptr) : m_externalMetadata(std::move(externalMetadata)) {}
 protected:
-	ibMetaData* m_externalMetadata;
+	std::shared_ptr<ibMetaData> m_externalMetadata;
 };
 
 class BACKEND_API ibValueRecordDataObjectExt : public ibValueRecordDataObject {
@@ -2311,7 +2373,7 @@ public:
 	virtual bool IsEmpty() const { return false; }
 
 	//copy new object
-	virtual ibValueRecordDataObjectExt* CopyObjectValue();
+	virtual ibValuePtr<ibValueRecordDataObject> CopyObjectValue();
 
 	//get metaData from object
 	virtual const ibValueMetaObjectRecordDataExt* GetMetaObject() const { return m_metaObject; }
@@ -2352,7 +2414,7 @@ public:
 	virtual ibClassID GetClassType() const;
 
 	virtual wxString GetClassName() const;
-	virtual wxString GetString() const;
+	virtual ibString GetString() const;
 
 	//is new object?
 	virtual bool IsNewObject() const { return m_newObject; }
@@ -2371,7 +2433,7 @@ public:
 
 	//Get presentation 
 	virtual wxString GetSourceCaption() const {
-		return m_metaObject->GetSynonym() + wxT(": ") + (IsNewObject() ? _("Creating") : GetString());
+		return m_metaObject->GetSynonym() + wxT(": ") + (IsNewObject() ? _("Creating") : GetString().ToWxString());
 	}
 
 	//support source data
@@ -2398,8 +2460,8 @@ public:
 	virtual bool FillObject(ibValue& vFillObject) const {
 		return Filling(vFillObject);
 	}
-	virtual ibValueRecordDataObjectRef* CopyObject(bool showValue = false) {
-		ibValueRecordDataObjectRef* objectRef = CopyObjectValue();
+	virtual ibValuePtr<ibValueRecordDataObjectRef> CopyObject(bool showValue = false) {
+		const ibValuePtr<ibValueRecordDataObjectRef> objectRef = CopyObjectValue();
 		if (objectRef != nullptr && showValue)
 			objectRef->ShowFormValue();
 		return objectRef;
@@ -2420,7 +2482,7 @@ public:
 	virtual const ibUniqueKey& GetGuid() const { return m_objGuid; }
 
 	//copy new object
-	virtual ibValueRecordDataObjectRef* CopyObjectValue();
+	virtual ibValuePtr<ibValueRecordDataObject> CopyObjectValue();
 
 	//get reference
 	virtual class ibValueReferenceDataObject* GetReference() const;
@@ -2478,13 +2540,14 @@ protected:
 	//   bool ibValueRecordDataObjectCatalog::WriteObject() {
 	//     ibConnectionScope scope = ibSession::Current()->OpenConnectionScope();
 	//     if (!BeginWriteScope(scope)) return true;          // designer / eval
+	//     ibWriteScope objectScope(*this);                   // put back if never durable
 	//
 	//     ibBackendValueForm* const valueForm = GetForm();
 	//     const bool newObject = IsNewObject();
 	//
 	//     /* === middle: BeforeWrite + codegen + SaveData + OnWrite === */
 	//
-	//     CommitWriteScope(scope, valueForm, newObject);
+	//     CommitWriteScope(scope, objectScope, valueForm, newObject);
 	//     return true;
 	//   }
 	//
@@ -2501,9 +2564,42 @@ protected:
 	// machine were PROMOTED onto ibValueRecordDataObjectRecorderRef, built on
 	// these same Begin/Commit helpers (bodies in commonObject.cpp).
 	// Constants stay inline (single use, single file).
+	// ⭐⭐ WHAT A WRITE CHANGES ON THE OBJECT BEFORE IT IS DURABLE, PUT BACK IF IT NEVER BECOMES SO.
+	//
+	// The database rolls a refused write back; the OBJECT did not. SaveData marks it written (m_newObject =
+	// false) straight after the INSERT - it has to, the posting and OnWrite handlers read its reference
+	// through that flag - and a refusal after that (a posting that failed, an OnWrite cancel, a refused
+	// commit) left it believing it was in the database. The next Write took the UPDATE road for a row
+	// that did not exist: "'Payroll': the row to rewrite was not found by its key" (2026-09-21). A number
+	// generated for the attempt stayed in the object too, while its sequence step was rolled back.
+	//
+	// The OBJECT's half of the write scope, beside the connection's (ibConnectionScope): opened right after
+	// BeginWriteScope, committed by CommitWriteScope the moment the transaction commits, and on any other
+	// way out - every refusal leaves by an exception - its destructor puts both back, as the connection
+	// scope rolls the transaction back. The same arrangement the version marker already has
+	// (CaptureLoadedDataVersion).
+	class ibWriteScope {
+	public:
+		// What it will put back is asked of the object as the write opens: was it new, did it have a number.
+		explicit ibWriteScope(ibValueRecordDataObjectRef& object)
+			: m_object(object), m_wasNew(object.m_newObject), m_hadNumber(object.IsSetUniqueIdentifier()) {}
+		~ibWriteScope();
+		ibWriteScope(const ibWriteScope&) = delete;
+		ibWriteScope& operator=(const ibWriteScope&) = delete;
+
+		void Commit() { m_committed = true; }   // durable: the object stays as written
+	protected:
+		bool IsCommitted() const { return m_committed; }   // a recorder's scope puts its own stamp back on the same answer
+	private:
+		ibValueRecordDataObjectRef& m_object;
+		const bool m_wasNew;
+		const bool m_hadNumber;
+		bool       m_committed = false;
+	};
+
 	bool BeginWriteScope (ibConnectionScope& scope);
 	bool BeginDeleteScope(ibConnectionScope& scope);
-	void CommitWriteScope (ibConnectionScope& scope,
+	void CommitWriteScope (ibConnectionScope& scope, ibWriteScope& objectScope,
 	                        ibBackendValueForm* valueForm, bool newObject);
 	void CommitDeleteScope(ibConnectionScope& scope,
 	                        ibBackendValueForm* valueForm);
@@ -2563,7 +2659,7 @@ public:
 
 	//Get presentation
 	virtual wxString GetSourceCaption() const {
-		return m_metaObject->GetSynonym() + wxT(": ") + (IsNewObject() ? _("Creating") : GetString());
+		return m_metaObject->GetSynonym() + wxT(": ") + (IsNewObject() ? _("Creating") : GetString().ToWxString());
 	}
 
 	//get metaData from object
@@ -2574,7 +2670,7 @@ public:
 	virtual ibObjectMode GetObjectMode() const override { return m_objMode; }
 
 	//copy new object
-	virtual ibValueRecordDataObjectRef* CopyObjectValue();
+	virtual ibValuePtr<ibValueRecordDataObject> CopyObjectValue();
 
 	//support source set/get data
 	virtual bool SetValueByMetaID(const ibMetaID& id, const ibValue& varMetaVal);
@@ -2742,10 +2838,25 @@ public:
 	// Hooks for leaf-specific Document state. Defaults are no-op so a
 	// future plain "recorder" type without these Document concepts
 	// (e.g. a bare business-process recorder) doesn't need to override.
-	virtual bool IsPosted() const                                          { return false; }
-	virtual bool CheckDeletionMarkOnPosting(ibDocumentWriteMode /*wm*/) const { return true; }   // true = ok to proceed
-	virtual void ApplyPostedAttributeOnWrite(ibDocumentWriteMode /*wm*/)   {}
-	virtual void FillDefaultDateForNew()                                   {}
+	virtual bool IsPosted() const           { return false; }
+	virtual void SetPosted(bool /*posted*/) {}   // the write's own stamp: into the slot, past Modify
+
+protected:
+	// THE RECORDER'S HALF ON TOP OF THE OBJECT'S. A posting marks the recorder posted before its
+	// movements are written (SetPosted in WriteObject), and a posting refused after that left it
+	// marked: the next plain Write stored "posted" over no movements at all (2026-09-21). Declared
+	// under the same name, so WriteObject opens this one exactly as a catalog opens the object's.
+	class ibWriteScope : public ibValueRecordDataObjectRef::ibWriteScope {
+	public:
+		explicit ibWriteScope(ibValueRecordDataObjectRecorderRef& recorder)
+			: ibValueRecordDataObjectRef::ibWriteScope(recorder), m_recorder(recorder), m_wasPosted(recorder.IsPosted()) {}
+		~ibWriteScope();
+	private:
+		ibValueRecordDataObjectRecorderRef& m_recorder;
+		const bool m_wasPosted;
+	};
+
+public:
 
 	// WHAT THIS RECORDER WRITES INTO, by list (ibRecorderWrites): the registers it posts movements to,
 	// or the sequences it registers in. Returns null for a kind that declares nothing of that list —
@@ -2794,7 +2905,7 @@ class BACKEND_API ibValueRecordKeyObject : public ibValueDynamicMembers {
 	virtual ibClassID GetClassType() const override;
 
 	virtual wxString GetClassName() const override;
-	virtual wxString GetString() const override;
+	virtual ibString GetString() const override;
 
 	//Working with iterators — walks named properties via GetPropVal
 	virtual std::shared_ptr<ibValueIteratorState> CreateIterator() override {
@@ -2884,6 +2995,10 @@ class BACKEND_API ibValueRecordSetObject : public ibValueModelStorage, public ib
 			// The attribute tells the declaration from what a value may be (a characteristic answers with
 			// its chart's list) — ask it rather than deciding here.
 			virtual const ibTypeDescription GetColumnTypeValue() const { return m_metaAttribute->GetTypeValueDesc(); }
+			virtual const ibFormatString& GetColumnFormat() const {
+				return ibBackendTypeConfigFactory::GetFormatFromColumn(m_metaAttribute->GetFormat(), m_metaAttribute->GetTypeDesc());
+			}
+			virtual bool IsColumnAvailable() const override { return m_metaAttribute->IsAvailable(); }
 
 			// The attribute the column is.
 			const ibValueMetaObjectAttributeBase* GetAttribute() const { return m_metaAttribute; }
@@ -2946,7 +3061,7 @@ class BACKEND_API ibValueRecordSetObject : public ibValueModelStorage, public ib
 		virtual ibClassID GetClassType() const;
 
 		virtual wxString GetClassName() const;
-		virtual wxString GetString() const;
+		virtual ibString GetString() const;
 
 		friend class ibValueRecordSetObject;
 	private:
@@ -3020,8 +3135,8 @@ public:
 	const ibValue& GetKeyValue(const ibMetaID& id) const { return m_keyValues.at(id); }
 	void EraseKeyValue(const ibMetaID& id) { m_keyValues.erase(id); }
 
-	//copy new object
-	virtual ibValueRecordSetObject* CopyRegisterValue();
+	//copy new object — born owned (ibValueMetaObjectRecordData::CreateRecordDataObjectValue says why)
+	virtual ibValuePtr<ibValueRecordSetObject> CopyRegisterValue();
 
 	bool Selected() const { return m_selected; }
 	void Read() { ReadData(); }
@@ -3094,7 +3209,7 @@ public:
 	virtual long AppendRow(unsigned int before = 0);
 
 	virtual bool LoadDataFromTable(ibValueModel* srcTable);
-	virtual ibValueModel* SaveDataToTable() const;
+	virtual ibValuePtr<ibValueModel> SaveDataToTable() const;
 
 	// Phase B template-method scaffolds. The 3 register-set leaves
 	// (Accumulation / Accounting / Information) have byte-identical
@@ -3113,7 +3228,7 @@ public:
 	virtual ibClassID GetClassType() const override;
 
 	virtual wxString GetClassName() const override;
-	virtual wxString GetString() const override;
+	virtual ibString GetString() const override;
 
 	// Iterator runtime path lives on ibValueModel (the paged Get*Fetch cursor over RunComposerPage).
 	// GetEmptyRow yields the typed skeleton that the iterator state surfaces as IntelliSense type hint.
@@ -3246,8 +3361,8 @@ public:
 		return m_metaObject->GetSynonym() + wxT(": ") + (IsNewObject() ? _("Creating") : m_metaObject->GetSynonym());
 	}
 
-	//copy new object
-	virtual ibValueRecordManagerObject* CopyRegisterValue();
+	//copy new object — born owned
+	virtual ibValuePtr<ibValueRecordManagerObject> CopyRegisterValue();
 
 	// Helper + NVI DoGetPMethods come from ibValueDynamicMembers; leaves bind their
 	// own fillers. (PrepareNames is gone.)
@@ -3307,8 +3422,8 @@ public:
 
 #pragma region _form_builder_h_
 	//support show 
-	virtual void ShowFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr) = 0;
-	virtual ibBackendValueForm* GetFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr) = 0;
+	virtual void ShowFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) = 0;
+	virtual ibFormPtr<ibBackendValueForm> GetFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) = 0;
 #pragma endregion 
 
 	//default showing
@@ -3318,7 +3433,7 @@ public:
 	virtual ibClassID GetClassType() const override;
 
 	virtual wxString GetClassName() const override;
-	virtual wxString GetString() const override;
+	virtual ibString GetString() const override;
 
 	//Working with iterators — walks named properties via GetPropVal
 	virtual std::shared_ptr<ibValueIteratorState> CreateIterator() override {

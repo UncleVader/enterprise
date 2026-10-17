@@ -2,7 +2,7 @@
 #define __PROPERTY_DYNAMIC_LIST_H__
 
 #include "backend/propertyManager/propertyObject.h"
-#include "backend/compositionDescription.h"   // what it stores — the SAME composer a report stores
+#include "core/description/compositionDescription.h"   // what it stores — the SAME composer a report stores
 
 // ---------------------------------------------------------------------------
 // ibPropertyDynamicList — backend half of the "dynamic list settings" designer
@@ -21,8 +21,8 @@
 class BACKEND_API ibPropertyDynamicList : public ibProperty {
 	// ONE maker with a default, the way ibPropertySpreadsheet has one over its description — a second
 	// overload for "no value yet" would be the empty description spelled twice.
-	wxVariantData* CreateVariantData(ibPropertyObject* property,
-	                                 const ibCompositionDescription& val = ibCompositionDescription()) const;
+	static wxVariantData* CreateVariantData(ibPropertyObject* property,
+	                                        const ibCompositionDescription& val = ibCompositionDescription());
 public:
 
 	// ⭐⭐ IT HOLDS A VARIANT — the same way ibPropertyType and ibPropertySource do — and what that

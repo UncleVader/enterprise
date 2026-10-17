@@ -111,6 +111,30 @@ TEST(QueryConstructorModel, ANestedTableAnswersWithItsOwnProjections)
 	EXPECT_EQ(wxT("Name"), fields[1]);
 }
 
+// ⭐⭐ A COMPOSITION READS ITS QUERY WITHOUT THE ROLES IT SAYS — its Fields page says them (Max, 2026-09-29).
+// Every select forgets them, the one it reads FROM and a union's branch included, since a role travels up
+// with its column; a text that says none comes back as it was, byte for byte.
+TEST(QueryConstructorModel, ACompositionReadsItsQueryWithoutTheRolesItSays)
+{
+	const wxString plain = wxT("SELECT T.Qty AS Qty FROM Catalog.Products AS T");
+	EXPECT_EQ(plain, ibQueryTextWithoutRoles(plain));
+
+	const wxString said =
+		wxT("SELECT U.Start ROLE OPENING AS Start, U.Day ROLE PERIOD 2 AS Day ")
+		wxT("FROM (SELECT T.Qty ROLE CLOSING AS Start, T.Date AS Day FROM Catalog.Products AS T ")
+		wxT("      UNION ALL SELECT S.Qty ROLE DIMENSION, S.Date FROM Catalog.Stock AS S) AS U");
+	ibQueryPackage package = Package(said);
+	EXPECT_TRUE(ibQueryDropRoles(package));
+	EXPECT_FALSE(ibQueryDropRoles(package)) << "a role was left somewhere the walk did not reach";
+
+	const wxString text = ibQueryTextWithoutRoles(said);
+	EXPECT_EQ(wxNOT_FOUND, text.Upper().Find(wxT("ROLE"))) << text.ToStdString();
+	// …and it still reads, its fields where they were.
+	const ibQueryPackage back = Package(text);
+	ASSERT_EQ(1u, back.m_statements.size());
+	EXPECT_EQ(2u, back.m_statements[0].m_select->m_projections.size());
+}
+
 TEST(QueryConstructorModel, ANestedTableUsesTheAliasWhereTheAuthorGaveOne)
 {
 	ibQueryParser parser;
@@ -171,6 +195,53 @@ TEST(QueryConstructorModel, WithNoConfigTheCatalogueIsEmptyRatherThanAFailure)
 	// where somebody is trying to look at a query.
 	ibQueryConstructorModel model(nullptr);
 	EXPECT_NO_THROW((void)model.GetSources());
+}
+
+// ===========================================================================
+//  WHERE A WRITTEN PATH STARTS — one rule for every holder of fields (WalkPath): the query's own
+//  sources, a composer's source, a settings window's list. They used to find the start each in its
+//  own way, and a line the settings window listed could be one the run left out.
+// ===========================================================================
+
+namespace {
+
+ibQueryConstructorField Field(const wxString& name, bool available = true)
+{
+	ibQueryConstructorField field;
+	field.m_name      = name;
+	field.m_available = available;
+	return field;
+}
+
+} // namespace
+
+TEST(QueryConstructorModel, APathStartsAtTheLongestPrefixAFieldIsNamed)
+{
+	// A linked package names its fields with the selection in front — `Sales.Qty` is ONE field, and
+	// reading its first segment alone would find `Sales`, a different one.
+	ibQueryConstructorModel model(nullptr);
+	const std::vector<ibQueryConstructorField> fields = { Field(wxT("Sales")), Field(wxT("Sales.Qty"), false) };
+	const ibQueryConstructorField leaf = model.WalkPath(fields, { wxT("Sales"), wxT("Qty") });
+	EXPECT_EQ(wxT("Sales.Qty"), leaf.m_name);
+	EXPECT_FALSE(leaf.m_available) << "the field the path names answers, not its first segment";
+}
+
+TEST(QueryConstructorModel, APathNoFieldStartsIsNoVerdict)
+{
+	// Silence, never a guess: a name the holder does not have is not hidden — it is not this question.
+	ibQueryConstructorModel model(nullptr);
+	const ibQueryConstructorField leaf = model.WalkPath({ Field(wxT("Qty")) }, { wxT("Amount") });
+	EXPECT_TRUE(leaf.m_name.IsEmpty());
+	EXPECT_TRUE(leaf.m_available);
+}
+
+TEST(QueryConstructorModel, AHiddenStartHidesTheWalkPastAHopNobodyAnswers)
+{
+	// What the walk KNEW stands: a hop past a hidden field that nothing resolves (here there is no
+	// configuration to walk into) does not bring the hidden field back.
+	ibQueryConstructorModel model(nullptr);
+	const ibQueryConstructorField leaf = model.WalkPath({ Field(wxT("Warehouse"), false) }, { wxT("Warehouse"), wxT("Code") });
+	EXPECT_FALSE(leaf.m_available);
 }
 
 // ===========================================================================

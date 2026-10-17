@@ -8,18 +8,24 @@
 // factory for a `DocumentRef`, which "cannot be created without arguments". So every assignment of a
 // reference to an attribute of a generic type raised.
 //
+// It asks the declared type's gate now, the same one a typed variable is checked by, and the value door
+// answers a type with nothing of its own to make with the empty value instead of a refusal.
+//
 // No database and no configuration: the families are registered by the platform itself, and a member's
 // class id is all the gate looks at, so a probe value that answers a class id stands in for a reference.
 // =============================================================================
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <vector>
 
+#include "backend/backend_type.h"              // GetTypesByFilter — what the reference shape offers
 #include "backend/compiler/value.h"
-#include "backend/metaCtor.h"                  // ib_find_any_reference / ibCtorMetaAnyReference
+#include "backend/metaCtor.h"                  // ib_find_meta_any_kind / ibCtorMetaAnyKind
+#include "backend/metaCollection/metaObject.h" // g_metaDocumentCLSID / g_metaCatalogCLSID — the metaclasses the ids carry
 #include "backend/system/value/valueType.h"    // ibValueTypeDescription::AdjustValue
-#include "backend/typeDescription.h"           // ibTypeDescription
+#include "core/description/typeDescription.h"           // ibTypeDescription
 
 namespace {
 
@@ -43,8 +49,10 @@ ibTypeDescription Declares(const ibClassID& clsid) {
 	return ibTypeDescription(std::vector<ibClassID>{ clsid });
 }
 
-const ibClassID kMember   = make_clsid("FamilyTestMember",   ibClassKind_Reference);
-const ibClassID kStranger = make_clsid("FamilyTestStranger", ibClassKind_Reference);
+// A document's reference and a catalog's — the metaclass is in the id (clsid.h), which is all a family's gate
+// reads: the metaclass's own id, as the platform registers it.
+const ibClassID kMember   = reference_to_clsid(4242, clsid_metaclass(g_metaDocumentCLSID));
+const ibClassID kStranger = reference_to_clsid(4243, clsid_metaclass(g_metaCatalogCLSID));
 
 } // namespace
 
@@ -54,7 +62,6 @@ TEST(TypeFamilyAdjust, AnyRef_AReference_PassesAsItIs)
 {
 	const ibCtorAbstractType* anyRef = ibValue::GetAvailableCtor(wxT("AnyRef"));
 	ASSERT_NE(anyRef, nullptr);
-	ASSERT_TRUE(anyRef->IsFamily());
 
 	const ibValue reference = ReferenceTo(kMember);
 	const ibValue result = ibValueTypeDescription::AdjustValue(Declares(anyRef->GetClassType()), reference, nullptr);
@@ -76,11 +83,8 @@ TEST(TypeFamilyAdjust, AnyRef_NotAReference_BecomesEmpty)
 
 TEST(TypeFamilyAdjust, DocumentRef_AMember_PassesAsItIs_AStrangerDoesNot)
 {
-	ibCtorMetaAnyReference* family = ib_find_any_reference(wxT("Document"));
+	ibCtorMetaAnyKind* family = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Reference);
 	ASSERT_NE(family, nullptr) << "the DocumentRef family is registered with the Document metatype";
-	ASSERT_TRUE(family->IsFamily());
-
-	family->AddMember(kMember);   // what registering a document's reference does
 
 	const ibTypeDescription declared = Declares(family->GetClassType());
 
@@ -89,13 +93,27 @@ TEST(TypeFamilyAdjust, DocumentRef_AMember_PassesAsItIs_AStrangerDoesNot)
 
 	const ibValue stranger = ibValueTypeDescription::AdjustValue(declared, ReferenceTo(kStranger), nullptr);
 	EXPECT_TRUE(stranger.IsEmpty()) << "a reference to something that is not a document is not kept";
+}
 
-	family->RemoveMember(kMember);
+// …and says it fit: AdjustOutValue answers by the same gate AdjustValue passed the value by, or a caller
+// watching for a value going in and not coming out would report one that did.
+TEST(TypeFamilyAdjust, DocumentRef_AMember_IsReportedAsFitting)
+{
+	ibCtorMetaAnyKind* family = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Reference);
+	ASSERT_NE(family, nullptr);
+
+	ibValueTypeDescription declared(Declares(family->GetClassType()));
+	ibValue out;
+	EXPECT_TRUE(declared.AdjustOutValue(ReferenceTo(kMember), out));
+	EXPECT_EQ(out.GetClassType(), kMember);
+
+	EXPECT_FALSE(declared.AdjustOutValue(ReferenceTo(kStranger), out));
+	EXPECT_TRUE(out.IsEmpty());
 }
 
 TEST(TypeFamilyAdjust, DocumentRef_EmptyValue_StaysEmpty)
 {
-	ibCtorMetaAnyReference* family = ib_find_any_reference(wxT("Document"));
+	ibCtorMetaAnyKind* family = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Reference);
 	ASSERT_NE(family, nullptr);
 
 	const ibValue result = ibValueTypeDescription::AdjustValue(Declares(family->GetClassType()), ibValue(), nullptr);
@@ -109,7 +127,7 @@ TEST(TypeFamilyAdjust, DocumentRef_EmptyValue_StaysEmpty)
 // have that swallowed by the caller; it is now simply empty.
 TEST(TypeFamilyAdjust, DefaultValueOfAFamily_IsEmpty_AndDoesNotThrow)
 {
-	ibCtorMetaAnyReference* family = ib_find_any_reference(wxT("Document"));
+	ibCtorMetaAnyKind* family = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Reference);
 	ASSERT_NE(family, nullptr);
 
 	ibValue result;
@@ -117,11 +135,56 @@ TEST(TypeFamilyAdjust, DefaultValueOfAFamily_IsEmpty_AndDoesNotThrow)
 	EXPECT_TRUE(result.IsEmpty());
 }
 
-// ---- a type that is NOT a family is untouched --------------------------------------------------------
+// ---- a type that admits only itself is untouched -----------------------------------------------------
 
-TEST(TypeFamilyAdjust, NotAFamily_IsNotClaimed)
+// The empty value is not put to the gate — every gate lets it through — so a declared Number still turns
+// Undefined into the number 0, the typed empty a column is read by, and not into Undefined.
+TEST(TypeFamilyAdjust, Number_Undefined_BecomesZero)
 {
 	const ibCtorAbstractType* number = ibValue::GetAvailableCtor(wxT("Number"));
 	ASSERT_NE(number, nullptr);
-	EXPECT_FALSE(number->IsFamily()) << "only the barriers that create nothing answer yes";
+
+	const ibValue result = ibValueTypeDescription::AdjustValue(Declares(number->GetClassType()), ibValue(), nullptr);
+
+	EXPECT_EQ(result.GetType(), ibValueTypes::TYPE_NUMBER);
+	EXPECT_TRUE(result.GetNumber().IsZero());
+}
+
+// ---- a family is declared and stored as what it admits -------------------------------------------
+
+// A field declared `CatalogRef` or `AnyRef` holds a reference, and the column layout reads that off the
+// declared type's KIND (columnSpread) — so a family is of its members' kind: the `_RTRef` / `_RRRef` pair
+// is there with no second question asked.
+TEST(TypeFamilyAdjust, AFamilyIsOfItsMembersKind)
+{
+	const ibCtorMetaAnyKind* catalogRef = ib_find_meta_any_kind(wxT("Catalog"), ibCtorObjectMetaType_Reference);
+	const ibCtorMetaAnyKind* documentObject = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Object);
+	const ibCtorAbstractType* anyRef = ibValue::GetAvailableCtor(wxT("AnyRef"));
+	ASSERT_NE(catalogRef, nullptr);
+	ASSERT_NE(documentObject, nullptr);
+	ASSERT_NE(anyRef, nullptr);
+
+	EXPECT_TRUE(IsReference(catalogRef->GetClassType()));
+	EXPECT_TRUE(IsObject(documentObject->GetClassType()));
+	EXPECT_TRUE(IsReference(anyRef->GetClassType()));
+}
+
+// The reference shape offers every metatype's family — a reference to any of its objects, the ones added
+// later included — and `AnyRef` closes the list.
+TEST(TypeFamilyAdjust, TheReferenceFilterOffersTheFamiliesAndAnyRef)
+{
+	std::vector<ibClassID> offered;
+	ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType::ibSelectorDataType_reference, nullptr, offered);
+
+	const ibCtorMetaAnyKind* catalogRef = ib_find_meta_any_kind(wxT("Catalog"), ibCtorObjectMetaType_Reference);
+	const ibCtorMetaAnyKind* documentRef = ib_find_meta_any_kind(wxT("Document"), ibCtorObjectMetaType_Reference);
+	const ibCtorAbstractType* anyRef = ibValue::GetAvailableCtor(wxT("AnyRef"));
+	ASSERT_NE(catalogRef, nullptr);
+	ASSERT_NE(documentRef, nullptr);
+	ASSERT_NE(anyRef, nullptr);
+
+	EXPECT_NE(std::find(offered.begin(), offered.end(), catalogRef->GetClassType()), offered.end());
+	EXPECT_NE(std::find(offered.begin(), offered.end(), documentRef->GetClassType()), offered.end());
+	ASSERT_FALSE(offered.empty());
+	EXPECT_EQ(offered.back(), anyRef->GetClassType()) << "AnyRef closes the list";
 }

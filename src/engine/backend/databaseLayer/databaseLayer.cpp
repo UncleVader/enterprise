@@ -30,13 +30,12 @@ void ibDatabaseLayer::BeginTransaction(const ibTxOptions& opts)
 	if (m_txDepth == 0) {
 		DoBeginTransaction(opts);   // may throw — depth stays 0, state clean
 		m_txAborted = false;
-		// Pin this conn to the current holder (ibSession::Current())
-		// for the whole TX. While set, every db_query call from the
-		// same session — across threads, across worker dispatch —
-		// resolves to this exact conn. SetActiveTxConnection is a
-		// no-op on threads that have no Current() session bound; in
-		// that mode the TX runs at the driver level only and the
-		// caller's own scope is responsible for routing.
+		// Pin this conn for the whole TX, in its own pool (m_pool — the
+		// base the TX runs in): to the calling thread's db_query channel
+		// when that is free, else to its own holder. While set, db_query
+		// on that channel resolves to this exact conn. A layer no pool
+		// knows is not pinned: the TX runs at the driver level and the
+		// caller's own scope routes it.
 		ibConnectionPool::SetActiveTxConnection(shared_from_this());
 	}
 	++m_txDepth;
@@ -308,7 +307,7 @@ int ibDatabaseLayer::GetSingleResultInt(const wxString& strSQL, const wxVariant*
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -321,22 +320,22 @@ int ibDatabaseLayer::GetSingleResultInt(const wxString& strSQL, const wxVariant*
 	return value;
 }
 
-wxString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, int nField, bool bRequireUniqueResult /*= true*/)
+ibString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, int nField, bool bRequireUniqueResult /*= true*/)
 {
 	wxVariant variant((long)nField);
 	return GetSingleResultString(strSQL, &variant, bRequireUniqueResult);
 }
 
-wxString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult /*= true*/)
+ibString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult /*= true*/)
 {
 	wxVariant variant(strField);
 	return GetSingleResultString(strSQL, &variant, bRequireUniqueResult);
 }
 
-wxString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult /*= true*/)
+ibString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult /*= true*/)
 {
 	bool valueRetrievedFlag = false;
-	wxString value = wxEmptyString;
+	ibString value;
 
 	ibDatabaseResultSet* pResult = nullptr;
 	try {
@@ -386,7 +385,7 @@ wxString ibDatabaseLayer::GetSingleResultString(const wxString& strSQL, const wx
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -464,7 +463,7 @@ long ibDatabaseLayer::GetSingleResultLong(const wxString& strSQL, const wxVarian
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -542,7 +541,7 @@ bool ibDatabaseLayer::GetSingleResultBool(const wxString& strSQL, const wxVarian
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -555,22 +554,22 @@ bool ibDatabaseLayer::GetSingleResultBool(const wxString& strSQL, const wxVarian
 	return value;
 }
 
-wxDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, int nField, bool bRequireUniqueResult /*= true*/)
+ibDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, int nField, bool bRequireUniqueResult /*= true*/)
 {
 	wxVariant variant((long)nField);
 	return GetSingleResultDate(strSQL, &variant, bRequireUniqueResult);
 }
 
-wxDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult /*= true*/)
+ibDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult /*= true*/)
 {
 	wxVariant variant(strField);
 	return GetSingleResultDate(strSQL, &variant, bRequireUniqueResult);
 }
 
-wxDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult /*= true*/)
+ibDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult /*= true*/)
 {
 	bool valueRetrievedFlag = false;
-	wxDateTime value = wxDefaultDateTime;
+	ibDateTime value;
 
 	ibDatabaseResultSet* pResult = nullptr;
 	try {
@@ -583,7 +582,7 @@ wxDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wx
 				// Close the result set, reset the value and throw an exception
 				CloseResultSet(pResult);
 				pResult = nullptr;
-				value = wxDefaultDateTime;
+				value = ibDateTime();
 				SetErrorCode(DATABASE_LAYER_NON_UNIQUE_RESULTSET);
 				SetErrorMessage(wxT("A non-unique result was returned."));
 				ThrowDatabaseException();
@@ -613,14 +612,14 @@ wxDateTime ibDatabaseLayer::GetSingleResultDate(const wxString& strSQL, const wx
 		// Make sure that a value was retrieved from the database
 		if (!valueRetrievedFlag)
 		{
-			value = wxDefaultDateTime;
+			value = ibDateTime();
 			SetErrorCode(DATABASE_LAYER_NO_ROWS_FOUND);
 			SetErrorMessage(wxT("No result was returned."));
 			ThrowDatabaseException();
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -698,7 +697,7 @@ void* ibDatabaseLayer::GetSingleResultBlob(const wxString& strSQL, const wxVaria
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -776,7 +775,7 @@ double ibDatabaseLayer::GetSingleResultDouble(const wxString& strSQL, const wxVa
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -855,7 +854,7 @@ ibNumber ibDatabaseLayer::GetSingleResultNumber(const wxString& strSQL, const wx
 			return value;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -902,7 +901,7 @@ wxArrayInt ibDatabaseLayer::GetResultsArrayInt(const wxString& strSQL, const wxV
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -949,7 +948,7 @@ wxArrayString ibDatabaseLayer::GetResultsArrayString(const wxString& strSQL, con
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -996,7 +995,7 @@ wxArrayLong ibDatabaseLayer::GetResultsArrayLong(const wxString& strSQL, const w
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {
@@ -1044,7 +1043,7 @@ wxArrayDouble ibDatabaseLayer::GetResultsArrayDouble(const wxString& strSQL, con
 			pResult = nullptr;
 		}
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		// Close any still-open result set before propagating; preserves the
 		// in-flight exception (sqlstate / native_code on derived types).
 		if (pResult != nullptr) {

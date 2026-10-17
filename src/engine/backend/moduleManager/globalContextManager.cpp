@@ -10,8 +10,14 @@
 
 #include "backend/objCtor.h"
 
+constexpr ibClassID g_valueGlobalContextStructureManagerCLSID = system_to_clsid("MG_SYAM");
+
 class ibValueGlobalContextStructureManager : public ibValueStructure {
 	public:
+
+	// Its own id — the structure it derives from answers with the structure's (valueMap.h). Not
+	// m_clsid below: that is the kind of metadata it manages.
+	virtual ibClassID GetClassType() const override { return g_valueGlobalContextStructureManagerCLSID; }
 
 	ibValueGlobalContextStructureManager() : m_metaData(nullptr), m_clsid(0) {}
 	ibValueGlobalContextStructureManager(const ibClassID& clsid, ibMetaData* metaData)
@@ -21,9 +27,10 @@ class ibValueGlobalContextStructureManager : public ibValueStructure {
 			ibCtorMetaValueType* so = m_metaData->GetTypeCtor(object, ibCtorObjectMetaType::ibCtorObjectMetaType_Manager);
 			if (so == nullptr)
 				continue;
-			ibValuePtr<ibValue> createdValue(so->CreateObject());
-			// Name surface builds lazily on first GetPMethods() — no eager populate.
-			ibValueStructure::Insert(object->GetName(), createdValue);
+			const ibValue createdValue = so->CreateObject();
+			// TWO OBJECTS MAY SHARE A NAME while a configuration is being edited (it is refused only when
+			// saved), so a repeated name is put, not inserted: one of them holds it, and which does not matter.
+			ibValueStructure::SetAt(object->GetName(), createdValue);
 		}
 	}
 
@@ -34,7 +41,7 @@ class ibValueGlobalContextStructureManager : public ibValueStructure {
 		return ibValueStructure::GetClassName();
 	}
 
-	virtual wxString GetString() const {
+	virtual ibString GetString() const {
 		ibCtorAbstractType* so = m_metaData->GetAvailableCtor(m_clsid);
 		if (so != nullptr)
 			return so->GetClassName() + wxT("Manager");
@@ -81,7 +88,7 @@ public:
 	}
 
 	virtual wxString GetClassName() const { return wxT("ScheduledJobsManager"); }
-	virtual wxString GetString() const { return wxT("ScheduledJobsManager"); }
+	virtual ibString GetString() const { return wxT("ScheduledJobsManager"); }
 };
 
 enum
@@ -103,7 +110,8 @@ enum
 	enCalculationRegisters,
 	enSequences,
 	enScheduledJobs,
-	enSessionParameters
+	enSessionParameters,
+	enFunctionalOptions
 };
 
 void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
@@ -131,6 +139,9 @@ void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
 	// The configuration's own declared parameters of this session. Read anywhere,
 	// written only by the session module (metaSessionParameterObject.h).
 	helper.AppendProp(wxT("SessionParameters"));
+	// Whether a part of the configuration is used in this base — `FunctionalOptions.<Name>.Get()`. Each
+	// option IS a constant, so the manager a name yields is the constant's own (metaFunctionalOptionObject.h).
+	helper.AppendProp(wxT("FunctionalOptions"));
 }
 
 #include "backend/metaCollection/metaSessionParameterObject.h"   // the metatype AND the value it yields
@@ -195,6 +206,9 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 	case enSessionParameters:
 		pvarPropVal = new ibValueSessionParameters(m_metaData);
 		return true;
+	case enFunctionalOptions:
+		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaFunctionalOptionCLSID, m_metaData);
+		return true;
 	}
 
 	return false;
@@ -205,4 +219,4 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 //***********************************************************************
 
 SYSTEM_TYPE_REGISTER(ibValueGlobalContextManager, "GlobalContextManager", system_to_clsid("MG_SYSM"));
-SYSTEM_TYPE_REGISTER(ibValueGlobalContextStructureManager, "GlobalContextStructureManager", system_to_clsid("MG_SYAM"));
+SYSTEM_TYPE_REGISTER(ibValueGlobalContextStructureManager, "GlobalContextStructureManager", g_valueGlobalContextStructureManagerCLSID);

@@ -10,12 +10,16 @@
 //   (the two lines are one shell command; the continuation backslash is left out
 //    because a trailing \ inside a // comment splices the next line into it)
 //
-// Three groups:
+// The main groups:
 //   RuntimeBench  — the ibProcUnit bytecode interpreter (dispatch, calls,
 //                   branches, strings, LINQ). The "runtime" number.
 //   NumberBench   — ibNumber arithmetic directly (immediate vs heap tier,
 //                   ToString / FromString), with an int64 / double baseline.
+//   DateBench     — ibDateTime directly (shift, order, span, parts, periods,
+//                   text), next to the wxDateTime it replaced.
 //   ParserBench   — ibCompileCode::Compile throughput (ns/compile, lines/s).
+//   JsonBench     — JSONReader / JSONWriter over a document, next to nlohmann's own
+//                   parse / dump of the same text.
 //
 // Every OES figure is printed next to a native-C++ baseline and the ratio
 // (oes/base) so the numbers read as an *overhead factor*, not raw nanoseconds
@@ -25,6 +29,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -32,10 +37,17 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <new>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <wx/datetime.h>  // DateBench — the wxDateTime the value's date replaced
+#include <wx/init.h>   // SessionBench — wxBase before application data
+#include <wx/image.h>  // wxInitAllImageHandlers — the configuration loads icons
+#include <wx/log.h>    // wxLogStderr — a warning must not become a modal box
 
 // Resident-set probe for the million-row bench. NOMINMAX because this file uses
 // std::min and windows.h would macro it away.
@@ -44,6 +56,9 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #  include <psapi.h>
+#  ifdef _MSC_VER
+#    include <intrin.h>   // _AddressOfReturnAddress — DISABLED_StackProbe's baseline
+#  endif
 #  ifdef _MSC_VER
 #    pragma comment(lib, "psapi.lib")
 #  endif
@@ -54,10 +69,16 @@
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/procUnit.h"
 #include "backend/compiler/byteCode.h"
-#include "backend/compiler/codeDef.h"
+#include "core/compiler/codeDef.h"
 #include "backend/compiler/value.h"
-#include "backend/fnumber.h"
+#include "core/fiber/fiber.h"               // DISABLED_StackProbe — the per-call StackRemaining
+#include "core/fnumber.h"
+#include "core/fdatetime.h"                 // DateBench / DISABLED_DateLoop
+#include "backend/appData.h"                   // SessionBench — the application's road
+#include "backend/session/session.h"           // DISABLED_CallCost — what a frame asks for
 #include "backend/system/value/valueArray.h"   // DISABLED_TypeCheckCost
+#include "backend/system/value/valueJson.h"    // JsonBench
+#include <nlohmann/json.hpp>                   // JsonBench - the native baseline
 
 namespace {
 
@@ -205,6 +226,26 @@ TEST(RuntimeBench, DISABLED_ArithLoop) {
     SUCCEED();
 }
 
+// The check Execute makes before the body. Native is the frame address
+// alone, which is the measurement the probe is built on.
+TEST(RuntimeBench, DISABLED_StackProbe) {
+    ibFiber::ConvertThread();
+    struct Release { ~Release() { ibFiber::ReleaseThread(); } } release;
+    const long n = 1000000;
+    const double oes = TimeNsPerOp(n, [](long) {
+        g_sink += static_cast<uint64_t>(ibFiber::StackRemaining());
+    });
+    const double base = TimeNsPerOp(n, [](long) {
+#if defined(_MSC_VER)
+        g_sink += reinterpret_cast<uintptr_t>(_AddressOfReturnAddress());
+#else
+        g_sink += reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+#endif
+    });
+    Row("stack probe (ns/call)", oes, base, "ns");
+    SUCCEED();
+}
+
 // --- call-heavy recursion: ns per script call -----------------------------
 // Fib(28): ~1.03M calls; the canonical interpreter call-overhead probe.
 TEST(RuntimeBench, DISABLED_Recursion) {
@@ -223,6 +264,183 @@ TEST(RuntimeBench, DISABLED_Recursion) {
     std::function<int64_t(int)> fib = [&](int n) -> int64_t { return n < 2 ? n : fib(n - 1) + fib(n - 2); };
     const double baseTot = BestTotalNs(5, [&]{ g_sink += (uint64_t)fib(N); });
     Row("recursion (ns/call)", oesTot / double(calls), baseTot / double(calls), "ns", oesTot, baseTot);
+    SUCCEED();
+}
+
+// --- THE CALL, apart from what the body does ------------------------------
+// `recursion` prices a call together with Fib's own compare, two subtractions
+// and an addition, so it cannot say how much of its figure is the call. Each
+// row here is one loop with and without a call in it, and the difference is the
+// call: an empty procedure, a function passing one argument back, the same with
+// eight locals (what a wider frame costs to reserve and release), and the same
+// callee placed after a hundred other functions in its module (the entry of a
+// called function is found by a linear walk over the module's functions).
+// `ibSession::Current()` is timed directly — a frame asks for it.
+namespace {
+
+wxString CallCostModule() {
+    return
+        wxT("Procedure Empty() Public\n")
+        wxT("EndProcedure\n")
+        wxT("Function Ident(x) Public\n")
+        wxT("  Return x;\n")
+        wxT("EndFunction\n")
+        wxT("Function Wide(x) Public\n")
+        wxT("  var a; var b; var c; var d; var e; var f; var g; var h;\n")
+        wxT("  a = x;\n")
+        wxT("  Return a;\n")
+        wxT("EndFunction\n")
+        wxT("Function LoopOnly(n) Public\n")
+        wxT("  var i; var s; i = 0;\n")
+        wxT("  While i < n Do s = i; i = i + 1; EndDo;\n")
+        wxT("  Return i;\n")
+        wxT("EndFunction\n")
+        wxT("Function LoopEmpty(n) Public\n")
+        wxT("  var i; var s; i = 0;\n")
+        wxT("  While i < n Do Empty(); s = i; i = i + 1; EndDo;\n")
+        wxT("  Return i;\n")
+        wxT("EndFunction\n")
+        wxT("Function LoopIdent(n) Public\n")
+        wxT("  var i; var s; i = 0;\n")
+        wxT("  While i < n Do s = Ident(i); i = i + 1; EndDo;\n")
+        wxT("  Return i;\n")
+        wxT("EndFunction\n")
+        wxT("Function LoopWide(n) Public\n")
+        wxT("  var i; var s; i = 0;\n")
+        wxT("  While i < n Do s = Wide(i); i = i + 1; EndDo;\n")
+        wxT("  Return i;\n")
+        wxT("EndFunction\n");
+}
+
+// ns per loop iteration of one of the module's Loop* functions.
+double CallCostPerIter(ibProcUnit& unit, const wxChar* fn, long n) {
+    ibValue argN((int)n), ret;
+    return BestTotalNs(5, [&]{ unit.CallAsFunc(fn, ret, argN); g_sink += (uint64_t)ret.GetInteger(); }) / double(n);
+}
+
+} // namespace
+
+TEST(RuntimeBench, DISABLED_CallCost) {
+    const long n = 200000;
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    ASSERT_TRUE(Build(cc, CallCostModule()));
+    ibProcUnit pu; ASSERT_TRUE([&]{ try { pu.Execute(cc.m_cByteCode); return true; } catch (...) { return false; } }());
+
+    // The same module behind a hundred procedures declared first.
+    wxString padded;
+    for (int k = 0; k < 100; ++k)
+        padded << wxT("Procedure Pad") << k << wxT("() Public\nEndProcedure\n");
+    padded << CallCostModule();
+    ibCompileCode ccPadded(wxT("test"), wxT("memory"), false);
+    ASSERT_TRUE(Build(ccPadded, padded));
+    ibProcUnit puPadded; ASSERT_TRUE([&]{ try { puPadded.Execute(ccPadded.m_cByteCode); return true; } catch (...) { return false; } }());
+
+    const double loop     = CallCostPerIter(pu, wxT("LoopOnly"), n);
+    const double empty    = CallCostPerIter(pu, wxT("LoopEmpty"), n);
+    const double ident    = CallCostPerIter(pu, wxT("LoopIdent"), n);
+    const double wide     = CallCostPerIter(pu, wxT("LoopWide"), n);
+    const double padLoop  = CallCostPerIter(puPadded, wxT("LoopOnly"), n);
+    const double padIdent = CallCostPerIter(puPadded, wxT("LoopIdent"), n);
+
+    const double current = TimeNsPerOp(1000000, [&](long){ g_sink += (uint64_t)(uintptr_t)ibSession::Current(); });
+
+    RowOes("loop alone (ns/iter)", loop, "ns");
+    RowOes("call: empty procedure", empty - loop, "ns");
+    RowOes("call: Ident(x), 1 arg", ident - loop, "ns");
+    RowOes("call: Wide(x), 8 locals", wide - loop, "ns");
+    RowOes("call: after 100 funcs", padIdent - padLoop, "ns");
+    RowOes("Current(), no session", current, "ns");
+    SUCCEED();
+}
+
+// --- THE SAME CALLS ON THE APPLICATION'S ROAD -----------------------------
+// Every RuntimeBench row runs SESSIONLESS: no application data, no registry, and
+// ibSession::Current() answers at its first line. The application never runs that
+// way — a script runs on a thread bound to its session — so what a call pays for
+// finding its session never showed in any of them. Here application data is up and
+// the thread is bound, and Current() is timed with 1–8 threads asking at once, each
+// bound to a session of its own: the load a server with several sessions puts on it.
+struct SessionBench : ::testing::Test {
+    wxInitializer                   m_wxInit;
+    std::shared_ptr<ibSession>      m_session;
+    std::unique_ptr<ibSessionScope> m_bound;
+    bool                            m_ownsAppData = false;
+
+    void SetUp() override {
+        if (!m_wxInit.IsOk())
+            GTEST_SKIP() << "wxBase init failed (no wxApp host)";
+        // As BuiltInRuntime (test_runtime.cpp): image handlers for the icons the
+        // configuration loads, and no modal log box in a headless run.
+        wxInitAllImageHandlers();
+        if (wxLog::GetActiveTarget() != nullptr)
+            delete wxLog::SetActiveTarget(new wxLogStderr());
+        if (ibApplicationInstance::Get() == nullptr) {
+            if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
+                GTEST_SKIP() << "appData env unavailable headless";
+            m_ownsAppData = true;
+        }
+        if (ibApplicationInstance::GetSessionRegistry() == nullptr)
+            GTEST_SKIP() << "no session registry after CreateAppDataEnv";
+        m_session = std::make_shared<ibSession>(wxString(wxT("bench")), ibSessionKind::Enterprise);
+        m_bound   = std::make_unique<ibSessionScope>(m_session.get());
+    }
+
+    // Put back as found, so the benches that run after this one stay sessionless.
+    void TearDown() override {
+        m_bound.reset();
+        m_session.reset();
+        if (m_ownsAppData && ibApplicationInstance::Get() != nullptr)
+            ibApplicationInstance::DestroyAppDataEnv();
+    }
+};
+
+TEST_F(SessionBench, DISABLED_CallCost) {
+    const long n = 200000;
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    ASSERT_TRUE(Build(cc, CallCostModule()));
+    ibProcUnit pu; ASSERT_TRUE([&]{ try { pu.Execute(cc.m_cByteCode); return true; } catch (...) { return false; } }());
+
+    const double loop  = CallCostPerIter(pu, wxT("LoopOnly"), n);
+    const double empty = CallCostPerIter(pu, wxT("LoopEmpty"), n);
+    const double ident = CallCostPerIter(pu, wxT("LoopIdent"), n);
+    RowOes("bound: loop (ns/iter)", loop, "ns");
+    RowOes("bound: call empty proc", empty - loop, "ns");
+    RowOes("bound: call Ident(x)", ident - loop, "ns");
+
+    // Current() with `threads` threads asking at once, each bound to a session of its
+    // own; the slowest thread's figure, since that is the one a caller waits for.
+    const auto currentUnderLoad = [](int threads) {
+        const long perThread = 1000000;
+        std::vector<double> ns(threads, 0.0);
+        std::atomic<int> ready{ 0 };
+        std::atomic<bool> go{ false };
+        std::vector<std::thread> pool;
+        for (int t = 0; t < threads; ++t) {
+            pool.emplace_back([&, t] {
+                const auto session = std::make_shared<ibSession>(wxString::Format(wxT("bench-%d"), t), ibSessionKind::Enterprise);
+                const ibSessionScope bound(session.get());
+                ++ready;
+                while (!go) std::this_thread::yield();
+                uint64_t sink = 0;
+                const auto t0 = Clock::now();
+                for (long i = 0; i < perThread; ++i) sink += (uint64_t)(uintptr_t)ibSession::Current();
+                const auto t1 = Clock::now();
+                ns[t] = std::chrono::duration<double, std::nano>(t1 - t0).count() / double(perThread);
+                g_sink += sink;
+            });
+        }
+        while (ready < threads) std::this_thread::yield();
+        go = true;
+        for (std::thread& th : pool) th.join();
+        return *std::max_element(ns.begin(), ns.end());
+    };
+    RowOes("Current(), bound", TimeNsPerOp(1000000, [&](long){ g_sink += (uint64_t)(uintptr_t)ibSession::Current(); }), "ns");
+    for (int threads : { 2, 4, 8 }) {
+        double best = 1e300;
+        for (int r = 0; r < 3; ++r) best = std::min(best, currentUnderLoad(threads));
+        const std::string label = "Current(), " + std::to_string(threads) + " threads";
+        RowOes(label.c_str(), best, "ns");
+    }
     SUCCEED();
 }
 
@@ -270,6 +488,33 @@ TEST(RuntimeBench, DISABLED_StringConcat) {
 
     const double baseTot = BestTotalNs(5, [&]{ std::string s; for (long i = 0; i < n; ++i) s += 'x'; g_sink += s.size(); });
     Row("string concat (ns/app)", oesTot / double(n), baseTot / double(n), "ns", oesTot, baseTot);
+    SUCCEED();
+}
+
+// --- a date shifted in a loop: ns per loop-iteration -----------------------
+// `t = t + 60` over a date is the script's date arithmetic - the operand read, a span in seconds, a
+// new reading - on top of the loop itself (`loop alone` in CallCost prices that part). The date comes
+// in as the argument: this unit runs with no session, so it asks no system function for one.
+TEST(RuntimeBench, DISABLED_DateLoop) {
+    const long n = 1000000;
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    ASSERT_TRUE(Build(cc, wxString::Format(
+        wxT("Function Shift(d) Public\n")
+        wxT("  var t; var i; t = d; i = 0;\n")
+        wxT("  While i < %ld Do\n")
+        wxT("    t = t + 60; i = i + 1;\n")
+        wxT("  EndDo;\n")
+        wxT("  Return t;\n")
+        wxT("EndFunction\n"), n)));
+    ibProcUnit pu; ASSERT_TRUE([&]{ try { pu.Execute(cc.m_cByteCode); return true; } catch (...) { return false; } }());
+    const ibDateTime start(2026, 1, 1);
+    ibValue argD(start), ret;
+    const double oesTot = BestTotalNs(5, [&]{ pu.CallAsFunc(wxT("Shift"), ret, argD); g_sink += (uint64_t)ret.GetDate().GetValue(); });
+    EXPECT_EQ(ret.GetDate(), start.AddMilliseconds(n * 60000ll));
+
+    volatile int64_t u = 0;
+    const double baseTot = BestTotalNs(5, [&]{ u = start.GetValue(); for (long i = 0; i < n; ++i) u += 60000; g_sink += (uint64_t)u; });
+    Row("date shift (ns/iter)", oesTot / double(n), baseTot / double(n), "ns", oesTot, baseTot);
     SUCCEED();
 }
 
@@ -943,36 +1188,56 @@ TEST(RuntimeBench, DISABLED_MillionRowScale) {
     size_t residentAt[kScales] = {};
 
     const size_t residentBase = ResidentBytes();
-    for (size_t s = 0; s < kScales; ++s) {
+
+    // One shape at one scale; false when it could not be completed, and the larger scales of its pass are skipped.
+    const auto measure = [&](size_t k, size_t s) -> bool {
         const long rows = scales[s];
         const int repeats = rows <= 64000L ? 3 : 1;
         ibValue argRows((int)rows), ret;
-        pu.CallAsProc(wxT("Fill"), argRows);
-
-        bool scaleCompleted = true;
-        for (size_t k = 0; k < kShapes && scaleCompleted; ++k) {
-            try {
-                const double tot = BestTotalNs(repeats, [&] {
-                    if (shapes[k].takesRows) pu.CallAsFunc(shapes[k].fn, ret, argRows);
-                    else                     pu.CallAsFunc(shapes[k].fn, ret);
-                    g_sink += (uint64_t)ret.GetInteger();
-                });
-                nsPerRow[k][s] = tot / double(rows);
-                wallNs[k][s] = tot;
-            }
-            catch (const std::bad_alloc&) {
-                std::cout << "  !! " << shapes[k].label << " n=" << rows
-                          << " -- out of memory; larger scales skipped\n";
-                scaleCompleted = false;
-            }
-            catch (const ibBackendException& err) {
-                std::cout << "  !! " << shapes[k].label << " n=" << rows << " raised: "
-                          << err.GetErrorDescription().ToStdString()
-                          << "; larger scales skipped\n";
-                scaleCompleted = false;
-            }
+        try {
+            const double tot = BestTotalNs(repeats, [&] {
+                if (shapes[k].takesRows) pu.CallAsFunc(shapes[k].fn, ret, argRows);
+                else                     pu.CallAsFunc(shapes[k].fn, ret);
+                g_sink += (uint64_t)ret.GetInteger();
+            });
+            nsPerRow[k][s] = tot / double(rows);
+            wallNs[k][s] = tot;
+            return true;
         }
+        catch (const std::bad_alloc&) {
+            std::cout << "  !! " << shapes[k].label << " n=" << rows
+                      << " -- out of memory; larger scales skipped\n";
+        }
+        catch (const ibBackendException& err) {
+            std::cout << "  !! " << shapes[k].label << " n=" << rows << " raised: "
+                      << err.GetErrorDescription().ToStdString()
+                      << "; larger scales skipped\n";
+        }
+        return false;
+    };
+
+    // ⚠ THE RECORDS FIRST, AT EVERY SCALE — THE PIPELINE AFTER THEM. Measured scale by scale in one loop, the
+    // pipeline at a scale ran in the heap the previous scale's records had just given back, so its line carried
+    // what THAT phase left behind: on 2026-10-01 a record shrank from 2.3 KB to 264 bytes, and `select` over
+    // plain NUMBERS moved 370 -> 530 ns a row from 64 000 rows up without a line of its own code changing.
+    // Now every pipeline point follows the same history — the whole record series — and the resident set is
+    // read right after each scale's records, the rows it reports (the pipeline's arrays no longer sit in it).
+    for (size_t s = 0; s < kScales; ++s) {
+        bool scaleCompleted = true;
+        for (size_t k = 0; k < kShapes && scaleCompleted; ++k)
+            if (shapes[k].takesRows)
+                scaleCompleted = measure(k, s);
         residentAt[s] = ResidentBytes();
+        if (!scaleCompleted)
+            break;
+    }
+    for (size_t s = 0; s < kScales; ++s) {
+        ibValue argRows((int)scales[s]);
+        pu.CallAsProc(wxT("Fill"), argRows);
+        bool scaleCompleted = true;
+        for (size_t k = 0; k < kShapes && scaleCompleted; ++k)
+            if (!shapes[k].takesRows)
+                scaleCompleted = measure(k, s);
         if (!scaleCompleted)
             break;
     }
@@ -1168,17 +1433,15 @@ TEST(RuntimeBench, DISABLED_IbValueCopyCost) {
         for (long i = 0; i < n; ++i) { ibValue tmp; g_sink += (uint64_t)tmp.IsEmpty(); }
     });
 
-    // ⭐⭐ WHAT A NON-NUMBER PAYS FOR THE NUMBER. `ibNumber m_fData` is a member OUTSIDE
-    // the union, so it is default-constructed by every ibValue — the ctor's
-    // initialiser list does not even name it — and `~ibNumber()` runs on every
-    // destruction, checking the heap tier. A string value carries a number; so
-    // does an object; so does an empty. (Max, 2026-09-09: *"the string always
-    // comes packaged with a number"*.)
+    // ⭐⭐ WHAT A NON-NUMBER USED TO PAY FOR THE NUMBER. `ibNumber m_fData` was a member
+    // OUTSIDE the union, default-constructed by every ibValue and destroyed on every
+    // destruction — a string value carried a number; so did an object; so did an
+    // empty. (Max, 2026-09-09: *"the string always comes packaged with a number"*.)
     //
-    // Its 8 bytes could live in the union — the payload IS one uint64 with a
-    // tier bit, exactly a pointer's width — with the tag owning the lifetime the
-    // way it already owns m_pStr's. This row is what says whether that is worth
-    // doing: the pair below is the price every non-number value pays today.
+    // Since 2026-09-26 it lives IN the union beside the string (one word each, a
+    // heap tier shared and counted), the tag owning both lifetimes, and a
+    // non-number value no longer constructs one. The pair below stays as the
+    // control: what a number costs when one IS made.
     const double numberPair = BestTotalNs(5, [&]{
         // The ADDRESS, not a reader: taking it stops the object being elided
         // without pulling a conversion into the timing (which is the mistake the
@@ -1780,6 +2043,139 @@ TEST(NumberBench, DISABLED_Arithmetic) {
 }
 
 // ===========================================================================
+// DateBench — ibDateTime directly, vs the wxDateTime it replaced in the value
+// ===========================================================================
+//
+// The same operations on both, so the ratio says what the engine's own date bought: a shift, an order
+// and a span are one integer operation on the count; the calendar (parts, periods) is integer day
+// arithmetic with no clock asked; text is written digit by digit. wxDateTime keeps an instant and asks
+// the machine's zone for every part. 10:30 on an ordinary day, so no clock change is on the path.
+
+TEST(DateBench, DISABLED_Calendar) {
+    std::cout << "\n[ DateBench | ibDateTime vs wxDateTime | x = ib/wx, <1 = ibDateTime faster ]\n";
+    const long N = 1000000;
+    const ibDateTime d(2026, 3, 15, 10, 30, 0), e(2026, 9, 30, 17, 0, 0);
+    const wxDateTime w(15, wxDateTime::Mar, 2026, 10, 30, 0), we(30, wxDateTime::Sep, 2026, 17, 0, 0);
+
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)d.AddMilliseconds(86400000).GetValue(); });
+        const double wx = TimeNsPerOp(N, [&](long){ wxDateTime c = w; c += wxTimeSpan::Day(); g_sink += (uint64_t)c.GetTicks(); });
+        Row("shift +1 day", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)(d < e); });
+        const double wx = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)(w < we); });
+        Row("compare", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)(e - d); });
+        const double wx = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)(we - w).GetMilliseconds().GetValue(); });
+        Row("span (ms)", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ ibDateTimeParts p; d.ToParts(p); g_sink += p.m_day + p.m_hour; });
+        const double wx = TimeNsPerOp(N, [&](long){ const wxDateTime::Tm tm = w.GetTm(); g_sink += tm.mday + tm.hour; });
+        Row("parts", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)d.BeginOfPeriod(ibTotalsPeriod::Month).GetValue(); });
+        const double wx = TimeNsPerOp(N, [&](long){ wxDateTime c = w; c.SetDay(1); c.ResetTime(); g_sink += (uint64_t)c.GetTicks(); });
+        Row("begin of month", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N, [&](long){ g_sink += (uint64_t)d.AddPeriods(ibTotalsPeriod::Month, 1).GetValue(); });
+        const double wx = TimeNsPerOp(N, [&](long){ wxDateTime c = w; c += wxDateSpan::Month(); g_sink += (uint64_t)c.GetTicks(); });
+        Row("add a month", ib, wx, "ns");
+    }
+    {
+        const double ib = TimeNsPerOp(N / 5, [&](long){ g_sink += (uint64_t)d.ToString().length(); });
+        const double wx = TimeNsPerOp(N / 5, [&](long){ g_sink += (uint64_t)w.Format(wxT("%d.%m.%Y %H:%M:%S")).length(); });
+        Row("ToString", ib, wx, "ns");
+    }
+    {
+        const ibString text(wxT("15.03.2026 10:30:00"));
+        const wxString wxText(wxT("15.03.2026 10:30:00"));
+        const double ib = TimeNsPerOp(N / 5, [&](long){ ibDateTime p; p.FromString(text); g_sink += (uint64_t)p.GetValue(); });
+        const double wx = TimeNsPerOp(N / 5, [&](long){
+            wxDateTime p; wxString::const_iterator end;
+            p.ParseFormat(wxText, wxT("%d.%m.%Y %H:%M:%S"), &end);
+            g_sink += (uint64_t)p.GetTicks();
+        });
+        Row("FromString (parse)", ib, wx, "ns");
+    }
+
+    EXPECT_NE(g_sink, 0xFFFFFFFFFFFFFFFFull);
+    SUCCEED();
+}
+
+// ===========================================================================
+// JsonBench — JSONReader / JSONWriter, vs nlohmann's own DOM on the same text
+// ===========================================================================
+
+TEST(JsonBench, DISABLED_ReadAndWrite) {
+    std::cout << "\n[ JsonBench | JSONReader / JSONWriter | x = oes/nlohmann ]\n";
+
+    // An exchange's shape: many small objects of short strings and a few numbers - every key and every
+    // string a value of its own, which is where a conversion per string shows.
+    std::string lines = "[";
+    for (int i = 0; i < 5000; ++i) {
+        if (i != 0) lines += ",";
+        lines += "{\"code\":\"C" + std::to_string(100000 + i) + "\",\"name\":\"Item number " + std::to_string(i)
+            + "\",\"unit\":\"pcs\",\"group\":\"Kitchen goods\",\"barcode\":\"48200" + std::to_string(1000000 + i)
+            + "\",\"price\":" + std::to_string(10 + i % 900) + ".50,\"quantity\":" + std::to_string(i % 37)
+            + ",\"vat\":\"20%\",\"supplier\":\"Supplier " + std::to_string(i % 40) + "\",\"note\":\"\",\"active\":true}";
+    }
+    lines += "]";
+    // The same shape in Cyrillic: two bytes of UTF-8 to a character, so what a string keeps is the room its
+    // characters take or the room its bytes did.
+    std::string cyrillic = "[";
+    for (int i = 0; i < 5000; ++i) {
+        if (i != 0) cyrillic += ",";
+        cyrillic += "{\"code\":\"C" + std::to_string(100000 + i) + "\",\"name\":\"\xD0\x9F\xD0\xBE\xD0\xB7\xD0\xB8\xD1\x86\xD1\x96\xD1\x8F "
+            + std::to_string(i) + "\",\"group\":\"\xD0\x9A\xD1\x83\xD1\x85\xD0\xBE\xD0\xBD\xD0\xBD\xD1\x96 \xD1\x82\xD0\xBE\xD0\xB2\xD0\xB0\xD1\x80\xD0\xB8\","
+            "\"supplier\":\"\xD0\x9F\xD0\xBE\xD1\x81\xD1\x82\xD0\xB0\xD1\x87\xD0\xB0\xD0\xBB\xD1\x8C\xD0\xBD\xD0\xB8\xD0\xBA "
+            + std::to_string(i % 40) + "\",\"price\":" + std::to_string(10 + i % 900) + ".50}";
+    }
+    cyrillic += "]";
+    // A message that is one long string (a file sent as base64).
+    const std::string blob = "{\"data\":\"" + std::string(8 * 1024 * 1024, 'A') + "\"}";
+
+    auto bench = [](const char* label, const std::string& utf8) {
+        // The text as a script hands it over - a runtime string (JSONReader.SetString gets the argument's
+        // GetString()) - so what is timed is the script's road, not a conversion only this test would make.
+        const ibString text = ibString::FromUTF8(utf8.data(), utf8.size());
+        ibValue built;
+        const double read = BestTotalNs(5, [&]{
+            ibValueJsonReader reader;
+            reader.SetText(text);
+            built = reader.ReadValue();
+            g_sink += (uint64_t)built.GetType();
+        });
+        const double readBase = BestTotalNs(5, [&]{
+            const nlohmann::json doc = nlohmann::json::parse(utf8);
+            g_sink += (uint64_t)doc.size();
+        });
+        const double write = BestTotalNs(5, [&]{
+            ibValueJsonWriter writer;
+            writer.WriteValue(built);
+            const ibValue result(writer.Close());   // what the script's Close() hands back
+            g_sink += (uint64_t)result.GetType();
+        });
+        const nlohmann::json doc = nlohmann::json::parse(utf8);
+        const double writeBase = BestTotalNs(5, [&]{ g_sink += (uint64_t)doc.dump().size(); });
+        std::cout << "  " << label << " (" << utf8.size() / 1024 << " KB)\n";
+        Row("  read  (ms)", read / 1e6, readBase / 1e6, "ms");
+        Row("  write (ms)", write / 1e6, writeBase / 1e6, "ms");
+    };
+    bench("5000 objects x 11 members", lines);
+    bench("the same in Cyrillic, 5 members", cyrillic);
+    bench("one 8 MB string", blob);
+
+    EXPECT_NE(g_sink, 0xFFFFFFFFFFFFFFFFull);
+    SUCCEED();
+}
+
+// ===========================================================================
 // ParserBench — ibCompileCode::Compile throughput
 // ===========================================================================
 
@@ -1829,3 +2225,211 @@ TEST(ParserBench, DISABLED_CompileThroughput) {
     EXPECT_NE(g_sink, 0xFFFFFFFFFFFFFFFFull);
     SUCCEED();
 }
+
+// ===========================================================================
+// SampledProfile — WHERE the time goes, not only how much
+// ===========================================================================
+//
+// The benches above say how long a row takes; they cannot say which function
+// the row's time is in, and ETW sampling (wpr, xperf, the VS profiler) needs an
+// elevated prompt that is not always at hand (2026-09-28). A thread can be
+// sampled from inside its own process without one: another thread suspends it
+// about once a millisecond, reads its registers, walks its stack with the
+// unwind tables the image already carries (RtlLookupFunctionEntry +
+// RtlVirtualUnwind — no allocation while the target is stopped, so a target
+// holding the heap lock cannot deadlock the sampler), and resumes it. The
+// addresses are named afterwards through dbghelp and the PDBs beside the
+// binaries. A couple of seconds of a scenario is a thousand-odd stacks.
+//
+// "self" is where the instruction pointer was; "total" is every function on the
+// stack at that moment, counted once per sample. Windows x64 only.
+#if defined(_WIN32) && defined(_M_X64)
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+
+namespace {
+
+class SampledStacks {
+public:
+    template <class F>
+    void Run(F&& scenario, double seconds) {
+        HANDLE target = nullptr;
+        ::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentThread(), ::GetCurrentProcess(), &target,
+                          THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+        std::atomic<bool> done{ false };
+        std::thread sampler([&] {
+            constexpr int kDepth = 64;
+            DWORD64 frames[kDepth];
+            while (!done.load(std::memory_order_relaxed)) {
+                const auto next = Clock::now() + std::chrono::microseconds(1000);
+                while (Clock::now() < next && !done.load(std::memory_order_relaxed)) std::this_thread::yield();
+                if (::SuspendThread(target) == (DWORD)-1)
+                    continue;
+                int depth = 0;
+                CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_FULL;
+                if (::GetThreadContext(target, &ctx)) {
+                    // Nothing that allocates until the thread is resumed: the frames go into the array.
+                    while (depth < kDepth && ctx.Rip != 0) {
+                        frames[depth++] = ctx.Rip;
+                        DWORD64 imageBase = 0;
+                        PRUNTIME_FUNCTION fn = ::RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+                        if (fn == nullptr) {   // a leaf: its return address is at the top of the stack
+                            ctx.Rip = *reinterpret_cast<const DWORD64*>(ctx.Rsp);
+                            ctx.Rsp += 8;
+                        } else {
+                            PVOID handlerData = nullptr;
+                            DWORD64 establisher = 0;
+                            ::RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fn, &ctx, &handlerData,
+                                               &establisher, nullptr);
+                        }
+                    }
+                }
+                ::ResumeThread(target);
+                if (depth > 0)
+                    m_stacks.emplace_back(frames, frames + depth);
+            }
+        });
+        const auto until = Clock::now() + std::chrono::duration<double>(seconds);
+        while (Clock::now() < until)
+            scenario();
+        done = true;
+        sampler.join();
+        ::CloseHandle(target);
+    }
+
+    void Print(const char* title, size_t top) const {
+        static bool symbolsLoaded = false;
+        const HANDLE process = ::GetCurrentProcess();
+        if (!symbolsLoaded) {
+            ::SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            symbolsLoaded = ::SymInitialize(process, nullptr, TRUE) != FALSE;
+        }
+        std::map<DWORD64, std::string> names;
+        std::map<DWORD64, DWORD64> offsets;   // an address's distance from the start of its function
+        const auto nameOf = [&](DWORD64 address) -> const std::string& {
+            auto it = names.find(address);
+            if (it != names.end())
+                return it->second;
+            alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512];
+            SYMBOL_INFO* const symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+            symbol->MaxNameLen = 511;
+            DWORD64 displacement = 0;
+            std::string name = ::SymFromAddr(process, address, &displacement, symbol) ? std::string(symbol->Name)
+                                                                                        : std::string("?");
+            offsets[address] = displacement;
+            return names.emplace(address, std::move(name)).first->second;
+        };
+
+        std::map<std::string, size_t> self, total;
+        for (const std::vector<DWORD64>& stack : m_stacks) {
+            self[nameOf(stack.front())]++;
+            std::vector<std::string> seen;
+            for (DWORD64 address : stack) {
+                const std::string& name = nameOf(address);
+                if (std::find(seen.begin(), seen.end(), name) == seen.end()) {
+                    seen.push_back(name);
+                    total[name]++;
+                }
+            }
+        }
+        const auto sortedOf = [](const std::map<std::string, size_t>& counts) {
+            std::vector<std::pair<size_t, std::string>> sorted;
+            for (const auto& kv : counts) sorted.emplace_back(kv.second, kv.first);
+            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            return sorted;
+        };
+        const auto percent = [&](size_t hits) { return 100.0 * double(hits) / double(m_stacks.size()); };
+        std::cout << "\n[ sampled profile | " << title << " | " << m_stacks.size() << " stacks ]\n";
+
+        // SELF, each with the callers it was reached through most often — the name alone of an allocator
+        // or a hash says nothing about which of ours asked for it.
+        std::cout << "  -- self (and its commonest callers) --\n";
+        const auto selfSorted = sortedOf(self);
+        for (size_t i = 0; i < selfSorted.size() && i < top; ++i) {
+            std::cout << "  " << std::setw(5) << std::fixed << std::setprecision(1) << percent(selfSorted[i].first)
+                      << "%  " << selfSorted[i].second.substr(0, 110) << "\n";
+            if (i >= 10)
+                continue;
+            std::map<std::string, size_t> chains;
+            for (const std::vector<DWORD64>& stack : m_stacks) {
+                if (nameOf(stack.front()) != selfSorted[i].second)
+                    continue;
+                std::string chain;
+                for (size_t k = 1; k < stack.size() && k <= 3; ++k)
+                    chain += (k > 1 ? " <- " : "") + nameOf(stack[k]).substr(0, 48);
+                chains[chain]++;
+            }
+            const auto chainSorted = sortedOf(chains);
+            for (size_t c = 0; c < chainSorted.size() && c < 2; ++c)
+                std::cout << "           " << std::setw(5) << percent(chainSorted[c].first) << "%  <- "
+                          << chainSorted[c].second << "\n";
+
+            // …and WHICH INSTRUCTIONS in it, as offsets from its start, to be read against the dumpbin
+            // listing: a function's self time is a question about its code only once it has an address.
+            if (i >= 5)
+                continue;
+            std::map<std::string, size_t> hot;
+            for (const std::vector<DWORD64>& stack : m_stacks)
+                if (nameOf(stack.front()) == selfSorted[i].second) {
+                    std::ostringstream at;
+                    at << "+0x" << std::hex << offsets[stack.front()];
+                    hot[at.str()]++;
+                }
+            std::cout << "           at:";
+            const auto hotSorted = sortedOf(hot);
+            for (size_t h = 0; h < hotSorted.size() && h < 6; ++h)
+                std::cout << " " << hotSorted[h].second << " " << std::setprecision(1) << percent(hotSorted[h].first) << "%";
+            std::cout << "\n";
+        }
+
+        // TOTAL, without the frames every stack has (the test harness, main, the thread start).
+        std::cout << "  -- total --\n";
+        size_t shown = 0;
+        for (const auto& entry : sortedOf(total)) {
+            if (entry.first >= m_stacks.size())
+                continue;
+            if (shown++ >= top)
+                break;
+            std::cout << "  " << std::setw(5) << percent(entry.first) << "%  " << entry.second.substr(0, 110) << "\n";
+        }
+    }
+
+private:
+    std::vector<std::vector<DWORD64>> m_stacks;
+};
+
+} // namespace
+
+TEST(SampledProfile, DISABLED_Linq) {
+    ibCompileCode cc(wxT("test"), wxT("memory"), false);
+    ASSERT_TRUE(Build(cc,
+        wxT("var src public; var inner public;\n")
+        wxT("Procedure Fill(n) Public\n")
+        wxT("  src = New Array; inner = New Array; var i; i = 0;\n")
+        wxT("  While i < n Do src.Add(i); inner.Add(i); i = i + 1; EndDo;\n")
+        wxT("EndProcedure\n")
+        wxT("Function WhereLambda() Public\n")
+        wxT("  Return src.Where(Function(x) Return x > 100 EndFunction).Count();\n")
+        wxT("EndFunction\n")
+        wxT("Function SelectBlock() Public\n")
+        wxT("  var q; q = from a in src select a;\n")
+        wxT("  Return q.Count();\n")
+        wxT("EndFunction\n")
+        wxT("Function JoinBlock() Public\n")
+        wxT("  var q; q = from a in src join b in inner on a equals b select a;\n")
+        wxT("  Return q.Count();\n")
+        wxT("EndFunction\n")));
+    ibProcUnit pu; ASSERT_TRUE([&]{ try { pu.Execute(cc.m_cByteCode); return true; } catch (...) { return false; } }());
+    ibValue argN((int)16000), ret;
+    pu.CallAsProc(wxT("Fill"), argN);
+
+    for (const wxChar* scenario : { wxT("WhereLambda"), wxT("SelectBlock"), wxT("JoinBlock") }) {
+        SampledStacks profile;
+        profile.Run([&]{ pu.CallAsFunc(scenario, ret); g_sink += (uint64_t)ret.GetInteger(); }, 2.0);
+        profile.Print(wxString(scenario).ToStdString().c_str(), 22);
+    }
+    SUCCEED();
+}
+#endif

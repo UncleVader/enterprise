@@ -141,8 +141,8 @@ public:
 
 #pragma region _form_builder_h_
 	//support form 
-	virtual ibBackendValueForm* GetRecordForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullUniqueKey) const;
-	virtual ibBackendValueForm* GetListForm(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr, const ibUniqueKey& formGuid = wxNullUniqueKey) const;
+	virtual ibFormPtr<ibBackendValueForm> GetRecordForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
+	virtual ibFormPtr<ibBackendValueForm> GetListForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const;
 #pragma endregion
 
 	//prepare menu for item
@@ -198,14 +198,14 @@ protected:
 	}
 
 	//create manager
-	virtual ibValueManagerDataObject* CreateManagerDataObjectValue() const;
+	virtual ibValuePtr<ibValueManagerDataObject> CreateManagerDataObjectValue() const;
 
 	//create record set
-	virtual ibValueRecordSetObject* CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const;
-	virtual ibValueRecordManagerObject* CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const;
+	virtual ibValuePtr<ibValueRecordSetObject> CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const;
+	virtual ibValuePtr<ibValueRecordManagerObject> CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey = wxNullUniquePairKey) const;
 
 	//create object data with meta form
-	virtual ibSourceDataObject* CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const;
+	virtual ibSourcePtr<ibSourceDataObject> CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const;
 
 	//get command section 
 	virtual ibInterfaceCommandSection GetCommandSection() const { return ibInterfaceCommandSection::ibInterfaceCommandSection_Combined; }
@@ -218,7 +218,7 @@ protected:
 protected:
 
 	//get default form
-	virtual ibBackendValueForm* GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
+	virtual ibFormPtr<ibBackendValueForm> GetFormByCommandType(ibInterfaceCommandType cmdType = ibInterfaceCommandType::ibInterfaceCommandType_Default) const {
 
 		if (cmdType == ibInterfaceCommandType::ibInterfaceCommandType_Create)
 			return GetRecordForm();
@@ -237,7 +237,7 @@ private:
 				prop->AppendItem(
 					object->GetName(),
 					object->GetMetaID(),
-					object->GetIcon(),
+					object->GetClassType(),
 					object);
 			}
 		}
@@ -251,7 +251,7 @@ private:
 				prop->AppendItem(
 					object->GetName(),
 					object->GetMetaID(),
-					object->GetIcon(),
+					object->GetClassType(),
 					object);
 			}
 		}
@@ -472,8 +472,8 @@ class ibValueRecordSetObjectInformationRegister : public ibValueRecordSetObject 
 public:
 
 	//default methods
-	virtual ibValueRecordSetObject* CopyRegisterValue() {
-		return new ibValueRecordSetObjectInformationRegister(*this);
+	virtual ibValuePtr<ibValueRecordSetObject> CopyRegisterValue() {
+		return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectInformationRegister(*this));
 	}
 
 	// WriteRecordSet / DeleteRecordSet inherited from
@@ -513,8 +513,8 @@ class ibValueRecordManagerObjectInformationRegister : public ibValueRecordManage
 	{
 		m_members.Bind(this, &ibValueRecordManagerObjectInformationRegister::FillMembers);
 	}
-	virtual ibValueRecordManagerObject* CopyRegister(bool showValue = false) {
-		ibValueRecordManagerObject* objectRef = CopyRegisterValue();
+	virtual ibValuePtr<ibValueRecordManagerObject> CopyRegister(bool showValue = false) {
+		const ibValuePtr<ibValueRecordManagerObject> objectRef = CopyRegisterValue();
 		if (objectRef != nullptr && showValue)
 			objectRef->ShowFormValue();
 		return objectRef;
@@ -541,8 +541,8 @@ class ibValueRecordManagerObjectInformationRegister : public ibValueRecordManage
 
 #pragma region _form_builder_h_
 	//support show 
-	virtual void ShowFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr);
-	virtual ibBackendValueForm* GetFormValue(const wxString& strFormName = wxEmptyString, ibBackendControlFrame* ownerControl = nullptr);
+	virtual void ShowFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr);
+	virtual ibFormPtr<ibBackendValueForm> GetFormValue(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr);
 #pragma endregion
 
 	//support actionData

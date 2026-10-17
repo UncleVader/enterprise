@@ -7,6 +7,10 @@
 #include <unordered_map>
 #include <string>
 
+constexpr ibClassID g_valueContainerCLSID = value_to_clsid("VL_CONTR");
+constexpr ibClassID g_valueKeyValueCLSID  = system_to_clsid("VL_KEVAL");
+constexpr ibClassID g_valueStructureCLSID = value_to_clsid("VL_STRUT");
+
 // A key -> value map (script "Container"; "Structure" is the string-keyed
 // variant). Keys are DATA: they live in the store below and are reached by NAME,
 // never mirrored into the member table. Two consequences the previous design got
@@ -14,18 +18,43 @@
 //
 //   * Lookup is O(1). The old store was a std::map keyed by ibValue with a
 //     comparator that materialised and uppercased BOTH keys on every comparison
-//     — O(log n) allocations per access. Here a hash index over a once-folded key
-//     answers in one probe.
+//     — O(log n) allocations per access. Here a hash index over the key (folded
+//     once per lookup, for a Structure's field names) answers in one probe.
 //   * Building is O(n). The old member table published every key as a script
 //     property and rebuilt that O(size) surface on each mutation, so filling an
 //     n-key container was O(n^2) (docs/private/runtime-perf.md §1g). The member table now
-//     carries only the fixed METHODS and is built once; the keys never touch it.
-class BACKEND_API ibValueContainer : public ibValueDynamicMembers {
-	public:
+//     carries only the fixed METHODS; the keys never touch it.
+//   * The method table is the TYPE's, not the instance's — see DoGetPMethods.
+class BACKEND_API ibValueContainer : public ibValue {
+public:
+	// AN ENTRY: the key, its value, and the key's HASH — taken once, when the entry is made. A container
+	// below kIndexMin is walked, and an insert walks it for a repeat: with the hash at hand that walk
+	// compares numbers and reads a key's text only where two agree; and the index, built when the count
+	// reaches kIndexMin, takes the hashes it finds instead of folding every key again. (2026-10-01: once
+	// the index started at eight, a ten-field Structure cost 1 660 -> 2 760 ns — some 28 comparisons of
+	// key text below eight, then all eight keys hashed a second time.)
+	struct ibContainerEntry {
+		// BUILT IN PLACE (emplace_back), as the pair before it was: a braced temporary pushed in cost every
+		// insert two ibValue moves and two destructions, out of line — a one- or two-field Structure paid more
+		// for them than for its hash (CI, 2026-10-01).
+		ibContainerEntry(const ibValue& k, const ibValue& v, size_t h) : key(k), value(v), hash(h) {}
+
+		ibValue key;
+		ibValue value;
+		size_t  hash;
+	};
+
+protected:
+	// What a string key is - see m_keyKind.
+	enum class ibKeyKind { Value, Name };
 private:
+	// A METHOD NUMBER IS A POSITION in the member table, so the order here is the
+	// order BindContainerNames appends in -- and enGet sits before the three a
+	// read-only container does not get, where a position cannot move under it.
 	enum Func  {
 		enCount = 0,
 		enProperty,
+		enGet,
 		enClear,
 		enDelete,
 		enInsert
@@ -35,48 +64,74 @@ private:
 	// stable index for the property protocol (FindProp -> GetPropVal) and a
 	// deterministic iteration / serialisation order. `m_index` buckets it.
 	// The two are maintained together by every mutating method.
-	std::vector<std::pair<ibValue, ibValue>> m_entries;
+	std::vector<ibContainerEntry> m_entries;
 
-	// TWO KINDS OF KEY, TWO RULES, and neither renders the value to text:
+	// WHAT A STRING KEY IS depends on which of the two this is, and neither renders a value to text:
 	//
-	//   a STRING key folds case — a script reaches a field by name and does not care how it was
-	//   typed (`Structure.Name` and `structure.name` are one field). The fold runs once per LOOKUP
-	//   while hashing; inside a bucket the comparison decides most candidates on length alone and
-	//   folds only the characters that differ.
+	//   in a STRUCTURE a string key is a NAME — a script reaches the field through a dot and does not
+	//   care how it was typed (`s.Name` and `s.name` are one field), so it folds case. The fold runs
+	//   once per LOOKUP while hashing; inside a bucket the comparison decides most candidates on
+	//   length alone and folds only the characters that differ.
 	//
-	//   anything else compares AS A VALUE, through ibValue's own ordering — a reference by its guid,
-	//   a number by its magnitude. This is what replaced the old rendered identity, and with it the
-	//   rule that `1` and "1" were one key: they are different keys now, as they are everywhere else
-	//   in the language.
+	//   in a CONTAINER a string key is a VALUE like any other: "fr" and "FR" are two keys, exactly as
+	//   `"fr" = "FR"` is False — through `[key]`, Get and the dot alike.
+	//
+	//   anything that is not a string compares AS A VALUE in both, through ibValue's own ORDERING — a
+	//   reference by its guid, a number by its magnitude — so `1` and "1" are different keys, as they
+	//   are everywhere else in the language. The ordering, not `=`: it puts Undefined and Null in one
+	//   place (CompareValueLS), so those two are ONE key here while `Undefined = Null` is False.
+	//
+	// Set once by the constructor and never changed: the index is built under it.
+	const ibKeyKind m_keyKind;
 
 	// THE INDEX HOLDS POSITIONS, NOT A SECOND COPY OF THE KEY. It used to be
 	// keyed by the ibValue itself, so every insert copied the key — and a string
-	// key copies its buffer, an allocation per field. The footprint probe reads
-	// that as ~1 KB per field of a Structure against 40 bytes of data
-	// (docs/private/runtime-perf.md §9); the key was already in m_entries, one hop away.
+	// key copies its buffer, an allocation per field. The key was already in
+	// m_entries, one hop away.
 	//
 	// So: bucket by the key's HASH, map to entry positions, and settle equality
 	// against the entry itself — which is exactly what a hash table does on a
 	// collision anyway. Multimap because two different keys may share a hash and
 	// both must keep their position.
+	//
+	// ⭐ AND ONLY WHERE IT PAYS. A row of a few fields — what most structures are — is
+	// found faster by walking its entries than by hashing the name, and an index there
+	// costs more than the data it finds (a node per field and a bucket array: some
+	// 250 bytes against 48 of two values). So the index exists exactly while the
+	// container holds kIndexMin entries or more — the rule the member table's own
+	// find index follows (kFindIndexMin); below that it is empty and a lookup walks
+	// m_entries. Every mutating path keeps that rule (Indexed()).
+	static constexpr size_t kIndexMin = 8;
 	std::unordered_multimap<size_t, size_t> m_index;
+	bool Indexed() const { return m_entries.size() >= kIndexMin; }
 
 	// Hash and lookup, split because every mutating path wants both and hashing
 	// twice was the other half of the old shape's cost.
-	static size_t HashOf(const ibValue& key);
+	size_t HashOf(const ibValue& key) const;
+	// A key whose hash the caller already holds (an insert, a put): the index when there is one, otherwise a
+	// walk comparing the stored hashes. A READ walks by FindByWalk — it holds no hash, and needs none: a field
+	// name of another length is told apart without hashing the one looked for.
 	long FindWithHash(const ibValue& key, size_t hash) const;
+	long FindByWalk(const ibValue& key) const;
+	bool KeyMatches(const ibValue& candidate, const ibValue& key) const;
+	// The entry just appended goes into the index when the container was already indexed — or, when it is the
+	// one that brings the count to kIndexMin, the whole index is built, from the hashes the entries hold.
+	void IndexNewEntry(bool wasIndexed);
 
 protected:
+	// A Structure's constructor: its string keys are field NAMES (see m_keyKind).
+	ibValueContainer(bool readOnly, ibKeyKind keyKind);
+
 	// -1 when absent; the entry index otherwise. The single lookup primitive the
 	// key-facing methods share.
 	long IndexOf(const ibValue& key) const;
 
 public:
-	// THE PAIRS, IN INSERTION ORDER — read-only, for a consumer that takes a whole map at once rather
+	// THE ENTRIES, IN INSERTION ORDER — read-only, for a consumer that takes a whole map at once rather
 	// than asking key by key (an accounting posting is written as *(kind -> value)* pairs and poured
 	// into the movement's slots). Nothing else about the store is exposed: this is the same order a
 	// script sees when it iterates, so a caller cannot observe an arrangement the language does not.
-	const std::vector<std::pair<ibValue, ibValue>>& Entries() const { return m_entries; }
+	const std::vector<ibContainerEntry>& Entries() const { return m_entries; }
 
 protected:
 
@@ -95,7 +150,9 @@ public:
 
 public:
 
-	class BACKEND_API ibValueReturnContainer : public ibValueDynamicMembers {
+	// One per step of a walk over a map — so its two names (Key, Value) are one shared table, not a table
+	// built for every step that reads them.
+	class BACKEND_API ibValueReturnContainer : public ibValue {
 	public:
 
 		enum Prop {
@@ -108,18 +165,19 @@ public:
 
 	public:
 
-		ibValueReturnContainer() : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, true) {
-			m_members.Bind(this, &ibValueReturnContainer::FillMembers);
-		}
+		ibValueReturnContainer() : ibValue(ibValueTypes::TYPE_VALUE, true) {}
+		ibValueReturnContainer(const ibValue& key, ibValue& value) : ibValue(ibValueTypes::TYPE_VALUE, true), m_key(key), m_value(value) {}
 
-		ibValueReturnContainer(const ibValue& key, ibValue& value) : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, true), m_key(key), m_value(value) {
-			m_members.Bind(this, &ibValueReturnContainer::FillMembers);
-		}
+		static void BindNames(ibMemberTable& helper, const ibValue* ctx);
 
-		void FillMembers(ibMemberTable& helper) const;   // bound in ctor (was PrepareNames)
+		// Its own id, not the registry's — one is made per step of a walk over a map.
+		virtual ibClassID GetClassType() const override { return g_valueKeyValueCLSID; }
 
 		virtual bool SetPropVal(const long lPropNum, const ibValue& cValue) override;        //setting attribute
 		virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
+
+	protected:
+		virtual ibMemberTable* DoGetPMethods() const override { return ibMemberTable::Shared<&ibValueReturnContainer::BindNames>(); }
 	};
 
 public:
@@ -130,14 +188,18 @@ public:
 
 	virtual ~ibValueContainer();
 
+	// Its own id, not the registry's (see the note beside the class ids in procUnitLINQ.cpp). A
+	// structure answers with its own.
+	virtual ibClassID GetClassType() const override { return g_valueContainerCLSID; }
+
 	// KEY access. Resolved straight against the store — the member table carries
 	// only methods, so FindProp returns a key's entry index (or -1), and
 	// Get/SetPropVal read / write that entry. GetNProps / GetPropName expose the
 	// keys to introspection (debugger, inspectors) without maintaining a live
 	// surface: they read the store on demand.
-	virtual long FindProp(const wxString& strPropName) const override;
+	virtual long FindProp(const ibString& strPropName) const override;
 	virtual long GetNProps() const override { return (long)m_entries.size(); }
-	virtual wxString GetPropName(const long lPropNum) const override;
+	virtual const ibString& GetPropName(const long lPropNum) const override;
 	virtual bool SetPropVal(const long lPropNum, const ibValue& cValue) override;
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override;
 
@@ -147,10 +209,8 @@ public:
 	virtual bool IsPropReadable(const long lPropNum) const override { return lPropNum >= 0 && lPropNum < (long)m_entries.size(); }
 	virtual bool IsPropWritable(const long lPropNum) const override { return lPropNum >= 0 && lPropNum < (long)m_entries.size(); }
 
-	// The FIXED method surface — methods only, no keys. Type-invariant given the
-	// read-only flag, bound once in the ctor and never rebuilt on a mutation.
-	static void BindContainerNames(ibMemberTable& helper, const ibValue* ctx);
-	// DoGetPMethods (protected) + the by-value helper come from ibValueDynamicMembers.
+	// The FIXED method surface — methods only, no keys — written for one value of the read-only flag.
+	static void BindContainerNames(ibMemberTable& helper, bool readOnly);
 
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);       //method call
 
@@ -181,6 +241,15 @@ public:
 
 protected:
 
+	// ⭐⭐ THE METHOD TABLE IS THE TYPE'S, NOT THE INSTANCE'S. It was a member of every container
+	// (ibValueDynamicMembers), built on the first method a script called — so a row filled with
+	// two Inserts built six names and six help strings of its own, ~1.3 KB against 48 bytes of
+	// data: 2 344 bytes per two-field Structure, 2.3 GB for a million rows (StructureFootprint
+	// bench, 2026-10-01). The surface depends on the read-only flag alone, and the flag moves no
+	// method's position (BindContainerNames), so there are two shared tables and every container
+	// points at one of them.
+	virtual ibMemberTable* DoGetPMethods() const override;
+
 	// Packing — CONTENTS only: a pair is two child nodes (valueMap.cpp). A
 	// structure inherits this unchanged; it differs in what it accepts as a KEY,
 	// not in how it is written, and the header already says which it was.
@@ -192,12 +261,16 @@ protected:
 class BACKEND_API ibValueStructure : public ibValueContainer {
 	public:
 
-	ibValueStructure() : ibValueContainer(false) {}
-	ibValueStructure(const std::map<wxString, ibValue>& structureValues) : ibValueContainer(true) {
+	// Its own id — the map it derives from answers with the map's; a structure that is something more
+	// answers with its own (globalContextManager.cpp, valueSpreadsheet.cpp).
+	virtual ibClassID GetClassType() const override { return g_valueStructureCLSID; }
+
+	ibValueStructure() : ibValueContainer(false, ibKeyKind::Name) {}
+	ibValueStructure(const std::map<wxString, ibValue>& structureValues) : ibValueContainer(true, ibKeyKind::Name) {
 		for (auto& strBVal : structureValues) ibValueContainer::SetAt(strBVal.first, strBVal.second);
 	}
 
-	ibValueStructure(bool readOnly) : ibValueContainer(readOnly) {}
+	ibValueStructure(bool readOnly) : ibValueContainer(readOnly, ibKeyKind::Name) {}
 
 	// `New Structure("Field1, Field2, ...", value1, value2, ...)` —
 	// named-column ctor: first arg is comma-separated field-name list,

@@ -63,7 +63,7 @@ bool ibDatabaseResultSetSQLite::Next()
 
 	if ((nReturn != SQLITE_ROW) && (nReturn != SQLITE_DONE))
 	{
-		SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+		SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 		if (GetErrorCode() != DATABASE_LAYER_QUERY_CANCELLED)   // a cancel is no error - see firebirdResultSet.cpp
 			ibJournalError(wxT("db.sqlite"),wxT("Error with RunQueryWithResults\n"));
 #if SQLITE_VERSION_NUMBER>=3002002
@@ -91,12 +91,12 @@ int ibDatabaseResultSetSQLite::GetResultInt(int nField)
 	return nValue;
 }
 
-wxString ibDatabaseResultSetSQLite::GetResultString(int nField)
+ibString ibDatabaseResultSetSQLite::GetResultString(int nField)
 {
-	wxString strValue = wxEmptyString;
+	ibString strValue;
 	if (m_pSqliteStatement == nullptr)
 		m_pSqliteStatement = m_pStatement->GetLastStatement();
-	strValue = ConvertFromUnicodeStream((const char*)(sqlite3_column_text(m_pSqliteStatement, nField - 1)));
+	ConvertFromUnicodeStream((const char*)(sqlite3_column_text(m_pSqliteStatement, nField - 1)), strValue);
 
 	return strValue;
 }
@@ -125,28 +125,14 @@ bool ibDatabaseResultSetSQLite::GetResultBool(int nField)
 	return (nValue != 0);
 }
 
-wxDateTime ibDatabaseResultSetSQLite::GetResultDate(int nField)
+ibDateTime ibDatabaseResultSetSQLite::GetResultDate(int nField)
 {
 	// Don't use nField-1 here since GetResultString will take care of that
-	wxString strDate = GetResultString(nField);
-	wxDateTime date;
-	// First check for the 2-digit year format
-	if (date.ParseFormat(strDate, wxT("%m/%d/%y %H:%M:%S")))
-	{
-		return date;
-	}
-	else if (date.ParseDateTime(strDate))
-	{
-		return date;
-	}
-	else if (date.ParseDate(strDate))
-	{
-		return date;
-	}
-	else
-	{
-		return wxDefaultDateTime;
-	}
+	// The text is the reading, read by the date's own door (fdatetime.h, ibDateTime::FromString); NULL is
+	// an empty text, and reads as the empty date.
+	ibDateTime date;
+	date.FromString(GetResultString(nField));
+	return date;
 }
 
 double ibDatabaseResultSetSQLite::GetResultDouble(int nField)
@@ -236,4 +222,3 @@ ibResultSetMetaData* ibDatabaseResultSetSQLite::GetMetaData()
 	LogMetaDataForCleanup(pMetaData);
 	return pMetaData;
 }
-

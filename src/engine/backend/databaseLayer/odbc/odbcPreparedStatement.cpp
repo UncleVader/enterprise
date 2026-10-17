@@ -113,7 +113,7 @@ void ibPreparedStatementODBC::SetParamNumber(int nPosition, const ibNumber& dblV
 	SetParam(nPosition, pParameter);
 }
 
-void ibPreparedStatementODBC::SetParamString(int nPosition, const wxString& strValue)
+void ibPreparedStatementODBC::SetParamString(int nPosition, const ibString& strValue)
 {
 	ResetErrorCodes();
 
@@ -137,11 +137,13 @@ void ibPreparedStatementODBC::SetParamBlob(int nPosition, const void* pData, lon
 	SetParam(nPosition, pParameter);
 }
 
-void ibPreparedStatementODBC::SetParamDate(int nPosition, const wxDateTime& dateValue)
+void ibPreparedStatementODBC::SetParamDate(int nPosition, const ibDateTime& dateValue)
 {
 	ResetErrorCodes();
 
-	ibDatabaseParameterODBC* pParameter = new ibDatabaseParameterODBC(dateValue);
+	ibDateTimeParts parts;
+	dateValue.ToParts(parts);
+	ibDatabaseParameterODBC* pParameter = new ibDatabaseParameterODBC(parts);
 	SetParam(nPosition, pParameter);
 }
 
@@ -433,7 +435,9 @@ void ibPreparedStatementODBC::InterpretErrorCodes(long nCode, SQLHSTMT stmth_ptr
 			m_pInterface->GetSQLGetDiagRec()(SQL_HANDLE_DBC, m_sqlHDBC, 1, strState, &iNativeCode,
 				strBuffer, ERR_BUFFER_LEN, &iMsgLen);
 
-		SetErrorCode(ibDatabaseLayerODBC::TranslateErrorCode((int)iNativeCode, ConvertFromUnicodeStream((char*)strState)));
+		const wxString strSqlState = ConvertFromUnicodeStream((char*)strState);
+		SetErrorCode(ibDatabaseLayerODBC::TranslateErrorCode((int)iNativeCode, strSqlState),
+			ibDatabaseLayerODBC::ClassifySqlState(strSqlState, (int)iNativeCode));
 		//SetErrorMessage(ConvertFromUnicodeStream((char*)strBuffer));
 		SetErrorMessage(wxString((wxChar*)strBuffer));
 	}

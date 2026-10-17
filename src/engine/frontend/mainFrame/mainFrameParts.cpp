@@ -133,24 +133,10 @@ bool ibFrontendMainFrame::EnsureRuntime()
 	if (session == nullptr || activeMetaData == nullptr)
 		return false;
 
-	// Re-entry guard — root module manager lives on the session; if it's
-	// already installed the runtime was started on a previous Show().
-	if (session->GetManagerModule() != nullptr)
-		return true;
-
-	const ibSessionKind kind = session->GetKind();
-	const bool wantsRuntime =
-		(kind == ibSessionKind::Enterprise) ||
-		(kind == ibSessionKind::WebClient)  ||
-		(kind == ibSessionKind::Service);
-	if (!wantsRuntime)
-		return true;
-
-	// CreateRoot + CompileRoot already happened during authentication
-	// (registry's NotifyAuthenticated chain) — only the runtime attach is
-	// left, and it waits until Show() so activeMetaData is populated.
-	if (auto* mm = session->GetManagerModule())
-		mm->AttachRuntime(session);
+	// THE RUNTIME CAME UP AT LOGIN — NotifyAuthenticated → CompileRoot → AttachRuntime — and a
+	// configuration that did not start refused the login there, so a window being shown has it. (A
+	// second attach stood here behind a guard that made it unreachable, beside a list of the session
+	// kinds that get a runtime which the module manager no longer keeps.)
 	return true;
 }
 
@@ -183,14 +169,14 @@ ibBackendValueForm* ibFrontendMainFrame::ActiveWindow() const {
 	return nullptr;
 }
 
-ibBackendValueForm* ibFrontendMainFrame::CreateNewForm(const ibValueMetaObjectFormBase* creator, ibBackendControlFrame* backendControl, ibSourceDataObject* srcObject, const ibUniqueKey& formGuid)
+ibBackendValueForm* ibFrontendMainFrame::CreateNewForm(const ibFormRequest& request, const ibValueMetaObjectFormBase* creator, ibBackendControlFrame* backendControl, ibSourceDataObject* srcObject)
 {
 	ibControlFrame* ownerControl = dynamic_cast<ibControlFrame*>(backendControl);
 	wxASSERT(!(backendControl == nullptr && ownerControl != nullptr));
 	// Parent descriptor wiring happens inside ibValueForm's ctor — it
 	// already receives ownerControl; for the UI path (null owner) it
 	// falls back to backend_mainFrame->GetSession()->GetManagerModule().
-	return new ibValueForm(creator, ownerControl, srcObject, formGuid);
+	return new ibValueForm(request, creator, ownerControl, srcObject);
 }
 
 ibUniqueKey ibFrontendMainFrame::CreateFormUniqueKey(const ibBackendControlFrame* ownerControl, const ibSourceDataObject* sourceObject, const ibUniqueKey& formGuid)
@@ -226,13 +212,13 @@ bool ibFrontendMainFrame::UpdateFormUniqueKey(const ibUniqueKeyPair& guid)
 #include "frontend/docView/templates/docViewSpreadsheet.h"
 
 // Grid support
-bool ibFrontendMainFrame::ShowSpreadsheetDocument(const wxString& strTitle, wxObjectDataPtr<ibBackendSpreadsheetObject>& spreadSheetDocument)
+bool ibFrontendMainFrame::ShowSpreadsheetDocument(const wxString& strTitle, std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument)
 {
 	class ibSpreadsheetMemoryDocument :
 		public ibSpreadsheetFileDocument {
 	public:
 
-		ibSpreadsheetMemoryDocument(const wxString& strTitle, const wxObjectDataPtr<ibBackendSpreadsheetObject>& spreadSheetDocument) :
+		ibSpreadsheetMemoryDocument(const wxString& strTitle, const std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument) :
 			ibSpreadsheetFileDocument(spreadSheetDocument)
 		{
 			ibSpreadsheetFileDocument::SetTitle(strTitle);
@@ -272,9 +258,13 @@ bool ibFrontendMainFrame::ShowSpreadsheetDocument(const wxString& strTitle, wxOb
 
 #include "frontend/win/editor/gridEditor/gridPrintout.h"
 
-bool ibFrontendMainFrame::PrintSpreadsheetDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& doc, bool showPrintDlg)
+bool ibFrontendMainFrame::PrintSpreadsheetDocument(const std::shared_ptr<ibSpreadsheetObject>& doc, bool showPrintDlg)
 {
 	wxScopedPtr<ibGridEditorPrintout> printout(new ibGridEditorPrintout(doc));
+
+	// The page as the preview was last left, the same as File -> Print: a sheet a script prints comes out
+	// the way the person chose to see sheets printed (Max, 2026-09-22).
+	ibPrintPreviewFrame::ApplyFitToPageWidth(printout.get());
 
 	const wxPageSetupDialogData& pageSetupDialogData =
 		docManager->GetPageSetupDialogData();

@@ -8,9 +8,14 @@ composer**. The platform turns the description into database tables, forms and r
 the database in step with the description as it changes.
 
 It ships with everything that loop needs: a designer, a compiler and bytecode interpreter, a remote
-debugger, a multi-database layer, a job manager, a web server — and a built-in **MCP server**, so an
+debugger, a multi-database layer, a job manager, an application server that serves several bases from
+one process, a thin client and a web server — and a built-in **MCP server**, so an
 AI assistant can read, build and check a configuration alongside the developer, through the same
 doors the developer uses.
+
+**New here?** The [wiki](https://github.com/open-enterprise-solutions/enterprise/wiki) is the
+user's guide: installing a build, a first application step by step, the designer, the metadata
+tree, forms, the language, queries and reports, and the pitfalls.
 
 ---
 
@@ -42,8 +47,8 @@ doors the developer uses.
 - **Scripting language** — two dialects over one compiler (**CES**, C-flavoured, the default; **VES**,
   keyword-fenced), procedures and functions, lambdas with closure capture, `try … except`,
   multi-line strings for query texts, **LINQ** (`from … where … join … group by … orderby … select`)
-  compiled into the bytecode, 94 built-in functions and 7 procedures. Bytecode of 82 opcodes, kept
-  in an ahead-of-time cache so a module compiles once per configuration version.
+  compiled into the bytecode, 94 built-in functions and 7 procedures. Bytecode of 81 opcodes, kept
+  in an ahead-of-time cache so a module compiles once per configuration version and engine.
 - **Designer** — metadata tree, form designer (drag a field onto a form and a bound control
   appears), code editor with IntelliSense, a query constructor that edits the query inside the
   literal the caret is in, a spreadsheet template editor, configuration compare, and a git panel.
@@ -61,14 +66,24 @@ doors the developer uses.
 - **Jobs** — scheduled and background jobs in sessions of their own, with a cross-process claim so a
   job runs once across a cluster; the platform's own housekeeping (totals folding and verification,
   Firebird sweep and backup) runs on the same manager.
-- **AI access over MCP** — an MCP server inside the designer, 114 tools across the platform: read and
+- **AI access over MCP** — an MCP server inside the designer, 127 tools across the platform: read and
   edit metadata, forms and modules; apply the configuration with a rehearsal; run code on the
   application; ask the data questions and compose reports; drive the debugger; read and write the
   registration journal. Protected by a token, listening on loopback by default; every call is
   journalled.
+- **Application server** — `appserver` serves the bases its `server.conf` lists from one process:
+  Firebird and PostgreSQL side by side, one worker pool for all, and each base with its own
+  connections, sessions, locks, jobs and journal. Several servers may share a base; a desktop client
+  and a server may not use one at the same time. Passwords in its configuration are sealed
+  (AES-256-GCM).
+- **Thin client** — `enterprise-thin` runs no code of the configuration: the server holds the session,
+  its forms and documents, the client draws what it is answered and sends what the person did. One
+  [client protocol](docs/public/client-protocol.md) — JSON-RPC 2.0 over WebSocket or HTTP to an
+  application server; a file base is the same protocol in the client's own process. See
+  [thin-client.md](docs/public/thin-client.md).
 - **Databases** — Firebird (embedded, shipped with the distribution) and PostgreSQL for production;
   ODBC; SQLite for tests and logging.
-- **Localisation** — the interface in English, Russian and Ukrainian; every caption of a
+- **Localisation** — the whole interface in English, Russian and Ukrainian; every caption of a
   configuration can be written per language.
 - **Web client — in progress.** `wenterprise-server` serves the same forms to a browser. Layout,
   commands, navigation, text fields, check boxes and toolbars work today; tables and reference
@@ -95,35 +110,37 @@ On a copy of a 40 000-employee payroll base (Release, x86): a month's payroll re
 ### Windows
 
 1. Install [Visual Studio 2019 or 2022](https://visualstudio.microsoft.com/) with the **Desktop development with C++** workload.
+   CMake is not needed for the MSBuild build.
 2. Clone the repository and initialise the wxWidgets submodule:
    ```cmd
    git clone https://github.com/open-enterprise-solutions/enterprise.git
    cd enterprise
-   git submodule update --init --recursive src/3rdparty/wxWidgets
+   git submodule update --init --recursive
    ```
 3. Open `enterprise.sln` in Visual Studio.
 4. Select configuration `Debug|Win32` or `Release|x64`.
 5. Build the solution (`Ctrl+Shift+B`). Binaries are placed in `bin\<Platform>\<Configuration>\`
    (`Win32` or `Win64`).
 6. Run `designer.exe` to build a configuration, `enterprise.exe` to work in it — or `launcher.exe`
-   to pick a base first.
+   to pick a base first. `appserver.exe` serves the bases of a server folder with no window;
+   `enterprise-thin.exe` works in a base it serves, or in a file base.
 
 ### macOS
 
 > The CMake build lives at `CMakeLists.txt` (repo root, CMake ≥ 3.20).
 
 ```bash
-# Install dependencies
-brew install cmake wxwidgets firebird-client postgresql
+# Install dependencies (wxWidgets is built from its submodule)
+brew install cmake ninja
 
 # Clone and initialise submodules
 git clone https://github.com/open-enterprise-solutions/enterprise.git
 cd enterprise
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 
 # Configure and build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(sysctl -n hw.logicalcpu)
+cmake --preset macos-release -DOES_USE_FIREBIRD=ON -DOES_USE_POSTGRESQL=ON
+cmake --build --preset macos-release
 ```
 
 ### Linux (Ubuntu / Debian)
@@ -131,19 +148,19 @@ cmake --build build -j$(sysctl -n hw.logicalcpu)
 > The CMake build lives at `CMakeLists.txt` (repo root, CMake ≥ 3.20).
 
 ```bash
-# Install dependencies
+# Install dependencies (wxWidgets is built from its submodule)
 sudo apt update
-sudo apt install -y build-essential cmake libwxgtk3.2-dev \
-    libfirebird-dev libpq-dev libsqlite3-dev
+sudo apt install -y build-essential cmake ninja-build pkg-config \
+    libgtk-3-dev libsqlite3-dev uuid-dev libpq-dev
 
 # Clone and initialise submodules
 git clone https://github.com/open-enterprise-solutions/enterprise.git
 cd enterprise
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 
 # Configure and build
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --preset linux-release -DOES_USE_FIREBIRD=ON -DOES_USE_POSTGRESQL=ON
+cmake --build --preset linux-release
 ```
 
 ---
@@ -170,6 +187,7 @@ cmake -B build \
 cmake --build build --parallel
 ```
 
+The web runtime (`wfrontend` + `wenterprise-server`) builds with `-DOES_BUILD_WEB=ON` (default OFF).
 The unit tests (Google Test) build with the same tree: `-DBUILD_TESTING=ON`.
 
 ### wxWidgets Submodule
@@ -177,7 +195,7 @@ The unit tests (Google Test) build with the same tree: `-DBUILD_TESTING=ON`.
 wxWidgets 3.3.2 lives at `src/3rdparty/wxWidgets` as a git submodule. After cloning:
 
 ```bash
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 ```
 
 ---
@@ -186,22 +204,23 @@ git submodule update --init --recursive src/3rdparty/wxWidgets
 
 ```
 enterprise/
-├── enterprise.sln            # MSBuild solution (10 C++ projects)
+├── enterprise.sln            # MSBuild solution (17 C++ projects)
 ├── CMakeLists.txt            # the cross-platform build, tests included
 ├── Common.props              # Shared MSBuild properties (paths, platforms)
 ├── ConfigurationDefs.props   # Preprocessor definitions per configuration
 ├── LICENSE.md                # PolyForm Noncommercial 1.0.0 (source-available)
 ├── NOTICE.md                 # third-party licenses, the wx fork, the LGPL past
-├── locale/                   # interface translations (ru, uk)
+├── locale/                   # interface translations (ru, uk): the template and the catalogs
+├── lang/                     # the compiled catalogs the programs read at run time
 ├── tests/                    # Google Test suites (built by CMake)
 ├── docs/                     # how we work, build, portability, architecture — start with docs/README.md
 │   └── private/              # PRIVATE submodule (design docs) — resolves for members of the
 │                             # organisation only and is empty for everyone else. The build never
 │                             # needs it, so links to docs/private/… will not open for you.
 └── src/
-    ├── 3rdparty/
-    │   └── wxWidgets/        # Git submodule — wxWidgets 3.3.2
+    ├── 3rdparty/             # Git submodules: wxWidgets 3.3.2, Mbed TLS, cpp-httplib, nlohmann/json
     └── engine/
+        ├── core/             # What the engine and its clients share: values, strings, dates, nodes, the journal
         ├── backend/          # Core engine DLL
         │   ├── compiler/     # Lexer, parser, bytecode, interpreter, LINQ
         │   ├── query/        # The query language: parse, lower, render to SQL, run in memory
@@ -223,11 +242,17 @@ enterprise/
         │   ├── web/          # The same controls for the browser (wfrontend)
         │   ├── docView/      # Document/view framework wrappers
         │   └── win/          # Editors, dialogs and custom widgets
+        ├── protocol/         # The client protocol: its contract (protocol.h) and connections
+        ├── frmserver/        # The server side of the thin client: sessions, forms, the client host
+        ├── frmclient/        # The thin client's window, document/view and controls
+        ├── fileserver/       # A file base in the thin client's process
         ├── enterprise/       # Enterprise runtime executable
+        ├── enterprise-thin/  # The thin client runtime executable
+        ├── designer-thin/    # The thin designer executable
         ├── designer/         # Designer/IDE executable
         ├── wenterprise-server/ # Web server (wes process)
         ├── launcher/         # Launcher (connection chooser)
-        ├── daemon/           # Background service
+        ├── appserver/        # The application server
         ├── codeRunner/       # Script runner
         └── simplePlugin/     # Example plugin
 ```
@@ -243,9 +268,11 @@ enterprise/
 | Primary database | Firebird (embedded) |
 | Production alternative | PostgreSQL |
 | Other databases | ODBC; SQLite (tests + logging) |
+| Client protocol | JSON-RPC 2.0 over WebSocket / HTTP |
+| TLS and ciphers | Mbed TLS |
 | AI access | Model Context Protocol (Streamable HTTP) |
 | Build (Windows) | MSBuild / Visual Studio 2019+ |
-| Build (cross-platform) | CMake ≥ 3.20 — `CMakeLists.txt` at repo root (macOS / Linux) |
+| Build (cross-platform) | CMake ≥ 3.20 — `CMakeLists.txt` at repo root (Windows / macOS / Linux) |
 | Tests | Google Test, run in CI (GitHub Actions) |
 | License | PolyForm Noncommercial 1.0.0 — source-available, not open source |
 
@@ -270,8 +297,8 @@ Bug reports and feature requests are welcome as GitHub Issues.
 ## License
 
 OES is **source-available, not open source**, under the
-[PolyForm Noncommercial License 1.0.0](LICENSE.md). Copyright is held by Open Enterprise
-Solutions.
+[PolyForm Noncommercial License 1.0.0](LICENSE.md). Copyright is held by Maksym Korniienko,
+acting as Open Enterprise Solutions until it is registered as a company ([NOTICE.md](NOTICE.md)).
 
 **Free, and meant to be used:** clone it, build it, break it, change it, run it on your own
 machine, write configurations for it, teach a course from it, write a thesis about it, publish

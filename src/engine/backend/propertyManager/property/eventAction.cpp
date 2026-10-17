@@ -1,11 +1,11 @@
 #include "eventAction.h"
 #include "backend/propertyManager/property/variant/variantAction.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
 
 
 //////////////////////////////////////////////////////////////////
 
-wxVariantData* ibEventAction::CreateVariantData(const ibPropertyObject* property, const ibStandardCommandDescription& act) const
+wxVariantData* ibEventAction::CreateVariantData(const ibPropertyObject* property, const ibStandardCommandDescription& act)
 {
 	return new ibVariantDataAction(act);
 }
@@ -66,26 +66,6 @@ bool ibEventAction::GetDataValue(ibValue& pvarPropVal) const
 		}
 	}
 	return false;
-}
-
-// node form: a Child { Action: <system id>, Name: <custom handler> }.
-bool ibActionDescriptionMemory::ReadNode(const ibDataValue& value, ibStandardCommandDescription& actionDesc)
-{
-	const std::shared_ptr<ibDataNode>& root = value.AsChild();
-	if (!root)
-		return false;
-	actionDesc.m_lAction = root->GetValue<s32>(wxT("Action"));
-	actionDesc.m_strAction = root->GetValue<wxString>(wxT("Name"));
-	return true;
-}
-
-bool ibActionDescriptionMemory::WriteNode(ibDataValue& value, const ibStandardCommandDescription& actionDesc)
-{
-	auto root = std::make_shared<ibDataNode>();
-	root->SetValue(wxT("Action"), (s32)actionDesc.m_lAction);
-	root->SetValue(wxT("Name"),   actionDesc.m_strAction);
-	value = ibDataValue::Child(root);
-	return true;
 }
 
 bool ibEventAction::ReadNodeValue(const ibDataValue& value)

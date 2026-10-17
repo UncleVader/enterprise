@@ -224,19 +224,8 @@ static wxString gs_listErrorString[] =
 // Error handling
 //////////////////////////////////////////////////////////////////////
 
-const wxString ibBackendException::GetErrorDescription() const
-{
-	return wxString::FromUTF8(m_errorDescriptionUtf8);
-}
-
-const char* ibBackendException::what() const noexcept
-{
-	// The stored bytes themselves — nothing is built here, which is what lets this be noexcept.
-	return m_errorDescriptionUtf8.c_str();
-}
-
 ibBackendException::ibBackendException(const wxString& strErrorDescription)
-	: m_errorHandled(false), m_errorDescriptionUtf8(strErrorDescription.utf8_string())
+	: ibCoreException(strErrorDescription), m_errorHandled(false)
 {
 #ifdef DEBUG
 	// "thrown", said as such: a line per exception MADE — every level a cancel walks out of makes one — and
@@ -329,7 +318,7 @@ void ibBackendException::ProcessError(const ibBackendException& err, const ibByt
 			// constantly and by design; recording those would bury the failures that matter under
 			// the ones nobody asked about.
 			if (!isEvalMode) {
-				if (ibLogger* const logger = ibApplicationData::GetLogger())
+				if (ibLogger* const logger = ibApplicationInstance::GetLogger())
 					logger->Error(wxT("script"), wxT("runtime.error"),
 						wxString::Format(wxT("%s (%s, line %d)"),
 							err.GetErrorDescription(), strModuleName, (int)error.m_numLine + 1));
@@ -348,10 +337,13 @@ void ibBackendException::ProcessError(const ibBackendException& err, const ibByt
 		err.m_errorHandled = true;
 	}
 
-	// Rethrow the in-flight exception — ProcessError is always called from a
-	// catch block in procUnit, so `throw;` keeps the same object propagating
-	// (preserving m_errorHandled) without allocating a new copy.
-	throw;
+	// The caller rethrows, and it rethrows after its catch has returned.
+	// `throw;` here is a throw inside the handler. On MSVC that handler is
+	// a funclet above the frame, and each interpreter level that rethrows
+	// from there nests another one — the slack is gone after a few dozen,
+	// and the overflow then skips the frame guards. The same object is what
+	// has to travel, so m_errorHandled stays set; the caller holds it with
+	// std::current_exception() and rethrows that.
 }
 
 void ibBackendException::ProcessError(const wxString& strFileName,
@@ -418,7 +410,11 @@ wxString ibBackendException::ProcessExceptionError(const wxString& strFileName,
 			wxASSERT(stackByteCode);
 			ibDiagnostic::Frame frame;
 			frame.m_module = stackByteCode->m_strModuleName;
-			frame.m_line = stackByteCode->m_listCode[stackContext->m_lCurLine].m_numLine + 1;
+			// The report of one failure must not become a second one: a frame whose position is
+			// outside its own bytecode is printed with line 0 rather than read past the array.
+			const long curLine = stackContext->m_lCurLine;
+			frame.m_line = (curLine >= 0 && (size_t)curLine < stackByteCode->m_listCode.size())
+				? stackByteCode->m_listCode[curLine].m_numLine + 1 : 0;
 			diagnostic.m_stack.push_back(std::move(frame));
 		}
 	}

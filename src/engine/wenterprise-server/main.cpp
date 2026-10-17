@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,11 +24,13 @@
 #	define _SSIZE_T_DEFINED
 #endif
 
-#include "../../3rdparty/cpp-httplib/httplib.h"
+#include <cpp-httplib/httplib.h>
 #include "wfrontend.h"
-#include "../../3rdparty/nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 #include "backend/backend_exception.h"
 #include "backend/databaseLayer/databaseLayerException.h"
+#include "backend/appHost.h"           // the process: its backend.conf, read once
+#include "backend/server/listener.h"   // the listener: TLS when backend.conf names a certificate
 #include "frontend/diagnostics/oesConsole.h"
 
 #if defined(_WIN32)
@@ -105,7 +108,9 @@ struct CmdArgs {
 	// (bind_to_any_port). Operator sees the actual bound port in the
 	// startup banner. Explicit `--port=N` forces N; conflict kills
 	// startup rather than silently coexisting on the same port.
-	std::string host = "0.0.0.0";
+	// This machine's own address unless said otherwise: any other needs
+	// the certificate backend.conf names (backend/server/listener.h).
+	std::string host = "127.0.0.1";
 	int         port = 0;
 
 	// Optional: write a tiny manifest (one key=value per line) with the
@@ -171,7 +176,7 @@ CmdArgs ParseArgs(int argc, char** argv)
 		else if (arg == "--help" || arg == "-h") {
 			std::cout <<
 				"Usage: wenterprise-server [options]\n"
-				"  --host=<addr>       HTTP bind address (default 0.0.0.0)\n"
+				"  --host=<addr>       bind address (default 127.0.0.1; any other needs Certificate and PrivateKey in backend.conf)\n"
 				"  --port=<N>          HTTP port (default 8080)\n"
 				"  --url=<segment>     URL prefix segment after /w/ (default derived from --file / --db)\n"
 				"\n"
@@ -221,8 +226,7 @@ std::string Field(const httplib::Request& req, const std::string& key)
 // Extract the session id preferred by the client. Web tabs generate
 // their own random id in sessionStorage and forward it via the
 // `X-OES-Session` header, so every browser tab — even multiple in
-// the same browser — gets a distinct server session. Cookie lookup
-// is the legacy fallback for non-tab-aware clients.
+// the same browser — gets a distinct server session.
 std::string SessionIdFromReq(const httplib::Request& req)
 {
 	const std::string header = req.get_header_value("X-OES-Session");
@@ -233,25 +237,7 @@ std::string SessionIdFromReq(const httplib::Request& req)
 	// attach custom headers — they carry only cookies. When a per-tab
 	// endpoint (e.g. /tab/N/icon) is reachable via plain GET the client
 	// appends ?sid=<tabSid>; fall back to that when the header is absent.
-	if (req.has_param("sid")) {
-		const std::string sid = req.get_param_value("sid");
-		if (!sid.empty())
-			return sid;
-	}
-
-	const std::string cookie = req.get_header_value("Cookie");
-	const auto pos = cookie.find("oes_session=");
-	if (pos == std::string::npos)
-		return std::string();
-	// oes_session is a dashed UUID (36 chars: 8-4-4-4-12). Slice up to
-	// the next '; ' delimiter instead of assuming a fixed length — gives
-	// us one parser whether the cookie is the first or the tail entry
-	// and survives a future id-format change.
-	const std::size_t start = pos + 12;
-	const std::size_t end   = cookie.find(';', start);
-	return (end == std::string::npos)
-		? cookie.substr(start)
-		: cookie.substr(start, end - start);
+	return req.has_param("sid") ? req.get_param_value("sid") : std::string();
 }
 
 // Extract session id, or emit 401 "no session" and return false. Every
@@ -336,6 +322,23 @@ bool InitBackend(const CmdArgs& args)
 	return false;
 }
 
+// httplib's own pool, with every connection served for the web server's session (wfrontendServe): the
+// pool's threads have no session of their own, and the base this server serves is that session's.
+class ServedTaskQueue final : public httplib::TaskQueue {
+public:
+	ServedTaskQueue()
+		: m_pool(CPPHTTPLIB_THREAD_POOL_COUNT, CPPHTTPLIB_THREAD_POOL_MAX_COUNT) {}
+
+	bool enqueue(std::function<void()> fn) override {
+		return m_pool.enqueue([fn = std::move(fn)]() { wfrontendServe(fn); });
+	}
+	void shutdown() override { m_pool.shutdown(); }
+	void on_idle() override { m_pool.on_idle(); }
+
+private:
+	httplib::ThreadPool m_pool;
+};
+
 } // namespace
 
 #ifdef _WIN32
@@ -377,7 +380,7 @@ static void BuildUtf8Argv(int& argc, char**& argv)
 }
 #endif
 
-#include "backend/diagnostics/leakTracker.h"
+#include "core/diagnostics/leakTracker.h"
 
 IB_LEAK_TRACKER_ARM();
 
@@ -398,22 +401,39 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	// Bind the HTTP server FIRST so we know the real port before the
-	// backend comes up — InitBackend's call chain creates the
-	// wenterprise-server's own ibSession (registry.Connect), and that
-	// session stamps `sys_session.address` from wfrontendServerAddress().
-	// If we called wfrontendSetServerAddress with args.port=0 (default
-	// OS-picks-port mode) the row would land with "host:0" and designer
-	// would show a bad URL. Two-phase bind solves this: determine the
-	// port here, stamp the address, then bring up the backend.
 	// URL prefix is whatever the operator / spawning process specified
 	// via --url, --db, or --file basename (see ParseArgs). Consistent
 	// between CLI and designer-spawn — designer passes --url=<name>
 	// derived the same way.
 	const std::string prefix = "/w/" + args.urlPrefix;
 
-	httplib::Server svr;
+	// THE BASE FIRST — the process comes up with it, its backend.conf read once. The address a browser's session
+	// records (wfrontendServerAddress, read by ibWebSession::Login) is set after the bind below, before anyone
+	// can log in: the server's own session records none.
+	if (!InitBackend(args)) {
+		const std::string err = wfrontendLastError();
+		std::cerr << "Failed to open the database";
+		if (!err.empty()) std::cerr << ": " << err;
+		std::cerr << std::endl;
+		return 1;
+	}
+
+	// The transport is the process's (backend/server/listener.h): TLS over the certificate backend.conf names,
+	// plain on this machine's own address only - an address off it without a certificate is a refusal.
+	const ibTlsFiles& tls = ibApplicationHost::Get()->GetTlsFiles();
+	std::unique_ptr<httplib::Server> listener;
+	try {
+		listener = ibMakeListener(wxString::FromUTF8(args.host), tls);
+	}
+	catch (const ibBackendException& err) {
+		std::cerr << "OES wenterprise-server did not start: " << err.GetErrorDescription().utf8_str() << std::endl;
+		wfrontendShutdown();
+		return 1;
+	}
+	const char* const scheme = tls.IsNamed() ? "https://" : "http://";
+	httplib::Server& svr = *listener;
 	g_svr = &svr;
+	svr.new_task_queue = [] { return new ServedTaskQueue(); };
 #if defined(_WIN32)
 	SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 #else
@@ -467,7 +487,7 @@ int main(int argc, char** argv)
 				+ ",\"message\":" + nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
 				+ "}";
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			body = std::string("{\"error\":\"backend\",\"message\":")
 				+ nlohmann::json(e.GetErrorDescription().ToUTF8().data()).dump()
 				+ "}";
@@ -484,7 +504,7 @@ int main(int argc, char** argv)
 		res.set_content(body, "application/json; charset=utf-8");
 	});
 
-	svr.Get(prefix + "/", [prefix](const httplib::Request& req, httplib::Response& res) {
+	svr.Get(prefix + "/", [prefix, scheme, &tls](const httplib::Request& req, httplib::Response& res) {
 		// Windows IPv6-first "localhost" fallback adds ~200ms cold
 		// connect per request, which stacks up on every tab switch /
 		// click. If the browser came in via `Host: localhost...`,
@@ -492,52 +512,21 @@ int main(int argc, char** argv)
 		// IPv4 literal skips the ::1 try. One-time 302 on GET /; the
 		// new origin then services all subsequent resource fetches
 		// with millisecond connect times.
+		// Not over TLS: the certificate names what the browser asked for, and a bounce to another name
+		// is a bounce to a name it may not carry.
 		const std::string host = req.get_header_value("Host");
-		if (host.size() >= 9 && host.compare(0, 9, "localhost") == 0
+		if (!tls.IsNamed() && host.size() >= 9 && host.compare(0, 9, "localhost") == 0
 			&& (host.size() == 9 || host[9] == ':')) {
-			std::string target = "http://127.0.0.1" + host.substr(9) + prefix + "/";
+			std::string target = scheme + ("127.0.0.1" + host.substr(9) + prefix + "/");
 			res.status = 302;
 			res.set_header("Location", target);
 			return;
 		}
 
-		// F5/reload: keep the existing session if the cookie is still
-		// valid — destroying in-line here races with the parallel polls
-		// the browser fires on the same reload (e.g. /active landing on
-		// the stale cookie while GET / is still processing the destroy),
-		// which produced intermittent "Pick a form on the left" flashes
-		// and occasional server crashes. Exception: when the existing
-		// session has zero tabs (user closed them all), swap it for a
-		// fresh one so OnStart re-runs and default forms re-appear —
-		// otherwise F5 on an empty session just re-shows the placeholder
-		// forever.
-		// Tab-local id: client's X-OES-Session header (sessionStorage)
-		// wins, cookie is the legacy fallback. If the tab has a
-		// sessionStorage id that the server doesn't know yet (fresh
-		// tab opened in an existing browser), CreateSessionWithId
-		// registers it.
-		std::string id = SessionIdFromReq(req);
-		if (id.empty()) {
-			id = wfrontendCreateSession();
-			std::cerr << "[GET /] created new session id=" << id << std::endl;
-		}
-		else if (wfrontendSessionExists(id)) {
-			const std::size_t tc = wfrontendSessionTabCount(id);
-			std::cerr << "[GET /] reusing session id=" << id
-				<< " tabCount=" << tc << std::endl;
-			if (tc == 0) {
-				wfrontendDestroySession(id);
-				std::cerr << "[GET /] destroyed empty session, re-minting" << std::endl;
-				id = wfrontendCreateSessionWithId(id);
-			}
-		}
-		else {
-			std::cerr << "[GET /] session id=" << id << " unknown - creating" << std::endl;
-			id = wfrontendCreateSessionWithId(id);
-		}
+		// A page load opens no session: a navigation cannot send the tab's id.
+		// Opening one here left a row nobody adopted, and a reload then replaced
+		// it for having no tabs. The tab's first POST /login registers its id.
 
-		// No HttpOnly: harmless here and makes DevTools inspection easier.
-		res.set_header("Set-Cookie", "oes_session=" + id + "; Path=/");
 		// HTML is generated in-binary; force the browser to pick up
 		// freshly rebuilt server output instead of serving a stale
 		// cached copy (common when iterating on the inline JS).
@@ -812,7 +801,7 @@ int main(int argc, char** argv)
 		const std::string id = SessionIdFromReq(req);
 		if (id.empty()) {
 			res.status = 401;
-			res.set_content("no session - GET / first\n", "text/plain");
+			res.set_content("no session\n", "text/plain");
 			return;
 		}
 		const int metaID = std::atoi(req.matches[1].str().c_str());
@@ -862,14 +851,10 @@ int main(int argc, char** argv)
 		std::string id = SessionIdFromReq(req);
 		if (id.empty()) {
 			res.status = 401;
-			res.set_content("no session - GET / first to obtain one\n", "text/plain");
+			res.set_content("no session - send X-OES-Session\n", "text/plain");
 			return;
 		}
-		// Tab's sessionStorage id (X-OES-Session header) is generated by
-		// JS independently from the server's cookie — on a fresh tab the
-		// first XHR can arrive with an id the server has never registered.
-		// Mirror GET /'s create-on-unknown behaviour so POST /login doesn't
-		// 401 just because the tab happened to beat GET / in registering.
+		// The tab's own id: a fresh tab's is one the server has never seen.
 		if (!wfrontendSessionExists(id))
 			id = wfrontendCreateSessionWithId(id);
 
@@ -885,7 +870,6 @@ int main(int argc, char** argv)
 		const std::string id = SessionIdFromReq(req);
 		if (!id.empty())
 			wfrontendDestroySession(id);
-		res.set_header("Set-Cookie", "oes_session=; Path=/; Max-Age=0");
 		res.set_content("bye\n", "text/plain");
 	});
 
@@ -952,16 +936,15 @@ int main(int argc, char** argv)
 
 	std::cout << wfrontendVersion() << std::endl;
 
-	// Two-phase bind — we need the real port BEFORE InitBackend so
-	// the technical session the backend creates stamps
-	// sys_session.address with the true "host:boundPort" string.
 	// bind_to_any_port returns the OS-picked port when args.port==0;
-	// bind_to_port takes an explicit one.
+	// bind_to_port takes an explicit one. The base is open by now: a
+	// refusal here closes it on the way out.
 	int boundPort = 0;
 	if (args.port == 0) {
 		boundPort = svr.bind_to_any_port(args.host.c_str());
 		if (boundPort == 0) {
 			std::cerr << "Failed to bind to any free port on " << args.host << std::endl;
+			wfrontendShutdown();
 			return 1;
 		}
 	}
@@ -973,28 +956,20 @@ int main(int argc, char** argv)
 			std::cerr << "Port " << args.port << " is already in use on " << args.host
 			          << ". Drop --port to let the OS pick a free one, or pass another --port=N."
 			          << std::endl;
+			wfrontendShutdown();
 			return 1;
 		}
 		if (!svr.bind_to_port(args.host.c_str(), args.port)) {
 			std::cerr << "Failed to bind " << args.host << ":" << args.port << std::endl;
+			wfrontendShutdown();
 			return 1;
 		}
 		boundPort = args.port;
 	}
 
-	// Stamp address with the real port BEFORE InitBackend so the
-	// technical-session INSERT records "host:boundPort" in sys_session.address.
+	// The address a browser's session records in sys_session.address (ibWebSession::Login) — "host:boundPort",
+	// set before listen_after_bind lets the first one in.
 	wfrontendSetServerAddress(args.host, boundPort);
-
-	// AccessMode (Server) is set by appData's ctor inside InitBackend
-	// based on the eWEB_RUNTIME_MODE runMode.
-	if (!InitBackend(args)) {
-		const std::string err = wfrontendLastError();
-		std::cerr << "Failed to open the database";
-		if (!err.empty()) std::cerr << ": " << err;
-		std::cerr << std::endl;
-		return 1;
-	}
 
 	// Unify backend's ForceExit() with wes's main loop: instead of
 	// posting to wxTheApp (which has no event loop in the httplib
@@ -1010,7 +985,7 @@ int main(int argc, char** argv)
 	// while still binding all interfaces.
 	const std::string displayHost =
 		(args.host == "0.0.0.0" || args.host == "::") ? "localhost" : args.host;
-	std::cout << "OES wenterprise-server listening on http://"
+	std::cout << "OES wenterprise-server listening on " << scheme
 		<< displayHost << ":" << boundPort << prefix << "/"
 		<< "  (bind: " << args.host << ")" << std::endl;
 
@@ -1029,8 +1004,8 @@ int main(int argc, char** argv)
 			fprintf(f, "host=%s\n",   args.host.c_str());
 			fprintf(f, "port=%d\n",   boundPort);
 			fprintf(f, "prefix=%s\n", prefix.c_str());
-			fprintf(f, "url=http://%s:%d%s/\n",
-				displayHostForManifest.c_str(), boundPort, prefix.c_str());
+			fprintf(f, "url=%s%s:%d%s/\n",
+				scheme, displayHostForManifest.c_str(), boundPort, prefix.c_str());
 			fclose(f);
 		}
 	}

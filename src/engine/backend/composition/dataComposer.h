@@ -37,7 +37,10 @@
 #include "backend/query/queryLowering.h"   // ibQueryLowering::OutputColumn (+ ibBackendQueryColumn)
 #include "backend/query/queryTempStore.h"  // ibQueryTempTableStore — what the preparing statements made
 #include "drivers/compositionDriver.h"             // ibCompositionDriver / ibCompositionOutputInfo — the contract, cut out on 2026-08-28
-#include "backend/compositionDescription.h"   // ibFilterDescription — a level's filter is the stored one
+#include "compositionCondition.h"                  // the evaluator — how a row in hand is read against a condition (SubtreeOf feeds it)
+#include "backend/backend_composition.h"   // ibFilterDescription — a level's filter is the stored one; ibStoredValue
+#include "core/composition/compositionTheme.h"   // ibCompositionTheme — the palette a run hands its driver
+#include "backend/functionalOption/functionalOptionGate.h"   // AsApplication — a run shows what the base uses
 
 // A LEVEL'S ORDER IS THE SELECTION'S — declared, not included: querySelector.h drags the whole query
 // tier in, and a header that only NAMES the key needs the name (the walk itself is in the .cpp).
@@ -51,10 +54,12 @@ struct ibSelectorSort;
 #include <vector>
 
 class ibDataQueryResult;
-struct ibReadPageRequest;
-struct ibRenderedPageCache;
 class ibBackendQueryable;
 class ibBackendQueryColumn;
+
+struct ibReadPageRequest;
+struct ibRenderedPageCache;
+struct ibQueryConstructorField;   // queryConstructorModel.h — held by pointer (m_sourceFields)
 
 // (WHAT AN OUTPUT IS, and WHAT A DRIVER IS HANDED, are stated in compositionDriver.h — cut out on
 //  2026-08-28 so that everything which DRAWS a result stops including everything which produces one.)
@@ -175,6 +180,10 @@ public:
 		// empty"). No fallback beside it: what the reader put there is theirs, and where they put
 		// nothing the author's declaration answers at the run, per name.
 		current.m_parameters = m_userSettings.m_parameters;
+		// …and the other settings, assembled like the rest — left out, the theme a person picked would be written
+		// into the setting on OK and gone from the window the next time it opened.
+		current.m_outputParameters = GetCurrentOutputParametersDesc();
+		current.m_conditionalAppearance = GetCurrentConditionalAppearanceDesc();
 		return current;
 	}
 
@@ -266,6 +275,43 @@ public:
 		return ReaderHasSetting() ? m_userSettings.m_selected
 		                          : m_variants.front().m_settings.m_selected;
 	}
+	// …AND HOW THE REPORT BEHAVES — the other settings, the same way again.
+	const ibOutputParametersDescription& GetCurrentOutputParametersDesc() const {
+		return ReaderHasSetting() ? m_userSettings.m_outputParameters
+		                          : m_variants.front().m_settings.m_outputParameters;
+	}
+	// …AND WHAT STANDS OUT, WHEN — the conditional appearance, the same way again.
+	const ibConditionalAppearanceDescription& GetCurrentConditionalAppearanceDesc() const {
+		return ReaderHasSetting() ? m_userSettings.m_conditionalAppearance
+		                          : m_variants.front().m_settings.m_conditionalAppearance;
+	}
+
+	// ⭐⭐ WHAT AN OTHER SETTING IS IN FORCE — inherited the way a sort is (Max, 2026-09-29): the node's own where it
+	// ticked the parameter, else the output's, else the setting in force. Empty = nobody said anything, and the
+	// caller answers with the platform's own. `node` may be null — the output itself is asked.
+	ibValue OutputParameterFor(const Output& output, const GroupNode* node, ibOutputParameter parameter) const {
+		if (node != nullptr && node->m_settings.m_outputParameters.Says(parameter))
+			return ibStoredValue(node->m_settings.m_outputParameters.ValueInForce(parameter), nullptr);
+		if (output.m_settings.m_outputParameters.Says(parameter))
+			return ibStoredValue(output.m_settings.m_outputParameters.ValueInForce(parameter), nullptr);
+		return ibStoredValue(GetCurrentOutputParametersDesc().ValueInForce(parameter), nullptr);
+	}
+	// …and the one a painter asks: the THEME in force there — the platform's first when nobody named one.
+	const ibCompositionTheme& ThemeFor(const Output& output, const GroupNode* node) const {
+		return ibCompositionThemeById(OutputParameterFor(output, node, ibOutputParameter::Theme).GetString());
+	}
+
+	// ⭐ THE READER'S GROUPING, less the lines on a field this base does not use (IsAvailable, below) — what
+	// every reader of the grouping in force asks: the render, the printer and the list model alike, so none
+	// of them disagrees with another about whether a read is grouped. The setting keeps every line.
+	ibGroupDescription GetAvailableGroupDesc() const;
+
+	// ⭐⭐ THE OUTPUTS A RUN READS — the structure in force (GetCurrentStructure) loaded into the live outputs,
+	// each keeping its driver, less what this base does not use: a grouping line on an unavailable field is
+	// dropped, a level it leaves with none goes and its children take its place, a selected row on one is
+	// dropped. Only the run's copy — the setting keeps every line, and they come back with the option.
+	// Nothing is loaded while the structure is empty (a composer nobody structured keeps its one output).
+	void ApplyAvailableStructure();
 
 	// ⭐⭐ …AND WHAT THE READER PUT IN THE PARAMETERS. Not "theirs or the author's" wholesale, like the
 	// four above: a parameter is answered ONE AT A TIME, because the author declares every parameter
@@ -408,14 +454,14 @@ public:
 	// Sort and filter were brought into the sections earlier in this arc; this is the third part,
 	// and leaving it out is what made the fix look arbitrary.
 	size_t GroupCount() const {
-		const ibGroupDescription& group = GetCurrentGroupDesc();
+		const ibGroupDescription group = GetAvailableGroupDesc();   // the render's answer — see there
 		return group.IsOk() ? group.m_lines.size() : LevelChain().size();
 	}
 	bool   GetGroupAt(size_t i, wxString& path, ibQueryDimUnfold& kind) const {
 		// A READER'S GROUPING IS A FLAT LIST — one field per level, which is exactly what a LIST
 		// means by grouping. (A report's level may weld several fields into one heading; that is the
 		// ladder's shape, read below.)
-		const ibGroupDescription& group = GetCurrentGroupDesc();
+		const ibGroupDescription group = GetAvailableGroupDesc();
 		if (group.IsOk()) {
 			if (i >= group.m_lines.size() || group.m_lines[i].m_path.IsEmpty())
 				return false;
@@ -627,7 +673,7 @@ public:
 	// The config this query runs ON BEHALF OF — threaded into the lowering so a by-name metaobject source resolves
 	// through THIS config's factory (sources register per-config). Set by whoever binds the source (the dynamic list
 	// from its own config; the script query from the running one). Null = a sourceless / transient-only composer.
-	ibDataComposer& SetMetaData(const class ibMetaData* metaData) { m_metaData = metaData; return *this; }
+	ibDataComposer& SetMetaData(const class ibMetaData* metaData) { m_metaData = metaData; DropMemos(); return *this; }
 	const class ibMetaData* GetMetaData() const { return m_metaData; }
 
 	// The driver-walk seam. A driver does not care where rows come from — it is handed a schema and
@@ -671,11 +717,7 @@ public:
 	// live rows for the RAM one.
 	virtual bool RunOutput(const Output& /*output*/, ibCompositionDriver& /*driver*/) { return false; }
 
-	// THE RUN'S OWN BRACKETS — see Run(). A realisation that can read several outputs at once builds
-	// that read in BeginRun and lets it go in EndRun; the RAM composer needs neither and says so by
-	// not overriding them.
-	virtual void BeginRun() {}
-	virtual void EndRun()   {}
+	// (🗑️ BeginRun / EndRun stood here — "the run's own brackets", empty, overridden and called by nobody.)
 
 	// ⭐ RUN — load the outputs, then run ONCE and every driver gets filled (Max). Outputs are read
 	// in declared order, each into the driver it was given. An output with NO DRIVER is not read at
@@ -685,6 +727,10 @@ public:
 	// The one-argument Run below is the SHORT WAY IN for a caller holding a single driver — a list,
 	// which has one output and says so at the call instead of setting it beforehand.
 	bool Run() {
+		// ONE VIEW OF THE FUNCTIONAL OPTIONS FOR THE WHOLE RUN — what every output asks (IsAvailable) is
+		// answered as the application answers it, and in the designer from one reading of the base.
+		const ibFunctionalOptionGate::AsApplication asTheApplication;
+
 		bool read = false;
 		for (Output& output : m_outputs) {
 			if (output.m_driver == nullptr)
@@ -822,8 +868,10 @@ public:
 	const std::vector<ibSelectDescription>& Selects() const { return m_selects; }
 
 	// THE TITLE IN FORCE FOR A PATH — through the SAME function the description answers with, so the
-	// two cannot drift (ibTitleForPath).
-	wxString TitleForPath(const wxString& path) const { return ibTitleForPath(m_selects, path); }
+	// two cannot drift (ibTitleForPath) — generated from what the SOURCE calls the field, where it says.
+	wxString TitleForPath(const wxString& path) const { return ibTitleForPath(m_selects, path, SourceCaptionOf(path)); }
+	// …AND HOW IT IS SHOWN — the field's appearance, what a person set (ibAppearanceForPath).
+	ibAppearanceDescription AppearanceForPath(const wxString& path) const { return ibAppearanceForPath(m_selects, path); }
 
 	// ⚠ THE OUTPUTS AND THEIR LEVELS ARE EDITED WHERE THEY ARE HELD — `Outputs()` hands over the
 	// vector, and the settings window builds a node whole (several fields, a kind, its own filter
@@ -929,6 +977,28 @@ public:
 	// made of), and down the page is where a report puts them.
 	static ibTotalsAxis DetailAxisOf(const Output& output);
 
+	// ⭐⭐ AN OUTPUT'S CONDITIONAL APPEARANCE, MADE READY FOR ITS RUN — every rule in force made ready ONCE
+	// (ibCompositionRulesOf): the setting's and the output's for every line, each node's for its own. A report reads a
+	// million lines and a rule does not change between them; a line is left only its conditions. EMPTY where no storey
+	// declares a rule, and a walk then asks nothing of any line. Asked by every walk that draws — a report's read
+	// (ibDataDBComposer) and a printed list (ibDataRamComposer) — hence here, beside LevelAt; the bodies stand beside the
+	// evaluator they ask (compositionCondition.cpp).
+	struct BACKEND_API ConditionalAppearance {
+		std::vector<ibCompositionRule>                             m_rules;       // the setting's, then the output's
+		std::map<const GroupNode*, std::vector<ibCompositionRule>> m_nodes;       // each node's own
+		ibCompositionSubtreeOf                                     m_subtreeOf;   // «in hierarchy», as the composer reads it
+		const class ibMetaData*                                    m_metaData = nullptr;   // …and the configuration it reads in
+
+		bool IsEmpty() const { return m_rules.empty() && m_nodes.empty(); }
+
+		// A LINE'S — the rules that hold on its row: the setting's, then the output's, then its node's (a deeper storey
+		// paints over); one naming no field paints the line, one naming fields paints those columns. Into `attr`, the
+		// walk's buffer, refilled where it stands. False when nothing held.
+		bool AttrFor(const GroupNode* node, const std::vector<ibQueryLowering::OutputColumn>& schema,
+			const std::vector<ibValue>& row, ibCompositionLineAttr& attr) const;
+	};
+	ConditionalAppearance ConditionalAppearanceFor(const Output& output) const;
+
 	// HOW MANY DIMENSIONS AN AXIS CONTRIBUTES — and it counts levels that actually WRITE A KEY, not
 	// levels. A level with no fields is the detail records: it writes no `BY` (see
 	// AppendSettingsClauses) and never becomes a dimension, so counting it here would move the seam
@@ -984,7 +1054,7 @@ public:
 	// were re-grouped by hand (a flat list of lines cannot say "these read across the page", so
 	// everything it names is the rows' — the same rule AppendSettingsClauses follows).
 	size_t RowLevelsFor(const Output& output) const {
-		if (GetCurrentGroupDesc().IsOk() || output.m_columnGroups.empty())
+		if (GetAvailableGroupDesc().IsOk() || output.m_columnGroups.empty())   // the render's answer — see there
 			return 0;
 		return DimensionCount(output.m_rowGroups);
 	}
@@ -996,7 +1066,7 @@ public:
 	// STRUCTURE, not about a number.
 	ibTotalsLayout LayoutFor(const Output& output) const {
 		ibTotalsLayout layout;
-		layout.m_hasColumns  = !GetCurrentGroupDesc().IsOk() && !output.m_columnGroups.empty();
+		layout.m_hasColumns  = !GetAvailableGroupDesc().IsOk() && !output.m_columnGroups.empty();
 		layout.m_rowLevels   = layout.m_hasColumns ? DimensionCount(output.m_rowGroups) : 0;
 		layout.m_detailsAxis = DetailAxisOf(output);
 		return layout;
@@ -1068,7 +1138,7 @@ public:
 	// did not fetch cannot be answered on.
 	//
 	// 🛑 AND THE ANSWER IS NOT AN ERROR — IT IS A SILENT YES. That is why nothing showed: a level
-	// filter that cannot find its column hides nothing (see ibLevelNodeShows), a sort key missing
+	// filter that cannot find its column hides nothing (see LevelShows), a sort key missing
 	// from the schema orders nothing (LevelOrder), and a field a node selected simply never arrives.
 	// The setting stays on screen, saves, travels through variants, and means nothing.
 	//
@@ -1208,6 +1278,51 @@ protected:
 	int                         m_autoParam = 0;   // auto-name counter for filter values (see m_params)
 
 	const class ibMetaData* m_metaData = nullptr;   // config the query resolves by-name sources against (SetMetaData)
+
+	// ⭐ A MEMO, and `mutable` for that reason alone: IsAvailable is a question whose answer for a path does not
+	// change within one reading of the options, and a run asks the same few paths again and again (every
+	// GetAvailableGroupDesc, SelectedFor, level of the ladder). Each different path is laid out and walked once.
+	// Dropped wherever an answer can change: a new source or configuration (RefreshSourceFields, SetMetaData,
+	// the RAM composer's FromStorage) and a run starting (ApplyAvailableStructure, the RAM composer's ComputeOrder
+	// and Run).
+	mutable std::map<wxString, bool> m_availablePaths;
+	// …and SubtreeAt's, on the same terms: what «in hierarchy» of the named values admits for a field — its
+	// catalog's tree, read once per run however many rows ask. Null = the path resolves to no type.
+	mutable std::map<std::pair<wxString, std::vector<ibValue>>, std::shared_ptr<const ibQueryHierarchyScope>> m_subtrees;
+	// WHAT «IN HIERARCHY» OF `named` ADMITS FOR A FIELD — the field's catalog found by the leaf's type (WalkPath), its
+	// tree read once (ibQueryHierarchyScope) and kept (m_subtrees). Null where the path resolves to no type: the
+	// condition is then unknown, not guessed. What SubtreeOf hands the engine.
+	const ibQueryHierarchyScope* SubtreeAt(const wxString& path, const ibValue& named) const;
+	// …both dropped at once, since both answer "as the source and the base stand now".
+	void DropMemos() const { m_availablePaths.clear(); m_subtrees.clear(); }
+
+public:
+
+	// ⭐ WHETHER A FIELD MAY BE SHOWN IN THIS BASE (functional options) — asked of the SOURCE this composer reads:
+	// the DB composer asks its query or its table (a column answers, a computed one for everything it reads, a
+	// temp table's for the select that made it), the RAM one the columns of its storage. A grouping or a
+	// selected field on an unavailable one is not printed; a filter or a sort on one still applies — it shows
+	// nothing. Answered as the application answers it, wherever the composer runs: a run shows what the base
+	// uses, and "the designer sees everything" is for what an author edits.
+	//
+	// The door takes the path as the settings keep it, a dotted line, and lays it out as HOPS once
+	// (ibQueryColumnFromPath); a composer answers for the hops, from the source's own field on. Last in the
+	// class, so no slot moves.
+	bool IsAvailable(const wxString& path) const;
+	// ⭐ THE FIELD THE HOPS END IN — walked from the source's own field, each hop by its type, as every holder of
+	// fields walks a path (ibQueryConstructorModel::WalkPath). One walk, read for two answers: whether every hop may
+	// be shown (IsAvailable), and what the leaf holds (SubtreeAt). A composer with no source to walk answers an
+	// empty field — available, of no known type.
+	virtual ibQueryConstructorField WalkPath(const std::vector<wxString>& hops) const;
+	// ⭐ WHAT «IN HIERARCHY» ADMITS, handed to the engine as it asks it (ibCompositionSubtreeOf) — by every reader of
+	// rows in memory this composer feeds: the walk, the printed list, a table's filter, a list's appearance.
+	ibCompositionSubtreeOf SubtreeOf() const;
+
+	// ⭐ WHAT THE SOURCE CALLS A FIELD, asked the way availability is: a composer answers from its source's own
+	// fields, and one whose source says nothing (a RAM model's column) answers nothing. Read by the title a
+	// column is printed under (TitleForPath). (What a field IS in a balance needs no such door: it travels with
+	// the column into the totals.)
+	virtual wxString SourceCaptionOf(const wxString& /*path*/) const { return wxString(); }
 };
 
 // The DB composer — the schema verbs render into L4-1 query TEXT, then the standard parse → lower → walk
@@ -1239,6 +1354,12 @@ public:
 	static const wxChar* AuthorQuerySourceName();
 
 	bool HasSource() const override { return !m_sourceText.IsEmpty() || !m_sources.empty(); }
+
+	// The source's own answer — see m_sourceFields — walked the way every holder of fields walks a path
+	// (ibQueryConstructorModel::WalkPath: where it starts, then each hop by its type).
+	ibQueryConstructorField WalkPath(const std::vector<wxString>& hops) const override;
+	// …and what it calls a field, from the same list.
+	wxString SourceCaptionOf(const wxString& path) const override;
 
 	// Render the schema into L4-1 text (the debug view / the AI seam). Throws when it does not render.
 	wxString RenderText() const;
@@ -1402,7 +1523,8 @@ public:
 		: ibDataComposer(other),
 		  m_sourceText(other.m_sourceText),
 		  m_sources(other.m_sources),
-		  m_directSources(other.m_directSources) {}
+		  m_directSources(other.m_directSources),
+		  m_sourceFields(other.m_sourceFields) {}
 
 	// …and a copy of itself — see ibDataComposer::Clone. Covariant, so a caller that already knows it holds
 	// a DB composer gets one back without a cast.
@@ -1415,7 +1537,7 @@ private:
 	// ⚠ NOT const, and that is the point: it REGISTERS the parameter values the query will bind
 	// (AddParam). A const method that writes is a const method that lied, and `mutable` was the cover.
 	void EnsureAst();
-	bool BuildPageSignature(const ibReadPageRequest& page, wxString& signature) const;
+	bool BuildPageSignature(const ibReadPageRequest& page, ibPageSignature& signature) const;
 
 	// ⭐⭐ THE AUTHOR'S TEXT, SPLIT INTO WHAT PREPARES AND WHAT IS READ — the seam that lets a
 	// composition stand over a PACKAGE (docs/private/query-language-arc.md § 24.4b).
@@ -1547,6 +1669,17 @@ private:
 	// Transient (RAM / temp) sources registered via FromSource(queryable) without a metaobject identity —
 	// keyed by the unique local name rendered into the text (t0, t1, …). NON-OWNING.
 	std::map<wxString, const ibBackendQueryable*> m_directSources;
+
+	// ⭐ WHAT THE SOURCE'S FIELDS ARE, and what the source says of each — whether this base's functional options
+	// leave it available, what it is called, what it is in a balance. Worked out when the source is bound
+	// (FromText / FromSource). A path is walked from them the way every holder of fields walks one
+	// (ibQueryConstructorModel::WalkPath). Held by pointer, so this header does not pull the query model in
+	// (48 headers to 121); a copy reads the same list, which is replaced, never changed.
+	std::shared_ptr<const std::vector<ibQueryConstructorField>> m_sourceFields;
+	void RefreshSourceFields();
+	const ibQueryConstructorField* SourceField(const wxString& path) const;
+	// ` ROLE <word>` for a field a person gave a role in the composition — written into the composer's select.
+	wxString RoleSaidFor(const wxString& path) const;
 };
 
 

@@ -3,9 +3,10 @@
 
 #include "frontend/frontend.h"
 
-#include "backend/backend_spreadsheet.h"
+#include "core/spreadsheet/spreadsheetObject.h"
 #include "backend/propertyManager/propertyManager.h"
 #include "backend/system/value/valueSpreadsheet.h"
+#include "frontend/win/typeconv.h"   // the sheet's colours and fonts, as the grid draws them
 
 static const wxArrayString wxEmptyArrayString;
 
@@ -46,9 +47,26 @@ inline ibSpreadsheetCellDescription::ibFitMode ibFromGridFitMode(ibGridFitMode m
 	return static_cast<ibSpreadsheetCellDescription::ibFitMode>(mode.GetEllipsizeMode());
 }
 
+// ⭐⭐ THE HEIGHT A ROW IS SHOWN AT — its own height when it has one, and otherwise its AUTOMATIC height
+// (spreadsheetDescription.h, HasRowSize): the default, or taller wherever something written in the row does
+// not fit — a larger font, more lines than one, a caption wrapped to its column. One function for everything
+// that shows a sheet: the grid sizes its rows by it and the printout lays its pages out by it, so the paper
+// keeps the rows the screen has. `dc` is a SCREEN's: a row height is drawn as that many screen pixels, by the
+// grid and by the printout alike; the text is read in `langCode`, as the showing side reads it.
+FRONTEND_API int ibSpreadsheetRowHeight(const ibSpreadsheetObject& doc, int row, wxDC& dc,
+	const wxString& langCode = wxEmptyString);
+
+// ⭐ THE WIDTH THE COLUMN'S CONTENT ASKS FOR — the widest thing written in it, plus what the cell's chrome
+// takes. ASKED FOR ONLY WHEN SOMEBODY PRESSES FOR IT (Fit width to content): a column has no automatic
+// width, because what does not fit is the cell's placement to answer and a width worked out at show time
+// would move the page breaks about (spreadsheetDescription.h, HasColSize). Cells that wrap, cells a merge
+// spans and text on its side are not asked — none of them says what one column should be.
+FRONTEND_API int ibSpreadsheetColWidth(const ibSpreadsheetObject& doc, int col, wxDC& dc,
+	const wxString& langCode = wxEmptyString);
+
 class FRONTEND_API ibGridEditor : public ibGrid {
 
-	class ibGenericSpreadsheetNotifier : public ibBackendSpreadsheetNotifier {
+	class ibGenericSpreadsheetNotifier : public ibSpreadsheetNotifier {
 	public:
 
 		ibGenericSpreadsheetNotifier(ibGridEditor* view) : m_view(view) {}
@@ -66,17 +84,18 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 		// ------ row and col formatting
 		//
 
-		virtual void SetCellBackgroundColour(int row, int col, const wxColour& colour) { GetOrCreateCell(row, col)->SetCellBackgroundColour(row, col, colour, false); }
-		virtual void SetCellTextColour(int row, int col, const wxColour& colour) { GetOrCreateCell(row, col)->SetCellTextColour(row, col, colour, false); }
-		virtual void SetCellTextOrient(int row, int col, const int orient) { GetOrCreateCell(row, col)->SetCellTextOrient(row, col, orient, false); }
-		virtual void SetCellFont(int row, int col, const wxFont& font) { GetOrCreateCell(row, col)->SetCellFont(row, col, font, false); }
+		virtual void SetCellBackgroundColour(int row, int col, const ibColour& colour) { GetOrCreateCell(row, col)->SetCellBackgroundColour(row, col, typeConv::ColourToWxColour(colour), false); }
+		virtual void SetCellTextColour(int row, int col, const ibColour& colour) { GetOrCreateCell(row, col)->SetCellTextColour(row, col, typeConv::ColourToWxColour(colour), false); }
+		// What changes the height a row's text needs also marks the row for its automatic height.
+		virtual void SetCellTextOrient(int row, int col, const int orient) { GetOrCreateCell(row, col)->SetCellTextOrient(row, col, orient, false); m_view->RequestAutoRowHeights(row, row); }
+		virtual void SetCellFont(int row, int col, const ibFont& font) { GetOrCreateCell(row, col)->SetCellFont(row, col, typeConv::FontToWxFont(font), false); m_view->RequestAutoRowHeights(row, row); }
 		virtual void SetCellAlignment(int row, int col, const int horiz, const int vert) { GetOrCreateCell(row, col)->SetCellAlignment(row, col, horiz, vert, false); }
 		virtual void SetCellBorderLeft(int row, int col, const ibSpreadsheetBorderDescription& desc) {}
 		virtual void SetCellBorderRight(int row, int col, const ibSpreadsheetBorderDescription& desc) {}
 		virtual void SetCellBorderTop(int row, int col, const ibSpreadsheetBorderDescription& desc) {}
 		virtual void SetCellBorderBottom(int row, int col, const ibSpreadsheetBorderDescription& desc) {}
-		virtual void SetCellSize(int row, int col, int num_rows, int num_cols) { GetOrCreateCell(row, col)->SetCellSize(row, col, num_rows, num_cols, false); }
-		virtual void SetCellFitMode(int row, int col, ibSpreadsheetCellDescription::ibFitMode fitMode) { GetOrCreateCell(row, col)->SetCellFitMode(row, col, ibToGridFitMode(fitMode), false); }
+		virtual void SetCellSize(int row, int col, int num_rows, int num_cols) { GetOrCreateCell(row, col)->SetCellSize(row, col, num_rows, num_cols, false); m_view->RequestAutoRowHeights(row, row + wxMax(num_rows, 1) - 1); }
+		virtual void SetCellFitMode(int row, int col, ibSpreadsheetCellDescription::ibFitMode fitMode) { GetOrCreateCell(row, col)->SetCellFitMode(row, col, ibToGridFitMode(fitMode), false); m_view->RequestAutoRowHeights(row, row); }
 		virtual void SetCellReadOnly(int row, int col, bool isReadOnly = true) { GetOrCreateCell(row, col)->SetCellReadOnly(row, col, isReadOnly, false); }
 
 		// ------ cell brake accessors
@@ -93,18 +112,18 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 
 		// ------ cell value accessors
 		//
-		virtual void SetCellValue(int row, int col, const wxString& s) { GetOrCreateCell(row, col)->SetCellValue(row, col, s, false); }
+		virtual void SetCellValue(int row, int col, const ibString& s) { GetOrCreateCell(row, col)->SetCellValue(row, col, s, false); m_view->RequestAutoRowHeights(row, row); }
 
 		// ------ area value accessors
 		//
 		virtual void PutArea(
-			const wxObjectDataPtr<class ibBackendSpreadsheetObject>& doc,
+			const std::shared_ptr<ibSpreadsheetObject>& doc,
 			unsigned int groupLevel = 0) override {
 			m_view->PutDocument(doc, groupLevel);
 		}
 
 		virtual void JoinArea(
-			const wxObjectDataPtr<class ibBackendSpreadsheetObject>& doc,
+			const std::shared_ptr<ibSpreadsheetObject>& doc,
 			unsigned int groupLevel = 0) override {
 			m_view->JoinDocument(doc, groupLevel);
 		}
@@ -227,7 +246,7 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 
 			const ibSpreadsheetFillType type = GetTypeString(row, col);
 			return type == ibSpreadsheetFillType_StrText || type == ibSpreadsheetFillType_StrTemplate ?
-				ibBackendLocalization::IsEmptyLocalizationString(m_data[row][col]) : m_data[row][col].IsEmpty();
+				ibLocalization::IsEmptyLocalizationString(m_data[row][col]) : m_data[row][col].IsEmpty();
 		}
 
 		// ⭐ WHERE THE CONTENT ENDS — a question for the TABLE, because the table is where content
@@ -300,7 +319,7 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 
 			const ibSpreadsheetFillType type = GetTypeString(row, col);
 			if (type == ibSpreadsheetFillType_StrText || type == ibSpreadsheetFillType_StrTemplate)
-				ibBackendLocalization::GetTranslateGetRawLocText(m_data[row][col], s);
+				ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), m_data[row][col], s);
 			else if (type == ibSpreadsheetFillType_StrParameter)
 				s = m_data[row][col];
 		}
@@ -322,19 +341,19 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 			if (s != value) {
 				const ibSpreadsheetFillType type = GetTypeString(row, col);
 				if (type == ibSpreadsheetFillType_StrText || type == ibSpreadsheetFillType_StrTemplate) {
-					if (ibBackendLocalization::IsLocalizationString(s)) {
+					if (ibLocalization::IsLocalizationString(s)) {
 						ibGridStringTable::SetValue(row, col, s);
 					}
-					else if (ibBackendLocalization::IsLocalizationString(value)) {
-						static ibBackendLocalizationEntryArray array;
-						if (ibBackendLocalization::CreateLocalizationArray(value, array)) {
-							ibBackendLocalization::SetArrayTranslate(array, s);
+					else if (ibLocalization::IsLocalizationString(value)) {
+						static ibLocalizationEntryArray array;
+						if (ibLocalization::CreateLocalizationArray(value, array)) {
+							ibLocalization::SetArrayTranslate(ibBackendLocalization::GetUserLanguage(), array, s);
 							ibGridStringTable::SetValue(row, col,
-								ibBackendLocalization::GetRawLocText(array));
+								ibLocalization::GetRawLocText(array));
 						}
 					}
 					else {
-						ibGridStringTable::SetValue(row, col, ibBackendLocalization::CreateLocalizationRawLocText(s));
+						ibGridStringTable::SetValue(row, col, ibLocalization::CreateLocalizationRawLocText(ibBackendLocalization::GetUserLanguage(), s));
 					}
 				}
 				else if (type == ibSpreadsheetFillType_StrParameter) {
@@ -399,12 +418,12 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 			const ibSpreadsheetFillType typeFill = GetTypeString(row, col);
 			if (stringUtils::CompareString(typeName, s_strTypeTextOrString)
 				|| stringUtils::CompareString(typeName, s_strTypeTemplate)) {
-				return new wxString(ibBackendLocalization::CreateLocalizationRawLocText(m_data[row][col]));
+				return new wxString(ibLocalization::CreateLocalizationRawLocText(ibBackendLocalization::GetUserLanguage(), m_data[row][col]));
 			}
 			else if (stringUtils::CompareString(typeName, s_strTypeParameter)) {
 				if (typeFill == ibSpreadsheetFillType::ibSpreadsheetFillType_StrText || typeFill == ibSpreadsheetFillType::ibSpreadsheetFillType_StrTemplate) {
 					wxString* s = new wxString;
-					ibBackendLocalization::GetTranslateGetRawLocText(m_data[row][col], *s);
+					ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), m_data[row][col], *s);
 					return s;
 				}
 				return new wxString(m_data[row][col]);
@@ -611,9 +630,9 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 		ibPropertyFont* m_propertyFont = ibPropertyObject::CreateProperty<ibPropertyFont>(m_categoryAppearance, wxT("Font"), _("Font"),
 			_("The font of the cell's text. Unset: the document's default font."));
 		ibPropertyColour* m_propertyBackgroundColour = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryAppearance, wxT("Background_colour"), _("Background colour"),
-			_("The cell's fill colour, on screen and in print. Unset: no fill."), wxNullColour);
+			_("The cell's fill colour, on screen and in print. Unset: no fill."), ibColour());
 		ibPropertyColour* m_propertyTextColour = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryAppearance, wxT("Text_colour"), _("Text colour"),
-			_("The colour of the cell's text. Unset: the default text colour."), wxNullColour);
+			_("The colour of the cell's text. Unset: the default text colour."), ibColour());
 
 		ibPropertyCategory* m_categoryBorder = ibPropertyObject::CreatePropertyCategory(wxT("Border"), _("Border"));
 		ibPropertyEnum<ibValueEnumSpreadsheetBorder>* m_propertyLeftBorder = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumSpreadsheetBorder>>(m_categoryBorder, wxT("Left_border"), _("Left"),
@@ -625,7 +644,7 @@ class FRONTEND_API ibGridEditor : public ibGrid {
 		ibPropertyEnum<ibValueEnumSpreadsheetBorder>* m_propertyBottomBorder = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumSpreadsheetBorder>>(m_categoryBorder, wxT("Bottom_border"), _("Bottom"),
 			_("The line drawn along the cell's bottom edge: none (the default), solid, dotted or dashed. Printed as shown."), ibSpreadsheetPenStyle::ibPenStyle_Transparent);
 		ibPropertyColour* m_propertyColourBorder = ibPropertyObject::CreateProperty<ibPropertyColour>(m_categoryBorder, wxT("Border_colour"), _("Colour"),
-			_("The colour of the cell's border lines. Unset: the default line colour."), wxNullColour);
+			_("The colour of the cell's border lines. Unset: the default line colour."), ibColour());
 	};
 
 public:
@@ -685,20 +704,31 @@ public:
 	void Copy();
 	void Paste();
 
-	bool AssociatibDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& doc);
-	bool GetActivibDocument(wxObjectDataPtr<ibBackendSpreadsheetObject>& doc) const;
+	bool AssociateDocument(const std::shared_ptr<ibSpreadsheetObject>& doc);
+	bool GetActiveDocument(std::shared_ptr<ibSpreadsheetObject>& doc) const;
 
 #pragma region file
 
 	bool LoadDocument(const ibSpreadsheetDescription& spreadsheetDesc);
-	bool LoadDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& doc);
+	bool LoadDocument(const std::shared_ptr<ibSpreadsheetObject>& doc);
 	bool SaveDocument(ibSpreadsheetDescription& spreadsheetDesc) const;
-	bool SaveDocument(wxObjectDataPtr<ibBackendSpreadsheetObject>& doc) const;
+	bool SaveDocument(std::shared_ptr<ibSpreadsheetObject>& doc) const;
 
-#pragma endregion 
+#pragma endregion
 
-	void PutDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& doc, unsigned int groupLevel = 0);
-	void JoinDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& doc, unsigned int groupLevel = 0);
+	void PutDocument(const std::shared_ptr<ibSpreadsheetObject>& doc, unsigned int groupLevel = 0);
+	void JoinDocument(const std::shared_ptr<ibSpreadsheetObject>& doc, unsigned int groupLevel = 0);
+
+	// ⭐ AUTOMATIC ROW HEIGHT, APPLIED — the rows without a height of their own, sized to their text
+	// (ibSpreadsheetRowHeight) from the document this editor shows. What is worked out here is never written
+	// back into the document (m_quietSizing): the row keeps no height of its own and stays automatic,
+	// however far its worked-out height is from the default. `toRow` -1: to the last row.
+	void FitAutoRowHeights(int fromRow = 0, int toRow = -1);
+
+	// …and the same, once the document has caught up. A change that arrives through the notifier is told
+	// to the grid BEFORE the document stores it (ibSpreadsheetObject's setters), so the rows are
+	// only marked here and fitted when the window is next idle.
+	void RequestAutoRowHeights(int fromRow, int toRow);
 
 	// Bridge called by the spreadsheet notifier when BeginGroup/EndGroup closes
 	// a block — mirrors the new area into m_rowAreaAt / m_colAreaAt so the
@@ -773,6 +803,7 @@ protected:
 
 	void OnRowHeight(wxCommandEvent& event);
 	void OnColWidth(wxCommandEvent& event);
+	void OnFitColWidth(wxCommandEvent& event);
 	void OnHideCell(wxCommandEvent& event);
 	void OnShowCell(wxCommandEvent& event);
 
@@ -822,11 +853,23 @@ private:
 	ibPropertyGridEditorSpreadsheet* m_propertySpreadsheet;
 
 	//grid doc
-	wxObjectDataPtr<ibBackendSpreadsheetObject> m_spreadsheetObject;
-	wxSharedPtr<ibBackendSpreadsheetNotifier> m_notifier;
+	std::shared_ptr<ibSpreadsheetObject> m_spreadsheetObject;
+	std::shared_ptr<ibSpreadsheetNotifier> m_notifier;
 
 	// The "composing…" overlay — see ShowComposeProgress. Created on first use, kept hidden after.
 	class wxWindow* m_composeProgress = nullptr;
+
+	// The rows waiting for their automatic height (RequestAutoRowHeights) — one span, widened as rows
+	// are marked; -1 when none are.
+	int m_autoHeightFrom = -1, m_autoHeightTo = -1;
+
+	// 🛑 WHILE THIS IS ON, A SIZE IS NOT ONE SOMEBODY CHOSE. `ibGrid::DoSetRowSize` / `DoSetColSize` send
+	// wxEVT_GRID_ROW_MODIFIED / _COL_MODIFIED themselves whenever a size changes outside a drag, and the
+	// handlers write that into the document — so the height FitAutoRowHeights works out came straight back
+	// as a height of the row's own, and the row stopped being automatic on its first showing (Max,
+	// 2026-09-22: *"a row that became automatic is still automatic — its height is a WORKED-OUT one"*).
+	// The same door serves a band PUT BACK to the default, which must leave no size behind it either.
+	bool m_quietSizing = false;
 
 	//grid enabled property? 
 	bool m_enableProperty;

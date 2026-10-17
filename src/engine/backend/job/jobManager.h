@@ -41,15 +41,12 @@
 
 #include "backend/backend.h"
 #include "backend/appDataCtorToken.h"
-#include "backend/guid.h"        // ibGuid — a job names its user by key, never by name
 #include "backend/session/sessionHolder.h"
 #include "backend/compiler/value.h"        // ibValue — the argument-array gate
 #include "backend/job/jobSchedule.h"       // ibJobScheduleDescription — when a job is due
 #include "backend/lock/lockHandle.h"       // ibLockHandle held per running job
 #include "backend/lock/lockHolder.h"       // ibLockHolder — base for the job's claim identity
 #include "backend/system/systemEnum.h"     // ibStatusMessage — the level of what a run's code said
-
-#include <wx/datetime.h>
 
 #include <atomic>
 #include <chrono>
@@ -193,7 +190,7 @@ struct BACKEND_API ibJobDescription {
 	ibJobScheduleDescription m_schedule;
 
 	// IS IT SWITCHED ON? The declaration's schedule keeps existing either way — an inactive job is
-	// still registered, still listed, and still runnable BY HAND (RunNow ignores this, as it
+	// still registered, still listed, and still runnable BY HAND (Execute ignores this, as it
 	// ignores the calendar). Only the tick reads it.
 	//
 	// Why the manager holds it rather than the metadata: switching a misbehaving job off at 3 a.m.
@@ -255,12 +252,12 @@ struct BACKEND_API ibJobState {
 	// Wall clock, for display. The scheduling itself runs off a steady clock so a
 	// system-clock adjustment cannot make a job fire twice or stall for hours;
 	// these two are the human-readable projection of that, not its source.
-	wxDateTime   m_lastRunAt;
+	ibDateTime   m_lastRunAt;
 	// COMPUTED, never stored: last run + interval. Empty when the job has not run
 	// yet (it is due immediately) or when work remained from the previous pass
 	// (due on the next tick). A stored "next run" would be one more thing that can
 	// disagree with reality after a restart.
-	wxDateTime   m_nextRunAt;
+	ibDateTime   m_nextRunAt;
 	wxString     m_error;   // set when m_outcome == Failed
 	// The schedule as a sentence — "Every 10 minutes, 10:00-15:00, Tue". Built
 	// from the same fields an editor shows, so a settings list and this list say
@@ -334,9 +331,11 @@ private:
 
 class BACKEND_API ibJobManager {
 public:
-	// Construction restricted to ibApplicationData via the token gate — same
+	// Construction restricted to ibApplicationInstance via the token gate — same
 	// pattern as the connection pool, lock manager and session registry.
-	explicit ibJobManager(ib::AppDataCtorToken);
+	// The token names the base whose schedule this is, asked instead of "the current one". A manager made
+	// outside any base (the tests) is named none and takes the base of the thread that makes it.
+	explicit ibJobManager(ib::AppDataCtorToken owner);
 	~ibJobManager();
 
 	ibJobManager(const ibJobManager&)            = delete;
@@ -349,7 +348,7 @@ public:
 	//
 	// Cheap and side-effect-free: no session, no database, no metadata. That is
 	// deliberate, because the platform's own list is registered from
-	// ibApplicationData the moment the database opens — long before there is a
+	// ibApplicationInstance the moment the database opens — long before there is a
 	// user, a configuration or a reason to spend a Connect on a job that may not
 	// come due for six hours. The session is built on first launch instead, so a
 	// job that never becomes due never costs anything.
@@ -459,13 +458,13 @@ public:
 	// every lock here is let go.
 	std::vector<std::shared_ptr<ibSession>> TenantsOf(const ibSession* landlord) const;
 
-	// Run one job now, ignoring interval and window. Returns false when the name is
-	// unknown or that job is already running.
+	// Execute one job, ignoring interval and window — the script's `Execute()` / `RunJob(name)`. Returns
+	// false when the name is unknown or that job is already running.
 	//
 	// Not a debugging convenience — without it a job can only be exercised by
 	// waiting out its schedule, which makes "is the job wrong or is the manager
 	// wrong?" unanswerable when a fresh tenant misbehaves.
-	bool RunNow(const wxString& name);
+	bool Execute(const wxString& name);
 
 	// Cap on jobs registered at once. Each holds a session, and a session holds a
 	// connection out of ibConnectionPool — whose Checkout BLOCKS once maxSize is
@@ -503,7 +502,7 @@ public:
 
 	// Release every job and its session. Waits for in-flight runs so no worker is
 	// left holding a session the manager is dropping. Idempotent; called from
-	// ~ibApplicationData before the session registry goes down.
+	// ~ibApplicationInstance before the session registry goes down.
 	void Stop();
 
 private:
@@ -518,7 +517,7 @@ private:
 		// "was there a 02:00 between when we started watching and now?" cannot be asked on a steady
 		// clock. Used only for the first-run decision; every later one measures on the steady clock,
 		// where moving the system time cannot make a job fire twice.
-		wxDateTime                            m_registeredAtWall = wxDateTime::Now();
+		ibDateTime                            m_registeredAtWall = ibDateTime::Now();
 		bool                                  m_everRun     = false;
 		// Set from the body's return value: the previous pass left work behind, so
 		// the interval is skipped and the job is due on the next tick.
@@ -526,10 +525,10 @@ private:
 
 		// RETRY STATE (ibJobDescription::m_retryCount). m_retriesLeft is the allowance remaining for
 		// the CURRENT streak of failures — refilled by a successful pass, so a job that fails once a
-		// week never runs out. m_retryAt is when the next attempt is due; invalid means the job is on
-		// its ordinary schedule and nothing is being retried.
+		// week never runs out. m_retryAt is when the next attempt is due; the empty date means the job
+		// is on its ordinary schedule and nothing is being retried.
 		int                                   m_retriesLeft = 0;
-		wxDateTime                            m_retryAt;
+		ibDateTime                            m_retryAt;
 
 		// A TICK IS WORKING ON THIS ENTRY OUTSIDE THE LOCK — launching it, which creates a session
 		// and can wait on the registry. Set under m_mtx before the lock is dropped and cleared under
@@ -567,7 +566,7 @@ private:
 		// system clock cannot make a job fire twice or stall until the date comes
 		// back around.
 		ibJobOutcome                          m_outcome = ibJobOutcome::Never;
-		wxDateTime                            m_lastRunAt;
+		ibDateTime                            m_lastRunAt;
 		wxString                              m_error;
 	};
 
@@ -605,7 +604,7 @@ public:
 		wxString                 m_name;        // display name, so the table reads for a person
 		bool                     m_active = true;
 		ibJobScheduleDescription m_schedule;
-		wxDateTime               m_lastRun;      // read-only for a caller — the shared clock
+		ibDateTime               m_lastRun;      // read-only for a caller — the shared clock
 		wxString                 m_computer;     // who ran it last, for diagnostics
 		bool                     m_found = false;   // was there a row at all? (seed-on-first-sight)
 
@@ -670,15 +669,17 @@ public:
 	//
 	// Best-effort by design: a database that cannot answer must not stop a job, since silently
 	// skipping work is worse than repeating it.
-	static wxDateTime ReadSharedLastRun(const ibGuid& key);
-	static void       WriteSharedLastRun(const ibGuid& key, const wxString& name, const wxDateTime& when);
+	// applicationInstance — whose clock: the tick names its own base; a run leaves it out and reads through its
+	// session (the calling thread's db_query channel).
+	static ibDateTime ReadSharedLastRun(const ibGuid& key, const ibApplicationInstance* applicationInstance = nullptr);
+	static void       WriteSharedLastRun(const ibGuid& key, const wxString& name, const ibDateTime& when);
 
 	// Apply settings to a REGISTERED job, at once — no re-registration, because the entry holds a
 	// session and dropping it would end a run in flight. Returns false when the key is unknown.
 	bool ApplySettings(const ibGuid& key, bool active, const ibJobScheduleDescription& schedule);
 
 	// The job registered under this key, by NAME — what a settings value needs to run one by hand
-	// (RunNow is keyed by name, because that is the manager's own identity for an entry).
+	// (Execute is keyed by name, because that is the manager's own identity for an entry).
 	wxString FindNameByKey(const ibGuid& key) const;
 
 private:
@@ -748,6 +749,9 @@ private:
 	// Signalled when a tick finishes launching an entry and clears its m_inFlight. Unregister and
 	// Stop wait on it, so they never destroy an entry a launch is still writing to.
 	std::condition_variable                   m_inFlightCv;
+
+	// The base whose schedule this is — its owner.
+	ibApplicationInstance* const                  m_applicationInstance;
 
 	std::thread                               m_thread;
 	std::condition_variable                   m_tickCv;

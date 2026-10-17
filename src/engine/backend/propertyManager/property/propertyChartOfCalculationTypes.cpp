@@ -1,8 +1,8 @@
 #include "propertyChartOfCalculationTypes.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/propertyManager/property/variant/variantOwner.h"
 
-wxVariantData* ibPropertyChartOfCalculationTypes::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc) const
+wxVariantData* ibPropertyChartOfCalculationTypes::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc)
 {
 	// No cast: the variant needs the owner only to reach GetMetaData, which ibPropertyObject answers.
 	return new ibVariantDataOwner(property, typeDesc);
@@ -46,12 +46,12 @@ bool ibPropertyChartOfCalculationTypes::GetDataValue(ibValue& pvarPropVal) const
 
 bool ibPropertyChartOfCalculationTypes::ReadNodeValue(const ibDataValue& value)
 {
-	ibMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
+	ibBackendMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
 	return true;
 }
 
 bool ibPropertyChartOfCalculationTypes::WriteNodeValue(ibDataValue& value) const
 {
 	const ibPropertyObject* owner = m_owner;   // CONST overload — the non-const one returns null (see propertyObject.h)
-	return ibMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
+	return ibBackendMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
 }

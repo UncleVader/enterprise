@@ -305,12 +305,12 @@ void ibDialogJobSchedule::LoadFromSchedule()
 	m_intervalValue->SetValue(value);
 	m_intervalUnit->SetSelection(unitIndex);
 
-	m_activeFromUse->SetValue(m_schedule.m_activeFrom.IsValid());
-	if (m_schedule.m_activeFrom.IsValid())
-		m_activeFrom->SetValue(m_schedule.m_activeFrom);
-	m_activeToUse->SetValue(m_schedule.m_activeTo.IsValid());
-	if (m_schedule.m_activeTo.IsValid())
-		m_activeTo->SetValue(m_schedule.m_activeTo);
+	m_activeFromUse->SetValue(!m_schedule.m_activeFrom.IsEmpty());
+	if (!m_schedule.m_activeFrom.IsEmpty())
+		m_activeFrom->SetValue(m_schedule.m_activeFrom.ToWxDateTime());
+	m_activeToUse->SetValue(!m_schedule.m_activeTo.IsEmpty());
+	if (!m_schedule.m_activeTo.IsEmpty())
+		m_activeTo->SetValue(m_schedule.m_activeTo.ToWxDateTime());
 
 	const bool hasWindow = m_schedule.m_startMinute >= 0 && m_schedule.m_endMinute >= 0;
 	m_windowUse->SetValue(hasWindow);
@@ -340,8 +340,8 @@ void ibDialogJobSchedule::ApplyToSchedule()
 	const int unitIndex = m_intervalUnit->GetSelection() >= 0 ? m_intervalUnit->GetSelection() : 0;
 	m_schedule.m_intervalSeconds = m_intervalValue->GetValue() * s_unitSeconds[unitIndex];
 
-	m_schedule.m_activeFrom = m_activeFromUse->GetValue() ? m_activeFrom->GetValue() : wxDateTime();
-	m_schedule.m_activeTo   = m_activeToUse->GetValue()   ? m_activeTo->GetValue()   : wxDateTime();
+	m_schedule.m_activeFrom = m_activeFromUse->GetValue() ? ibDateTime::OfWxDateTime(m_activeFrom->GetValue()) : ibDateTime();
+	m_schedule.m_activeTo   = m_activeToUse->GetValue()   ? ibDateTime::OfWxDateTime(m_activeTo->GetValue())   : ibDateTime();
 
 	if (m_windowUse->GetValue()) {
 		m_schedule.m_startMinute = MinutesFrom(m_windowStart, nullptr);
@@ -399,7 +399,7 @@ void ibDialogJobSchedule::OnOk(wxCommandEvent& event)
 
 	// Refuse what can never match, HERE, in front of the person who typed it — rather than leaving
 	// it to be debugged later as a job that simply never runs.
-	if (!m_schedule.IsValid()) {
+	if (!ibJobScheduleRules::IsValid(m_schedule)) {
 		wxMessageBox(_("This schedule can never run: check the interval and the time window."),
 		             _("Schedule"), wxOK | wxICON_WARNING, this);
 		return;

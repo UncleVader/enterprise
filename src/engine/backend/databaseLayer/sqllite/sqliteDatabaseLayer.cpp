@@ -22,12 +22,15 @@ const ibDialectDictionary& ibDatabaseLayerSQLite::Dialect()
 		d.m_groupByPosition = true;                   // GROUP BY 2 — a key that binds a value is named by its position
 		d.m_features.m_window = true;                 // SQLite 3.25+
 		d.m_features.m_cte    = true;                 // WITH … AS (…) — SQLite 3.8.3+
+		d.m_features.m_recursiveCte      = true;      // WITH RECURSIVE — SQLite 3.8.3+
+		d.m_features.m_recursiveCteUnion = true;      // UNION in the recursive part — a loop in a parent chain ends
 		d.m_features.m_multiRowValues = true;         // INSERT … VALUES (…), (…) — SQLite 3.7.11+
 		d.m_alterColumnTemplate = wxEmptyString;      // no in-place type change -> renderer throws
 		d.m_alterTableMultiClause = false;            // one ADD/DROP per ALTER — the structure builder splits batches
 		d.m_rowLockSuffix = wxEmptyString;            // SQLite locks the whole DB per TX — no row FOR UPDATE
 		d.m_rowLockNoWaitSuffix = wxEmptyString;      // (no row lock at all -> nothing to make non-blocking)
 		d.m_rowIdColumn    = wxT("rowid");            // physical row id for the pre-UNIQUE dedup (keep one row per key)
+		d.m_maxParameters  = 32766;                   // SQLITE_MAX_VARIABLE_NUMBER, the 3.32+ default the vendored engine keeps
 		d.m_returningClause = wxT("RETURNING");       // SQLite 3.35+; the embedded engine here is 3.48
 		// type map (SQLite is dynamically typed; these set column affinity)
 		d.m_typeBoolean       = wxT("INTEGER");
@@ -128,7 +131,9 @@ const ibDialectDictionary& ibDatabaseLayerSQLite::Dialect()
 			{ ibDatePart::Month,     wxT("CAST(strftime('%m', {expr}) AS INTEGER)") },
 			{ ibDatePart::DayOfYear, wxT("(CAST(strftime('%j', {expr}) AS INTEGER))") },
 			{ ibDatePart::Day,       wxT("CAST(strftime('%d', {expr}) AS INTEGER)") },
-			{ ibDatePart::Week,      wxT("CAST(strftime('%W', {expr}) AS INTEGER)") },
+			// %V is the ISO week (SQLite 3.46+; the vendored one is 3.48) - what the script's GetWeekOfYear
+			// and the other dialects' WEEK count. %W counted from the year's first Monday and had a week 0.
+			{ ibDatePart::Week,      wxT("CAST(strftime('%V', {expr}) AS INTEGER)") },
 			{ ibDatePart::WeekDay,   wxT("(((CAST(strftime('%w', {expr}) AS INTEGER) + 6) % 7) + 1)") },
 			{ ibDatePart::Hour,      wxT("CAST(strftime('%H', {expr}) AS INTEGER)") },
 			{ ibDatePart::Minute,    wxT("CAST(strftime('%M', {expr}) AS INTEGER)") },
@@ -278,7 +283,8 @@ bool ibDatabaseLayerSQLite::Open(const wxString& strDatabase)
 
 	if (nReturn != SQLITE_OK)
 	{
-		SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)));
+		SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)),
+			ClassifyDatabaseError(sqlite3_errcode((sqlite3*)m_pDatabase)));
 		SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg((sqlite3*)m_pDatabase)));
 		ThrowDatabaseException();
 		return false;
@@ -305,7 +311,8 @@ bool ibDatabaseLayerSQLite::Close()
 		int nReturn = sqlite3_close((sqlite3*)m_pDatabase);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)),
+			ClassifyDatabaseError(sqlite3_errcode((sqlite3*)m_pDatabase)));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg((sqlite3*)m_pDatabase)));
 			ThrowDatabaseException();
 			return false;
@@ -390,7 +397,8 @@ int ibDatabaseLayerSQLite::DoRunQuery(const wxString& strQuery, bool bParseQuery
 
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)),
+			ClassifyDatabaseError(sqlite3_errcode((sqlite3*)m_pDatabase)));
 			SetErrorMessage(strErrorMessage);
 			ThrowDatabaseException();
 			return DATABASE_LAYER_QUERY_RESULT_ERROR;
@@ -418,7 +426,8 @@ ibDatabaseResultSet* ibDatabaseLayerSQLite::DoRunQueryWithResults(const wxString
 
 			if (szErrorMessage != nullptr)
 			{
-				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)));
+				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)),
+			ClassifyDatabaseError(sqlite3_errcode((sqlite3*)m_pDatabase)));
 				strErrorMessage = ConvertFromUnicodeStream(szErrorMessage);
 				sqlite3_free(szErrorMessage);
 				return nullptr;
@@ -426,7 +435,8 @@ ibDatabaseResultSet* ibDatabaseLayerSQLite::DoRunQueryWithResults(const wxString
 
 			if (nReturn != SQLITE_OK)
 			{
-				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)));
+				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(sqlite3_errcode((sqlite3*)m_pDatabase)),
+			ClassifyDatabaseError(sqlite3_errcode((sqlite3*)m_pDatabase)));
 				SetErrorMessage(strErrorMessage);
 				ThrowDatabaseException();
 				return nullptr;
@@ -491,7 +501,7 @@ ibPreparedStatement* ibDatabaseLayerSQLite::DoPrepareStatement(const wxString& s
 
 				if (nReturn != SQLITE_OK)
 				{
-					SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+					SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ClassifyDatabaseError(nReturn));
 					SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg((sqlite3*)m_pDatabase)));
 					wxDELETE(pReturnStatement);
 					ThrowDatabaseException();
@@ -728,6 +738,27 @@ wxArrayString ibDatabaseLayerSQLite::GetColumns(const wxString& table)
 	return returnArray;
 }
 
+ibBackendDatabaseException::Kind ibDatabaseLayerSQLite::ClassifyDatabaseError(int code)
+{
+	// Values are SQLite's stable ABI (sqlite3.h SQLITE_*), so the integer literals are safe.
+	using Kind = ibBackendDatabaseException::Kind;
+	switch (code & 0xFF) {
+		case 5:  // SQLITE_BUSY  — database file locked by another process / writer
+		case 6:  // SQLITE_LOCKED — table locked by a concurrent connection
+			return Kind::Timeout;
+
+		case 19: // SQLITE_CONSTRAINT
+			return Kind::Constraint;
+
+		case 1:  // SQLITE_ERROR  — catch-all for SQL errors / missing table
+		case 21: // SQLITE_MISUSE — library used incorrectly (usually a bad prepared statement)
+			return Kind::Syntax;
+
+		default:
+			return Kind::Unknown;
+	}
+}
+
 int ibDatabaseLayerSQLite::TranslateErrorCode(int nCode)
 {
 	// An interrupted statement (Cancel -> sqlite3_interrupt) is the cancel, recorded as the platform's.
@@ -814,26 +845,4 @@ int ibDatabaseLayerSQLite::TranslateErrorCode(int nCode)
 	return nReturn;
 }
 
-ibBackendDatabaseException::Kind ibDatabaseLayerSQLite::ClassifyDatabaseError(int nativeCode) const
-{
-	// SQLite returns a single-int result code via sqlite3_errcode().
-	// The values are part of SQLite's stable ABI (sqlite3.h SQLITE_*
-	// macros) so the integer literals are safe.
-	using Kind = ibBackendDatabaseException::Kind;
-	switch (nativeCode) {
-		case 5:  // SQLITE_BUSY  — database file locked by another process / writer
-		case 6:  // SQLITE_LOCKED — table locked by a concurrent connection
-			return Kind::Timeout;
-
-		case 19: // SQLITE_CONSTRAINT
-			return Kind::Constraint;
-
-		case 1:  // SQLITE_ERROR  — catch-all for SQL errors / missing table
-		case 21: // SQLITE_MISUSE — library used incorrectly (usually a bad prepared statement)
-			return Kind::Syntax;
-
-		default:
-			return Kind::Unknown;
-	}
-}
 

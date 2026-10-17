@@ -85,6 +85,12 @@ struct ibSqlFeatures
 {
 	bool m_window        = false;   // SUM() OVER (...)
 	bool m_cte           = false;   // WITH ... AS (...)
+	// WITH RECURSIVE — a parent chain walked by the server («in hierarchy», ibQueryCte::m_recursive). And whether its
+	// recursive part may be joined by UNION rather than UNION ALL: UNION drops a row it has already produced,
+	// which is what ends a corrupt chain that loops back on itself. Firebird takes UNION ALL only there, and
+	// stops such a loop at its recursion limit with an error instead of an answer.
+	bool m_recursiveCte      = false;
+	bool m_recursiveCteUnion = false;
 	bool m_fullOuterJoin = false;
 	bool m_iLike         = false;   // case-insensitive LIKE
 	bool m_rollup        = false;   // GROUP BY ROLLUP(...) — hierarchical subtotals server-side
@@ -128,89 +134,9 @@ struct ibSqlFeatures
 	bool m_batchByReexecution = false;
 };
 
-// A period truncation unit — "start of the minute / week / month / … containing this moment".
-//
-// It lives in the QUERY dictionary, not the materialization one, because truncating a period is
-// an ordinary DECLARATIVE expression: it belongs in any SELECT that groups by month, whoever
-// wrote it — a report, the composer, a user query — and only incidentally in a totals trigger.
-// Locking it inside the dictionary that only the trigger generator can reach would have shut a
-// generally useful fact into a private room.
-//
-// ORDERED COARSENING, and that ordering is a CONTRACT: every member is coarser than the one
-// before it. Consumers rely on it to decide derivability — a value truncated to unit A can be
-// re-truncated to any B >= A, and to nothing finer, because the finer information is gone.
-// Insert new members in order.
-//
-// (Not to be confused with ibPeriodicity — that is the granularity of a record KEY, a different
-// question that happens to share a word.)
-enum class ibTotalsPeriod
-{
-	Second,
-	Minute,
-	Hour,
-	Day,
-	Week,       // starts Monday (ISO) on every engine — the truncations encode that per dialect
-	TenDays,    // the 1st / 11th / 21st of the month; the last one runs 8-11 days
-	Month,
-	Quarter,
-	HalfYear,
-	Year
-};
-
-// ⭐ ONE PIECE OF A DATE, AS A NUMBER — what `YEAR(x)` / `WEEKDAY(x)` answer with. A different
-// question from ibTotalsPeriod, which names a STRETCH of time and answers with a date: truncating to
-// the month gives the 1st of it, taking the month gives 9. They share most of their words and none
-// of their meaning, so they are separate enums rather than one with two readings.
-//
-// WeekDay is Monday = 1 … Sunday = 7 (ISO), pinned here rather than left to each engine's own
-// numbering — a rule that differs per dialect is a report that reads differently per deployment.
-enum class ibDatePart
-{
-	Year,
-	Quarter,
-	Month,
-	DayOfYear,
-	Day,
-	Week,
-	WeekDay,
-	Hour,
-	Minute,
-	Second
-};
-
-// The RAM twin of the dialect's truncation expression: same answer, computed in C++ for the paths
-// that cannot push down (a multi-source read materialises its leaves and folds them here).
-//
-// The two MUST agree exactly, or a query answers differently depending on whether it happened to
-// co-locate — a difference that shows up as totals that reconcile in one deployment and not in
-// another. So this walks the calendar (month lengths, leap years) rather than approximating with
-// fixed-length arithmetic, exactly as the SQL expressions do.
-BACKEND_API wxDateTime ibTruncateToPeriod(const wxDateTime& moment, ibTotalsPeriod unit);
-
-// The start of the NEXT period after the one holding `moment` — the first instant a stored row of
-// that grain no longer covers. A read whose lower boundary falls inside a grain cannot use that
-// grain's stored row (it holds the part before the boundary too), so it starts at this instant and
-// takes the head from the movements instead. Calendar-walking for the same reason as the truncation:
-// months differ in length, and the ten-day bucket ending a month is not ten days long.
-BACKEND_API wxDateTime ibNextPeriodStart(const wxDateTime& moment, ibTotalsPeriod unit);
-
-// The LAST instant the period holding `moment` still covers — `ENDOFPERIOD(x, Month)`. Written as
-// the start of the next period less one second, and said here ONCE so the RAM road and the SQL one
-// cannot disagree about whether the boundary belongs to the period (it does).
-BACKEND_API wxDateTime ibEndOfPeriod(const wxDateTime& moment, ibTotalsPeriod unit);
-
-// Move a date by whole units, calendar-aware — `DATEADD(x, Month, 3)`. Adding a month to the 31st of
-// a 31-day month lands on the last day of a shorter one, which is what a person means by "a month
-// later" and what fixed-length arithmetic gets wrong.
-BACKEND_API wxDateTime ibDateAddUnits(const wxDateTime& moment, ibTotalsPeriod unit, long count);
-
-// How many WHOLE units lie between two moments — `DATEDIFF(a, b, Day)`. Negative when `to` is
-// earlier, zero when they fall in the same unit.
-BACKEND_API long ibDateDiffUnits(const wxDateTime& from, const wxDateTime& to, ibTotalsPeriod unit);
-
-// One piece of a date as a number — `YEAR(x)`, `WEEKDAY(x)`. The RAM twin of the dialect's
-// m_datePart expression, and it must agree with it to the digit.
-BACKEND_API long ibReadDatePart(const wxDateTime& moment, ibDatePart part);
+// The calendar's periods (ibTotalsPeriod) and a date's parts (ibDatePart) are the date's own, and so
+// is the arithmetic over them (fdatetime.h): the dialect's truncation, DATEADD, DATEDIFF and date-part
+// expressions below have their RAM twins there, as methods of ibDateTime, and the two roads must agree.
 
 struct ibDialectDictionary
 {
@@ -223,6 +149,13 @@ struct ibDialectDictionary
 	// DROP INDEX divergence: MSSQL needs "DROP INDEX <name> ON <table>"; FB / PG /
 	// SQLite take just "DROP INDEX <name>". Default = standalone (no table).
 	bool m_dropIndexNeedsTable = false;
+
+	// A list read BACKWARDS (scrolling up: ORDER BY … DESC) walks an index only where the engine can walk
+	// one in that direction. Firebird walks an ascending index forward only, so a descending twin is
+	// declared beside the index a list reads by, and this is the word that makes one there
+	// (`CREATE DESCENDING INDEX`). EMPTY (default) = the engine walks an ascending index both ways
+	// (PostgreSQL, SQLite, MySQL, MSSQL) — the twin would only cost every write, so it is not made.
+	wxString m_descendingIndexWord;
 
 	// ⭐⭐ HOW MANY FIELDS AN INDEX MAY COVER. 0 (the default) = no limit worth declaring.
 	//
@@ -254,7 +187,9 @@ struct ibDialectDictionary
 	// to read (2026-08-30, a register with a wide string key).
 	//
 	// Declared rather than discovered, for the same reason as the segment count: the identity moves
-	// into one hashed field BEFORE any DDL is emitted.
+	// into one hashed field BEFORE any DDL is emitted. This is the ceiling of a base the driver
+	// CREATES; whoever decides reads ibDatabaseLayer::GetMaxIndexKeyBytes, which a driver whose
+	// ceiling depends on the base answers from the base it is attached to.
 	unsigned int m_maxIndexKeyBytes = 0;
 
 	// Physical row identifier, used to drop duplicate-key rows (keep one) BEFORE a UNIQUE index is created
@@ -296,6 +231,12 @@ struct ibDialectDictionary
 	// showed it is the PATH: one statement ran with its outer alias 20 characters long and failed at 26 (the
 	// vendored 5.0.5). Firebird's bound is therefore short (see its dialect).
 	unsigned int m_maxAliasLength = 0;
+
+	// ⭐⭐ HOW MANY VALUES ONE STATEMENT BINDS (`?`), however many lists they stand in — the engine's own wall, so a
+	// road that would build a long list can ask before it builds one instead of learning it from the refusal. 0 = none
+	// known. Firebird 5: 32 767 (measured 2026-10-05: 30 000 ran; 50 000 "Implementation limit exceeded - Maximum
+	// number of parameters: 32767").
+	unsigned int m_maxParameters = 0;
 
 	// ⭐ A NAME WITHIN A LIMIT — itself when it fits, otherwise its head plus a hash of the WHOLE name. Deterministic,
 	// so whoever writes the name and whoever reads it back compute the same spelling, and two names that share
@@ -926,6 +867,11 @@ public:
 	/// dtor so this back-pointer is always valid while non-null.
 	ibDatabaseConnectionHolder* GetHolder() const { return m_holder; }
 
+	/// The pool this layer belongs to — the base its transactions run in; nullptr for a layer no pool knows,
+	/// whose transactions are the driver's alone. (Taken into "the current base's" pool, such a layer was
+	/// handed out to that base's queries — see loggerSinkSqlite.cpp.)
+	class ibConnectionPool* GetPool() const { return m_pool; }
+
 	/// True while at least one ibPreparedStatement / ibDatabaseResultSet
 	/// is alive on this layer. The pool consults this in Checkout so a
 	/// conn whose result set is mid-iteration cannot be handed to
@@ -1011,8 +957,8 @@ public:
 	/// Retrieve a single string value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
 	///  is thrown unless bRequireUniqueResult is false
-	virtual wxString GetSingleResultString(const wxString& strSQL, int nField, bool bRequireUniqueResult = true);
-	virtual wxString GetSingleResultString(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult = true);
+	virtual ibString GetSingleResultString(const wxString& strSQL, int nField, bool bRequireUniqueResult = true);
+	virtual ibString GetSingleResultString(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult = true);
 
 	/// Retrieve a single long value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
@@ -1029,8 +975,8 @@ public:
 	/// Retrieve a single date/time value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
 	///  is thrown unless bRequireUniqueResult is false
-	virtual wxDateTime GetSingleResultDate(const wxString& strSQL, int nField, bool bRequireUniqueResult = true);
-	virtual wxDateTime GetSingleResultDate(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult = true);
+	virtual ibDateTime GetSingleResultDate(const wxString& strSQL, int nField, bool bRequireUniqueResult = true);
+	virtual ibDateTime GetSingleResultDate(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult = true);
 
 	/// Retrieve a single Blob value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
@@ -1074,6 +1020,11 @@ public:
 	// owns its dialect (typically a static singleton it returns by reference);
 	// ODBC returns a default-constructed ANSI dictionary.
 	virtual const ibDialectDictionary& GetDialect() const = 0;
+
+	// THE BYTE CEILING OF AN INDEX KEY IN THE BASE THIS CONNECTION IS ATTACHED TO. The dialect says what a
+	// base this driver CREATES gets (m_maxIndexKeyBytes); a base is what it was created as, so a driver whose
+	// ceiling depends on the base (Firebird: a quarter of its page) answers from the base it attached to.
+	virtual unsigned int GetMaxIndexKeyBytes() const { return GetDialect().m_maxIndexKeyBytes; }
 
 	// The driver's TEMP-TABLE facts, or nullptr if it has no DB temporary tables. PRESENCE = the
 	// capability: nullptr => L3 materialises an intermediate in RAM (ibQueryComposer — the
@@ -1194,6 +1145,10 @@ protected:
 	/// active TX. Maintained exclusively by ibConnectionPool — see
 	/// ReserveTx / ReleaseTx. nullptr when not pinned.
 	ibDatabaseConnectionHolder* m_holder = nullptr;
+
+	/// The pool that made this layer (Clone) or took it in (Init's primary, an outside layer in ReserveTx).
+	/// Maintained exclusively by ibConnectionPool; nullptr for a layer no pool knows.
+	class ibConnectionPool* m_pool = nullptr;
 	friend class ibConnectionPool;
 
 	/// Add result set object pointer to the list for "garbage collection"
@@ -1245,10 +1200,10 @@ protected:
 private:
 
 	int GetSingleResultInt(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
-	wxString GetSingleResultString(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
+	ibString GetSingleResultString(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	long GetSingleResultLong(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	bool GetSingleResultBool(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
-	wxDateTime GetSingleResultDate(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
+	ibDateTime GetSingleResultDate(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	void* GetSingleResultBlob(const wxString& strSQL, const wxVariant* field, wxMemoryBuffer& buffer, bool bRequireUniqueResult = true);
 	double GetSingleResultDouble(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	ibNumber GetSingleResultNumber(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);

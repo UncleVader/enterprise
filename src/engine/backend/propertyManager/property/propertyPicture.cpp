@@ -1,11 +1,11 @@
 #include "propertyPicture.h"
 #include "backend/propertyManager/property/variant/variantPicture.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary, transitional)
 
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyPicture::CreateVariantData(ibPropertyObject* property, const ibPictureDescription& id) const
+wxVariantData* ibPropertyPicture::CreateVariantData(ibPropertyObject* property, const ibPictureDescription& id)
 {
 	return new ibVariantDataPicture(property, id);
 }
@@ -54,10 +54,10 @@ bool ibPropertyPicture::GetDataValue(ibValue& pvarPropVal) const
 
 bool ibPropertyPicture::ReadNodeValue(const ibDataValue& value)
 {
-	return ibPictureDescriptionMemory::ReadNode(value, GetValueAsPictureDesc());
+	return ibBackendPictureDescriptionMemory::ReadNode(value, GetValueAsPictureDesc());
 }
 
 bool ibPropertyPicture::WriteNodeValue(ibDataValue& value) const
 {
-	return ibPictureDescriptionMemory::WriteNode(value, GetValueAsPictureDesc());
+	return ibBackendPictureDescriptionMemory::WriteNode(value, GetValueAsPictureDesc());
 }

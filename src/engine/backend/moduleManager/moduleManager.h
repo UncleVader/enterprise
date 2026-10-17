@@ -89,7 +89,7 @@ public:
 		virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 		virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
 
-		virtual wxString GetString() const override {
+		virtual ibString GetString() const override {
 			return m_moduleObject->GetName();
 		}
 
@@ -247,7 +247,7 @@ public:
 
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);        //setting attribute
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
-	virtual long FindProp(const wxString& strName) const;
+	virtual long FindProp(const ibString& strName) const override;
 
 	//check is empty
 	virtual bool IsEmpty() const { return false; }
@@ -366,7 +366,8 @@ public:
 	// on `this`. Overridden by subclasses with additional modules
 	// (external data processor, report). Default impl handles the
 	// common-case main module + m_listCommonModuleManager fanout.
-	virtual bool AttachRuntime(class ibSession* session);
+	// Done, or THROWN: a configuration that does not start refuses the session (see the .cpp).
+	virtual void AttachRuntime(class ibSession* session);
 
 	// Symmetric teardown — drop this session's ProcUnit entries.
 	virtual void DetachRuntime(class ibSession* session);

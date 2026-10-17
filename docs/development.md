@@ -59,10 +59,19 @@ user interface is translated; a `_()` message id stays ASCII ([portability.md §
 products do not go into identifiers; a comparison, if a design needs one at all, is a footnote
 in its document.
 
-**Header guards are `#ifndef __NAME_H__` / `#define __NAME_H__`.** Almost every header uses
-them; the few with `#pragma once` are exceptions to fix, not examples to follow.
+**Header guards are `#ifndef __NAME_H__` / `#define __NAME_H__`.** Every header of ours uses
+them, and CI refuses a header that brings `#pragma once`.
 
-**The backend stays GUI-free and never shows a modal window.** Its callers include the daemon,
+**A picture is a PNG in Base64, in the source file that reads it; never XPM.** It is a string
+(`static const wxString s_<name>_png = "..."`) beside the code that uses it — the art provider's in
+`frontend/artProvider/private/picturePredefined.h`, the engine's own in `core/picturePredefined.cpp`, a control's in its `_res.cpp`, a metatype's in its
+`_res.cpp` — kept as a MASTER four times the size it is drawn at, and scaled down by whoever reads it to
+the size it shows it at. Its source is an SVG in `tools/pictures/render.js`, which draws the PNG and
+writes the string: to change a picture, change its SVG there and run the script; to add one, add the SVG,
+a line in its `TARGETS` and a placeholder string. One act has one drawing everywhere it appears, and the
+manner is the one that file describes. XPM renders poorly at any size but its own, and no new one goes in.
+
+**The backend stays GUI-free and never shows a modal window.** Its callers include the application server,
 the web server, background jobs and an assistant over MCP, and none of them can click a box.
 Say it with `ibValueSystemFunction::Message`, or hand the reason back to the caller
 (`bool Verb(…, wxString* refusal)`).
@@ -147,6 +156,15 @@ until it survives serialisation and a restart.
 data: copyable, comparable, storable as versions. A live reference inside one comes back as
 `Unknown value type`.
 
+**A new value is born owned.** Whatever makes a value answers with its holder, never a bare
+pointer: the ctor registry and `ibValue::CreateObject` with an `ibValue`, a creator whose type the
+caller needs with an `ibValuePtr<T>`, a source with an `ibSourcePtr<T>`. A bare pointer starts at
+reference count zero, and a new object runs code of its own while it is being made (a data
+object's module, its `Filling`): anything that takes `ThisObject` and lets it go frees the object
+halfway through (#154). Hold it before initialising it. Keep the answer in a holder, never in a
+`T*` — the holder converts to one silently, and the pointer dangles once the temporary goes. Where
+no type is needed the holder is plain `ibValue`; `ibValuePtr<ibValue>` adds nothing.
+
 **The schema diff is the only authority on DDL.** Nothing reads the database to decide what DDL
 to run. A schema change that exists only in code, and not in the declaration, is invisible to
 the diff, so the declaration must carry the difference.
@@ -176,6 +194,13 @@ the designer, not only from code or an assistant.
 ---
 
 ## 5. Tests and CI
+
+**The review remarks a script can make, it makes first.** `.github/lint.sh` checks what a change
+brings, and CI runs it before any build: a tool attribution line in a commit message, a header
+with `#pragma once`, a new XPM file, a `_()` message id that is not ASCII. Each finding lands on
+its line with the rule and the fix. Run it before you push:
+`bash .github/lint.sh origin/develop`. A rule that keeps coming up in review and needs no
+judgement belongs in that script.
 
 **The solution does not build the tests; CMake does.** A green `enterprise.sln` says nothing
 about `tests/`. CI builds and runs them on Windows, Linux and macOS, and its verdict is the one
@@ -211,6 +236,14 @@ output to a document) measures something nobody waits for.
 **Ask one question once.** When many readers ask the same thing with the same key, fold them
 into one question before the join, not after.
 
+**Hot paths carry `ibString`.** The engine's own string (`core/fstring.h`) is a shared handle:
+copying it copies a reference, not the characters. A name that reaches the runtime is taken as
+`const ibString&` — `ibProcUnit::CallAsProc` / `CallAsFunc`, `ibRuntimeModuleDataObject::ExecAsProc` /
+`ExecAsFunc` / `ExecAsEvent` / `ExecAsManagerEvent`. `wxString` stays where speed is not the question
+(the interface, serialisation, metadata edits). Both conversions are implicit, and each one makes a new
+text, so convert at the boundary, once. `ib_clsid_hash(const wxString&)` converts to UTF-8 and allocates
+on every call, so hash once per event, not once per handler.
+
 ---
 
 ## 7. Finding a defect
@@ -231,10 +264,15 @@ both spellings, both layers (backend and frontend), and the last week of history
 ## 8. Documentation
 
 **`docs/` is public**: these rules, the build, portability, architecture, the context file for
-assistants, release notes. **`docs/private/` is a private submodule** with design documents,
-arcs and plans; it opens for members of the organisation and is empty for everyone else. Links
-into it from code and from public documents will not open for you. That is expected, and nothing
-in the build depends on it.
+assistants, release notes. **Design documents anyone may read go in `docs/public/`** — how a
+subsystem works, why an interface has its shape, what a mechanism guarantees; its README says
+what belongs there. **`docs/private/` is a private submodule** with arcs in progress, plans and
+whatever stays inside the organisation; it opens for members and is empty for everyone else.
+Links into it from code and from public documents will not open for you. That is expected, and
+nothing in the build depends on it.
+
+A document does not go to `private/` because it is unfinished — only because its contents are
+ours alone.
 
 **Documents are written in English**, and a document that describes code changes in the same
 push as the code.

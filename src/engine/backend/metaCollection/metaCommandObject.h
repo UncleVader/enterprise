@@ -7,11 +7,10 @@
 #include "backend/moduleInfo.h" // ibRuntimeModuleDataObject (the command's private runtime descriptor)
 #include "backend/propertyManager/property/propertyType.h"   // ibPropertyType — the command's parameter data type
 #include "backend/compiler/enumUnit.h"                       // ibValueEnumeration — the interface-area enum value class
-#include "backend/propertyManager/property/propertyEnum.h"   // ibPropertyEnum — the area dropdown (declare once, all surfaces)
 
-// The interface-area enum as a runtime value — one declaration gives the script value, the inspector dropdown and
-// a serialisable property (see docs/private/enumerations.md). Members mirror ibInterfaceCommandSection (Combined excluded —
-// it is a list object's own dual mode, not a place a command is put).
+// The interface-area enum as a runtime value — the script value, and the captions of the platform's own command
+// groups (ibCommandGroupCaption reads them here, so a group is named in one place). Members mirror
+// ibInterfaceCommandSection (Combined excluded — it is a list object's own dual mode, not a place a command is put).
 class ibValueEnumInterfaceCommandSection : public ibValueEnumeration<ibInterfaceCommandSection> {
 public:
 	ibValueEnumInterfaceCommandSection() : ibValueEnumeration() {}
@@ -48,13 +47,18 @@ public:
 	// so the command path climbs uniformly. A plain leaf command has none and the walk terminates on it.
 	virtual bool GetCommandByHop(const ibCommandHop& hop, ibValue& out) override;
 
-	// The interface AREA this command occupies once it is included in a section (Important / Normal / Create /
-	// Reports / Service) — property-driven, NOT hardcoded by type: a command is a free citizen, the developer
-	// places it. A section's menu builder reads this (GetInterfaceItemArrayObject) to lay the command in the right
-	// panel; the form's command picker sees the SAME sections the same way.
-	virtual ibInterfaceCommandSection GetCommandSection() const override {
-		return m_propertyInterfaceArea->GetValueAsEnum();
-	}
+	// ⭐ WHERE THE COMMAND IS FILED once a section includes it — its GROUP, one property, one number: a platform
+	// group (Important / Normal / Create / Reports / Service) or a group the configuration declares. Property-driven,
+	// NOT hardcoded by type: a command is a free citizen, the developer places it. A section's page reads it through
+	// GetInterfaceItemArrayObject; the form's command picker sees the SAME sections the same way.
+	//
+	// The platform area, when the command sits in a platform group. A command filed under a declared group sits in
+	// none of them — the section files it under that group — and answers Normal here only because the contract has
+	// no "none".
+	virtual ibInterfaceCommandSection GetCommandSection() const override;
+	// …and the declared group, when that is where the command sits; null in a platform group, and null again when
+	// the group it named has been deleted (the command falls back to Normal rather than out of every page).
+	const class ibValueMetaObjectCommandGroup* GetCommandGroup() const;
 
 
 	// projected buttons inherit these LIVE from the command (not edited on the button)
@@ -62,6 +66,8 @@ public:
 		if (!m_propertyPicture->IsEmptyProperty()) return m_propertyPicture->GetValueAsBitmap();
 		return ibBackendPicture::CreatePicture(g_metaCommonMetadataCLSID);
 	}
+	// …and what the picture IS — what a server sends it by (ibBackendPicture::GetServerPicture).
+	ibPictureDescription GetPictureDesc() const { return m_propertyPicture->GetValueAsPictureDesc(); }
 	// The command carries NO picture -> a projection of it is TEXT-ONLY (do not force the metatype glyph). A picture
 	// is inherited from the command only when the command actually HAS one; a table action bakes its own picture.
 	bool IsEmptyPicture() const { return m_propertyPicture->IsEmptyProperty(); }
@@ -132,16 +138,21 @@ protected:
 
 
 	// required by ibBackendCommandItem, but a command overrides Execute and never opens a form.
-	virtual ibBackendValueForm* GetFormByCommandType(ibInterfaceCommandType /*cmdType*/ = ibInterfaceCommandType::ibInterfaceCommandType_Default) const override { return nullptr; }
+	virtual ibFormPtr<ibBackendValueForm> GetFormByCommandType(ibInterfaceCommandType /*cmdType*/ = ibInterfaceCommandType::ibInterfaceCommandType_Default) const override { return nullptr; }
 
 	virtual bool ReadData(const ibDataNode& node) override;
 	virtual bool WriteData(ibDataNode& node) const override;
 
 private:
 
+	// The choices of Group: the platform's groups, then every group the configuration declares (the .cpp says why
+	// one number can stand for both).
+	bool FillGroupList(ibPropertyList* prop);
+
 	ibPropertyCategory* m_categoryCommand      = ibPropertyObject::CreatePropertyCategory(wxT("Command"), _("Command"));
-	// Interface area — where the command sits once included in a section; default Normal. GetCommandSection reads it.
-	ibPropertyEnum<ibValueEnumInterfaceCommandSection>* m_propertyInterfaceArea = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumInterfaceCommandSection>>(m_categoryCommand, wxT("InterfaceArea"), _("Interface area"), _("Which group of a section the command sits in once the section includes it - the ordinary commands, create, reports or service. Normal by default."), ibInterfaceCommandSection_Default);
+	// Group — where the command sits once included in a section; default Normal. GetCommandSection / GetCommandGroup
+	// read it. Saved as "Group"; a configuration written before it has "InterfaceArea", the same number (ReadData).
+	ibPropertyList* m_propertyGroup = ibPropertyObject::CreateProperty<ibPropertyList>(m_categoryCommand, wxT("Group"), _("Group"), _("Where the command is shown. A group of a section page - one of the platform's (Important, Normal, Create, Reports, Service) or a command group the configuration declares for a section - once a section includes the command; or a command group of the form command bar, which puts it in that group's submenu on the forms of its object: the owner's for an object's command, the one its Parameter type names for a common command. Normal by default."), &ibValueMetaObjectCommand::FillGroupList, ibInterfaceCommandSection_Default);
 	ibPropertyPicture*  m_propertyPicture      = ibPropertyObject::CreateProperty<ibPropertyPicture>(m_categoryCommand, wxT("Picture"), _("Picture"), _("The icon shown beside the command's caption in a section, a command bar or a menu. Empty: caption only."));
 	ibPropertyTString*  m_propertyTooltip      = ibPropertyObject::CreateProperty<ibPropertyTString>(m_categoryCommand, wxT("Tooltip"), _("Tooltip"), _("The hint shown when the pointer rests on the command, one text per language. Empty: the synonym is shown."), wxEmptyString);
 	ibPropertyBoolean*  m_propertyModifiesData = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryCommand, wxT("ModifiesData"), _("Modifies data"), _("Declares that running the command changes data, so it has no place where data is only viewed. Saved with the command; nothing hides or disables it by this yet."), true);
@@ -156,7 +167,7 @@ private:
 		ibPropertyObject::CreateProperty<ibPropertyInnerModule<ibValueMetaObjectModule>>(
 			m_categoryContext, wxT("CommandModule"), _("Command module"), _("The command's code: CommandProcessing(CommandParameter, ExecuteParameters) runs when the command is invoked, with the typed command's reference as the parameter. Compiled when the command is run."));
 
-	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), _("Use"));
+	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), wxGETTEXT_IN_CONTEXT("access right", "Use"));
 
 	friend class ibMetaData;
 };

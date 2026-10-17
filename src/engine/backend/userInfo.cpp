@@ -3,8 +3,7 @@
 #include "appData.h"   // user_table macro
 #include "databaseLayer/databaseQueryBuilder.h"   // L2 door — the whole sys_user DAO rides this (no raw ibDatabaseLayer / result set)
 #include "databaseLayer/databaseErrorCodes.h"
-#include "fileSystem/fs.h"
-#include "guid.h"
+#include "core/fileSystem/fs.h"
 
 namespace {
 
@@ -183,35 +182,32 @@ ibUserInfo ibUserInfo::Read(const wxString& userName)
 
 bool ibUserInfo::HasAny()
 {
-	try {
-		ibDatabaseQueryBuilder q;
-		ibQueryResult result = q.ExecuteIR(
-			ibQueryIR(ibProject(ibScan(user_table), { { ibCol(wxT("name")), wxEmptyString } })));
-		return result.Next();
-	}
-	catch (...) { return false; }
+	// No catch. A missing connection or a failed statement used to come back
+	// as false, and an empty name was then accepted as open access.
+	ibDatabaseQueryBuilder q;
+	ibQueryResult result = q.ExecuteIR(
+		ibQueryIR(ibProject(ibScan(user_table), { { ibCol(wxT("name")), wxEmptyString } })));
+	return result.Next();
 }
 
 std::vector<ibUserInfo::Brief> ibUserInfo::ListAll()
 {
+	// No catch. A failed read used to come back as an empty vector, and
+	// MCP user_list then said there were no accounts at all.
 	std::vector<Brief> list;
-	try {
-		ibDatabaseQueryBuilder q;
-		ibQueryResult result = q.ExecuteIR(ibQueryIR(ibProject(ibScan(user_table),
-			{ { ibCol(wxT("guid")),     wxEmptyString },
-			  { ibCol(wxT("name")),     wxEmptyString },
-			  { ibCol(wxT("fullName")), wxEmptyString } })));
+	ibDatabaseQueryBuilder q;
+	ibQueryResult result = q.ExecuteIR(ibQueryIR(ibProject(ibScan(user_table),
+		{ { ibCol(wxT("guid")),     wxEmptyString },
+		  { ibCol(wxT("name")),     wxEmptyString },
+		  { ibCol(wxT("fullName")), wxEmptyString } })));
 
-		while (result.Next()) {
-			Brief entry;
-			entry.m_strUserGuid     = result.GetResultString(wxT("guid"));
-			entry.m_strUserName     = result.GetResultString(wxT("name"));
-			entry.m_strUserFullName = result.GetResultString(wxT("fullName"));
-			list.emplace_back(std::move(entry));
-		}
+	while (result.Next()) {
+		Brief entry;
+		entry.m_strUserGuid     = result.GetResultString(wxT("guid"));
+		entry.m_strUserName     = result.GetResultString(wxT("name"));
+		entry.m_strUserFullName = result.GetResultString(wxT("fullName"));
+		list.emplace_back(std::move(entry));
 	}
-	catch (...) { /* best-effort — empty list on failure */ }
-
 	return list;
 }
 
@@ -233,7 +229,7 @@ bool ibUserInfo::Save(const ibUserInfo& info)
 			{ wxT("guid"),       ibConst(ibValue(info.m_strUserGuid)) },
 			{ wxT("name"),       ibConst(ibValue(info.m_strUserName)) },
 			{ wxT("fullName"),   ibConst(ibValue(info.m_strUserFullName)) },
-			{ wxT("changed"),    ibConst(ibValue(wxDateTime::Now())) },
+			{ wxT("changed"),    ibConst(ibValue(ibDateTime::Now())) },
 			{ wxT("dataSize"),   ibConst(ibValue(static_cast<unsigned int>(writer.size()))) },
 			{ wxT("binaryData"), ibConstBlob(writer.pointer(), writer.size()) },
 		}, { wxT("guid") }));

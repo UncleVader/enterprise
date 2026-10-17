@@ -10,6 +10,8 @@
 #include "backend/query/queryParser.h"  // a field picked for a branch is read by the ENGINE
 #include "backend/query/queryRewrite.h" // ibQueryEnsureUniqueName — what to call a field with no natural name
 
+#include "core/exception.h"   // ibCoreException — what a refused field throws
+
 // ---------------------------------------------------------------------------
 //  The branches
 // ---------------------------------------------------------------------------
@@ -353,7 +355,7 @@ bool ibQueryUnionFieldModel::SetBranchColumn(unsigned int row, unsigned int bran
 				ibQueryParser parser;
 				added.m_expr = parser.ParseExpression(field);
 			}
-			catch (const ibBackendException& error) {
+			catch (const ibCoreException& error) {
 				if (m_onError) m_onError(error.GetErrorDescription());
 				return false;
 			}
@@ -400,7 +402,7 @@ bool ibQueryUnionFieldModel::SetBranchColumn(unsigned int row, unsigned int bran
 			ibQueryParser parser;
 			target->m_projections[row].m_expr = parser.ParseExpression(field);
 		}
-		catch (const ibBackendException& error) {
+		catch (const ibCoreException& error) {
 			if (m_onError) m_onError(error.GetErrorDescription());
 			return false;
 		}
@@ -465,7 +467,7 @@ bool ibQueryUnionFieldModel::SetBranchColumn(unsigned int row, unsigned int bran
 		ibQueryParser parser;
 		expr = parser.ParseExpression(field);
 	}
-	catch (const ibBackendException& error) {
+	catch (const ibCoreException& error) {
 		if (m_onError) m_onError(error.GetErrorDescription());
 		return false;
 	}

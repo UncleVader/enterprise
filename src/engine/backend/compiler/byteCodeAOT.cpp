@@ -34,7 +34,8 @@
 // successful Deserialize).
 
 #include "backend/compiler/byteCode.h"
-#include "backend/fileSystem/fs.h"
+#include "backend/compiler/byteCodeFormat.h"   // kAOTFormatVersion — also the cache key
+#include "core/fileSystem/fs.h"
 
 namespace {
 
@@ -157,9 +158,10 @@ constexpr uint32_t kAOTMagic         = 0x31434250u; // 'PBC1' little-endian
 // while this was being tested.
 //
 // ⭐ THE VERSION IS ABOUT WHETHER THIS ENGINE MAY USE THIS BLOB, not about byte layout.
-// The cache key (byteCodeCache.cpp) is build-stamp + configuration digest, and the stamp
-// only moves when backend_core.cpp is recompiled — a compiler-rule change in another file
-// leaves it untouched. The strict check below is what makes a rule change safe.
+// The cache key (byteCodeCache.cpp) is this number plus the configuration digest. The
+// number lives in byteCodeFormat.h, which is what the compiler rebuilds; the old key
+// used core's build stamp, and core is not rebuilt when an opcode changes. The check
+// below still rejects a blob that was found under the wrong number.
 // v23 (2026-09-05): a function record gained one byte after m_valueCached —
 // `m_valueVariadic`, THE THIRD default-false flag this record has lost on the way back.
 // A built-in registered with a negative arity (`AppendFunc(wxT("Max"), -1, …)`) declares
@@ -224,7 +226,29 @@ constexpr uint32_t kAOTMagic         = 0x31434250u; // 'PBC1' little-endian
 // is not kept by `where` — a v30 blob's zero there keeps it; and `Not` no longer gates its own result cell
 // before computing it (a v30 blob does, and raises on the second row of a filter); and `Not` reads its operand
 // only up to the next And / Or (a v30 blob compiled `Not a And b` as `Not (a And b)`). The layout did not move.
-constexpr uint16_t kAOTFormatVersion = 31;
+// 🛑 31 → 32 (2026-09-21): an ordering key's WAY rides its own `OPER_LINQ_KEEP` (m_param4.m_numArray, 1 =
+// descending), and `OPER_LINQ_RESULT` says only "by the keys" (2). A v31 blob wrote the way once, as 1 in the
+// RESULT, and a zero in every KEEP - read now, a descending query would come back ascending, quietly.
+// 🛑 32 -> 33 (2026-09-24): a COMPARISON'S RESULT IS BOOLEAN AGAIN, so the instruction above it
+//    changes. "Is this a comparison" is a range over the operator numbers and it was asked after a
+//    declared type had already moved the opcode by a tier, so a typed comparison answered no and
+//    its result carried the OPERAND'S class - which made the If over it take the operand's tier and
+//    read the operand's field. Cached bytecode written by the old compiler holds that If; the new
+//    interpreter writes the comparison's answer with its tag, into another field, and the old If
+//    would read the one nobody wrote. And / Or answer a boolean by the same rule and move with it.
+// 🛑 33 -> 34 (2026-09-27): A DYNAMIC CLASS ID CARRIES ITS METACLASS (clsid.h: kind | metaclass | metaID), and
+//    `AnyRef` / `CatalogRef` are spelled in those bits (any metaID) instead of a name hash. A blob keeps the
+//    class ids its code was compiled against — a declared type, a `New` — and a v33 one names classes that
+//    are registered under other ids now.
+// 🛑 34 -> 35 (2026-09-30): A DATE CONSTANT IS AN ibDateTime (fdatetime.h) - a wall-clock reading counted from the
+//    empty date - where a v34 blob holds an instant of the compiling machine's clock.
+// 🛑 35 -> 36 (2026-10-09): OPER_ITER left the opcode list (codeDef.h). The ternary is If's shape
+//    now — OPER_IF, the chosen branch writing the result, OPER_GOTO over the other — so both
+//    branches are no longer computed before the choice. Dropping the enumerator moves every opcode
+//    from OPER_GT through OPER_END, and TYPE_DELTA with them. A v35 blob stores the old numbers and
+//    would dispatch the wrong handler on every instruction after that slot.
+// The constant itself is kAOTFormatVersion in byteCodeFormat.h. It moved out of this
+// file so the cache key can name the same number the blob header writes.
 [[maybe_unused]] constexpr uint16_t kAOTFlagPortable = 0x0001;   // reserved — host-endian today, no reader yet
 
 // Sentinel for an over-large collection — guards Deserialize against
@@ -311,7 +335,7 @@ bool WriteConstValue(ibWriterMemory& w, const ibValue& v) {
 		return true;
 	}
 	case ibValueTypes::TYPE_DATE:
-		w.w_s64((int64_t)v.m_dData);
+		w.w_s64(v.m_dData.GetValue());
 		return true;
 	case ibValueTypes::TYPE_STRING:
 		w.w_stringZ(v.GetString());
@@ -353,7 +377,7 @@ bool ReadConstValue(const ibReaderMemory& r, ibValue& v) {
 		break;
 	}
 	case ibValueTypes::TYPE_DATE:
-		v.m_dData = (wxLongLong_t)r.r_s64();
+		v.m_dData = ibDateTime(r.r_s64());
 		break;
 	case ibValueTypes::TYPE_STRING:
 		v.SetString(r.r_stringZ());

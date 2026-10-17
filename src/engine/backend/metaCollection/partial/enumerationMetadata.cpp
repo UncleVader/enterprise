@@ -4,7 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "enumeration.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/metaData.h"
 #include "backend/system/value/valueDynamicList.h"   // ibValueDynamicList — the standard list migrates onto the universal dynamic list
 
@@ -22,6 +22,9 @@
 ibValueMetaObjectEnumeration::ibValueMetaObjectEnumeration() : ibValueMetaObjectRecordDataEnumRef()
 {
 	m_propertyQuickChoice->SetValue(true);
+	
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("ChoiceDataGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("ChoiceData"), wxT("Parameters"), wxT("StandardProcessing") });
 }
 
 ibValueMetaObjectEnumeration::~ibValueMetaObjectEnumeration()
@@ -42,42 +45,40 @@ ibValueMetaObjectFormBase* ibValueMetaObjectEnumeration::GetDefaultFormByID(cons
 
 #include "enumerationManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectEnumeration::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectEnumeration::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectEnumeration(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectEnumeration(this));
 }
 
-ibSourceDataObject* ibValueMetaObjectEnumeration::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectEnumeration::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormList:
-		return ibCreateList(GetQueryable(), GetDataOrder()->GetQueryColumn());   // migrated onto the universal dynamic list
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetDataOrder()->GetQueryColumn()));   // migrated onto the universal dynamic list
 	case eFormSelect:
-		return ibCreateList(GetQueryable(), GetDataOrder()->GetQueryColumn(), ibDynamicListView_Choice);   // select front-driven — choice mode
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetDataOrder()->GetQueryColumn(), ibDynamicListView_Choice));   // select front-driven — choice mode
 	}
 
 	return nullptr;
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectEnumeration::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectEnumeration::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectEnumeration::eFormList,
-		ownerControl, ibCreateList(GetQueryable(), GetDataOrder()->GetQueryColumn()),   // migrated onto the universal dynamic list
-		formGuid
+		ownerControl, ibCreateList(request.m_create, GetQueryable(), GetDataOrder()->GetQueryColumn())   // migrated onto the universal dynamic list
 	);
 }
 
-ibBackendValueForm* ibValueMetaObjectEnumeration::GetSelectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectEnumeration::GetSelectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectEnumeration::eFormSelect,
-		ownerControl, ibCreateList(GetQueryable(), GetDataOrder()->GetQueryColumn(), ibDynamicListView_Choice),   // select front-driven — choice mode
-		formGuid
+		ownerControl, CreateSourceObject(request.m_create, eFormSelect)   // select front-driven — choice mode
 	);
 }
 #pragma endregion

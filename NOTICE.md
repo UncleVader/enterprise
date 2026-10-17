@@ -2,23 +2,23 @@
 
 ## Who holds the copyright
 
-OES Enterprise is owned by **Open Enterprise Solutions**
-(<https://github.com/open-enterprise-solutions>), which holds the copyright and grants the
-licenses: the noncommercial one in [LICENSE.md](LICENSE.md) and the commercial ones.
+OES Enterprise is owned by **Maksym Korniienko**, who wrote most of the platform and publishes
+it as **Open Enterprise Solutions** (<https://github.com/open-enterprise-solutions>). He holds
+the copyright and grants the licenses: the noncommercial one in [LICENSE.md](LICENSE.md) and
+the commercial ones.
 
-Open Enterprise Solutions is not yet registered as a company. Until it is, the copyright is
-held, and licenses are granted, by Maxim Kornienko, who wrote most of the platform, acting as
-Open Enterprise Solutions. Everyone else's work is contributed under the grant in
-[CONTRIBUTING.md](CONTRIBUTING.md), in return for the platform free for noncommercial use and
-for evaluation.
+Open Enterprise Solutions is not yet registered as a company. Once it is, he may assign the
+rights to it, and the grants received under [CONTRIBUTING.md](CONTRIBUTING.md) go with them.
+Everyone else's work is contributed under that grant, in return for the platform free for
+noncommercial use and for evaluation.
 
 The copyright holders agreed to the change of terms recorded below.
 
 ## Contributors
 
 People who improved this platform and let it be licensed as it is. A contribution accepted
-here goes into something owned and sold by Open Enterprise Solutions and is not paid for — see
-[CONTRIBUTING.md](CONTRIBUTING.md), which says so plainly.
+here goes into something owned and sold by Maksym Korniienko as Open Enterprise Solutions and
+is not paid for — see [CONTRIBUTING.md](CONTRIBUTING.md), which says so plainly.
 
 Their credit is the history itself. A pull request is merged as it is, not squashed, so every
 contributor stays the author of their own commits, and the repository's contributor list on
@@ -41,7 +41,8 @@ These keep their own licenses. Nothing in LICENSE.md changes or overrides them.
 | Component | Where | License |
 |---|---|---|
 | wxWidgets | `src/3rdparty/wxWidgets` (git submodule) | wxWindows Library Licence |
-| cpp-httplib | `src/3rdparty/cpp-httplib` | MIT |
+| cpp-httplib | `src/3rdparty/cpp-httplib` (submodule) | MIT |
+| Mbed TLS | `src/3rdparty/mbedtls` (submodule) | Apache-2.0 |
 | nlohmann/json | `src/3rdparty/nlohmann` | MIT |
 
 ## wxWidgets-derived sources inside the engine
@@ -76,7 +77,7 @@ free tier, which requires attribution:
 | *ai* | the assistant — tab and menu item | icons8 |
 
 Both are downscaled to 16px and embedded as base64 in
-`src/engine/backend/picturePredefined.cpp`, where each carries a comment pointing here.
+`src/engine/core/picturePredefined.cpp`, where each carries a comment pointing here.
 
 ⚠ This section was missing until 2026-08-31 even though the code had said for months that the
 credit "is kept in the docs" — the note existed, the attribution did not. It is here rather

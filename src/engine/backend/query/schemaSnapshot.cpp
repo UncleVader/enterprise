@@ -178,26 +178,59 @@ void ibDeclareDerivedKey(ibSchemaTable& table, const wxString& tableName,
 	ibDeclareLookupIndex(table, tableName + wxT("_KL"), keyCols);
 }
 
+std::vector<const ibBackendQueryColumn*> ibFitLookupColumns(
+	const std::vector<const ibBackendQueryColumn*>& cols, const ibBackendQueryColumn* closing,
+	const std::function<bool(size_t fields, size_t bytes)>& fits)
+{
+	const auto measure = [](const ibBackendQueryColumn* col, size_t& fields, size_t& bytes) {
+		const std::vector<ibColumnSlot> slots = DescribeColumnLayout(col);
+		fields = slots.size();
+		bytes = 0;
+		for (const ibColumnSlot& field : slots)
+			bytes += ibIndexFieldByteWidth(field.m_type);
+	};
+
+	// The closing column is paid for FIRST: what is cut to make room is a trailing column before it, never it.
+	// One that does not fit even alone closes nothing, and the leading columns are taken as they always were.
+	size_t fields = 0, bytes = 0;
+	if (closing != nullptr) {
+		measure(closing, fields, bytes);
+		if (fits && !fits(fields, bytes)) {
+			closing = nullptr;
+			fields = bytes = 0;
+		}
+	}
+
+	std::vector<const ibBackendQueryColumn*> lookup;
+	for (const ibBackendQueryColumn* col : cols) {
+		if (col == closing)
+			continue;
+		size_t colFields = 0, colBytes = 0;
+		measure(col, colFields, colBytes);
+		if (fits && !fits(fields + colFields, bytes + colBytes))
+			break;
+		lookup.push_back(col);
+		fields += colFields;
+		bytes += colBytes;
+	}
+	if (closing != nullptr)
+		lookup.push_back(closing);
+	return lookup;
+}
+
 void ibDeclareLookupIndex(ibSchemaTable& table, const wxString& indexName,
-                          const std::vector<const ibBackendQueryColumn*>& cols)
+                          const std::vector<const ibBackendQueryColumn*>& cols,
+                          const ibBackendQueryColumn* closing)
 {
 	// ⚠ ASKED THROUGH L2-2, never read off a dialect from here. A dictionary is the level below's to
 	// read; this floor knows that it wants "as many leading columns as an index will hold" and nothing
 	// about which engine answers. BOTH ceilings — the count alone let a key of wide strings through to a
 	// CREATE INDEX the engine refused (see ibKeyNeedsHash).
-	std::vector<const ibBackendQueryColumn*> lookup;
-	size_t fields = 0, bytes = 0;
-	for (const ibBackendQueryColumn* col : cols) {
-		const std::vector<ibColumnSlot> slots = DescribeColumnLayout(col);
-		size_t width = 0;
-		for (const ibColumnSlot& field : slots)
-			width += ibIndexFieldByteWidth(field.m_type);
-		if (db_query != nullptr && !ibIndexKeyFits(*db_query, fields + slots.size(), bytes + width))
-			break;
-		lookup.push_back(col);
-		fields += slots.size();
-		bytes += width;
-	}
+	std::function<bool(size_t, size_t)> fits;
+	if (db_query != nullptr)
+		fits = [](size_t fields, size_t bytes) { return ibIndexKeyFits(*db_query, fields, bytes); };
+
+	const std::vector<const ibBackendQueryColumn*> lookup = ibFitLookupColumns(cols, closing, fits);
 	if (!lookup.empty())
 		table.Index(indexName, lookup, /*unique*/ false);
 }
@@ -260,16 +293,35 @@ const ibSchemaIndex* FindIndex(const std::vector<ibSchemaIndex>& indexes, const 
 	return nullptr;
 }
 
-// Two same-named indexes are the SAME shape iff their uniqueness and their column list (by model id,
-// stable across config instances) match. A mismatch (e.g. Index -> IndexWithAdditionalOrder adds the
-// order column, or a unique flip) means the index must be dropped and rebuilt, not left as-is.
+// Two same-named indexes are the SAME shape iff their uniqueness, their column list (by model id,
+// stable across config instances) and the PHYSICAL type of each column match. A mismatch (e.g.
+// Index -> IndexWithAdditionalOrder adds the order column, a unique flip, or a dimension retyped
+// from string to a reference) means the index must be dropped and rebuilt, not left as-is.
+//
+// The model id survives a type change. The index does not: it stands on the physical fields, and
+// no engine alters a column an index references — Firebird answers "column ... is referenced in
+// index" and rolls the apply back. A different layout is a different index, so the differ drops
+// it before the column and puts it back after.
 bool SameIndex(const ibSchemaIndex& a, const ibSchemaIndex& b)
 {
 	if (a.m_unique != b.m_unique)             return false;
+	if (a.m_descending != b.m_descending)     return false;
 	if (a.m_columns.size() != b.m_columns.size()) return false;
-	for (size_t k = 0; k < a.m_columns.size(); ++k)
-		if (a.m_columns[k]->GetColumnId() != b.m_columns[k]->GetColumnId())
+	for (size_t k = 0; k < a.m_columns.size(); ++k) {
+		const ibBackendQueryColumn* const left = a.m_columns[k];
+		const ibBackendQueryColumn* const right = b.m_columns[k];
+		if (left == nullptr || right == nullptr)
 			return false;
+		if (left->GetColumnId() != right->GetColumnId())
+			return false;
+		const std::vector<ibColumnSlot> was = DescribeColumnLayout(left);
+		const std::vector<ibColumnSlot> now = DescribeColumnLayout(right);
+		if (was.size() != now.size())
+			return false;
+		for (size_t f = 0; f < was.size(); ++f)
+			if (was[f].m_name != now[f].m_name || !ibSameFieldType(was[f].m_type, now[f].m_type))
+				return false;
+	}
 	return true;
 }
 
@@ -598,7 +650,7 @@ int CreateTable(ibStructureBatch& batch, const ibSchemaTable& t, ibRestructureIn
 	}
 	if (!t.m_external)
 		for (const ibSchemaIndex& i : t.m_indexes)
-			batch.CreateIndex(i.m_name, i.m_columns, i.m_unique);
+			batch.CreateIndex(i.m_name, i.m_columns, i.m_unique, i.m_descending);
 	return 1;
 }
 
@@ -626,7 +678,7 @@ int AlterTable(ibStructureBatch& batch, const ibSchemaTable& old, const ibSchema
 	for (const ibSchemaIndex& o : old.m_indexes) {
 		const ibSchemaIndex* c = FindIndex(cur.m_indexes, o.m_name);
 		if (c == nullptr || !SameIndex(o, *c)) {
-			batch.DropIndex(o.m_name, o.m_columns, o.m_unique);   // the shape rides along for the compensation
+			batch.DropIndex(o.m_name, o.m_columns, o.m_unique, o.m_descending);   // the shape rides along for the compensation
 			if (report != nullptr)
 				report->AppendInfo((c == nullptr ? _("Remove index ") : _("Rebuild index ")) + o.m_name);
 		}
@@ -635,12 +687,22 @@ int AlterTable(ibStructureBatch& batch, const ibSchemaTable& old, const ibSchema
 	for (const ibSchemaColumn& c : cur.m_columns) {
 		const ibSchemaColumn* o = FindColumn(old.m_columns, c.m_id);
 		const size_t before = batch.StepCount();
-		DiffColumnInto(batch, c.m_column, o != nullptr ? o->m_column : nullptr);   // errors THROW now
+		const long long cleared = DiffColumnInto(batch, c.m_column, o != nullptr ? o->m_column : nullptr);   // errors THROW now
 		if (report != nullptr && batch.StepCount() != before) {   // a step was emitted -> a real change
 			if (o == nullptr)
 				report->AppendInfo(_("Add ") + ColName(c.m_column) + _(" to ") + LedgerName(cur));
 			else
 				report->AppendInfo(_("Change ") + ColName(c.m_column) + _(" in ") + LedgerName(cur));
+		}
+		// What a removed type costs, said while the person can still refuse the apply: the values
+		// are counted before the batch clears them. A derived table loses nothing — its rows are a
+		// reading of the movements, which say their own loss.
+		if (report != nullptr && cleared > 0 && !cur.m_derived) {
+			ibNumber::Format grouped;
+			grouped.groupSep = wxT(' ');
+			grouped.groupSize = 3;
+			report->AppendWarning(wxString::Format(_("%s in %s: %s stored values will be cleared"),
+				ColName(c.m_column), LedgerName(cur), ibNumber(cleared).ToString(grouped)));
 		}
 	}
 	for (const ibSchemaColumn& o : old.m_columns) {
@@ -656,7 +718,7 @@ int AlterTable(ibStructureBatch& batch, const ibSchemaTable& old, const ibSchema
 	for (const ibSchemaIndex& i : cur.m_indexes) {
 		const ibSchemaIndex* o = FindIndex(old.m_indexes, i.m_name);
 		if (o == nullptr || !SameIndex(*o, i)) {
-			batch.CreateIndex(i.m_name, i.m_columns, i.m_unique);
+			batch.CreateIndex(i.m_name, i.m_columns, i.m_unique, i.m_descending);
 			if (report != nullptr && o == nullptr)
 				report->AppendInfo(_("Add index ") + i.m_name);
 		}
@@ -665,7 +727,37 @@ int AlterTable(ibStructureBatch& batch, const ibSchemaTable& old, const ibSchema
 	return retCode;
 }
 
+// ⭐ AN INDEX THE BASE CANNOT HOLD IS REFUSED HERE, before a statement — not by the engine at CREATE INDEX,
+// where the failure rolls the apply back and names nothing useful (a register's records key was declared
+// with no width check at all, ROADMAP §1o). Measured the way a derived key is (ibDeclareDerivedKey): fields
+// as the index counts them, bytes generously. Asked only of an index this apply CREATES — see the caller.
+bool IndexKeyFitsOrSay(const ibDatabaseLayer& conn, const ibSchemaTable& t, const ibSchemaIndex& i, ibRestructureInfo* report)
+{
+	size_t fieldCount = 0;
+	size_t keyBytes = 0;
+	wxString fields;
+	for (const ibBackendQueryColumn* col : i.m_columns) {
+		fieldCount += ColumnFieldNames(col).size();
+		for (const ibColumnSlot& field : DescribeColumnLayout(col))
+			keyBytes += ibIndexFieldByteWidth(field.m_type);
+		fields += (fields.IsEmpty() ? wxString() : wxString(wxT(", "))) + ColName(col);
+	}
+	if (ibIndexKeyFits(conn, fieldCount, keyBytes))
+		return true;
+	if (report != nullptr)
+		report->AppendError(wxString::Format(
+			_("Index %s of %s is too wide for this base: %u fields and about %u bytes of key, where it holds %u and %u - shorten a field of it or take one out of the key (%s)"),
+			i.m_name, LedgerName(t), (unsigned)fieldCount, (unsigned)keyBytes,
+			ibIndexFieldCapacity(conn), conn.GetMaxIndexKeyBytes(), fields));
+	return false;
+}
+
 } // namespace
+
+bool ibSameSchemaIndex(const ibSchemaIndex& a, const ibSchemaIndex& b)
+{
+	return SameIndex(a, b);
+}
 
 // Apply a derived table's materialization bundle — drop the old triggers / view, create the new
 // ones. Runs AFTER the table's own structure is in place (a trigger references its columns).
@@ -764,17 +856,18 @@ bool SameStructure(const ibSchemaSnapshot* baseline, const ibSchemaSnapshot& tar
 			return false;                                   // new table
 
 		// Columns by MODEL ID, the same key the differ matches on; a column present on one side only is an
-		// add or a drop, and a matched pair differs when its type set does — which is exactly the condition
-		// DiffColumnInto tests before it emits anything. Adding a type to a COMPOSITE attribute that already
-		// carries a reference lands here as "same type set is not same" only when the physical layout really
-		// moves; when it does not, the type descriptions compare equal and the table stays unchanged.
+		// add or a drop, and a matched pair differs when what it may HOLD does (GetTypeValueDesc) — which
+		// is exactly the condition DiffColumnInto tests before it emits anything. Adding a type to a
+		// COMPOSITE attribute that already carries a reference lands here as "same type set is not same"
+		// only when the physical layout really moves; when it does not, the type descriptions compare
+		// equal and the table stays unchanged.
 		if (old->m_columns.size() != cur.m_columns.size())
 			return false;
 		for (const ibSchemaColumn& c : cur.m_columns) {
 			const ibSchemaColumn* o = FindColumn(old->m_columns, c.m_id);
 			if (o == nullptr || o->m_column == nullptr || c.m_column == nullptr)
 				return false;
-			if (!(o->m_column->GetTypeDesc() == c.m_column->GetTypeDesc()))
+			if (!(o->m_column->GetTypeValueDesc() == c.m_column->GetTypeValueDesc()))
 				return false;
 		}
 
@@ -817,6 +910,23 @@ int DiffSnapshots(const ibSchemaSnapshot* baseline, const ibSchemaSnapshot& targ
 	for (const ibSchemaTable& cur : target.Tables()) {
 		if (cur.m_beforeChange && !cur.m_beforeChange(report))
 			refused = true;
+	}
+
+	// …and every index this apply would CREATE — new, or changed — is asked whether the base can hold it
+	// (IndexKeyFitsOrSay). Only those: an index standing unchanged is never questioned again, because the
+	// estimate is deliberately generous and a rule that re-judged standing indexes on every apply would refuse
+	// a base whose index the engine already accepted (the PR #220 guard did exactly that to a column).
+	for (const ibSchemaTable& cur : target.Tables()) {
+		if (cur.m_external)
+			continue;
+		const ibSchemaTable* old = baseline != nullptr ? baseline->Find(cur.m_id) : nullptr;
+		for (const ibSchemaIndex& i : cur.m_indexes) {
+			const ibSchemaIndex* standing = old != nullptr ? FindIndex(old->m_indexes, i.m_name) : nullptr;
+			if (standing != nullptr && SameIndex(*standing, i))
+				continue;
+			if (!IndexKeyFitsOrSay(schema.Connection(), cur, i, report))   // the connection this save runs on
+				refused = true;
+		}
 	}
 	if (refused)
 		return 0;

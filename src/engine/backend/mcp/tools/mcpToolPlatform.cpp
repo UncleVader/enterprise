@@ -18,6 +18,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "backend/mcp/mcpTool.h"
+#include "backend/appData.h"   // appData — the caller's base
 
 //---------------------------------------------------------------------------
 // platform_state
@@ -38,7 +39,8 @@ public:
 
 	wxString GetDescription() const override
 	{
-		return ibMcpText("What decides how anything here must be written, RIGHT NOW: the script dialect "
+		return ibMcpText("What decides how anything here must be written, RIGHT NOW: WHICH BASE this is "
+			"(its path, and how it is connected), the script dialect "
 			"(word-fenced or C-style), the languages this configuration declares, its "
 			"compatibility version, the platform build, and who you are acting as. ASK IT BEFORE "
 			"WRITING CODE. The same facts are handed over at connection, but that was a snapshot "
@@ -59,7 +61,7 @@ public:
 		// account are facts either way, and `configurationOpen: false` is the answer to "what
 		// dialect" rather than an error about it. A caller orienting itself should never be told
 		// off for asking.
-		ibMcpDescribePlatform(result);
+		ibMcpDescribePlatform(appData, result);   // a tool runs in the caller's session — its base
 
 		return true;
 	}

@@ -1,11 +1,11 @@
 #include "propertyString.h"
 #include "backend/propertyManager/property/variant/variantTranslate.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (String, the stored form)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (String, the stored form)
 
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyTString::CreateVariantData(const ibTranslateString& translate) const
+wxVariantData* ibPropertyTString::CreateVariantData(const ibTranslateString& translate)
 {
 	return new ibVariantDataTranslate(translate);
 }

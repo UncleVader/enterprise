@@ -10,9 +10,10 @@
 #include "backend/metaCollection/partial/tabularSection/tabularSection.h"
 #include "backend/query/dataQueryBuilder.h"   // L3 door — reference read by key / scan
 #include "backend/logger/logger.h"        // a read that FAILED is said out loud, unlike a row that is absent
-#include "backend/diagnostics/journal.h"  // every read is counted — how many there are is a measurement, not a guess
-#include "backend/utils/debugTrace.h"     // ibDebugTraceEnabled — the same gate as the hit line
-#include "backend/stringUtils.h"          // a typed text against a code: the whole of it, case aside
+#include "core/diagnostics/debugTrace.h"     // ibDebugTraceEnabled — the same gate as the hit line
+#include "core/stringUtils.h"          // a typed text against a code: the whole of it, case aside
+#include "backend/system/value/valueArray.h"   // ibValueArray — ChoiceDataGetProcessing's ChoiceData
+#include "backend/system/value/valueMap.h"     // ibValueStructure — …and its Parameters
 
 #include <algorithm>    // the batch's list, sorted and halved
 #include <functional>   // std::less over the tables' addresses
@@ -65,13 +66,13 @@ bool ibValueReferenceDataObject::ReadData(bool createData)
 	//
 	// It stays non-throwing (a presentation asking "who is this reference" must not blow up a form),
 	// but the fault is now SAID, with the table it happened on.
-	catch (const ibBackendException& err) {
-		if (ibLogger* const log = ibApplicationData::GetLogger())
+	catch (const ibCoreException& err) {
+		if (ibLogger* const log = ibApplicationInstance::GetLogger())
 			log->Error(wxT("reference"), wxT("read"),
 				m_metaObject->GetPhysicalTableName() + wxT(": ") + err.GetErrorDescription());
 	}
 	catch (...) {
-		if (ibLogger* const log = ibApplicationData::GetLogger())
+		if (ibLogger* const log = ibApplicationInstance::GetLogger())
 			log->Error(wxT("reference"), wxT("read"),
 				m_metaObject->GetPhysicalTableName() + wxT(": ") + _("unknown exception"));
 	}
@@ -163,13 +164,13 @@ void ibValueReferenceDataObject::ReadBatch()
 		// A read that FAILED — or a key that did not come back, deleted or refused by its rights — leaves
 		// its references raw: each reads itself when it is asked, and says there what it found, with the
 		// object it happened on.
-		catch (const ibBackendException& err) {
-			if (ibLogger* const log = ibApplicationData::GetLogger())
+		catch (const ibCoreException& err) {
+			if (ibLogger* const log = ibApplicationInstance::GetLogger())
 				log->Error(wxT("reference"), wxT("read"),
 					metaObject->GetPhysicalTableName() + wxT(": ") + err.GetErrorDescription());
 		}
 		catch (...) {
-			if (ibLogger* const log = ibApplicationData::GetLogger())
+			if (ibLogger* const log = ibApplicationInstance::GetLogger())
 				log->Error(wxT("reference"), wxT("read"),
 					metaObject->GetPhysicalTableName() + wxT(": ") + _("unknown exception"));
 		}
@@ -181,6 +182,26 @@ void ibValueReferenceDataObject::ReadBatch()
 
 bool ibValueReferenceDataObject::FindValue(const wxString& findData, std::vector<ibValue>& listValue) const
 {
+	// ⭐ THE MANAGER IS ASKED FIRST — ChoiceDataGetProcessing(ChoiceData, Parameters, StandardProcessing), in
+	// its module and in its event handlers. Every quick choice and every choice by typed text comes through
+	// here: told StandardProcessing = False, the list is what it put into ChoiceData, and no search is run.
+	// Only for whom may read the object's data — the rights come first, as they do for its forms.
+	if (m_metaObject->AccessRight_Show()) {
+		const ibValuePtr<ibValueArray> choiceData(new ibValueArray());
+		const ibValuePtr<ibValueStructure> parameters(new ibValueStructure());
+		parameters->Insert(wxT("SearchString"), findData);
+
+		ibValue choiceDataValue(choiceData);
+		ibValue parametersValue(parameters);
+		ibValue standardProcessing = true;
+		ibValue* params[] = { &choiceDataValue, &parametersValue, &standardProcessing };
+		ibRuntimeModuleDataObject::ExecAsManagerEvent(m_metaObject, wxT("ChoiceDataGetProcessing"), params, 3);
+		if (!standardProcessing.GetBoolean()) {
+			listValue = choiceData->Values();
+			return !listValue.empty();
+		}
+	}
+
 	// ⭐⭐ THE ROW BEING JUDGED IS THE ROW ALREADY IN HAND.
 	//
 	// This used to run a QUERY PER ROW: the scan below walked the table, and for every row it built a

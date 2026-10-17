@@ -25,7 +25,9 @@
 // (`ResolveReferenceTarget`, the one metadata owner), the target vends its row key and its parent
 // column, and the whole parent map is read in ONE query. This is the same road `TOTALS BY x
 // HIERARCHY` already takes (`ibQueryComposer::BuildReferenceHierarchy`) — one mechanism, so a report
-// and a filter that both say "in hierarchy" cannot come to mean different things.
+// and a filter that both say "in hierarchy" cannot come to mean different things. A column that names
+// no catalog (a value table's, declared with no type) is refused in words: it is given a type (CAST),
+// not guessed from the values.
 //
 // ⚠ It was written the other way round first — from the VALUE: cast it to a reference, ask its
 // metaobject for a parent link, then one query PER NODE. That is a metadata cast in a tier that is
@@ -34,10 +36,12 @@
 // ⚠ NOT A CODE PREFIX. "Every account whose code starts with 60" is the tempting one-liner and it
 // is wrong: a code is a presentation somebody may re-number, the parent link is the fact.
 //
-// ⚠ THE SUBTREE IS RESOLVED INTO VALUES, not expressed as an operator the database has to
-// understand: what reaches the server is an ordinary IN, which every one of the four drivers renders
-// with no recursive CTE and no dialect that has to spell one. That is also why the language's
-// `IN HIERARCHY` takes a PARAMETER and never a subquery - the values have to be IN HAND first.
+// ⚠ THIS IS THE READ IN HAND, NOT THE ONLY ROAD. Since 2026-09-29 a condition that selects rows goes
+// down AS NAMED and the database has the server walk the subtree (dbTableProvider BuildSubtreeIn, WITH
+// RECURSIVE); this scope answers where the rows are filtered in memory (queryProvider SubtreeResolved),
+// where a driver cannot walk a tree (ODBC), inside an expression, and for the FOLD a source makes by the
+// word. The language's `IN HIERARCHY` takes a PARAMETER and never a subquery — the named values are the
+// roots of either walk, and they have to be in hand first.
 
 #include "backend/backend.h"          // BACKEND_API
 #include "backend/compiler/value.h"   // ibValue
@@ -52,6 +56,8 @@
 
 class ibBackendQueryable;
 class ibBackendQueryColumn;
+class ibMetaData;
+struct ibTypeDescription;
 
 class BACKEND_API ibQueryHierarchyScope
 {
@@ -68,6 +74,12 @@ public:
 	// degradation and not a failure: «in hierarchy» over a flat list IS the list.
 	ibQueryHierarchyScope(const ibBackendQueryable* source, const ibBackendQueryColumn* column,
 	                      const std::vector<ibValue>& named, ibQueryDimUnfold unfold);
+	// …and by the field's TYPE, where a holder of fields has the type with no column behind it — a setting's field,
+	// walked by its type (ibQueryConstructorModel::WalkFrom) and read against rows in memory. The same metadata
+	// owner names the targets (ibDbTableProvider::ReferenceTargetsOf); a type that names none leaves every named
+	// value standing for itself, as a flat list does above.
+	ibQueryHierarchyScope(const ibMetaData* metaData, const ibTypeDescription& type,
+	                      const std::vector<ibValue>& named, ibQueryDimUnfold unfold);
 
 	// Nothing named at all. NOT the same as "nothing matches": what an empty scope means is the
 	// caller's to decide - a register argument left out means every account, while an `IN ()`
@@ -76,6 +88,9 @@ public:
 
 	// Every value the filter admits - the named ones, their subordinates, or only the subordinates.
 	const std::vector<ibValue>& Accepted() const { return m_accepted; }
+	// …and whether it admits THIS one — asked of a row in memory, cell by cell, so a walked subtree is looked up
+	// by the value rather than scanned.
+	bool Admits(const ibValue& value) const;
 
 	// The value a row is REPORTED under. Named in hierarchy: the value that was asked for, which is
 	// what makes the subordinates add up into it. Otherwise the row's own value - and that is also
@@ -83,6 +98,11 @@ public:
 	ibValue ReportedUnder(const ibValue& value) const;
 
 private:
+	// Both doors land here once the targets are known — the column's, or the type's.
+	ibQueryHierarchyScope(const std::vector<const ibBackendQueryable*>& targets,
+	                      const std::vector<ibValue>& named, ibQueryDimUnfold unfold);
+
+	ibQueryDimUnfold     m_unfold = ibQueryDimUnfold::Elements;   // the word it was asked with
 	std::vector<ibValue> m_accepted;               // what the filter admits
 	// Keyed by the VALUE, not by a string rendered from it — see ibValueHash in
 	// value.h. A reference keys by its guid there just as it did through

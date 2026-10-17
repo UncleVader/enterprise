@@ -92,7 +92,7 @@ public:
 	virtual bool Init(ibValue** paParams, const long lSizeArray);
 
 	// The sentence — the same one the manager's journal and the designer's property row show.
-	virtual wxString GetString() const { return ibJobScheduleRules::Describe(m_schedule); }
+	virtual ibString GetString() const { return ibJobScheduleRules::Describe(m_schedule); }
 
 	// A schedule is never "empty": it always answers when its job is due. Saying otherwise would
 	// make an untouched schedule read as an absent one, and an absent schedule is a job that
@@ -104,7 +104,7 @@ public:
 	// happens IN PLACE, so whoever holds this value already has the new one when the call returns;
 	// there is nothing to re-assign and nothing to re-create.
 	//
-	// No frame means no interactive context (daemon, codeRunner, a background job) — and that is
+	// No frame means no interactive context (appserver, codeRunner, a background job) — and that is
 	// said out loud rather than silently ignored: a script that opens an editor where none can be
 	// opened is a mistake, not a no-op.
 	virtual void ShowValue() override;
@@ -149,6 +149,8 @@ constexpr ibClassID g_valueScheduleCLSID = value_to_clsid("VL_SCHED");
 //  job off must not mean opening the Designer against production.
 //////////////////////////////////////////////////////////////////////
 
+constexpr ibClassID g_valuePredefinedJobsCLSID = value_to_clsid("VL_PJOBS");
+
 class BACKEND_API ibValuePredefinedJobs : public ibValueArray {
 	public:
 
@@ -183,7 +185,7 @@ class BACKEND_API ibValuePredefinedJobs : public ibValueArray {
 
 		bool ReadSettings();
 
-		virtual wxString GetString() const { return m_jobName; }
+		virtual ibString GetString() const { return m_jobName; }
 		virtual bool IsEmpty() const { return !m_jobKey.isValid(); }
 
 		virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
@@ -197,7 +199,7 @@ class BACKEND_API ibValuePredefinedJobs : public ibValueArray {
 		wxString                 m_jobName;   // the display name
 		bool                     m_active = true;
 		ibJobScheduleDescription m_schedule;
-		wxDateTime               m_lastRun;
+		ibDateTime               m_lastRun;
 		wxString                 m_computer;
 	};
 
@@ -208,6 +210,9 @@ class BACKEND_API ibValuePredefinedJobs : public ibValueArray {
 	explicit ibValuePredefinedJobs(ibMetaData* metaData);
 
 	virtual wxString GetClassName() const { return wxT("PredefinedJobs"); }
+
+	// Its own id — the array it derives from answers with the array's.
+	virtual ibClassID GetClassType() const override { return g_valuePredefinedJobsCLSID; }
 };
 
 #endif // !__VALUE_JOB_H__

@@ -37,7 +37,9 @@ ibFormID ibValueRecordDataObjectParameterizedJob::GetCurrentObjectFormID() const
 
 const ibSourceExplorer* ibValueRecordDataObjectParameterizedJob::GetSourceExplorer() const
 {
-	m_sourceExplorer.Reset(wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(), false);
+	if (!m_sourceExplorer.Reset(m_metaObject->GetMetaData()->GetFactoryCountChanges(),
+		wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(), false))
+		return &m_sourceExplorer;   // built at this version of the metadata already — read as it is
 
 	ibValueMetaObjectParameterizedJob* metaRef = nullptr;
 
@@ -147,10 +149,10 @@ bool ibValueRecordDataObjectParameterizedJob::GetValueByMetaID(const ibMetaID& i
 			return true;
 		}
 
-		const wxDateTime lastRun = ibJobManager::ReadSharedLastRun(m_objGuid);
+		const ibDateTime lastRun = ibJobManager::ReadSharedLastRun(m_objGuid);
 
 		if (id == metaJob->GetDataLastRun()->GetMetaID()) {
-			pvarMetaVal = lastRun.IsValid() ? ibValue(lastRun) : ibValue(ibValueTypes::TYPE_DATE);
+			pvarMetaVal = !lastRun.IsEmpty() ? ibValue(lastRun) : ibValue(ibValueTypes::TYPE_DATE);
 			return true;
 		}
 
@@ -163,12 +165,12 @@ bool ibValueRecordDataObjectParameterizedJob::GetValueByMetaID(const ibMetaID& i
 			return true;
 		}
 
-		const wxDateTime nextRun = ibValueMetaObjectParameterizedJob::ComputeNextRun(schedule->GetSchedule(), lastRun);
+		const ibDateTime nextRun = ibValueMetaObjectParameterizedJob::ComputeNextRun(schedule->GetSchedule(), lastRun);
 
-		// An INVALID answer means the calendar names no moment within a year — a schedule naming,
+		// An EMPTY answer means the calendar names no moment within a year — a schedule naming,
 		// say, February 31st. It reads as the empty date, which is a thing to SEE on the card
 		// rather than a job that quietly never runs.
-		pvarMetaVal = nextRun.IsValid() ? ibValue(nextRun) : ibValue(ibValueTypes::TYPE_DATE);
+		pvarMetaVal = !nextRun.IsEmpty() ? ibValue(nextRun) : ibValue(ibValueTypes::TYPE_DATE);
 		return true;
 	}
 
@@ -202,7 +204,7 @@ bool ibValueRecordDataObjectParameterizedJob::ExecuteJob()
 	//   * A CLIENT MAY NOT BE WHERE THE WORK RUNS. A thin client has no scheduler and no
 	//     database; asking the manager is a request that reaches whoever does, while calling the
 	//     handler in place could only ever work on a fat client over a file base.
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		ibBackendCoreException::Error(_("scheduled jobs are not available in this context"));
 
@@ -338,7 +340,7 @@ bool ibValueRecordDataObjectParameterizedJob::CallAsFunc(const long lMethodNum, 
 		return true;
 	case Func::enGetForm:
 		pvarRetValue = GetFormValue(
-			lSizeArray > 0 ? paParams[0]->GetString() : wxString(wxEmptyString),
+			lSizeArray > 0 ? ibFormRequest(paParams[0]->GetString()) : ibFormRequest(),
 			lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr
 		);
 		return true;

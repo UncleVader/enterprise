@@ -76,8 +76,8 @@
 
 // OES — unified modal routing: both desktop and web implement
 // ibBackendDocFrame::ShowModalMessage. Desktop forwards to wxMessageBox
-// (with frame as parent); web parks the worker on a promise + emits the
-// modal via /session, resolves through /modal-reply. Replaces the per-
+// (with frame as parent); web waits in the session's pool (Await) + emits
+// the modal via /session, answered through /modal-reply. Replaces the per-
 // callsite wxMessageDialog / wxMessageBox in OnSaveModified / OnSave-
 // BeforeForceClose / Revert with a single cross-build call.
 #include "backend/session/session.h"
@@ -865,6 +865,7 @@ ibView::~ibView()
         // prevent it from doing anything with us
         m_docChildFrame->SetView(nullptr);
 
+#ifndef OES_USE_WEB
         // it doesn't make sense to leave the frame alive if its associated
         // view doesn't exist any more so unconditionally close it as well
         //
@@ -874,6 +875,12 @@ ibView::~ibView()
         // the view, as it happens if its creation fails in ibDocTemplate::
         // CreateView() for example
         m_docChildFrame->GetWindow()->Destroy();
+#else
+        // WEB: the tab is owned by ibWebFrame::m_tabs (a unique_ptr), not by its view. Here
+        // ibWebWindow::Destroy() is `delete this`, so destroying it would free a tab its owner
+        // still holds, and DrainPendingCloses would free it again — closing any form tab took
+        // the whole web server down. The view only severs the edge above; the owner deletes.
+#endif
     }
 
     if ( m_viewDocument )
@@ -965,9 +972,13 @@ bool ibView::OnClose(bool WXUNUSED(deleteWindow))
 }
 
 #if wxUSE_PRINTING_ARCHITECTURE
+// 🛑 NOTHING, RATHER THAN A BLANK SHEET. The stock answer was an ibDocPrintout, which draws through
+// OnDraw — and OnDraw is empty in every view of this tree — so a view that prints nothing of its own
+// sent one clean page to the printer. A view with something to print says so by overriding this; the
+// manager tells the person when there is nothing (ibDocManager::OnPrint / OnPreview).
 wxPrintout *ibView::OnCreatePrintout()
 {
-    return new ibDocPrintout(this);
+    return nullptr;
 }
 #endif // wxUSE_PRINTING_ARCHITECTURE
 
@@ -1282,6 +1293,21 @@ void ibDocManager::OnMRUFileNotExist(unsigned n, const wxString& filename)
 
 #if wxUSE_PRINTING_ARCHITECTURE
 
+#ifndef OES_USE_WEB
+#include "frontend/docView/print/printPreview.h"   // ibPrintPreviewFrame — the preview with "Fit to page width"
+#endif
+
+// 🛑 SAID, not skipped: Print and Preview used to return quietly when the view had nothing to put on
+// paper, and a Print that does nothing reads as a Print that broke (2026-09-22). Through the one modal
+// door both builds answer (ibBackendDocFrame::ShowModalMessage).
+static void ShowNothingToPrint()
+{
+    if (ibBackendDocFrame* const frame = ibSession::CurrentFrame())
+        frame->ShowModalMessage(
+            _("There is nothing here to print. In a form with several tables, put the cursor in the one to print."),
+            _("Print"), wxOK | wxICON_INFORMATION);
+}
+
 void ibDocManager::OnPrint(wxCommandEvent& WXUNUSED(event))
 {
     ibView *view = GetAnyUsableView();
@@ -1289,6 +1315,16 @@ void ibDocManager::OnPrint(wxCommandEvent& WXUNUSED(event))
         return;
 
     wxPrintout *printout = view->OnCreatePrintout();
+    if (!printout)
+    {
+        ShowNothingToPrint();
+        return;
+    }
+#ifndef OES_USE_WEB
+    // The page as the preview was last left - fitted to its width or not (Max, 2026-09-22: printing from
+    // the menu keeps the choice made in the preview).
+    ibPrintPreviewFrame::ApplyFitToPageWidth(printout);
+#endif
     if (printout)
     {
         wxPrintDialogData printDialogData(m_pageSetupDialogData.GetPrintData());
@@ -1317,7 +1353,13 @@ wxPreviewFrame* ibDocManager::CreatePreviewFrame(wxPrintPreviewBase* preview,
                                                  wxWindow *parent,
                                                  const wxString& title)
 {
+#ifndef OES_USE_WEB
+    // The platform's own preview window - wx's, with "Fit to page width" for a printout that can be
+    // fitted (printPreview.h).
+    return new ibPrintPreviewFrame(preview, parent, title);
+#else
     return new wxPreviewFrame(preview, parent, title);
+#endif
 }
 
 void ibDocManager::OnPreview(wxCommandEvent& WXUNUSED(event))
@@ -1353,6 +1395,8 @@ void ibDocManager::OnPreview(wxCommandEvent& WXUNUSED(event))
         frame->Initialize();
         frame->Show(true);
     }
+    else
+        ShowNothingToPrint();
 }
 #endif // wxUSE_PRINTING_ARCHITECTURE
 

@@ -8,7 +8,7 @@
 
 #include "backend/query/queryParser.h"
 #include "backend/query/queryRender.h"
-#include "backend/query/queryKeywords.h"
+#include "core/query/queryKeywords.h"
 #include "backend/backend_exception.h"
 
 #include "artProvider/artProvider.h"
@@ -302,7 +302,7 @@ void ibDialogQueryCase::OnOk(wxCommandEvent& event)
 			return;
 		}
 	}
-	catch (const ibBackendException& error) {
+	catch (const ibCoreException& error) {
 		wxMessageBox(error.GetErrorDescription(), GetTitle(), wxOK | wxICON_ERROR, this);
 		return;
 	}

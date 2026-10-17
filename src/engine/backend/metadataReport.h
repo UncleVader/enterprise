@@ -21,13 +21,6 @@ public:
 	virtual wxString GetFileName() const { return m_fullPath; }
 
 	//runtime support:
-	virtual ibValue* CreateObjectRef(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const;
-	virtual ibValue* CreateObjectRef(const wxString& className, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		return CreateObjectRef(
-			GetIDObjectFromString(className), paParams, lSizeArray
-		);
-	}
-
 	virtual bool IsRegisterCtor(const wxString& className) const;
 	virtual bool IsRegisterCtor(const wxString& className, ibCtorObjectType objectType) const;
 	virtual bool IsRegisterCtor(const wxString& className, ibCtorObjectType objectType, enum ibCtorObjectMetaType refType) const;
@@ -74,7 +67,11 @@ public:
 
 	//load/save form file
 	bool LoadFromFile(const wxString& strFileName);
+	// …and from a file of the session's temporary storage, by its id — what a thin client handed the server.
+	bool LoadFromTempFile(const wxString& id);
 	bool SaveToFile(const wxString& strFileName);
+	// …and into one — what a thin client takes down to where the person keeps it.
+	bool SaveToTempFile(const wxString& id);
 
 	virtual const ibValueMetaObject* GetCommonMetaObject() const; // out-of-line: m_commonObject is ibValuePtr
 	virtual ibValueMetaObject* GetCommonMetaObject();
@@ -95,6 +92,11 @@ protected:
 	ibValueMetaObjectReport* BuildFreshRoot();
 
 private:
+
+	// The file's content in hand, loaded — the one load both roads come to, whatever the bytes were read from.
+	bool LoadFromBuffer(const wxMemoryBuffer& buffer, const wxString& fullPath);
+	// …and the content written, the one write both roads take, whatever the bytes go to.
+	bool SaveToBuffer(ibWriterMemory& writerData, const wxString& fullPath);
 
 	wxString m_fullPath;
 

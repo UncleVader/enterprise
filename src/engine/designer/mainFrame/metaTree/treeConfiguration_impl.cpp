@@ -5,7 +5,7 @@
 
 #include "treeConfiguration.h"
 #include <wx/wupdlock.h>   // wxWindowUpdateLocker — the Freeze/Thaw pair taken as a guard
-#include "backend/fileKind.h"   // extensions live in one table, not at each call site
+#include "core/fileKind.h"   // extensions live in one table, not at each call site
 
 #include "mainFrame/mainFrameDesigner.h"   // the documents are the window's — see the verbs below
 #include "backend/backend_exception.h"     // an engine refusal arrives as an exception
@@ -209,19 +209,19 @@ static bool ibRowCanBeAsked(const wxTreeCtrl* ctrl, const wxTreeItemId& item)
 // ⚠ ONLY A FORM THAT HAS NO KIND YET. A paste, a copy and a tool-made form all arrive here too,
 // and every one of them already knows what it is — asking again would put a dialog in front of
 // somebody who never pressed anything.
-void ibMetaTreeBase::AskFormKind(ibValueMetaObject* object)
+bool ibMetaTreeBase::AskFormKind(ibValueMetaObject* object)
 {
 	if (object == nullptr || m_bReadOnly)
-		return;
+		return true;
 
 	ibValueMetaObjectForm* form = dynamic_cast<ibValueMetaObjectForm*>(object);
 	if (form == nullptr || form->GetTypeForm() != wxNOT_FOUND)
-		return;
+		return true;
 
 	ibValueMetaObjectGenericData* owner =
 		dynamic_cast<ibValueMetaObjectGenericData*>(form->GetParent());
 	if (owner == nullptr)
-		return;
+		return true;
 
 	// THE DIALOG, right here. It stood in a `SelectFormType` of its own — virtual, and overridden by
 	// nobody: a leftover from when the ENGINE asked this through the tree's interface. Its only
@@ -233,9 +233,25 @@ void ibMetaTreeBase::AskFormKind(ibValueMetaObject* object)
 
 	dlg.CreateSelector();
 
+	// ⭐ REFUSED — THE FORM IS NOT WANTED, and it goes again, through the door a Delete takes. The ask
+	// comes after the create (the create is the engine's, and a tool makes forms with nobody to ask),
+	// so undoing it is the asker's; it used to return here and leave a form with no kind and no layout
+	// standing in the tree, as if the person had said yes.
+	//
+	// ⚠ AND REFUSED IS ANYTHING BUT A KIND THE OWNER OFFERED. The dialog's own Cancel answers wxNOT_FOUND,
+	// but closed from outside — window_dismiss, the close box, Esc — it answers wxID_CANCEL, and that
+	// number was taken for a kind: written into FormType, which rebuilds the form and announces it
+	// again, and the tree asked again — a wizard behind every Cancel, each one deeper in the stack
+	// (2026-09-28).
 	const ibFormID chosen = dlg.ShowModal();
-	if (chosen == wxNOT_FOUND)
-		return;   // closed the dialog: the form stands, with its kind still to be chosen
+	bool offered = false;
+	for (unsigned int idx = 0; idx < optList.GetItemCount() && !offered; idx++)
+		offered = optList.GetItemId(idx) == chosen;
+	if (!offered) {
+		if (ibMetaData* const metaData = GetMetaData())
+			metaData->RemoveMetaObject(form);
+		return false;
+	}
 
 	// Placed the way the object inspector places one: ask the owner, set, tell the owner — so
 	// whatever watches a property change sees this one too.
@@ -251,6 +267,7 @@ void ibMetaTreeBase::AskFormKind(ibValueMetaObject* object)
 	// branch as the question inside the engine, so skipping the ask skipped the build and the form
 	// came out with nothing in it.
 	owner->OnCreateFormObject(form);
+	return true;
 }
 
 // ONE WALK, THREE TREES. Every row that stands for a metaobject carries an ibTreeDataObject —
@@ -296,6 +313,47 @@ wxTreeItemId ibMetaTreeBase::FindItemByMetaObject(const wxTreeItemId& from,
 	}
 
 	return wxTreeItemId();
+}
+
+// Two rows of one group by their objects' places in the metadata. Asks, changes nothing.
+int ibMetaTreeBase::CompareItemsByPosition(const wxTreeItemId& item1, const wxTreeItemId& item2) const
+{
+	ibValueMetaObject* const object1 = GetMetaObject(item1);
+	ibValueMetaObject* const object2 = GetMetaObject(item2);
+	ibValueMetaObject* const parent = object1 != nullptr ? object1->GetParent() : nullptr;
+	if (parent == nullptr || object2 == nullptr || object2->GetParent() != parent)
+		return 0;
+
+	const unsigned int position1 = parent->GetChildPosition(object1), position2 = parent->GetChildPosition(object2);
+	return position1 < position2 ? -1 : position1 > position2 ? 1 : 0;
+}
+
+// The sort button: the group's objects by name, each put where the object at its place in the group
+// stands now. The door announces every move, and `Moved` brings the rows along.
+void ibMetaTreeBase::SortItemsByName(const wxTreeItemId& parentItem)
+{
+	std::vector<ibValueMetaObject*> objects;
+	wxTreeItemIdValue cookie;
+	for (wxTreeItemId row = m_treeCtrl->GetFirstChild(parentItem, cookie); row.IsOk(); row = m_treeCtrl->GetNextChild(parentItem, cookie)) {
+		if (ibValueMetaObject* const object = GetMetaObject(row))
+			objects.push_back(object);
+	}
+	if (objects.empty() || objects.front()->GetParent() == nullptr)
+		return;
+
+	ibValueMetaObject* const parent = objects.front()->GetParent();
+	std::vector<ibValueMetaObject*> sorted = objects;
+	std::stable_sort(sorted.begin(), sorted.end(), [](ibValueMetaObject* a, ibValueMetaObject* b) {
+		return wxStrcmp(a->GetName(), b->GetName()) < 0;
+	});
+
+	for (size_t i = 0; i < sorted.size(); ++i) {
+		std::sort(objects.begin(), objects.end(), [parent](ibValueMetaObject* a, ibValueMetaObject* b) {
+			return parent->GetChildPosition(a) < parent->GetChildPosition(b);
+		});
+		if (objects[i] != sorted[i])
+			parent->ChangeChildPosition(sorted[i], parent->GetChildPosition(objects[i]));
+	}
 }
 
 // ⭐⭐ THE WHOLE CYCLE, IN ONE PLACE, FOR ALL THREE TREES. Create, load, save, rename, delete —
@@ -344,14 +402,6 @@ void ibMetaTreeBase::MetaObjectChanged(ibMetaDataNotifier::ibMetaStage stage, ib
 		FillData();
 		return;
 
-	// A CHILD CHANGED ITS PLACE — the same objects in another order, so no pointer the tree holds went
-	// stale and nothing has to close. The rows are read again from the metadata, which is where the
-	// order lives.
-	case ibMetaDataNotifier::ibMetaStage::Moved:
-		ClearTree();
-		FillData();
-		return;
-
 	// GOING, ALL OF IT. The editors opened over this metadata close — once, here, instead of once
 	// per object inside every OnAfterCloseMetaObject on the way out. The rows are not touched: the
 	// tree is either about to be given another metadata (which refills it) or about to die.
@@ -386,6 +436,17 @@ void ibMetaTreeBase::MetaObjectChanged(ibMetaDataNotifier::ibMetaStage stage, ib
 				m_treeCtrl->Delete(item);   // …and the row itself goes, with its subtree
 			}
 			UpdateChoiceSelection();
+		}
+		return;
+
+	// THE ANSWER TO A MOVE, whoever made it — this tree's buttons or metadata_move from outside. The rows
+	// of the object's group go back into the metadata's order (SortChildren, CompareItemsByPosition); they
+	// are not rebuilt, so what was open stays open and the selection stays.
+	case ibMetaDataNotifier::ibMetaStage::Moved:
+		if (object != nullptr && m_treeCtrl != nullptr) {
+			const wxTreeItemId item = FindItemByMetaObject(object);
+			if (item.IsOk())
+				m_treeCtrl->SortChildren(m_treeCtrl->GetItemParent(item));
 		}
 		return;
 
@@ -431,7 +492,8 @@ void ibMetaTreeBase::MetaObjectChanged(ibMetaDataNotifier::ibMetaStage stage, ib
 	// single add, to work out something the click already knew.
 	case ibMetaDataNotifier::ibMetaStage::Created:
 		if (object != nullptr && !object->IsDeleted()) {
-			AskFormKind(object);
+			if (!AskFormKind(object))
+				return;   // refused and taken away again — its Removed has come and gone, and there is no row
 
 			// ⭐⭐ WHERE THE ROW GOES IS THE OBJECT'S OWN BUSINESS — its OWNER says it.
 			//
@@ -652,7 +714,8 @@ ibValueMetaObject* ibConfigurationTree::NewItem(const ibClassID& clsid, ibValueM
 // The engine used to ask for this (SelectFormType) — a dialog in the middle of a create, with the
 // create refused if the person closed it. Now the create simply happens and states the fact; the
 // watcher that has a person in front of it asks them, and writes the answer in through the ordinary
-// property door. A host with nobody to ask writes nothing, and the form is still made.
+// property door — or, if they refuse, takes the form away again through the door a Delete takes. A
+// host with nobody to ask writes nothing, and the form is still made.
 //
 // ⚠ ONLY A FORM THAT HAS NO KIND YET. A paste, a copy and a tool-made form all arrive here too, and
 // every one of them already knows what it is — asking again would put a dialog in front of somebody
@@ -724,6 +787,11 @@ ibValueMetaObject* ibConfigurationTree::CreateItem(bool showValue)
 		GetClassIdentifier(),
 		GetMetaIdentifier()
 	);
+
+	// A form whose kind the person refused is taken away again before the create returns (AskFormKind):
+	// nothing was made, and there is nothing to open.
+	if (createdObject != nullptr && createdObject->IsDeleted())
+		createdObject = nullptr;
 
 	// ⭐⭐ THE ROW IS NOT DRAWN HERE, and that is the whole concept (Max, 2026-09-01): *"we send our
 	// metadata that we changed, and then we just wait for its answer — it says 'I changed it, show
@@ -882,7 +950,7 @@ void ibConfigurationTree::SelectItem()
 	ibValueMetaObject* metaObject = GetMetaObject(selection);
 	UpdateToolbar(metaObject, selection);
 
-	if (appData->GetAppMode() != ibRunMode::eDESIGNER_MODE)
+	if (!appData->DesignerMode())
 		return;
 
 	objectInspector->SelectObject(metaObject);
@@ -894,7 +962,7 @@ void ibConfigurationTree::PropertyItem()
 	ibValueMetaObject* metaObject = GetMetaObject(selection);
 	UpdateToolbar(metaObject, selection);
 
-	if (appData->GetAppMode() != ibRunMode::eDESIGNER_MODE)
+	if (!appData->DesignerMode())
 		return;
 
 	if (!objectInspector->IsShownInspector())
@@ -940,7 +1008,7 @@ void ibConfigurationTree::Expand(const wxTreeItemId& item)
 
 void ibConfigurationTree::UpItem()
 {
-	if (appData->GetAppMode() != ibRunMode::eDESIGNER_MODE)
+	if (!appData->DesignerMode())
 		return;
 
 	m_metaTreeCtrl->Freeze();
@@ -948,51 +1016,11 @@ void ibConfigurationTree::UpItem()
 	const wxTreeItemId& selection = m_metaTreeCtrl->GetSelection();
 	const wxTreeItemId& nextItem = m_metaTreeCtrl->GetPrevSibling(selection);
 	ibValueMetaObject* metaObject = GetMetaObject(selection);
-	if (metaObject != nullptr && nextItem.IsOk()) {
-		const wxTreeItemId& parentItem = m_metaTreeCtrl->GetItemParent(nextItem);
-		wxTreeItemIdValue coockie; wxTreeItemId nextId = m_metaTreeCtrl->GetFirstChild(parentItem, coockie);
-		size_t pos = 0;
-		do {
-			if (nextId == nextItem)
-				break;
-			nextId = m_metaTreeCtrl->GetNextChild(parentItem, coockie); pos++;
-		} while (nextId.IsOk());
+	ibValueMetaObject* nextObject = GetMetaObject(nextItem);
+	if (metaObject != nullptr && nextObject != nullptr) {
+		// The door moves it and announces `Moved`; the rows follow that (MetaObjectChanged).
 		ibValueMetaObject* parentObject = metaObject->GetParent();
-		ibValueMetaObject* nextObject = GetMetaObject(nextItem);
-		if (parentObject->ChangeChildPosition(metaObject, parentObject->GetChildPosition(nextObject))) {
-			wxTreeItemId newId = m_metaTreeCtrl->InsertItem(parentItem,
-				pos + 2,
-				m_metaTreeCtrl->GetItemText(nextItem),
-				m_metaTreeCtrl->GetItemImage(nextItem),
-				m_metaTreeCtrl->GetItemImage(nextItem),
-				m_metaTreeCtrl->GetItemData(nextItem)
-			);
-
-			auto tree = m_metaTreeCtrl;
-			std::function<void(ibMetaTreeCtrl*, const wxTreeItemId&, const wxTreeItemId&)> swap = [&swap](ibMetaTreeCtrl* tree, const wxTreeItemId& dst, const wxTreeItemId& src) {
-				wxTreeItemIdValue coockie; wxTreeItemId nextId = tree->GetFirstChild(dst, coockie);
-				while (nextId.IsOk()) {
-					wxTreeItemId newId = tree->AppendItem(src,
-						tree->GetItemText(nextId),
-						tree->GetItemImage(nextId),
-						tree->GetItemImage(nextId),
-						tree->GetItemData(nextId)
-					);
-					if (tree->HasChildren(nextId)) {
-						swap(tree, nextId, newId);
-					}
-					tree->SetItemData(nextId, nullptr);
-					nextId = tree->GetNextChild(dst, coockie);
-				}
-				};
-
-			swap(tree, nextItem, newId);
-
-			m_metaTreeCtrl->SetItemData(nextItem, nullptr);
-			m_metaTreeCtrl->Delete(nextItem);
-
-			//m_metaTreeCtrl->Expand(newId);
-		}
+		parentObject->ChangeChildPosition(metaObject, parentObject->GetChildPosition(nextObject));
 	}
 
 	m_metaTreeCtrl->Thaw();
@@ -1000,7 +1028,7 @@ void ibConfigurationTree::UpItem()
 
 void ibConfigurationTree::DownItem()
 {
-	if (appData->GetAppMode() != ibRunMode::eDESIGNER_MODE)
+	if (!appData->DesignerMode())
 		return;
 
 	m_metaTreeCtrl->Freeze();
@@ -1008,51 +1036,11 @@ void ibConfigurationTree::DownItem()
 	const wxTreeItemId& selection = m_metaTreeCtrl->GetSelection();
 	const wxTreeItemId& prevItem = m_metaTreeCtrl->GetNextSibling(selection);
 	ibValueMetaObject* metaObject = GetMetaObject(selection);
-	if (metaObject != nullptr && prevItem.IsOk()) {
-		const wxTreeItemId& parentItem = m_metaTreeCtrl->GetItemParent(prevItem);
-		wxTreeItemIdValue coockie; wxTreeItemId nextId = m_metaTreeCtrl->GetFirstChild(parentItem, coockie);
-		size_t pos = 0;
-		do {
-			if (nextId == prevItem)
-				break;
-			nextId = m_metaTreeCtrl->GetNextChild(parentItem, coockie); pos++;
-		} while (nextId.IsOk());
+	ibValueMetaObject* prevObject = GetMetaObject(prevItem);
+	if (metaObject != nullptr && prevObject != nullptr) {
+		// The door moves it and announces `Moved`; the rows follow that (MetaObjectChanged).
 		ibValueMetaObject* parentObject = metaObject->GetParent();
-		ibValueMetaObject* prevObject = GetMetaObject(prevItem);
-		if (parentObject->ChangeChildPosition(metaObject, parentObject->GetChildPosition(prevObject))) {
-			wxTreeItemId newId = m_metaTreeCtrl->InsertItem(parentItem,
-				pos - 1,
-				m_metaTreeCtrl->GetItemText(prevItem),
-				m_metaTreeCtrl->GetItemImage(prevItem),
-				m_metaTreeCtrl->GetItemImage(prevItem),
-				m_metaTreeCtrl->GetItemData(prevItem)
-			);
-
-			auto tree = m_metaTreeCtrl;
-			std::function<void(ibMetaTreeCtrl*, const wxTreeItemId&, const wxTreeItemId&)> swap = [&swap](ibMetaTreeCtrl* tree, const wxTreeItemId& dst, const wxTreeItemId& src) {
-				wxTreeItemIdValue coockie; wxTreeItemId nextId = tree->GetFirstChild(dst, coockie);
-				while (nextId.IsOk()) {
-					wxTreeItemId newId = tree->AppendItem(src,
-						tree->GetItemText(nextId),
-						tree->GetItemImage(nextId),
-						tree->GetItemImage(nextId),
-						tree->GetItemData(nextId)
-					);
-					if (tree->HasChildren(nextId)) {
-						swap(tree, nextId, newId);
-					}
-					tree->SetItemData(nextId, nullptr);
-					nextId = tree->GetNextChild(dst, coockie);
-				}
-				};
-
-			swap(tree, prevItem, newId);
-
-			m_metaTreeCtrl->SetItemData(prevItem, nullptr);
-			m_metaTreeCtrl->Delete(prevItem);
-
-			//m_metaTreeCtrl->Expand(newId);
-		}
+		parentObject->ChangeChildPosition(metaObject, parentObject->GetChildPosition(prevObject));
 	}
 
 	m_metaTreeCtrl->Thaw();
@@ -1060,7 +1048,7 @@ void ibConfigurationTree::DownItem()
 
 void ibConfigurationTree::SortItem()
 {
-	if (appData->GetAppMode() != ibRunMode::eDESIGNER_MODE)
+	if (!appData->DesignerMode())
 		return;
 	m_metaTreeCtrl->Freeze();
 	const wxTreeItemId& selection = m_metaTreeCtrl->GetSelection();
@@ -1069,7 +1057,7 @@ void ibConfigurationTree::SortItem()
 		const wxTreeItemId& parentItem =
 			m_metaTreeCtrl->GetItemParent(selection);
 		if (parentItem.IsOk()) {
-			m_metaTreeCtrl->SortChildren(parentItem);
+			SortItemsByName(parentItem);
 		}
 	}
 	m_metaTreeCtrl->Thaw();
@@ -1095,12 +1083,13 @@ void ibConfigurationTree::InsertItem()
 		if (openFileDialog.ShowModal() == wxID_CANCEL)
 			return;     // the user changed idea...
 
-		//create main metaObject
-		ibMetaDataDataProcessor metadataDataProcessor(m_metaData);
+		// A reader only — what it reads lives on in this configuration, so it is never closed: a plain make_shared,
+		// not ibMetaData::MakeShared, whose last holder would close the object it handed over.
+		const std::shared_ptr<ibMetaDataDataProcessor> metadataDataProcessor = std::make_shared<ibMetaDataDataProcessor>(GetMetaData());
 
-		if (metadataDataProcessor.LoadFromFile(openFileDialog.GetPath())) {
+		if (metadataDataProcessor->LoadFromFile(openFileDialog.GetPath())) {
 			m_metaTreeCtrl->Freeze();
-			ibValueMetaObjectDataProcessor* dataProcessor = metadataDataProcessor.GetDataProcessor();
+			ibValueMetaObjectDataProcessor* dataProcessor = metadataDataProcessor->GetDataProcessor();
 			wxASSERT(dataProcessor);
 			const wxTreeItemId& createdItem = AppendItem(hSelItem, dataProcessor);
 			AddDataProcessorItem(dataProcessor, createdItem);
@@ -1116,11 +1105,11 @@ void ibConfigurationTree::InsertItem()
 		if (openFileDialog.ShowModal() == wxID_CANCEL)
 			return;     // the user changed idea...
 
-		ibMetaDataReport metadataReport(m_metaData);
+		const std::shared_ptr<ibMetaDataReport> metadataReport = std::make_shared<ibMetaDataReport>(GetMetaData());   // a reader — see above
 
-		if (metadataReport.LoadFromFile(openFileDialog.GetPath())) {
+		if (metadataReport->LoadFromFile(openFileDialog.GetPath())) {
 			m_metaTreeCtrl->Freeze();
-			ibValueMetaObjectReport* report = metadataReport.GetReport();
+			ibValueMetaObjectReport* report = metadataReport->GetReport();
 			wxASSERT(report);
 			const wxTreeItemId& createdItem = AppendItem(hSelItem, report);
 			AddReportItem(report, createdItem);
@@ -1146,10 +1135,11 @@ void ibConfigurationTree::ReplaceItem()
 		if (openFileDialog.ShowModal() == wxID_CANCEL)
 			return;     // the user changed idea...
 
-		ibMetaDataDataProcessor metadataDataProcessor(m_metaData);
-		if (metadataDataProcessor.LoadFromFile(openFileDialog.GetPath())) {
+		// A reader — never closed: what it reads replaces the object in this configuration (see AppendItem's import).
+		const std::shared_ptr<ibMetaDataDataProcessor> metadataDataProcessor = std::make_shared<ibMetaDataDataProcessor>(GetMetaData());
+		if (metadataDataProcessor->LoadFromFile(openFileDialog.GetPath())) {
 			m_metaTreeCtrl->Freeze();
-			ibValueMetaObjectDataProcessor* metaObject = metadataDataProcessor.GetDataProcessor();
+			ibValueMetaObjectDataProcessor* metaObject = metadataDataProcessor->GetDataProcessor();
 			wxTreeItemData* itemData = m_metaTreeCtrl->GetItemData(hSelItem);
 			if (itemData != nullptr) {
 				ibTreeDataObject* metaItem = dynamic_cast<ibTreeDataObject*>(itemData);
@@ -1180,10 +1170,10 @@ void ibConfigurationTree::ReplaceItem()
 
 		wxASSERT(newReport);
 
-		ibMetaDataReport metadataDataProcessor(m_metaData);
-		if (metadataDataProcessor.LoadFromFile(openFileDialog.GetPath())) {
+		const std::shared_ptr<ibMetaDataReport> metadataDataProcessor = std::make_shared<ibMetaDataReport>(GetMetaData());   // a reader
+		if (metadataDataProcessor->LoadFromFile(openFileDialog.GetPath())) {
 			m_metaTreeCtrl->Freeze();
-			ibValueMetaObjectReport* metaObject = metadataDataProcessor.GetReport();
+			ibValueMetaObjectReport* metaObject = metadataDataProcessor->GetReport();
 			wxTreeItemData* itemData = m_metaTreeCtrl->GetItemData(hSelItem);
 			if (itemData != nullptr) {
 				ibTreeDataObject* metaItem = dynamic_cast<ibTreeDataObject*>(itemData);
@@ -1226,8 +1216,10 @@ void ibConfigurationTree::SaveItem()
 			currentMetaObject
 			);
 		wxASSERT(newDataProcessor);
-		ibMetaDataDataProcessor metadataDataProcessor(m_metaData, newDataProcessor);
-		metadataDataProcessor.SaveToFile(saveFileDialog.GetPath());
+		// A writer over this configuration's own object — never closed, for the object stays here.
+		const std::shared_ptr<ibMetaDataDataProcessor> metadataDataProcessor =
+			std::make_shared<ibMetaDataDataProcessor>(GetMetaData(), newDataProcessor);
+		metadataDataProcessor->SaveToFile(saveFileDialog.GetPath());
 	}
 	else {
 		wxFileDialog saveFileDialog(this, _("Open report file"), "", "",
@@ -1242,8 +1234,9 @@ void ibConfigurationTree::SaveItem()
 			currentMetaObject
 			);
 		wxASSERT(newDataProcessor);
-		ibMetaDataReport metadataDataProcessor(m_metaData, newDataProcessor);
-		metadataDataProcessor.SaveToFile(saveFileDialog.GetPath());
+		const std::shared_ptr<ibMetaDataReport> metadataDataProcessor =
+			std::make_shared<ibMetaDataReport>(GetMetaData(), newDataProcessor);   // a writer — see above
+		metadataDataProcessor->SaveToFile(saveFileDialog.GetPath());
 	}
 }
 
@@ -1625,6 +1618,7 @@ const ibMetaTreeGroupDef s_groups[] = {
 	{ g_metaCommonModuleCLSID,     0, ibMetaRow::Item    },
 	{ g_metaCommonFormCLSID,       0, ibMetaRow::Item    },
 	{ g_metaCommonCommandCLSID,    0, ibMetaRow::Command },
+	{ g_metaCommandGroupCLSID,     0, ibMetaRow::Item    },
 	{ g_metaCommonTemplateCLSID,   0, ibMetaRow::Item    },
 
 	// SCHEDULED JOBS: one branch, two kinds inside it. The branch itself holds the PARAMETERIZED jobs
@@ -1633,8 +1627,10 @@ const ibMetaTreeGroupDef s_groups[] = {
 	// cannot: where a group NESTS is this tree's own shape.
 	{ g_metaParameterizedJobCLSID, 0, ibMetaRow::Item },
 	{ g_metaScheduledJobCLSID,     g_metaParameterizedJobCLSID, ibMetaRow::Item },
+	{ g_metaEventHandlerCLSID,     0, ibMetaRow::Item },
 
 	{ g_metaSessionParameterCLSID, 0, ibMetaRow::Item },
+	{ g_metaFunctionalOptionCLSID, 0, ibMetaRow::Item },
 	{ g_metaCommonAttributeCLSID,  0, ibMetaRow::Item },
 	{ g_metaPictureCLSID,          0, ibMetaRow::Item },
 	// A section holds sections, so its rows are groups themselves.
@@ -1915,14 +1911,18 @@ void ibConfigurationTree::FillData()
 	m_metaTreeCtrl->Expand(m_treeCOMMON);
 }
 
-bool ibConfigurationTree::Load(ibMetaDataConfigurationBase* metaData)
+bool ibConfigurationTree::Load(std::shared_ptr<ibMetaDataConfigurationBase> metaData)
 {
 	m_metaTreeCtrl->Freeze();
 	CloseDocuments();   // a configuration is being left — its editors go with it
 	ClearTree();
 
-	m_metaData = metaData ? metaData : appEnv::ActiveMetaData();
-	WatchMetaData(m_metaData);   // off the old list, onto this one — one call, one place
+	// What it shows, held while it shows it: the one handed in, else the configuration this session works in.
+	if (metaData == nullptr)
+		if (ibMetaDataConfigurationBase* const active = appEnv::ActiveMetaData())
+			metaData = std::static_pointer_cast<ibMetaDataConfigurationBase>(active->shared_from_this());
+	m_metaData = std::move(metaData);
+	WatchMetaData(GetMetaData());   // off the old list, onto this one — one call, one place
 	FillData(); //Fill all data from metaData
 
 	// …and the metadata learns whether this file may be edited at all. Said HERE because the view

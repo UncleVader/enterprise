@@ -123,6 +123,11 @@ class BACKEND_API ibValueMetaObjectCommonAttributeColumn : public ibValueMetaObj
 	// grid read the stored one directly. The copy therefore STORES its name, set when it
 	// is created and rewritten by the declaration's OnRenameMetaObject.
 	virtual ibTypeDescription& GetTypeDesc() const override;
+	virtual ibTypeDescription& GetTypeValueDesc() const override;
+
+	// …AND SO DOES THE FORMAT, for the same reason: it is the declaration's, and a copy of it would be
+	// a second truth. An unbound copy has none.
+	virtual const ibTranslateString& GetFormat() const override;
 
 	// ALIVE ONLY WHILE ITS DECLARATION IS. A copy exists because a declaration put it
 	// there, so it cannot outlive it: mark the declaration deleted and every copy stops

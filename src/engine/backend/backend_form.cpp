@@ -5,22 +5,23 @@
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-ibBackendValueForm* ibBackendValueForm::CreateNewForm(
+ibFormPtr<ibBackendValueForm> ibBackendValueForm::CreateNewForm(
+	const ibFormRequest& request,
 	const ibValueMetaObjectFormBase* creator,
 	ibBackendControlFrame* ownerControl,
-	ibSourceDataObject* srcObject,
-	const ibUniqueKey& formGuid
+	ibSourceDataObject* srcObject
 )
 {
 	if (ibSession::CurrentFrame() != nullptr) {
-		ibBackendValueForm* createdForm = ibSession::CurrentFrame()->CreateNewForm(
+		// Owned from the moment the frontend made it — nothing below this line holds a form nobody holds.
+		ibFormPtr<ibBackendValueForm> createdForm(ibSession::CurrentFrame()->CreateNewForm(
+			request,
 			creator,
 			ownerControl,
-			srcObject,
-			formGuid
-		);
+			srcObject
+		));
 
-		if (createdForm == nullptr) {
+		if (!createdForm) {
 			ibBackendFormException::Error(_("a form this frontend library cannot build"));
 			return nullptr;
 		}
@@ -29,6 +30,11 @@ ibBackendValueForm* ibBackendValueForm::CreateNewForm(
 
 	ibBackendFormException::Error();
 	return nullptr;
+}
+
+bool ibSessionHasFrame()
+{
+	return ibSession::CurrentFrame() != nullptr;
 }
 
 ibUniqueKey ibBackendValueForm::CreateFormUniqueKey(ibBackendControlFrame* ownerControl, ibSourceDataObject* sourceObject, const ibUniqueKey& formGuid)

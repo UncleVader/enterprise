@@ -21,7 +21,7 @@ class ibMetaData;   // the metadata context the column-based value-assembly thre
 // it, and NewPageCache constructs it. (docs/private/query-language-arc.md §19/§20)
 struct ibRenderedPageCache
 {
-	wxString                     m_sig;             // signature of the SQL-determining inputs
+	ibPageSignature              m_sig;             // the SQL-determining inputs, compared as values (dataQueryBuilder.h)
 	std::vector<ibQuerySortItem> m_effectiveSort;   // resolved once (identity tail walk)
 	ibRenderedQuery              m_rendered;         // SQL + bind plan, rendered once
 	bool                         m_valid = false;
@@ -33,7 +33,7 @@ public:
 	// --- the L3<->L2 read/write engine (vended by a DB-family queryable) ---
 	ibDataQueryResult ExecuteRead(const ibDataQuerySpec& spec, const ibReadPageRequest& req) override;
 	ibDataQueryResult ExecuteReadCached(const ibDataQuerySpec& spec, const ibReadPageRequest& req,
-	                                    ibRenderedPageCache& cache, const wxString& signature) override;
+	                                    ibRenderedPageCache& cache, const ibPageSignature& signature) override;
 	ibDataQueryResult ExecuteAggregate(const ibDataQuerySpec& spec) override;
 	// The same GROUP BY / the same read, stopped one step before they run — see the base declarations.
 	ibQueryRelPtr     BuildAggregateRelation(const ibDataQuerySpec& spec) override;
@@ -46,6 +46,10 @@ public:
 	// metadata-free while resolution has a single home. (docs/private/query-language-arc.md §22 dot-walk)
 	const ibBackendQueryable* ResolveReferenceTarget(const ibBackendQueryable* queryable, const ibBackendQueryColumn* refColumn) const override;
 	std::vector<const ibBackendQueryable*> ResolveReferenceTargets(const ibBackendQueryable* queryable, const ibBackendQueryColumn* refColumn) const override;
+	// …the same answer for a TYPE a holder of fields already has in hand, with no column behind it — a setting's
+	// field, walked by its type (ibQueryConstructorModel::WalkFrom). ResolveReferenceTargets is this over the column.
+	static BACKEND_API std::vector<const ibBackendQueryable*> ReferenceTargetsOf(const ibMetaData* metaData,
+		const ibTypeDescription& type);
 
 	// ⭐⭐ A WALK NARROWED BY CAST. `CAST(Analytics AS Catalog.Goods).Description` walks into the goods and
 	// nowhere else: a counterparty in the same slot answers NULL, not its own description. The narrowing
@@ -58,6 +62,10 @@ public:
 	static BACKEND_API const ibBackendQueryColumn* CastLeaf(const ibBackendQueryable* target, const ibBackendQueryColumn* leaf);
 	static BACKEND_API const ibBackendQueryable*   CastTarget(const ibBackendQueryColumn* next);
 	static BACKEND_API bool                        WalkEnters(const ibBackendQueryable* target, const ibBackendQueryColumn* next);
+
+	// How many values one statement may bind on the connected engine (ibDialectDictionary::m_maxParameters) — what a
+	// road that would bind a long list asks first; 0 = none known.
+	static BACKEND_API size_t ParametersOneStatementTakes();
 
 	// The flat list read from this base is in hand: the references it made — this base's own — are told
 	// what they say together, a table at a time (ibValueReferenceDataObject::ReadBatch). See the base's note.
@@ -115,6 +123,13 @@ public:
 	static BACKEND_API bool CanRollupTotalsShape(const ibDataQuerySpec& spec);
 	static BACKEND_API bool CanPushRollupTotals(const ibDataQuerySpec& spec);
 	static ibSelectorTree   ExecuteRollupTotals(const ibDataQuerySpec& spec);
+
+	// ONE level of headings needs no ROLLUP: a plain GROUP BY, which every engine has (Firebird has no ROLLUP),
+	// the groups ordered by the key and by an ordinary sort's MIN / MAX, the grand total added up from the groups
+	// — so only a sum, a count, a minimum or a maximum rides here. Same shape rules as the ROLLUP road otherwise;
+	// no dialect probe -> unit-testable without a DB.
+	static BACKEND_API bool CanFoldOneLevelTotals(const ibDataQuerySpec& spec);
+	static ibSelectorTree   ExecuteOneLevelTotals(const ibDataQuerySpec& spec);
 
 	// Multi-source variant of the ROLLUP totals push-down: the SAME GROUP BY ROLLUP + GROUPING()
 	// mechanism, but over a co-located INNER/LEFT JOIN tree (BuildColocatedFrom) OR a UNION-of-branches
@@ -227,5 +242,10 @@ private:
 BACKEND_API ibValue ibTypeValueOf(const ibClassID& clsid);
 BACKEND_API ibValue ibTypeValueByName(const wxString& typeName);
 BACKEND_API bool    ibTypeValueClsid(const ibValue& value, ibClassID& outClsid);
+
+// ⭐ A VALUE AS A TYPE — what `CAST(x AS …)` answers, through the same door for the same reason. A primitive is
+// CONVERTED as a typed field converts what is written into it (AdjustValue: `Number(15, 2)` rounds, `String(10)`
+// cuts); a reference is NARROWED — it is of the type named or it is NULL, never an empty reference nobody wrote.
+BACKEND_API ibValue ibValueAsType(const ibValue& value, const ibTypeDescription& type);
 
 #endif // __DB_TABLE_PROVIDER_H__

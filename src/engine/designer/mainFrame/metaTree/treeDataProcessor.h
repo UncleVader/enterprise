@@ -70,22 +70,10 @@ protected:
 		// this function is called to compare 2 items and should return -1, 0
 		// or +1 if the first item is less than, equal to or greater than the
 		// second one. The base class version performs alphabetic comparison
-		// of item labels (GetText)
+		// of item labels (GetText). Here: the metadata's order (ibMetaTreeBase::CompareItemsByPosition).
 		virtual int OnCompareItems(const wxTreeItemId& item1,
 			const wxTreeItemId& item2) {
-			int ret = wxStrcmp(GetItemText(item1), GetItemText(item2));
-			ibTreeDataObject* data1 = dynamic_cast<ibTreeDataObject*>(GetItemData(item1));
-			ibTreeDataObject* data2 = dynamic_cast<ibTreeDataObject*>(GetItemData(item2));
-			if (data1 != nullptr && data2 != nullptr && ret > 0) {
-				ibValueMetaObject* metaObject1 = data1->m_metaObject;
-				ibValueMetaObject* metaObject2 = data2->m_metaObject;
-				ibValueMetaObject* parent = metaObject1->GetParent();
-				wxASSERT(parent);
-				return parent->ChangeChildPosition(metaObject2,
-					parent->GetChildPosition(metaObject1)
-				) ? ret : wxNOT_FOUND;
-			}
-			return ret;
+			return m_ownerTree->CompareItemsByPosition(item1, item2);
 		}
 
 		//events:
@@ -127,7 +115,7 @@ protected:
 	};
 
 	ibDataProcessorTreeCtrl* m_metaTreeCtrl = nullptr;
-	ibMetaDataDataProcessor* m_metaData = nullptr;
+	std::shared_ptr<ibMetaDataDataProcessor> m_metaData;   // what it shows, held while it shows it
 
 private:
 
@@ -183,7 +171,7 @@ public:
 
 	// ITS OWN TYPE, not the base's — the override is covariant, so a caller that needs the data
 	// processor's own verbs gets them without a cast, and the base gets what it asks for.
-	virtual ibMetaDataDataProcessor* GetMetaData() const { return m_metaData; }
+	virtual ibMetaDataDataProcessor* GetMetaData() const { return m_metaData.get(); }
 
 	ibDataProcessorTree() { }
 	ibDataProcessorTree(ibMetaDocument* docParent, wxWindow* parent, wxWindowID id = wxID_ANY);
@@ -191,7 +179,7 @@ public:
 	
 	void InitTree();
 
-	bool Load(ibMetaDataDataProcessor* metaData);
+	bool Load(std::shared_ptr<ibMetaDataDataProcessor> metaData);
 	bool Save();
 
 	void ActivateTree();

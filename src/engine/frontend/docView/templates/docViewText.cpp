@@ -1,5 +1,6 @@
 #include "docViewText.h"
 #include "frontend/mainFrame/mainFrame.h"
+#include "wx/filedlg.h"   // wxFileSelector - the text box's own Save as
 
 // ----------------------------------------------------------------------------
 // ibTextEditView implementation
@@ -141,5 +142,59 @@ bool ibTextFileDocument::DoOpenDocument(const wxString& filename)
 		return false;
 
 	Modify(false);
+	return true;
+}
+
+// ----------------------------------------------------------------------------
+// ibTextBoxDocument / View: the document a form's text box holds, and its view
+// ----------------------------------------------------------------------------
+
+wxIMPLEMENT_DYNAMIC_CLASS(ibTextBoxDocument, ibTextFileDocument);
+wxIMPLEMENT_DYNAMIC_CLASS(ibTextBoxView, ibTextEditView);
+
+ibTextBoxDocument::ibTextBoxDocument() : ibTextFileDocument()
+{
+	SetTitle(_("Text document"));
+}
+
+bool ibTextBoxDocument::SaveAs()
+{
+	const wxString fileName = wxFileSelector(_("Save As"),
+		wxEmptyString,
+		wxFileNameFromPath(GetFilename()),
+		wxEmptyString,
+		GetSaveFilter(),
+		wxFD_SAVE | wxFD_OVERWRITE_PROMPT,
+		GetDocumentWindow());
+
+	if (fileName.empty())
+		return false; // cancelled by user
+
+	return DoSaveDocument(fileName);
+}
+
+bool ibTextBoxView::OnCreate(ibDocument* doc, long flags)
+{
+	if (!ibTextEditView::OnCreate(doc, flags))
+		return false;
+
+	// The document's undo drives this editor, so it is made with it — as the manager makes a document's —
+	// and dropped in OnClose.
+	delete doc->GetCommandProcessor();
+	doc->SetCommandProcessor(doc->OnCreateCommandProcessor());
+
+	return true;
+}
+
+bool ibTextBoxView::OnClose(bool WXUNUSED(deleteWindow))
+{
+	// Not the base's close — see ibSpreadsheetGridBoxView::OnClose.
+	if (ibDocument* const doc = GetDocument()) {
+		delete doc->GetCommandProcessor();
+		doc->SetCommandProcessor(nullptr);
+	}
+
+	m_textEditor = nullptr;
+	SetFrame(nullptr);
 	return true;
 }

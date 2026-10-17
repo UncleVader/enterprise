@@ -86,6 +86,18 @@ struct ibQueryConstructorField
 	// own, and a shell that draws them holds no list of kinds. Null only for a field standing
 	// behind no column at all — the drawer then uses its default picture.
 	wxIcon m_icon;
+	// WHETHER A PERSON IS OFFERED IT — asked of the COLUMN too (ibBackendSourceColumn::IsAvailable), so
+	// the functional options of the base answer, and a dot-walk is available only while every hop is.
+	// The query constructor does not read it: a query is written against the schema, which options leave
+	// alone. The settings pickers and a composition's run do, since what they offer or print is what a
+	// person may see.
+	bool m_available = true;
+	// ⭐ WHAT THE SOURCE CALLS IT, and WHAT IT IS IN A BALANCE — asked of the COLUMN a plain projection reads
+	// (its synonym, ibBackendSourceColumn::GetBalanceRole), empty / None for anything computed. The
+	// constructor still shows the NAME (m_presentation); these are what a composition fills a field in
+	// with before anybody says otherwise — its generated title, and its role.
+	wxString      m_caption;
+	ibBalanceRole m_balanceRole = ibBalanceRole::None;
 };
 
 class BACKEND_API ibQueryConstructorModel
@@ -191,6 +203,20 @@ public:
 	// only for several will just unfold it: a plain [+], no type level in between.
 	std::vector<ibQueryConstructorField> GetReferenceBranches(const ibTypeDescription& typeDesc) const;
 
+	// ⭐ A TYPE WRITTEN AS A CAST, BOTH WAYS — how a temporary table's fields are described in the text itself
+	// (`CAST(T.Qty AS Number(15, 2)) AS Qty … INTO Goods FROM &Goods AS T`), so a window can write them and every
+	// reader of the text — this model, the lowering — reads them back alike.
+	//   · CastTo — `value` wrapped in the CAST that brings it to `type`: a primitive with its qualifiers
+	//     (ibQueryMakeCast), one reference as the table it points at, named as GetReferenceBranches names it.
+	//     Anything no CAST can say (a composite, a type no table stands behind) leaves `value` as it is.
+	//   · TypeOfCast — the type such a CAST brings its value to; empty for anything else.
+	ibQueryAstExprPtr CastTo(ibQueryAstExprPtr value, const ibTypeDescription& type) const;
+	ibTypeDescription TypeOfCast(const ibQueryAstExpr& cast) const;
+	// …AND WHAT A SELECT SAYS OF A TABLE THAT HAS NO ROWS YET — one handed in (`&Goods`), or a temporary table the
+	// manager brings: every `Goods.X` it takes, as it is or CAST to a type, is a field of that table, typed by the
+	// CAST. The one reading of such a table, for the model's field lists and for the window that describes it.
+	std::vector<ibQueryConstructorField> FieldsTakenFrom(const ibQuerySelect& reader, const ibQuerySource& source) const;
+
 	// THE FIELD A PATH ENDS IN — the walk the trees make when somebody clicks [+], asked all at once
 	// instead of one level at a time: find the source the first segment belongs to, then hop through
 	// the references. Done ONCE, and both questions below read its answer.
@@ -198,6 +224,20 @@ public:
 	// An unresolvable path yields an EMPTY field: silence, never a guess.
 	ibQueryConstructorField FieldOfPath(const ibQuerySelect& select, const std::vector<wxString>& path,
 	                                    const ibQueryPackage& package, size_t beforeStatement) const;
+	// …AND THE HOPS OF IT, from a field already in hand — each segment found among the fields of the one
+	// before, a reference walked by its TYPE (GetReferenceFields: the target's descriptor, no value made).
+	// The leaf answers with its type and with whether EVERY hop is available (functional options).
+	// FieldOfPath runs it once it has found where a path starts; a host that holds the start itself (a
+	// setting over a known source) runs it directly. A hop nothing answers yields an EMPTY field that keeps
+	// only what the walk knew up to there — silence, never a guess.
+	ibQueryConstructorField WalkFrom(const ibQueryConstructorField& from, const std::vector<wxString>& hops) const;
+	// …AND WHERE A WRITTEN PATH STARTS among the fields a holder already has: the LONGEST prefix one of them is
+	// named — a linked package names its fields with the selection in front (`Sales.Qty`), so the first
+	// segment alone is not always one — and the rest walked from it (WalkFrom). One rule for every holder of
+	// fields: the query's own sources (FieldOfPath), a composer's source, a settings window's list. A path
+	// none of them starts yields an EMPTY field — silence, and no verdict on it.
+	ibQueryConstructorField WalkPath(const std::vector<ibQueryConstructorField>& fields,
+	                                 const std::vector<wxString>& path) const;
 	// WHAT IT REFERS TO — 0 when the leaf is not a single-target reference.
 	ibClassID ReferenceOfPath(const ibQuerySelect& select, const std::vector<wxString>& path,
 	                          const ibQueryPackage& package, size_t beforeStatement) const;
@@ -250,5 +290,16 @@ private:
 // saying out loud.
 BACKEND_API std::vector<ibQueryConstructorField> ibQueryFieldsOfText(const wxString& text,
 	const ibMetaData* metaData, wxString* error = nullptr);
+
+// ⭐⭐ …AND NO ROLE THE TEXT SAYS. What a field is in a balance is a composition's word on its Fields page
+// (ibFieldDescription::m_role), and a `ROLE` in the query under it would be a second place to say one thing
+// (Max, 2026-09-29). So a composition reads its query without them — the fields above offer the SOURCE's
+// roles only, and the composer stands on this text (ibDataDBComposer::FromText). Every select the text holds
+// forgets them, the ones it reads FROM included, since a role travels up with its column. A text that says no
+// role — or does not parse yet — comes back as it was, byte for byte.
+BACKEND_API wxString ibQueryTextWithoutRoles(const wxString& text);
+// …the same over a parsed package (the query constructor's, opened by a host that keeps roles itself —
+// ibQueryExclude_Roles). True when one was said.
+BACKEND_API bool ibQueryDropRoles(ibQueryPackage& package);
 
 #endif

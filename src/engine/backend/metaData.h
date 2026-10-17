@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <functional>
+#include <utility>   // std::forward — MakeShared
 #include <vector>
 
 #include "backend/moduleManager/moduleManager.h"
@@ -259,8 +260,9 @@ public:
 	// modules no longer use this path — they register into the designer-mgr
 	// directly via RuntimeRegisterCommonModule (see project_common_module_designer_cache).
 	// insert_or_assign semantics (a re-run replaces the prior builder + drops
-	// the built value).
-	bool AddCompileModule(const ibValueMetaObject* moduleObject, std::function<ibValue*()> builder);
+	// the built value). The builder answers with the OWNER of what it built — a data object's
+	// creator does (born owned: its module runs inside the build).
+	bool AddCompileModule(const ibValueMetaObject* moduleObject, std::function<ibValue()> builder);
 	bool RemoveCompileModule(const ibValueMetaObject* moduleObject);
 
 	// Mark a deferred entry as dirty — Designer calls this on form-edit
@@ -270,7 +272,6 @@ public:
 	bool InvalidateCompileModule(const ibValueMetaObject* moduleObject);
 
 	ibValue* FindCompileModuleRef(const ibValueMetaObject* moduleObject) const;
-	ibValue* FindParentCompileModuleRef(const ibValueMetaObject* moduleObject) const;
 
 	template <class T>
 	bool FindCompileModule(const ibValueMetaObject* moduleObject, T*& objValue) const {
@@ -278,16 +279,10 @@ public:
 		return objValue != nullptr;
 	}
 
-	template <class T>
-	bool FindParentCompileModule(const ibValueMetaObject* moduleObject, T*& objValue) const {
-		objValue = dynamic_cast<T*>(FindParentCompileModuleRef(moduleObject));
-		return objValue != nullptr;
-	}
-
 private:
 	struct ibCompileEntry {
 		ibValuePtr<ibValue>           m_value;     // built value; null if pending or invalidated
-		std::function<ibValue*()>     m_deferred;  // rebuilder; set for lazy entries (forms / common modules)
+		std::function<ibValue()>      m_deferred;  // rebuilder; set for lazy entries (forms / common modules)
 		bool                          m_constructing = false; // recursion guard for FindCompileModuleRef
 	};
 	mutable std::map<const ibValueMetaObject*, ibCompileEntry> m_cache;
@@ -395,7 +390,12 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class BACKEND_API ibMetaData {
+// ⭐ EVERY METADATA IS HELD BY A shared_ptr (Max, 2026-10-06: *"implement shared_from_this in the metadata, and hold
+// the reference properly, as a shared_ptr — all the metadata"*): a configuration, an external report or data
+// processor, a configuration file, both sides of a comparison. It is handed around as a plain pointer; whoever
+// works in it holds `shared_from_this()` for as long as it works — a session, a document, a tree, an external
+// object — and it goes with the last of them.
+class BACKEND_API ibMetaData : public std::enable_shared_from_this<ibMetaData> {
 	void DoGenerateNewID(ibMetaID& id, const ibValueMetaObject* top) const;
 
 	// The next id to hand out — see GenerateNewID. 0 = not seeded yet (the first call walks the tree
@@ -410,6 +410,21 @@ public:
 	}
 
 	virtual ~ibMetaData() {}
+
+	// ⭐ HOW A METADATA IS MADE — std::make_shared's twin, with one difference: its last holder closes what is still
+	// open before it goes (Dispose), on their own thread, working for its base meanwhile.
+	template <class T, class... Args>
+	static std::shared_ptr<T> MakeShared(Args&&... args) {
+		return std::shared_ptr<T>(new T(std::forward<Args>(args)...), &ibMetaData::Dispose);
+	}
+
+	// The base it belongs to — a configuration's (ibMetaDataConfigurationBase); an external report or data processor
+	// and a configuration read from a file belong to none.
+	virtual class ibApplicationInstance* GetApplicationInstance() const { return nullptr; }
+
+private:
+	static void Dispose(ibMetaData* metaData);
+public:
 
 	// Module-storage skeleton — list of common-module descriptors that
 	// runtime mm reads in CreateMainModule to spawn its own instances.
@@ -540,46 +555,23 @@ public:
 	// Out-of-line (metaData.cpp) — ibSchemaSnapshot is only forward-declared here.
 	class ibSchemaSnapshot BuildSchemaSnapshot() const;
 
-	//runtime support:
-	inline ibValue CreateObject(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		return CreateObjectRef(clsid, paParams, lSizeArray);
-	}
-	inline ibValue CreateObject(const wxString& className, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		return CreateObjectRef(className, paParams, lSizeArray);
+	// runtime support — every factory answers with the OWNER, empty when nothing was made (see
+	// ibValue::CreateObject). A caller that needs the type asks the owner: `ibValuePtr<T> v = ...`.
+	virtual ibValue CreateObject(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const;
+	virtual ibValue CreateObject(const wxString& className, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
+		const ibClassID& clsid = GetIDObjectFromString(className);
+		return CreateObject(clsid, paParams, lSizeArray);
 	}
 
 	template<typename T, typename... Args>
 	inline ibValue CreateObjectValue(Args&&... args) const {
-		return CreateObjectValueRef<T>(std::forward<Args>(args)...);
-	}
-
-	virtual ibValue* CreateObjectRef(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const;
-	virtual ibValue* CreateObjectRef(const wxString& className, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		const ibClassID& clsid = GetIDObjectFromString(className);
-		return CreateObjectRef(clsid, paParams, lSizeArray);
-	}
-	template<typename T, typename... Args>
-	inline ibValue* CreateObjectValueRef(Args&&... args) const {
-		return CreateAndConvertObjectValueRef<T>(std::forward<Args>(args)...);
-	}
-
-	template<class T = ibValue>
-	inline T* CreateAndConvertObjectRef(const ibClassID& clsid, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		return CastValue<T>(CreateObjectRef(clsid, paParams, lSizeArray));
-	}
-	template<class T = ibValue>
-	inline T* CreateAndConvertObjectRef(const wxString& className, ibValue** paParams = nullptr, const long lSizeArray = 0) const {
-		return CastValue<T>(CreateObjectRef(className, paParams, lSizeArray));
-	}
-	template<typename T, typename... Args>
-	inline T* CreateAndConvertObjectValueRef(Args&&... args) const {
-		T* created_value = new T(args...);
-		if (!IsRegisterCtor(created_value->GetClassType())) {
-			wxDELETE(created_value);
-			wxASSERT_MSG(false, "CreateAndConvertObjectValueRef ret null!");
-			return nullptr;
+		T* const created = new T(args...);
+		const ibValue owner(created);
+		if (!IsRegisterCtor(created->GetClassType())) {
+			wxASSERT_MSG(false, "CreateObjectValue: the type is not registered");
+			return wxEmptyValue;
 		}
-		return created_value;
+		return owner;
 	}
 
 	void RegisterCtor(ibCtorMetaValueType* typeCtor);
@@ -606,8 +598,7 @@ public:
 	virtual ibClassID GetIDObjectFromString(const wxString& className) const;
 	virtual wxString GetNameObjectFromID(const ibClassID& clsid, bool upper = false) const;
 
-	inline ibMetaID GetVTByID(const ibClassID& clsid) const;
-	inline ibClassID GetIDByVT(const ibMetaID& valueType, enum ibCtorObjectMetaType refType) const;
+	ibClassID GetIDObjectFromMetaID(const ibMetaID& metaID, enum ibCtorObjectMetaType refType) const;
 
 	virtual ibCtorMetaValueType* GetTypeCtor(const wxString& className) const;
 	virtual ibCtorMetaValueType* GetTypeCtor(const ibClassID& clsid) const;
@@ -780,16 +771,6 @@ public:
 	// configuration — was indistinguishable from a delete that happened, and the caller reported
 	// success either way.
 	bool RemoveMetaObject(ibValueMetaObject* object, ibValueMetaObject* objParent = nullptr);
-
-	// ⭐ PUT AN OBJECT NEXT TO ONE OF ITS SIBLINGS. The order of an object's children is data — the order
-	// of the sections in the navigation panel, of the forms under an object, of what a person reads down
-	// the tree — and until now only a drag in the designer could change it. `before` puts `object` in
-	// FRONT of `sibling`, otherwise BEHIND it; both must sit under the same parent.
-	//
-	// Answers whether the object NOW STANDS where it was asked to — true also when it already did, and
-	// then `*changed` stays false and nothing is announced. False is a refusal: a read-only
-	// configuration, an object placed relative to itself, or two objects that are not siblings.
-	bool MoveMetaObject(ibValueMetaObject* object, ibValueMetaObject* sibling, bool before, bool* changed = nullptr);
 
 #pragma region __array_h__
 

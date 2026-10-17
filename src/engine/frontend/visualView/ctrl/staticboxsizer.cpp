@@ -1,6 +1,6 @@
 
 #include "sizer.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifdef OES_USE_WEB
 #include "frontend/web/webSizer.h"
 #endif
@@ -61,27 +61,27 @@ void ibValueStaticBoxSizer::Update(wxObject* wxobject, ibVisualHost* visualHost)
 #endif
 
 	staticboxsizer->SetOrientation(m_propertyOrient->GetValueAsInteger());
-	staticboxsizer->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	staticboxsizer->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 
 	target->SetLabel(m_propertyTitle->GetValueAsTranslateString());
-	target->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	target->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 	// A group's caption is a HEADING: without a font of its own it is the system font in bold, so it reads as
 	// the title of what is inside it rather than as one more small label on the grey.
 	if (m_propertyFont->IsOk()) {
-		target->SetFont(m_propertyFont->GetValueAsFont());
+		target->SetFont(typeConv::FontToWxFont(m_propertyFont->GetValueAsFont()));
 	}
 	else {
 		wxFont heading = wxSystemSettings::GetFont(wxSYS_DEFAULT_GUI_FONT);
 		heading.SetWeight(wxFONTWEIGHT_BOLD);
 		target->SetFont(heading);
 	}
-	target->SetForegroundColour(m_propertyFG->GetValueAsColour());
-	target->SetBackgroundColour(m_propertyBG->GetValueAsColour());
+	target->SetForegroundColour(typeConv::ColourToWxColour(m_propertyFG->GetValueAsColour()));
+	target->SetBackgroundColour(typeConv::ColourToWxColour(m_propertyBG->GetValueAsColour()));
 	target->Enable(m_propertyEnabled->GetValueAsBoolean());
-	target->Show(m_propertyVisible->GetValueAsBoolean());
+	target->Show(m_propertyVisible->GetValueAsBoolean() && IsAvailable());
 	target->SetToolTip(m_propertyTooltip->GetValueAsString());
 
-	if (m_propertyMinSize->GetValueAsSize() != wxDefaultSize)
+	if (m_propertyMinSize->GetValueAsSize() != ibDefaultSize)
 		target->Layout();
 
 	UpdateSizer(staticboxsizer);

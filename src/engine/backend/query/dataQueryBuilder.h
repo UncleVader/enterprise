@@ -111,7 +111,18 @@ struct ibAggregateItem { ibAggregateFn m_fn; const ibBackendQueryColumn* m_col; 
                          // …and the column the figure is read back through when the SERVER computed
                          // it (a window projected under an alias of its own). Owned here because
                          // nothing else outlives the read it belongs to.
-                         std::shared_ptr<ibBackendQueryColumn> m_ownedReceiver; };
+                         std::shared_ptr<ibBackendQueryColumn> m_ownedReceiver;
+                         // ⭐⭐ A BALANCE — `TOTALS SUM(x)` over a field that is `ROLE OPENING` / `ROLE CLOSING`.
+                         //
+                         // None = the ordinary figure. Set, a group does not add the rows up: for each
+                         // KEY it takes the rows at the key's first (Opening) or last (Closing) MOMENT,
+                         // and adds up those. The key is what tells one balance from another — the
+                         // read's dimensions. The moment is the PERIOD fields in the order they are
+                         // read, the senior first (a period, then a recorder, then a line number):
+                         // compared one after another, as a point in time is.
+                         ibBalanceRole m_balance = ibBalanceRole::None;
+                         std::vector<const ibBackendQueryColumn*> m_balanceMoments;
+                         std::vector<const ibBackendQueryColumn*> m_balanceKeys; };
 // ONE FIELD of a TotalBy level — the column to roll up by + how it unfolds.
 // ⭐ A LEVEL'S FIELD CARRIES ITS OWN PATH. A dot-walked dimension (`Producer.Region`) groups by a
 // SYNTHETIC column — one this door made up so the fold has a stable id to key the tree on — while
@@ -237,6 +248,16 @@ struct ibDotWalkColumn
 	wxString                                 m_alias;   // output name (read via GetColumn)
 };
 
+// ⭐ A WALK MAY BE SHOWN WHILE EVERY HOP OF IT MAY BE (functional options, IsAvailable) — a hop the options
+// take away takes what stands behind it too. Asked of a dot-walk's path and of a resolved column path alike.
+inline bool ibIsWalkAvailable(const std::vector<const ibBackendQueryColumn*>& path)
+{
+	for (const ibBackendQueryColumn* hop : path)
+		if (hop != nullptr && !hop->IsAvailable())
+			return false;
+	return true;
+}
+
 // One page request — universal across read modes. The caller fills the fields
 // its mode needs; the rest stay defaulted.
 struct ibReadPageRequest
@@ -346,6 +367,23 @@ public:
 	// tomorrow gets it without knowing.
 	void SetComputedOverRow(std::vector<ibQueryColumnSelect> columns);
 
+	// ⭐⭐ …AND WHICH COMPUTED OUTPUTS CAME BACK AS A SPREAD RATHER THAN AS ONE FIELD. An expression that
+	// answers with a COMPOSITE value — `CASE WHEN … THEN Account ELSE … END` — cannot ride one column:
+	// a reference is a tag, a target type and a key, and reduced to its first value field it is the bytes
+	// of a guid with nothing to rebuild it from. So the projection writes it once per physical field under
+	// the alias as a PREFIX, exactly as every object output travels, and this says so.
+	//
+	// Held HERE for the same reason the computed-over-row columns are: every road ends in a result, and
+	// `GetColumn(alias)` is the one door a caller knocks on. Told this, that door reassembles the value
+	// through `GetColumn(prefix, col)` — the reader that already exists — so nothing above learns that an
+	// output was ever spread (2026-09-24).
+	struct ibComputedSpread {
+		wxString                    m_alias;    // the name a caller asks for
+		wxString                    m_prefix;   // …and where its fields were put
+		const ibBackendQueryColumn* m_col = nullptr;   // the column whose spread they are
+	};
+	void SetComputedSpreads(std::vector<ibComputedSpread> spreads);
+
 	// The door also stamps the totals config — the TotalBy dimension levels (in order) + the common
 	// totals aggregate set — so result.Select(kind) folds by them automatically (no manual fold on
 	// the Selector). (docs/private/query-language-arc.md §22.1b)
@@ -402,6 +440,7 @@ private:
 	std::shared_ptr<ibDataResultSource> m_source;
 	std::vector<const ibBackendQueryColumn*> m_matColumns;   // columns a Select(mode) drains into the snapshot
 	std::vector<ibQueryColumnSelect> m_computedOverRow;      // …and the ones this result answers itself — see the setter
+	std::vector<ibComputedSpread>    m_computedSpreads;      // …and the ones that came back as a field spread
 	// Co-ownership of the sources built for the query (AdoptSources) — every column pointer above
 	// lives inside one of them, so they stay valid for exactly as long as this result does.
 	std::vector<std::shared_ptr<const ibBackendQueryable>> m_ownedSources;
@@ -438,6 +477,26 @@ private:
 // signature mismatch. It stores an L2 ibRenderedQuery, so its DEFINITION lives in
 // the .cpp and it is OPAQUE here — the list model holds it through a shared_ptr
 // and creates it via ibDataQueryBuilder::NewPageCache(), never naming its layout.
+
+// ⭐ WHAT DECIDES A CACHED PAGE'S SQL, compared as what it is: the rendered text, the page's shape, and the
+// query's parameters by name and VALUE. A value is compared as a value (ibValueSeqEqual, the relation a
+// grouping key uses), never as its printed text: the key used to be one wxString the values were rendered
+// into, which made a date its raw count and let a string that spelled `;name=` stand for another parameter.
+struct ibPageSignature
+{
+	wxString              m_text;          // the rendered query text
+	long                  m_count = 0;
+	int                   m_direction = 0;
+	bool                  m_reverseSort = false;
+	std::vector<wxString> m_names;         // the parameters, in their names' order…
+	std::vector<ibValue>  m_values;        // …and their values
+
+	bool operator==(const ibPageSignature& other) const {
+		return m_count == other.m_count && m_direction == other.m_direction && m_reverseSort == other.m_reverseSort
+			&& m_text == other.m_text && m_names == other.m_names && ibValueSeqEqual()(m_values, other.m_values);
+	}
+	bool operator!=(const ibPageSignature& other) const { return !(*this == other); }
+};
 
 // L3 join kind — the door's own (NOT L2's ibQueryJoinType; the door is L2-blind).
 enum class ibQueryJoinKind { Inner, Left, Right, Full };   // Right / Full -> RAM stitch only (co-located does Inner/Left)
@@ -734,7 +793,7 @@ public:
 	ibDataQueryBuilder& Where(const ibBackendQueryColumn* col, const ibValue& value);        // 2-arg = equality (meta column)
 	ibDataQueryBuilder& Where(const ibBackendColumnRawDB& rawColumn, const ibValue& value);         // direct field = value (door owns a copy)
 	ibDataQueryBuilder& WhereLike(const ibBackendQueryColumn* col,
-	                              const ibValue& pattern);                                    // col LIKE pattern (FindByCode/Description)
+	                              const ibValue& pattern);                                    // col LIKE pattern (a lookup that is not exact; the language's LIKE)
 	ibDataQueryBuilder& WhereCompare(const ibBackendQueryColumn* col,
 	                                 ibQueryFilterOp op, const ibValue& value);               // col <op> value (ordered: <=, <, >, >=, LIKE)
 	// A ready-made condition, pushed VERBATIM. The composer re-reads leaves through this door, and a
@@ -860,6 +919,11 @@ public:
 	// the common one. Together they are an ADDRESS, and the fields it stands for are derivable from
 	// it, which is what leaves the push-down road open (the same address is `PARTITION BY <prefix>`).
 	ibDataQueryBuilder& AggregateOver(const wxString& alias, std::shared_ptr<ibTotalBranch> branch, int depth);
+	// …AND THAT AN ALREADY-DECLARED AGGREGATE IS A BALANCE (its field's role — OPENING / CLOSING), stated the same
+	// way and for the same reason: the edge, the moment and the keys are properties of the figure, not of
+	// how its input was spelled. Addressed by alias.
+	ibDataQueryBuilder& AggregateAsBalance(const wxString& alias, ibBalanceRole edge,
+		std::vector<const ibBackendQueryColumn*> moments, std::vector<const ibBackendQueryColumn*> keys);
 
 	// …AND THE COLUMN THE FIGURE IS READ BACK THROUGH, when the SERVER computed it. The window is
 	// projected under an alias of its own, so the value must not land on the column it was computed
@@ -1073,7 +1137,7 @@ public:
 	// capture every SQL-determining input (the caller owns that contract).
 	[[nodiscard]] ibDataQueryResult Execute(const ibReadPageRequest& request,
 	                                       ibRenderedPageCache& cache,
-	                                       const wxString& signature) const;
+	                                       const ibPageSignature& signature) const;
 
 	// Aggregated terminal — a FLAT GROUP BY built from GroupBy() + Sum()/Count()/… +
 	// Where()/Having(). NOT paged: returns the full grouped set (one row per group). In

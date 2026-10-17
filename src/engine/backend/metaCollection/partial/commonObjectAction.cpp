@@ -10,9 +10,10 @@
 
 #include "commonObject.h"
 #include "backend/backend_form.h"             // ibBackendControlFrame COMPLETE — the dynamic_cast target in ShowFormValue
+#include "backend/choiceLinkResolver.h"      // a row added in a narrowed list is born matching it
 #include "backend/srcDataObject.h"            // ibSourceDataObject::ibSourceExplorer — FillSourceExplorer's out-param
 #include "backend/system/systemManager.h"     // ibValueSystemFunction::Alert
-#include "backend/picturePredefined.h"        // g_picAdd/Copy/Edit/Delete/MarkAsDelete/AddFolderCLSID — the command band
+#include "core/picturePredefined.h"        // g_picAdd/Copy/Edit/Delete/MarkAsDelete/AddFolderCLSID — the command band
 #include "backend/rowValues.h"                // ibRowMetaValues::find — reading the reference cell for GetSelectValue
 #include "backend/metaCollection/partial/reference/reference.h"   // ibValueReferenceDataObject::GetGuid — GetItemKey's row guid
 
@@ -80,12 +81,12 @@ void ibValueMetaObjectRecordDataRecorderRef::FillSourceExplorer(ibSourceDataObje
 void ibValueMetaObjectRecordDataHierarchyMutableRef::FillSourceExplorer(ibSourceDataObject::ibSourceExplorer& explorer) const
 {
 	// THE PARENT HIDES ONLY WHERE IT IS THE TREE. In a real hierarchy the list SHOWS the structure by
-	// being a tree, so a Parent column beside it repeats what the indentation already says. Under
-	// SUBORDINATION the parent is an ordinary recorded fact ("subordinate to account"), and hiding it
-	// would leave the one thing that arrangement exists for invisible.
+	// being a tree, so a Parent column beside it repeats what the indentation already says — folders, and
+	// items (a chart of accounts). Where a parent is only recorded (ParentOnly, no longer offered) it is an
+	// ordinary fact, and hiding it would leave the one thing that arrangement exists for invisible.
 	//
 	// ⏳ Left as the DECLARED question on purpose (2026-08-13). `GetHierarchyColumn()` now answers
-	// `HasParentLink()`, so a Subordination source CAN be shown as a tree — but only in a tree view,
+	// `HasParentLink()`, so a ParentOnly source CAN be shown as a tree — but only in a tree view,
 	// and whether the list is one is the FRONTEND's answer (`flatView`), which no metaobject can give.
 	// Asking `HasParentLink()` here would hide the column in a flat view too, taking the structure
 	// away exactly where nothing else shows it. So the two questions stay apart until the visibility
@@ -138,6 +139,33 @@ ibUniqueKey ibValueMetaObjectRecordDataRef::GetItemKey(const ibRowMetaValues& ro
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// THE ROW'S STATE PICTURE — what a list's first column shows at its left. Read off the row's cells by the kind
+// that owns them, as the key is: the list knows no metadata and asks through the source descriptor.
+// ---------------------------------------------------------------------------------------------------------
+
+// A flag of the row, by the attribute that holds it. A row that does not carry the cell (an arrangement without
+// groups has no folder column) answers false - the ordinary state, not an error.
+static bool ibRowFlag(const ibRowMetaValues& rowValues, const ibValueMetaObjectAttributePredefined* attribute)
+{
+	if (attribute == nullptr)
+		return false;
+	const ibRowMetaValues::const_iterator it = rowValues.find(attribute->GetMetaID());
+	return it != rowValues.end() && it->second.GetBoolean();
+}
+
+ibPictureID ibValueMetaObjectRecordDataMutableRef::GetRowPicture(const ibRowMetaValues& rowValues) const
+{
+	return ibRowFlag(rowValues, GetDataDeletionMark()) ? g_picRowItemDeletedCLSID : g_picRowItemCLSID;
+}
+
+ibPictureID ibValueMetaObjectRecordDataHierarchyMutableRef::GetRowPicture(const ibRowMetaValues& rowValues) const
+{
+	if (ibRowFlag(rowValues, GetDataIsFolder()))
+		return ibRowFlag(rowValues, GetDataDeletionMark()) ? g_picRowFolderDeletedCLSID : g_picRowFolderCLSID;
+	return ibValueMetaObjectRecordDataMutableRef::GetRowPicture(rowValues);
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Writeable-record BASE (MutableRef) — the command set + execution of the ref list models, lifted onto the
 // metaobject so a metadata-blind dynamic list reaches it through the source descriptor. Execute is BY KEY (the
 // front-owned row's handle) + srcForm (parent / to refresh). Hierarchy adds AddFolder, Document adds Post.
@@ -151,6 +179,19 @@ void ibValueMetaObjectRecordDataMutableRef::GetCommandCollection(const ibFormID&
 	commands.emplace_back(eMarkAsDeleteValue, wxT("MarkAsDelete"), _("Mark as delete"), g_picMarkAsDeleteCLSID, true);
 }
 
+// ⭐⭐ BORN MATCHING THE LIST IT WAS ADDED TO — see ibChoiceLinkResolver::Fill. ONE place, because a record is
+// added from three handlers below (a flat record, a hierarchical one, a register's) and the rule is the same for
+// all of them. Written into two of them, the one left out was the HIERARCHICAL catalog — contracts kept in
+// folders, which is exactly the list a choice narrows by owner — so a contract added there was never born with
+// its counterparty, and the journal never once showed `choice.fill 'Contracts'` (2026-09-23).
+static void ibFillFromTheList(ibSourceDataObject* obj, const ibBackendValueForm* srcForm)
+{
+	if (obj == nullptr || srcForm == nullptr)
+		return;
+	ibChoiceHolder holder(obj);
+	ibChoiceLinkResolver::Fill(holder, srcForm->GetFormRequest().m_create);
+}
+
 void ibValueMetaObjectRecordDataMutableRef::CallAsCommand(ibActionID id, const ibUniqueKey& /*anchor*/, const ibUniqueKey& key, ibBackendValueForm* srcForm) const
 {
 	try {
@@ -158,13 +199,16 @@ void ibValueMetaObjectRecordDataMutableRef::CallAsCommand(ibActionID id, const i
 		{
 		case eAddValue: {
 			ibValuePtr<ibValueRecordDataObjectRef> obj(CreateObjectValue());
-			if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+			if (obj != nullptr) {
+				ibFillFromTheList(obj, srcForm);
+				obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
+			}
 			break;
 		}
 		case eCopyValue: {
 			if (!key.IsOk()) return;
 			ibValuePtr<ibValueRecordDataObjectRef> obj(CopyObjectValue(key));
-			if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+			if (obj != nullptr) obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 			break;
 		}
 		case eEditValue:
@@ -204,7 +248,7 @@ void ibValueMetaObjectRecordDataMutableRef::CallAsCommand(ibActionID id, const i
 	// ⚠ Level Error, not the default Information: a failed command IS an error, and a reader
 	// filtering the pane for problems must find it there.
 	catch (const ibBackendInterruptException&) {}   // the user stopped it — nothing to report
-	catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+	catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 	catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRecordDataMutableRef::CallAsCommand: unhandled non-ibBackend exception swallowed")); }
 }
 
@@ -212,11 +256,11 @@ void ibValueMetaObjectRecordDataMutableRef::ShowValueByKey(const ibUniqueKey& ke
 {
 	if (!key.IsOk()) return;
 	try {
-		ibValueRecordDataObjectRef* obj(CreateObjectValue(key));
-		if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+		const ibValuePtr<ibValueRecordDataObjectRef> obj(CreateObjectValue(key));
+		if (obj != nullptr) obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 	}
 	catch (const ibBackendInterruptException&) {}
-	catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+	catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 	catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRecordDataMutableRef::ShowValueByKey: unhandled non-ibBackend exception swallowed")); }
 }
 
@@ -247,7 +291,7 @@ void ibValueMetaObjectRecordDataHierarchyMutableRef::CallAsCommand(ibActionID id
 		const ibUniqueKey& ctxKey = anchor;
 		try {
 			ibValue parent;   // empty → root
-			if (ctxKey.IsOk()) {
+			if (ctxKey.IsOk() && HasParentLink()) {   // …and a flat list has no parent to fill
 				ibValuePtr<ibValueRecordDataObjectHierarchyRef> sel(CreateObjectValue(ibObjectMode::OBJECT_ITEM, ctxKey.GetGuid()));
 				if (sel != nullptr) {
 					// WHERE THE NEW NODE LANDS depends on what a parent is allowed to be here.
@@ -258,7 +302,7 @@ void ibValueMetaObjectRecordDataHierarchyMutableRef::CallAsCommand(ibActionID id
 					// to the anchor's parent here would make "create inside this account" silently create a
 					// neighbour, which is the one outcome that looks like it worked.
 					bool nestInsideAnchor = IsItemHierarchy();
-					if (!nestInsideAnchor) {
+					if (!nestInsideAnchor && HasFolders()) {   // …and only folders have an IsFolder to ask
 						ibValue isFolder;
 						sel->GetValueByMetaID(GetDataIsFolder()->GetMetaID(), isFolder);
 						nestInsideAnchor = isFolder.GetBoolean();
@@ -271,11 +315,12 @@ void ibValueMetaObjectRecordDataHierarchyMutableRef::CallAsCommand(ibActionID id
 			if (obj != nullptr) {
 				if (!parent.IsEmpty())
 					obj->SetValueByMetaID(GetDataParent()->GetMetaID(), parent);   // pre-fill the parent from the browsed folder
-				obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+				ibFillFromTheList(obj, srcForm);
+				obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 			}
 		}
 		catch (const ibBackendInterruptException&) {}
-		catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+		catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 		catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRecordDataHierarchyMutableRef::CallAsCommand: unhandled non-ibBackend exception swallowed")); }
 		return;
 	}
@@ -306,19 +351,22 @@ void ibValueMetaObjectRegisterData::CallAsCommand(ibActionID id, const ibUniqueK
 		{
 		case eAddValue: {
 			ibValuePtr<ibValueRecordManagerObject> obj(CreateRecordManagerObjectValue());
-			if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+			if (obj != nullptr) {
+				ibFillFromTheList(obj, srcForm);   // a register record: the slice it was added in is what it belongs to
+				obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
+			}
 			break;
 		}
 		case eCopyValue: {
 			if (!key.IsOk()) return;
 			ibValuePtr<ibValueRecordManagerObject> obj(CopyRecordManagerObjectValue(ibUniqueKeyPair(key.GetKeyValues())));
-			if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+			if (obj != nullptr) obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 			break;
 		}
 		case eEditValue: {
 			if (!key.IsOk()) return;
 			ibValuePtr<ibValueRecordManagerObject> obj(CreateRecordManagerObjectValue(ibUniqueKeyPair(key.GetKeyValues())));
-			if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+			if (obj != nullptr) obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 			break;
 		}
 		case eDeleteValue: {
@@ -331,7 +379,7 @@ void ibValueMetaObjectRegisterData::CallAsCommand(ibActionID id, const ibUniqueK
 		}
 	}
 	catch (const ibBackendInterruptException&) {}
-	catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+	catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 	catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRegisterData::CallAsCommand: unhandled non-ibBackend exception swallowed")); }
 }
 
@@ -361,17 +409,17 @@ void ibValueMetaObjectRegisterData::ShowValueByKey(const ibUniqueKey& key, ibBac
 			}
 		}
 		catch (const ibBackendInterruptException&) {}
-		catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+		catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 		catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRegisterData::ShowValueByKey: unhandled non-ibBackend exception swallowed")); }
 		return;
 	}
 
 	try {
 		ibValuePtr<ibValueRecordManagerObject> obj(CreateRecordManagerObjectValue(ibUniqueKeyPair(key.GetKeyValues())));
-		if (obj != nullptr) obj->ShowFormValue(wxEmptyString, dynamic_cast<ibBackendControlFrame*>(srcForm));
+		if (obj != nullptr) obj->ShowFormValue(ibFormRequest(), dynamic_cast<ibBackendControlFrame*>(srcForm));
 	}
 	catch (const ibBackendInterruptException&) {}
-	catch (const ibBackendException&) {}   // already reported where it happened - see ProcessExceptionError
+	catch (const ibCoreException&) {}   // already reported where it happened - see ProcessExceptionError
 	catch (...) { ibJournalError(wxT("metadata.action"),wxT("ibValueMetaObjectRegisterData::ShowValueByKey: unhandled non-ibBackend exception swallowed")); }
 }
 
@@ -388,6 +436,19 @@ ibValue ibValueMetaObjectRegisterData::GetSelectValue(const ibRowMetaValues& row
 ibUniqueKey ibValueMetaObjectRegisterData::GetItemKey(const ibRowMetaValues& rowValues) const
 {
 	return CreateUniqueKeyPair(rowValues);
+}
+
+// The record, or the same shaded when it is switched off. A register whose rows carry no activity cell (one
+// written without a recorder) has only active records.
+ibPictureID ibValueMetaObjectRegisterData::GetRowPicture(const ibRowMetaValues& rowValues) const
+{
+	const ibValueMetaObjectAttributePredefined* const active = GetRegisterActive();
+	if (active != nullptr) {
+		const ibRowMetaValues::const_iterator it = rowValues.find(active->GetMetaID());
+		if (it != rowValues.end() && !it->second.IsEmpty() && !it->second.GetBoolean())
+			return g_picRowRecordInactiveCLSID;
+	}
+	return g_picRowRecordCLSID;
 }
 
 // REGISTER variant — all columns (dimensions / resources / period / recorder …) visible by default.

@@ -19,14 +19,14 @@
 //
 // See docs/private/query-language-arc.md §18 (name substitution) / §20 (this interface).
 
-#include "backend/tabularModelView.h"   // ibMetaID (via backend.h) — NOT tabularModel.h, so that one can hold
+#include "core/tabular/tabularModelView.h"   // ibMetaID (via core.h) — NOT tabularModel.h, so that one can hold
                                         // ibDataDBComposer BY VALUE (breaks the dataComposer→queryLowering→queryable→
                                         // model include cycle). (ibComparisonType is no longer used here — the
                                         // L3 condition op is ibQueryFilterOp now, defined below.)
 #include "backend/compiler/value.h"     // ibValue
 #include "backend/uniqueKey.h"          // ibUniqueKey — GetQueryTableGuid hands out the source's key
 #include "queryColumn.h"                // ibBackendQueryColumn (the column counterpart)
-#include "queryUnfold.h"                // ibQueryDimUnfold — a condition may carry the word, so a source can FOLD by it
+#include "core/query/queryUnfold.h"     // ibQueryDimUnfold — a condition may carry the word, so a source can FOLD by it
 #include "queryRamTable.h"              // ibQueryRamTable — ComputeRows produces the L3 table (no runtime type)
 #include "backend/databaseLayer/databaseLayer.h"   // ibTotalsPeriod — the unit a PeriodTrunc expression carries
 
@@ -185,16 +185,17 @@ struct ibQueryCondition
 	// ⭐⭐ HOW FAR DOWN THE VALUES REACH — and, when it is not `Elements`, m_values holds the values AS
 	// NAMED rather than the subtree they stand for.
 	//
-	// A condition that only SELECTS rows never needs this: the lowering resolves the subtree into
-	// values and hands over an ordinary `In`, which every provider renders. A condition handed to a
-	// SOURCE is the other case — an accounting register asked for accounts «in hierarchy» reports the
-	// subordinates UNDER the account that was named, and to fold like that it has to know which
-	// account was named and how far down was asked. Expanded first, that question is unanswerable:
-	// twenty accounts arrive and nothing says which one they roll into.
+	// A condition handed to a SOURCE needs it — an accounting register asked for accounts «in hierarchy»
+	// reports the subordinates UNDER the account that was named, and to fold like that it has to know which
+	// account was named and how far down was asked. Expanded first, that question is unanswerable: twenty
+	// accounts arrive and nothing says which one they roll into.
 	//
-	// ⚠ SO A PROVIDER MUST NEVER SEE A LEAF WITH THIS SET. It is filled only for a condition the
-	// source consumes itself (ibQuerySourceParameter::m_consumedBySource); everything on the ordinary
-	// road is expanded at the lowering and arrives here as `Elements`, which is what the default says.
+	// And a condition that only SELECTS rows carries it too, down to whoever filters them (2026-09-29): the
+	// database provider has the server walk the subtree (dbTableProvider BuildSubtreeIn, WITH RECURSIVE) or
+	// reads it there when the driver cannot; the side that filters rows in memory reads it before any cell is
+	// compared (queryProvider SubtreeResolved). The lowering expands it itself only inside an EXPRESSION (a
+	// CASE's WHEN), which any side may evaluate. A cell that still meets one refuses in words
+	// (RefuseNamedHierarchy): compared as named, the values would lose every subordinate.
 	ibQueryDimUnfold            m_unfold = ibQueryDimUnfold::Elements;
 
 	// Reference DOT-WALK: when non-empty, this condition filters the LEAF attribute of a reference
@@ -360,6 +361,11 @@ struct ibSemiJoinExists
 	const ibBackendQueryColumn* m_innerKey = nullptr;   // a.k — correlation column on the INNER
 	ibQueryFilterOp             m_op = ibQueryFilterOp::Equal;   // correlation comparison (Equal default; FilterOpToBinOp at render)
 	bool                        m_negated  = false;      // NOT EXISTS — a deny-if-present rule (future)
+	// An EMPTY key matches an empty one, in whichever spelling either side holds it (a NULL or zero key, an
+	// untagged row, the type's empty value), as an equality of values says (DecomposeEquality). Set by
+	// `x IN (SELECT k …)` when neither key is a row's own (and so both may be empty); a policy's restriction
+	// keeps the plain correlation.
+	bool                        m_emptyMatchesEmpty = false;
 };
 
 // ==========================================================================
@@ -403,12 +409,16 @@ struct ibSemiJoinExists
 // object and answers in its own words), and `VALUETYPE(x)` is the type the value carries. Neither is
 // a reading of a field, so neither can be rendered into SQL at all: the input column is projected and
 // the question is put here, to the value that came back.
+//
+// `CAST(x AS Number(15, 2))` is the fourth such question — what the value IS as that type — and it is
+// answered the way a typed field answers it when a value is written into one (AdjustValue), so a query
+// and a script bring a value to a type alike.
 enum class ibQueryColumnExprKind { Column, Const, Arith, Case, PeriodTrunc, PeriodEnd, DateAdd, DateDiff,
                                   DatePart, Substring, WindowAgg, OutputRef, ValueAsk };
 
-// WHAT IS ASKED OF THE VALUE. Three questions, one kind — they differ in what is asked, never in how
-// it is answered, and a separate kind each would be three copies of the same walk.
-enum class ibQueryValueAsk { Presentation, RefPresentation, ValueType };
+// WHAT IS ASKED OF THE VALUE. The questions differ in what is asked, never in how it is answered, and a
+// separate kind each would be as many copies of the same walk. `AsType` reads its type from m_asType.
+enum class ibQueryValueAsk { Presentation, RefPresentation, ValueType, AsType };
 
 // ⭐ THE CALL A WINDOW MAKES — named as a CONCEPT here, spelled by the provider, exactly as
 // ibTotalsPeriod is. The five folds and the three ranking calls sit in one enum because they differ
@@ -499,8 +509,9 @@ struct ibQueryColumnExpr
 
 	// OutputRef — the published NAME of the result column this node reads (an aggregate's alias).
 	wxString                    m_outputName;
-	// ValueAsk — which question is put to m_lhs's value.
+	// ValueAsk — which question is put to m_lhs's value, and for `AsType` the type it is brought to.
 	ibQueryValueAsk             m_valueAsk = ibQueryValueAsk::Presentation;
+	ibTypeDescription           m_asType;
 
 	// WindowAgg — the call applied to m_lhs, partitioned by m_partition, ordered by m_windowOrder.
 	//
@@ -606,6 +617,11 @@ struct ibQueryColumnExpr
 		auto e = std::make_shared<ibQueryColumnExpr>();
 		e->m_kind = ibQueryColumnExprKind::ValueAsk; e->m_lhs = std::move(expr); e->m_valueAsk = ask; return e;
 	}
+	// …and the one that carries a type: the value as `type` — see ibValueAsType.
+	static ibQueryColumnExprPtr AsType(ibQueryColumnExprPtr expr, const ibTypeDescription& type) {
+		ibQueryColumnExprPtr e = ValueAsk(std::move(expr), ibQueryValueAsk::AsType);
+		e->m_asType = type; return e;
+	}
 	static ibQueryColumnExprPtr Case(std::vector<std::pair<ibQueryPredicatePtr, ibQueryColumnExprPtr>> cases,
 	                                 ibQueryColumnExprPtr otherwise) {
 		auto e = std::make_shared<ibQueryColumnExpr>();
@@ -653,12 +669,14 @@ struct ibSubqueryOutput
 	wxString                    m_name;            // what the outer query writes
 	const ibBackendQueryColumn* m_col = nullptr;   // read through this column…
 	wxString                    m_alias;           // …or by this name, when the door has no column for it
+	
 	// …or, for a reference / enum / composite leaf, reassembled from the field spread projected under
 	// this prefix. THE SAME THREE-WAY RULE the selection reader uses (queryLowering, MaterialiseInto):
 	// prefix first, then alias, then the column. A nested table reads its rows the one way its own
 	// schema is read, or the value arrives as one field of an object instead of the object.
 	wxString                    m_objectPrefix;
 	ibTypeDescription           m_type;            // empty = unknown (a computed expression)
+	
 	// ⭐ AND WHO KEEPS `m_col` ALIVE, when it is not the metadata. The inner SELECT's schema owns the
 	// columns IT minted (a dot-walk leaf, a synthetic measure) through OutputColumn::m_ownedCol, and
 	// that schema is a LOCAL of the function that builds this list — so a wrapper holding the bare
@@ -667,6 +685,14 @@ struct ibSubqueryOutput
 	//
 	// Carried as a share: empty for a metadata column (it outlives everything), set for a minted one.
 	std::shared_ptr<ibBackendQueryColumn> m_owned;
+	
+	// ⭐ WHETHER WHAT IT READS MAY BE SHOWN (functional options) — the inner schema's answer
+	// (OutputColumn::m_available). `m_col` may be a walk's leaf, which answers for itself alone.
+	bool                                  m_available = true;
+	// …and what it is in a balance — the inner schema's answer too (OutputColumn::GetBalanceRole): the query's
+	// own `ROLE` where it said one, else the column's. With a period's seniority beside it.
+	ibBalanceRole                         m_balanceRole = ibBalanceRole::None;
+	int                                   m_periodRank  = 0;
 };
 
 // ==========================================================================
@@ -816,15 +842,17 @@ public:
 	// every caller reads off it the distinction it actually needs:
 	//
 	//   is there a parent to walk        — anything but `eNone`      (grouping, IN HIERARCHY)
-	//   does a LIST walk it as a tree    — `eItems` / `eFoldersAndItems`
+	//   does a LIST walk it as a tree    — `eItems` / `eFolders`
 	//   may an ITEM hold items           — `eItems`
+	//
+	// (`eItems` is the tree of peers — a chart of accounts, an account under an account; `eParentOnly`, no
+	// longer offered, records a parent and builds nothing on it. Max, 2026-09-29.)
 	//
 	// It used to be handed out as booleans, one per question, and a boolean is a PROJECTION: it
 	// answers what its author needed and silently answers something else for the next caller. Both
-	// mistakes that came of it were the same mistake — a chart of accounts declares `eSubordination`
-	// (a recorded parent, a flat list), and asked through `GetHierarchyColumn() != nullptr` it first
-	// said "no parent" to the grouping and later "yes, drill" to the list. Nothing to decide here:
-	// the source states its arrangement and the caller names the state it cares about.
+	// mistakes that came of it were the same mistake — asked through `GetHierarchyColumn() != nullptr`,
+	// a source first said "no parent" to the grouping and later "yes, drill" to the list. Nothing to
+	// decide here: the source states its arrangement and the caller names the state it cares about.
 	// (Asked once per fetch, not per row.)
 	virtual ibHierarchyType GetHierarchyType() const { return ibHierarchyType::eNone; }
 	// (GetFolderColumn REMOVED — folders are a folder-first SORT / IsFolder FILTER set at list creation, not a
@@ -881,6 +909,14 @@ public:
 	// after it, and a partially-rebuilt tree then calls through the wrong one: the stack does not
 	// unwind and the frame pointer reads as a code address. New optional virtuals go here.
 	virtual wxString GetQueryTableAlias() const { return wxEmptyString; }
+
+	// ⭐⭐ THE COLUMN THIS SOURCE'S ROWS ARE ORDERED BY — what a sort by a REFERENCE to it sorts by
+	// (ibDataQueryBuilder::OrderBy). Not a field but the list of them, made a column the way a document's
+	// moment is: a catalog by what it is presented by and then the reference, a document by its date and then
+	// the reference, an enumeration by its declared order and then the reference (ibBackendColumnSortOrder).
+	// Null (the default): no order of its own, and a reference to it sorts by its identity. (Appended after
+	// the one above, for the same reason.)
+	virtual const ibBackendQueryColumn* GetSortColumn() const { return nullptr; }
 };
 
 // ==========================================================================
@@ -992,6 +1028,11 @@ public:
 	// (2026-08-20). A wrapper is not a metadata-free source: it is a query over one.
 	const ibMetaData* GetMetaData() const override;
 
+	// ⭐ THE OUTPUTS NO ENGINE CAN BE ASKED FOR — an expression answered over the finished row (a CAST that re-types a
+	// value, a PRESENTATION). Handed to every inner read, as the statement's own result is handed them
+	// (ibDataQueryResult::SetComputedOverRow), so a column published by name is answered when it is read.
+	void SetComputedOverRow(std::vector<ibQueryColumnSelect> columns) { m_computedOverRow = std::move(columns); }
+
 private:
 	std::unique_ptr<ibDataQueryBuilder>      m_inner;     // the nested query (owned by value via the heap)
 	std::vector<const ibBackendQueryColumn*> m_columns;   // exposed columns (select list / SELECT * / group keys + agg aliases)
@@ -1010,6 +1051,7 @@ private:
 	std::vector<std::shared_ptr<ibBackendQueryColumn>> m_ownedColumns;
 	bool m_aggregate = false;
 	long m_top = 0;
+	std::vector<ibQueryColumnSelect> m_computedOverRow;   // SetComputedOverRow
 };
 
 // ibBackendQueryColumn — the column counterpart, lives in queryColumn.h (included
@@ -1059,11 +1101,14 @@ public:
 	ibTypeDescription& GetTypeDesc()      const override { return m_origin->GetTypeDesc(); }
 	ibTypeDescription& GetTypeValueDesc() const override { return m_origin->GetTypeValueDesc(); }
 	bool               IsAllowed()        const override { return m_origin->IsAllowed(); }
+	bool               IsAvailable()      const override { return m_origin->IsAvailable(); }
 	wxIcon             GetColumnIcon()    const override { return m_origin->GetColumnIcon(); }
 	Kind               GetColumnKind()    const override { return m_origin->GetColumnKind(); }
 	// …and WHAT IT STANDS FOR answers for it here too: a twin of a raw column IS that raw column for
 	// every question about the data, and this is the one question a cast used to answer instead.
 	const ibBackendColumnRawDB* AsRawColumn() const override { return m_origin->AsRawColumn(); }
+	ibBalanceRole GetBalanceRole() const override { return m_origin->GetBalanceRole(); }
+	int           GetPeriodRank()  const override { return m_origin->GetPeriodRank(); }
 
 	std::vector<ibColumnSlot> DescribeLayout() const override { return m_origin->DescribeLayout(); }
 

@@ -1,23 +1,24 @@
 #include "propertySource.h"
 #include "backend/propertyManager/property/variant/variantSource.h"   // GetGuidByID / GetIdByGuid — the hop <-> guid resolve
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary)
-#include "backend/sourceDescription.h"       // ibSourceDescription / ibSourceHop (the id path the variant holds)
-#include "backend/fileSystem/fs.h"           // ibReaderMemory / ibWriterMemory — the guid-keyed node blob
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary)
+#include "core/description/sourceDescription.h"       // ibSourceDescription / ibSourceHop (the id path the variant holds)
+#include "core/fileSystem/fs.h"           // ibReaderMemory / ibWriterMemory — the guid-keyed node blob
+#include "backend/functionalOption/functionalOptionGate.h"   // ibFunctionalOptionGate::AnyUnavailable — IsAvailable
 
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibValueTypes& type) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibValueTypes& type)
 {
 	return CreateVariantData(property, ibTypeDescription(ibValue::GetIDByVT(type)));
 }
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibClassID& clsid) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibClassID& clsid)
 {
 	return CreateVariantData(property, ibTypeDescription(clsid));
 }
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibTypeDescription& typeDesc) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibTypeDescription& typeDesc)
 {
 	const ibBackendTypeSourceFactory* propFactory = dynamic_cast<const ibBackendTypeSourceFactory*>(property);
 	if (propFactory == nullptr)
@@ -25,7 +26,7 @@ wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* prope
 	return new ibVariantDataSource(propFactory, typeDesc);
 }
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibMetaID& id) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibMetaID& id)
 {
 	const ibBackendTypeSourceFactory* propFactory = dynamic_cast<const ibBackendTypeSourceFactory*>(property);
 	if (propFactory == nullptr)
@@ -33,7 +34,7 @@ wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* prope
 	return new ibVariantDataSource(propFactory, id);
 }
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibGuid& id, bool fillTypeDesc) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibGuid& id, bool fillTypeDesc)
 {
 	const ibBackendTypeSourceFactory* propFactory = dynamic_cast<const ibBackendTypeSourceFactory*>(property);
 	if (propFactory == nullptr)
@@ -41,7 +42,7 @@ wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* prope
 	return new ibVariantDataSource(propFactory, id, fillTypeDesc);
 }
 
-wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibSourceDescription& desc) const
+wxVariantData* ibPropertySource::CreateVariantData(const ibPropertyObject* property, const ibSourceDescription& desc)
 {
 	const ibBackendTypeSourceFactory* propFactory = dynamic_cast<const ibBackendTypeSourceFactory*>(property);
 	if (propFactory == nullptr)
@@ -87,6 +88,13 @@ std::vector<ibBackendFormAttributeValue*> ibPropertySource::GetSourceList() cons
 
 bool ibPropertySource::IsEmptyProperty() const {
 	return get_cell_variant<ibVariantDataSource>()->IsEmptySource();
+}
+
+bool ibPropertySource::IsAvailable() const {
+	const ibPropertyObject* owner = m_owner;   // CONST overload — the non-const one returns null (see propertyObject.h)
+	if (owner == nullptr || !ibFunctionalOptionGate::AnyUnavailable(owner->GetMetaData()))
+		return true;
+	return get_cell_variant<ibVariantDataSource>()->IsSourceAvailable();
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -135,8 +143,12 @@ bool ibPropertySource::CopyNodeValue(ibDataValue& value) const
 		const ibGuid guid = (idx > 0) ? variant->GetGuidByID((ibMetaID)hop.m_id) : wxNullGuid;   // head is form-local -> raw
 		if (guid.isValid()) { writer.w_u8(kHopGuid); writer.w_stringZ(guid.str()); }
 		else                { writer.w_u8(kHopRaw);  writer.w_u32((unsigned int)hop.m_id); }
-		const ibGuid typeGuid = IsMetaValue(hop.m_type) ? variant->GetGuidByID((ibMetaID)(hop.m_type & kIbClsidBodyMask)) : wxNullGuid;
-		if (typeGuid.isValid()) { writer.w_u8(kTypeMeta); writer.w_u8((unsigned char)clsid_kind(hop.m_type)); writer.w_stringZ(typeGuid.str()); }
+		const ibGuid typeGuid = IsMetaValue(hop.m_type) ? variant->GetGuidByID((ibMetaID)clsid_metaID(hop.m_type)) : wxNullGuid;
+		if (typeGuid.isValid()) {
+			writer.w_u8(kTypeMeta);
+			writer.w_u64((unsigned wxLongLong_t)clsid_any_of(hop.m_type));   // its kind and metaclass: the type less its metaID
+			writer.w_stringZ(typeGuid.str());
+		}
 		else                    { writer.w_u8(kTypeRaw);  writer.w_u64((unsigned wxLongLong_t)hop.m_type); }
 		idx++;
 	}
@@ -177,9 +189,9 @@ bool ibPropertySource::PasteNodeValue(const ibDataValue& value)
 			break;
 		}
 		if (reader.r_u8() == kTypeMeta) {
-			const ibClassKind kind = (ibClassKind)reader.r_u8();
+			const ibClassID any = (ibClassID)reader.r_u64();   // the type less its metaID — the pasted object's goes in
 			const ibGuid typeGuid(reader.r_stringZ());
-			type = make_clsid_dynamic((ibClassID)variant->GetIdByGuid(typeGuid), kind);
+			type = make_clsid_dynamic((ibClassID)variant->GetIdByGuid(typeGuid), clsid_kind(any), clsid_metaclass(any));
 		}
 		else {
 			type = (ibClassID)reader.r_u64();

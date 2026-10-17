@@ -1,6 +1,6 @@
 
 #include "sizer.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifdef OES_USE_WEB
 #include "frontend/web/webSizer.h"
 #endif
@@ -41,7 +41,7 @@ void ibValueGridSizer::Update(wxObject* wxobject, ibVisualHost* visualHost)
 #endif
 	gridsizer->SetRows(m_propertyRows->GetValueAsUInteger());
 	gridsizer->SetCols(m_propertyCols->GetValueAsUInteger());
-	gridsizer->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	gridsizer->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 	UpdateSizer(gridsizer);
 }
 

@@ -24,7 +24,8 @@
 #include "backend/system/value/valueOLE.h"   // ibValueOLE::ReleaseComObjects in normal OnExit
 #endif
 
-#include "resources/splashLogo.xpm"
+#include "backend/backend_picture.h"
+#include "frontend/artProvider/splash/splashLogo.h"   // one picture for the designer and the application
 
 #if wxVERSION_NUMBER >= 2905 && wxVERSION_NUMBER <= 3100
 #include <wx/xrc/xh_auinotbk.h>
@@ -32,7 +33,7 @@
 #include <wx/xrc/xh_aui.h>
 #endif
 
-#include "backend/diagnostics/leakTracker.h"
+#include "core/diagnostics/leakTracker.h"
 
 IB_LEAK_TRACKER_ARM();
 
@@ -59,7 +60,7 @@ void ibAppDesigner::OnInitCmdLine(wxCmdLineParser& parser)
 	parser.AddOption(wxT("pwd"),    wxT("password"), "Database password",       wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("ib_usr"), wxT("ibuser"),   "IB user",                 wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("ib_pwd"), wxT("ibpwd"),    "IB password",             wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
-	parser.AddOption(wxT("lc"),     wxT("locale"),   "UI locale",               wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("lc"),     wxT("locale"),   "The locale for a base that names none (default: backend.conf's Locale, else the system's)",               wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 
 	return wxApp::OnInitCmdLine(parser);
 }
@@ -116,18 +117,21 @@ int ibAppDesigner::DoOnRun()
 	// ⚠ THE BRING-UP CAN THROW — see enterprise/mainApp.cpp for the whole argument. A raised
 	// exception walked out past the reporting below and closed the process with no message at all.
 	try {
+		ibFileInstanceRequest request;
+		request.m_create = true;
+		request.m_locale = m_strLocale;
 		if (m_strFile.IsEmpty()) {
-			ret = appDataCreateServer(ibRunMode::eDESIGNER_MODE,
-				m_strServer, m_strPort, m_strUser, m_strPassword, m_strDatabase, m_strLocale
-			);
+			request.m_server   = m_strServer;
+			request.m_port     = m_strPort;
+			request.m_user     = m_strUser;
+			request.m_password = m_strPassword;
+			request.m_database = m_strDatabase;
 		}
-		else {
-			ret = appDataCreateFile(ibRunMode::eDESIGNER_MODE,
-				m_strFile, m_strLocale
-			);
-		}
+		else
+			request.m_directory = m_strFile;
+		ret = ibApplicationInstance::CreateAppDataEnv(request) != nullptr;
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		ret = false;   // already recorded in the chain, drained below
 	}
 	catch (const std::exception& e) {
@@ -160,14 +164,14 @@ int ibAppDesigner::DoOnRun()
 	}
 
 	ibProcessSplashScreen* splashScreenLoader =
-		new ibProcessSplashScreen(wxBitmap(splashLogo_xpm),
+		new ibProcessSplashScreen(ibBackendPicture::GetBitmapFromBase64(s_splashLogo_png),
 			wxSPLASH_CENTRE_ON_SCREEN,
 			-1, nullptr, -1, wxDefaultPosition, wxDefaultSize,
 			wxBORDER_SIMPLE
 		);
 
 	// Image handlers are already up: backend.dll registers them ALL from its picture
-	// auto-loader (picturePredefined.cpp), which runs at DLL load — before this. Calling
+	// auto-loader (backend_picture.cpp), which runs at DLL load — before this. Calling
 	// wxInitAllImageHandlers again only produced a screenful of "Adding duplicate image
 	// handler" in the debug log (wx deletes the duplicate and logs it).
 	wxXmlResource::Get()->InitAllHandlers();
@@ -216,8 +220,7 @@ int ibAppDesigner::DoOnRun()
 	//   4. Show — Designer kind → EnsureRuntime no-op; AllowRun passes
 	//      unconditionally (no session scripts here).
 
-	// AccessMode was set by appData's ctor based on runMode. Registry
-	// listeners (wired in appData ctor) handle BindSessionToThread,
+	// Registry listeners (wired in appData ctor) handle BindSessionToThread,
 	// LoadMetadata, CreateRoot + CompileRoot through OnFirstConnect /
 	// OnAuthenticated — nothing to compose here.
 	// Holder on the stack until the designer window takes it — see
@@ -227,13 +230,13 @@ int ibAppDesigner::DoOnRun()
 	wxString openError;
 	ibSession::OpenResult openResult = ibSession::OpenResult::Failed;
 	try {
-		holder = appData->CreateSession<ibGUISession>();
+		holder = appData->CreateSession<ibGUISession>(ibSessionKind::Designer);
 		if (holder) {
 			openResult = holder->Open(m_strIBUser, m_strIBPassword);
 			if (openResult != ibSession::OpenResult::Authenticated)
 				holder.Reset();
 		}
-	} catch (const ibBackendException& e) {
+	} catch (const ibCoreException& e) {
 		openError = e.GetErrorDescription();
 		holder.Reset();
 		openResult = ibSession::OpenResult::Failed;
@@ -287,16 +290,6 @@ int ibAppDesigner::OnExit()
 #ifdef __WXMSW__
 	ibValueOLE::ReleaseComObjects();
 #endif
-
-	// Tear every session down through the session manager BEFORE
-	// wxApp::OnExit. registry->Stop() submits Remove@Urgent for each
-	// session in m_own and drains the queue — OnDisconnect listeners
-	// fire while the wx event loop is still alive, so any frame-Destroy
-	// scheduled from there gets dispatched. Without this the event
-	// loop dies first and the Destroy events stay queued. Idempotent —
-	// ~ibApplicationData calls Stop again best-effort.
-	if (auto* registry = ibApplicationData::GetSessionRegistry())
-		registry->Stop();
 
 	bool success_exit = wxApp::OnExit();
 

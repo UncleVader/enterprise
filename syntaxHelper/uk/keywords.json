@@ -22,7 +22,8 @@
       "see_also": [
         "kw.Else",
         "kw.Elseif",
-        "kw.While"
+        "kw.While",
+        "op.Ternary"
       ],
       "reviewed": true,
       "syntax_block_ves": "If <Expression1> Then\n    // statements\nElsIf <Expression2> Then\n    // statements\nElse\n    // statements\nEndIf",
@@ -137,6 +138,33 @@
       "reviewed": true,
       "modes": [
         "ves"
+      ]
+    },
+    {
+      "id": "op.Ternary",
+      "name_local": "?()",
+      "name_en": "?()",
+      "kind": "operator",
+      "category_keys": [
+        "common_lang",
+        "control_flow"
+      ],
+      "signature": "?(<Condition>, <ValueIfTrue>, <ValueIfFalse>)",
+      "description": "Умовний (тернарний) вираз — Якщо, яке відповідає значенням. Коли <Condition> виконано, вираз дорівнює <ValueIfTrue>, інакше — <ValueIfFalse>. Пишеться однаково в обох діалектах і стоїть усюди, де стоїть значення: у присвоєнні, в аргументі, у поверненні, всередині іншого виразу; вкладається.\n\nУмова перевіряється так само, як у Якщо: логічне значення читається як є, будь-яке інше вважається істинним, коли воно не порожнє.\n\nОБЧИСЛЮЄТЬСЯ ЛИШЕ ОБРАНЕ ЗНАЧЕННЯ. Спочатку виконується умова, а гілка, яку вона не обрала, не рахується, тому значення, яке там упало б, не падає: `?(doc <> Undefined, doc.Description, \"\")` відповідає \"\", коли doc дорівнює Undefined, а виклик у необраній гілці не виконується.",
+      "syntax_block": "var <Result> = ?(<Condition>, <ValueIfTrue>, <ValueIfFalse>);",
+      "parameters": "<Condition> — перевірка: логічне значення або будь-яке інше, істинне, коли воно не порожнє.\n<ValueIfTrue> — результат, коли умову виконано.\n<ValueIfFalse> — результат в інших випадках.",
+      "return_descr": "<ValueIfTrue> або <ValueIfFalse> — те, що обрала умова.",
+      "example": "var caption = ?(qty > 0, \"In stock\", \"Sold out\");\nvar size = ?(weight < 1, \"small\", ?(weight < 10, \"medium\", \"large\"));",
+      "availability": "Designer, codeRunner, daemon, wenterprise-server",
+      "see_also": [
+        "kw.If"
+      ],
+      "reviewed": true,
+      "syntax_block_ves": "<Result> = ?(<Condition>, <ValueIfTrue>, <ValueIfFalse>);",
+      "example_ves": "Caption = ?(Qty > 0, \"In stock\", \"Sold out\");\nSize = ?(Weight < 1, \"small\", ?(Weight < 10, \"medium\", \"large\"));",
+      "modes": [
+        "ves",
+        "ces"
       ]
     },
     {
@@ -421,7 +449,7 @@
       "syntax_block": "<LeftExpr> Or <RightExpr>",
       "parameters": "",
       "return_descr": "",
-      "example": "",
+      "example": "If Doc = Undefined Or Doc.Posted Then\n    Return;\nEndIf;",
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": [
         "kw.And",
@@ -1309,12 +1337,12 @@
         "common_lang",
         "linq"
       ],
-      "signature": "orderby <Expression>[, <Expression>...] [ascending|descending]",
-      "description": "Sort clause for a LINQ query. SEVERAL KEYS, comma-separated, in the order they decide: `orderby Warehouse, Item` sorts by warehouse and, within each warehouse, by item — the second key is consulted only where the first is equal. Default direction ascending; `descending` written after the last key reverses the whole ordering.",
-      "syntax_block": "orderby <Expression>[, <Expression>...] [ascending|descending]",
+      "signature": "orderby <Expression> [ascending|descending][, <Expression> [ascending|descending]...]",
+      "description": "Sort clause for a LINQ query. SEVERAL KEYS, comma-separated, in the order they decide: `orderby Warehouse, Item` sorts by warehouse and, within each warehouse, by item — the second key is consulted only where the first is equal. Each key has its own direction, written after it; a key that names none runs ascending: `orderby Warehouse, Date descending, Item` sorts by warehouse, within each the latest date first, and within a date by item.",
+      "syntax_block": "orderby <Expression> [ascending|descending][, <Expression> [ascending|descending]...]",
       "parameters": "",
       "return_descr": "",
-      "example": "// by warehouse, then by date within it\nvar moves = from m in Data.AccumulationRegisters.GoodsInWarehouses\n            orderby m.Warehouse, m.Period descending\n            select { W = m.Warehouse, P = m.Period };",
+      "example": "// by warehouse, and within it the latest first\nvar moves = from m in Data.AccumulationRegisters.GoodsInWarehouses\n            orderby m.Warehouse, m.Period descending\n            select { W = m.Warehouse, P = m.Period };",
       "availability": "Designer, codeRunner, daemon, wenterprise-server",
       "see_also": [
         "guide.linq",

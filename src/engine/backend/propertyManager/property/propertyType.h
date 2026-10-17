@@ -6,12 +6,13 @@
 
 //base property for "type"
 class BACKEND_API ibPropertyType : public ibProperty {
-	wxVariantData* CreateVariantData(ibPropertyObject* property, const ibValueTypes type) const;
-	wxVariantData* CreateVariantData(ibPropertyObject* property, const ibClassID& clsid) const;
-	wxVariantData* CreateVariantData(ibPropertyObject* property, const ibTypeDescription& typeDesc) const;
+	static wxVariantData* CreateVariantData(ibPropertyObject* property, const ibValueTypes type);
+	static wxVariantData* CreateVariantData(ibPropertyObject* property, const ibClassID& clsid);
+	static wxVariantData* CreateVariantData(ibPropertyObject* property, const ibTypeDescription& typeDesc);
 public:
 
 	ibTypeDescription& GetValueAsTypeDesc() const;
+	ibTypeDescription& GetValueAsTypeValueDesc() const;
 	void SetValue(const ibTypeDescription& val);
 
 	ibPropertyType(ibPropertyCategory* cat, const wxString& name, const ibValueTypes type) : ibProperty(cat, name, CreateVariantData(cat->GetPropertyObject(), type)) {}

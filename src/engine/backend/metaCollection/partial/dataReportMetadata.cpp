@@ -4,7 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "dataReport.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/metaData.h"
 #include "backend/metadataReport.h"
 #include "backend/moduleManager/moduleManagerExt.h"
@@ -17,10 +17,12 @@
 
 ibValueMetaObjectReport::ibValueMetaObjectReport() : ibValueMetaObjectRecordDataExt()
 {
-	// NO DECLARED HANDLER. A report used to offer `Composing(StandartProcessing)`, back when the
-	// object itself composed; it does not — it points at the composer it declares, and the box
-	// showing that composer runs it. Declaring a handler nothing raises is worse than none: the
+	// NO HANDLER IN THE OBJECT MODULE. A report used to offer `Composing(StandartProcessing)`, back
+	// when the object itself composed; it does not — it points at the composer it declares, and the
+	// box showing that composer runs it. Declaring a handler nothing raises is worse than none: the
 	// designer would list it, an author would write into it, and it would never be called.
+
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
 }
 
 ibValueMetaObjectReport::~ibValueMetaObjectReport()
@@ -38,14 +40,14 @@ ibValueMetaObjectFormBase* ibValueMetaObjectReport::GetDefaultFormByID(const ibF
 
 #include "dataReportManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectReport::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectReport::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectReport(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectReport(this));
 }
 
 #include "backend/appData.h"
 
-ibValueRecordDataObjectExt* ibValueMetaObjectReport::CreateObjectExtValue() const
+ibValuePtr<ibValueRecordDataObjectExt> ibValueMetaObjectReport::CreateObjectExtValue() const
 {
 	if (IsExternalCreate()) {
 		// External DP — m_objectValue lives on the DP's own moduleManager,
@@ -53,36 +55,35 @@ ibValueRecordDataObjectExt* ibValueMetaObjectReport::CreateObjectExtValue() cons
 		// (= ibMetaDataDataProcessor for external DPs).
 		auto* extMeta = dynamic_cast<ibMetaDataReport*>(m_metaData);
 		ibValueModuleManager* mm = extMeta ? extMeta->GetManagerModule() : nullptr;
-		return mm ? dynamic_cast<ibValueRecordDataObjectExt*>(mm->GetObjectValue()) : nullptr;
+		return ibValuePtr<ibValueRecordDataObjectExt>(mm ? dynamic_cast<ibValueRecordDataObjectExt*>(mm->GetObjectValue()) : nullptr);
 	}
 
 	ibValueRecordDataObjectReport* pDataRef = nullptr;
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef))
-			return pDataRef;
+			return ibValuePtr<ibValueRecordDataObjectExt>(pDataRef);
 	}
-	return new ibValueRecordDataObjectReport(this);
+	return ibValuePtr<ibValueRecordDataObjectExt>(new ibValueRecordDataObjectReport(this));
 }
 
-ibSourceDataObject* ibValueMetaObjectReport::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectReport::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormReport:
-		return CreateObjectValue();
+		return ibSourcePtr<ibSourceDataObject>(CreateObjectValue());
 	}
 
 	return nullptr;
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectReport::GetObjectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectReport::GetObjectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectReport::eFormReport,
-		ownerControl, CreateObjectValue(),
-		formGuid
+		ownerControl, CreateObjectValue()
 	);
 }
 #pragma endregion
@@ -223,7 +224,7 @@ bool ibValueMetaObjectReport::OnAfterRunMetaObject(int flags)
 
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (ibValueMetaObjectRecordDataExt::OnAfterRunMetaObject(flags))
-			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateObjectValue(); });
+			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateObjectValue(); });
 		return false;
 	}
 

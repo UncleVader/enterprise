@@ -1,5 +1,5 @@
 #include "sizer.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifdef OES_USE_WEB
 #include "frontend/web/webSizer.h"
 #endif
@@ -41,7 +41,7 @@ void ibValueBoxSizer::Update(wxObject* wxobject, ibVisualHost *visualHost)
 	wxBoxSizer*    boxSizer = static_cast<wxBoxSizer*>(wxobject);
 #endif
 	boxSizer->SetOrientation(m_propertyOrient->GetValueAsInteger());
-	boxSizer->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	boxSizer->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 	UpdateSizer(boxSizer);
 }
 

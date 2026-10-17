@@ -84,6 +84,12 @@ from `<sys/socket.h>` / `<netinet/in.h>` / `<netinet/tcp.h>` on POSIX. A `#if de
 block whose `#else` branch is thinner than its `#if` branch is a bug waiting for the first person
 to build the other platform.
 
+The platform's LIBRARY is linked by the target that compiles the call. `core/guid.cpp` picks its
+generator three ways — Windows `CoCreateGuid`, macOS CFUUID, else libuuid's `uuid_generate` — so
+libuuid (non-Apple UNIX) and `-framework CoreFoundation` (Apple) are linked in
+`core/CMakeLists.txt` (moved from `backend/CMakeLists.txt` with `guid` on 2026-10-08). `core` is
+wx base only; its `fstring.cpp` carries the Apple `uselocale` formatting of § 1.5a′.
+
 ### 1.5 A nested class cannot carry a default argument built from its own initializers
 
 A nested class's default member initializers are not complete until the **enclosing** class is,
@@ -114,6 +120,14 @@ for one spelling.
 
 This one shipped four times in a single batch — three in one dialog, one in a new test — and every
 one of them compiled clean on `Debug|x86`. It is invisible to the local build by construction.
+
+### 1.5a′ A wide `printf` is not wide on Apple (2026-09-26)
+
+Apple's libc passes every character of `swprintf` / `vswprintf` through the thread's multibyte locale.
+In the `"C"` locale a character past ASCII — in an argument or in the format itself — fails the call
+(`-1`), which a grow-the-buffer loop reads as "does not fit". glibc and MSVC copy wide characters as
+they are, so only the macOS job sees it. `ibString::Format` formats through one function,
+`ibFStringFormat::Print` (`fstring.cpp`), which runs under its own UTF-8 locale (`uselocale`) there.
 
 ### 1.5b Two string overloads and a literal — the ambiguity MSVC ranks away
 
@@ -201,10 +215,10 @@ build one. So — **a backend test constructs no toolkit object.** What cannot b
 toolkit belongs to the GUI suite CI runs in a job of its own; say so in the test rather than leaving
 the gap silent.
 
-⚠ The description types themselves still HOLD a `wxFont` and two `wxColour`
-(`backend/spreadsheetDescription.h`), which is a standing exception to the GUI-free backend rule and
-the reason a sheet cannot be composed headlessly at all. Naming it here because it bounds what
-`daemon` and `codeRunner` can do on Linux; changing it is an arc of its own.
+The description types hold fonts and colours as data — `ibFont` and `ibColour`
+(`core/graphics/`), in `core/description/spreadsheetDescription.h` and in every property cell. The
+backend has no `typeconv`: converting to `wxFont` / `wxColour` is the GUI side's
+(`frontend/win/typeconv.h`, 2026-10-13).
 
 ### 1.8 An initialiser list that disagrees with the declaration order is a lie
 
@@ -331,7 +345,8 @@ covers the screen.
 
 The engine — backend, compiler, interpreter, query engine, all four drivers — is cross-platform
 as of 2026-08-02, and as of 2026-08-03 so are the **applications**: `enterprise`, `designer`,
-`daemon`, `launcher`, `codeRunner` and `simplePlugin` link on Linux and Windows in CI. Three
+`appserver` (named `daemon` until 2026-10-01), `launcher`, `codeRunner` and `simplePlugin` link on Linux and
+Windows in CI. Three
 toolchains, three standard libraries, two 64-bit models, two CPU architectures, one result.
 
 What that claim does **not** cover, so nobody reads more into the table than it says:
@@ -343,11 +358,13 @@ What that claim does **not** cover, so nobody reads more into the table than it 
   only the executables' own translation units.
 - **In the general jobs, only SQLite actually executes.** Firebird is compiled but loads
   `fbclient` at run time, and the runner has none; ODBC is compile-only. `FirebirdLeaseTest`
-  exercises file-lock mechanics against a path that need not exist, not the driver. PostgreSQL is
-  the one exception, and it took a job of its own to become one: `Dialect (PostgreSQL, Debug)`
-  runs `oes_pg_dialect_test` against a `postgres:16` service container, with the connection
-  handed in through the environment — so the same binary is a silent no-op wherever `OES_PG_USER`
-  is unset, which is what keeps it out of a developer's way.
+  exercises file-lock mechanics against a path that need not exist, not the driver. The other two
+  took a job of their own each: `Dialect (PostgreSQL, Debug)` runs `oes_pg_dialect_test` against a
+  `postgres:16` service container, with the connection handed in through the environment — so the
+  same binary is a silent no-op wherever `OES_PG_USER` is unset, which is what keeps it out of a
+  developer's way; and since 2026-09-22 `Firebird (Linux, Debug)` lays the pinned Firebird 5 kit
+  out as `_fb/` beside `oes_tests` and runs the `Firebird*` tests through the embedded engine,
+  failing on a skip.
 - ~~**Only x86-64.**~~ **Closed 2026-08-03** by the macOS arm64 job. The earlier reasoning —
   that ARM buys little because `ibNumber` selects its carry intrinsics on `_MSC_VER` rather than
   on the architecture, so Clang and GCC already execute the portable fallback — holds for
@@ -355,6 +372,15 @@ What that claim does **not** cover, so nobody reads more into the table than it 
   on AArch64 `char` is **unsigned**, the memory model is weaker (a missing atomic ordering is no
   longer hidden by x86's), and alignment/padding differ where a type's natural alignment drove
   the layout. Those are properties of the CPU, not of one class's intrinsics.
+- **ThreadSanitizer watches part of the suite, on Linux only.** Since 2026-10-10
+  `Tests (Linux, TSan)` builds with `-DOES_SANITIZE=thread` and runs the suites a fiber can race —
+  the worker pool, sessions, the connection pool, locks, the job manager — and a race there fails
+  the job. The rest of the suite does not run under it, and nothing does on Windows or macOS. Two
+  toolchain facts it cost: TSan cannot see the assembly fiber switch (`fiber_x64.S`,
+  `fiber_arm64.S`), so `ibFiber::SwitchTo` announces each switch (`__tsan_switch_to_fiber`); and
+  GCC 11's libtsan reports a double lock of a destroyed mutex when a fiber locks a mutex on the
+  calling thread's stack, which GCC 13 does not — so the job runs GCC 13 (ubuntu-24.04) rather
+  than suppress a report in our own code.
 - **Nobody has run the product on Linux.** Building is not running: the `wxScreenDC` in §1.7 was
   found by reading, and that class of fault — load order, resources, paths — only appears when
   something actually starts.
@@ -439,11 +465,9 @@ Two lessons about *silencing* itself, both learned the hard way here:
   headers, and one of them was re-reading `collection.GetID(i)` twice per loop iteration while
   leaving the first read unused.
 
-Still open, in order of weight: **the web is absent from CMake entirely** (`wenterprise-server`
-has no `CMakeLists.txt`, `wfrontend` is filtered out of the frontend glob) — so breaking it keeps
-all four jobs green. That was not a discovery: [BUILD.md](BUILD.md) has said "the web runtime
-targets build under the MSBuild solution only" all along. What is new is only the consequence,
-now that CI builds the applications everywhere else; `designer` compiles `mainFrameDesignerCmd.cpp`, a dead legacy main-frame the
+Still open, in order of weight: **the web is not built in CI** — CMake has its targets since
+2a3843f82 (`-DOES_BUILD_WEB=ON`, default OFF), but no job sets the option, so breaking the web keeps
+all the jobs green; `designer` compiles `mainFrameDesignerCmd.cpp`, a dead legacy main-frame the
 `.vcxproj` excludes, which means the two build systems produce different binaries; and 936
 `-Woverloaded-virtual` plus ~100 unmarked `override` declarations across 27 property headers.
 

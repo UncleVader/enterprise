@@ -1,9 +1,9 @@
 #include "propertyAccountingKind.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/propertyManager/property/variant/variantOwner.h"
 #include "backend/metaCollection/partial/chartOfAccounts.h"   // the chart whose kinds these are
 
-wxVariantData* ibPropertyAccountingKind::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc) const
+wxVariantData* ibPropertyAccountingKind::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc)
 {
 	return new ibVariantDataOwner(property, typeDesc);
 }
@@ -47,7 +47,7 @@ ibPropertyChoiceMode ibPropertyAccountingKind::GetValueList(ibPropertyChoiceList
 			return;
 		list.Add((long)kind->GetMetaID(), kind->GetName(), kind->GetSynonym(),
 			wxVariant(new ibVariantDataOwner(owner, ibMetaDescription(kind->GetMetaID()))),
-			kind->GetIcon());
+			kind->GetClassType());
 	};
 
 	if (m_level == Level::Account) {
@@ -74,12 +74,12 @@ bool ibPropertyAccountingKind::GetDataValue(ibValue& pvarPropVal) const
 
 bool ibPropertyAccountingKind::ReadNodeValue(const ibDataValue& value)
 {
-	ibMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
+	ibBackendMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
 	return true;
 }
 
 bool ibPropertyAccountingKind::WriteNodeValue(ibDataValue& value) const
 {
-	const ibPropertyObject* owner = m_owner;   // CONST overload — see propertyObject.h
-	return ibMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
+	const ibPropertyObject* owner = m_owner;   // CONST overload — the non-const one returns null (see propertyObject.h)
+	return ibBackendMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
 }

@@ -3,6 +3,11 @@
 #include "backend/system/value/valueSpreadsheetDetails.h"  // …and what the clicked cell was composed from
 #include "backend/metadataReport.h"                        // the in-memory external report
 #include "backend/metaCollection/metaComposerObject.h"     // …and the composer metaobject it declares
+#include "backend/metaCollection/genericData.h"            // ibValueMetaObjectGenericData — the report a detail is named after
+#include "frontend/visualView/ctrl/form.h"                 // ibValueForm::GetMetaObject — …reached through the grid's form
+#include "backend/backend_localization.h"                  // a title read in the reader's language
+#include "backend/query/queryable.h"                       // ibReadPeriodUnit — the word a period grouping says
+#include "backend/backend_composition.h"                   // ibStoreValue — a context value packed into its condition
 
 #include <algorithm>
 
@@ -24,16 +29,17 @@ namespace {
 // WHAT A CELL WAS COMPOSED FROM — asked TWICE about one click: once to offer the fields worth
 // breaking down by, once to narrow the detail itself. One lookup for both, so the menu and the
 // report it opens can never disagree about the same cell.
-void ibCollectCellContext(const ibBackendSpreadsheetObject* document, int row, int col,
+void ibCollectCellContext(const ibSpreadsheetObject* document, int row, int col,
 	std::vector<ibValueSpreadsheetDetails::ibSpreadsheetDetailsField>& into)
 {
 	if (document == nullptr)
 		return;
 
-	wxString bound;
+	ibString bound;
 	document->GetCellDetailsParameter(row, col, bound);
-	ibValue cellValue;   // held, not a temporary — From returns a pointer INTO it
-	if (!bound.IsEmpty() && document->GetParameter(bound, cellValue)) {
+	ibAnyValuePtr<ibAnyValue> held;
+	if (!bound.IsEmpty() && document->GetParameter(bound, held)) {
+		ibValue cellValue = ibValue::FromAnyValue(held);   // held, not a temporary — From returns a pointer INTO it
 		if (ibValueSpreadsheetDetails* details = ibValueSpreadsheetDetails::From(cellValue))
 			details->CollectContext(into);
 	}
@@ -106,6 +112,31 @@ void ibForceAndRoot(ibFilterDescription& filter)
 	filter.m_rootKind = ibFilterGroupKind_And;
 }
 
+// ⭐⭐ A PERIOD HEADING STANDS FOR ITS WHOLE PERIOD, not for the moment it begins. What a heading of a
+// `PERIODS(Month)` grouping carries is the month's first moment — the key the fold groups by — and
+// `Period = 01.08.2026 00:00:00` is a condition no record meets, so the detail came up empty (Max,
+// 2026-09-30). The unit is the grouping's own, on its line in the structure in force, so it is asked
+// there.
+bool ibPeriodUnitOfPath(const std::vector<ibLevelDescription>& levels, const wxString& path, ibTotalsPeriod& unit)
+{
+	for (const ibLevelDescription& level : levels) {
+		for (const ibGroupLineDescription& line : level.m_settings.m_group.m_lines)
+			if (line.m_path == path && line.m_periods.IsOk())
+				return ibReadPeriodUnit(line.m_periods.m_unit, unit);
+		if (ibPeriodUnitOfPath(level.m_children, path, unit))
+			return true;
+	}
+	return false;
+}
+
+bool ibPeriodUnitOfPath(const std::vector<ibOutputDescription>& structure, const wxString& path, ibTotalsPeriod& unit)
+{
+	for (const ibOutputDescription& output : structure)
+		if (ibPeriodUnitOfPath(output.m_rowGroups, path, unit) || ibPeriodUnitOfPath(output.m_columnGroups, path, unit))
+			return true;
+	return false;
+}
+
 // ⭐⭐ A CONDITION IS NOT A PATH AND A VALUE — IT IS A FIELD, WITH ITS SCHEMA. The settings window
 // draws the left cell as the field it holds and the right one THROUGH THE LEFT'S TYPE
 // (`AdjustValue(item->m_left.m_type, …)`), so a line carrying only a path and a value is a line with
@@ -117,23 +148,35 @@ void ibForceAndRoot(ibFilterDescription& filter)
 //
 // (⚠ NO LEAF ID, deliberately: a field of a PARSED TEXT stands behind no metaobject attribute, and
 //  the picker passes wxNOT_FOUND for exactly that reason.)
+//
+// ⭐ …AND A PERIOD HEADING IS SAID AS ITS PERIOD'S TWO EDGES — see ibPeriodUnitOfPath.
 void ibAppendContextConditions(ibFilterDescription& filter,
 	const std::vector<ibValueSpreadsheetDetails::ibSpreadsheetDetailsField>& context,
+	const std::vector<ibOutputDescription>& structure,
 	const ibValueDataComposition& composition, const ibCompositionDescription& desc)
 {
 	const std::vector<ibQueryConstructorField> offered = composition.GetConstructorFields();
 	for (const ibValueSpreadsheetDetails::ibSpreadsheetDetailsField& field : context) {
-		ibFilterNodeDescription& line =
-			filter.Append(field.m_path, ibComparisonKind_Equal, field.m_value);
-		line.m_left.m_presentation = desc.TitleForPath(field.m_path);
+		ibFilterOperandDescription left;
+		left.m_path         = field.m_path;
+		left.m_presentation = desc.TitleForPath(field.m_path);
 		for (const ibQueryConstructorField& known : offered) {
 			if (!known.m_name.IsSameAs(field.m_path, false))
 				continue;
-			line.m_left.m_type = known.m_type;
-			if (line.m_left.m_presentation.IsEmpty())
-				line.m_left.m_presentation = known.m_presentation;
+			left.m_type = known.m_type;
+			if (left.m_presentation.IsEmpty())
+				left.m_presentation = known.m_presentation;
 			break;
 		}
+
+		ibTotalsPeriod unit = ibTotalsPeriod::Month;
+		if (field.m_value.GetType() == ibValueTypes::TYPE_DATE && ibPeriodUnitOfPath(structure, field.m_path, unit)) {
+			const ibDateTime date = field.m_value.GetDate();
+			filter.Append(field.m_path, ibComparisonKind_GreaterEqual, ibStoreValue(ibValue(date.BeginOfPeriod(unit)))).m_left = left;
+			filter.Append(field.m_path, ibComparisonKind_LessEqual, ibStoreValue(ibValue(date.EndOfPeriod(unit)))).m_left = left;
+		}
+		else
+			filter.Append(field.m_path, ibComparisonKind_Equal, ibStoreValue(field.m_value)).m_left = left;
 	}
 }
 
@@ -169,39 +212,41 @@ std::vector<ibOutputDescription> ibStructureByField(const wxString& path)
 // and stands up the module manager — "so a freshly created (not-from-file) report already has it".
 // Opening from a file is the same path with `LoadCommonTree` in the middle; here the middle is a
 // composer carrying a copy of the schema.
-void ibOpenReportOver(const ibCompositionDescription& desc)
+// `source` — the report the cell was composed in; the detail is named after it.
+void ibOpenReportOver(const ibCompositionDescription& desc, const ibValueMetaObject* source)
 {
-	// A report in memory: the ctor has already made its root and its module manager.
-	ibMetaDataReport* detailMeta = new ibMetaDataReport();
+	// A report in memory, held from birth: the ctor has already made its root and its module manager.
+	const std::shared_ptr<ibMetaDataReport> detailMeta = ibMetaData::MakeShared<ibMetaDataReport>();
 	ibValueMetaObject* root = detailMeta->GetCommonMetaObject();
-	if (root == nullptr) {
-		wxDELETE(detailMeta);
+	if (root == nullptr)
 		return;
+
+	// ⭐ …AND NAMED AFTER THE REPORT IT DETAILS. A detail is that report's figure broken down, so its window says
+	// whose it is (Max, 2026-09-30); a fresh report answers with the default name, "External report1".
+	if (source != nullptr) {
+		root->SetName(source->GetName());
+		root->SetSynonym(source->GetSynonym());
 	}
 
 	// …AND THE COMPOSER IT DECLARES. A report's main node IS its default composer, which is what puts
 	// a gridbox on the generated form without anybody drawing one.
 	ibValueMetaObjectComposer* composer =
 		root->CreateMetaObjectAndSetParent<ibValueMetaObjectComposer>();
-	if (composer == nullptr) {
-		wxDELETE(detailMeta);
+	if (composer == nullptr)
 		return;
-	}
 
 	// REGISTERED LIKE ANY OTHER METAOBJECT — an external report's tree is registered as it is built
 	// (Max: "as an external report it still has to be registered"), and a node that skipped it has no
 	// ctor behind its class.
-	composer->OnCreateMetaObject(detailMeta, newObjectFlag);
-	composer->OnLoadMetaObject(detailMeta);
+	composer->OnCreateMetaObject(detailMeta.get(), newObjectFlag);
+	composer->OnLoadMetaObject(detailMeta.get());
 	composer->SetCompositionDesc(desc);
 
-	if (!detailMeta->RunDatabase()) {
-		wxDELETE(detailMeta);
+	if (!detailMeta->RunDatabase())
 		return;
-	}
 
-	// …and the object owns the container from here on (ibValueRecordDataObjectExternalReport holds it
-	// by RAII), so nothing is deleted below: the form's life is what keeps the report alive.
+	// …and the object holds the container from its load on (ibValueRecordDataObjectExternalReport), so this
+	// reference may go: the form's life is what keeps the report alive.
 	if (ibValueModuleRuntimeManagerExternalReport* manager = detailMeta->GetManagerModule()) {
 		if (ibValueRecordDataObjectReport* object =
 				dynamic_cast<ibValueRecordDataObjectReport*>(manager->GetObjectValue()))
@@ -247,7 +292,9 @@ std::vector<wxString> ibValueGridBox::AppendDetailByMenu(wxMenu& menu, int first
 		if (taken)
 			continue;
 
-		wxString title = desc.TitleForPath(field.m_name);
+		// …in the reader's language: a title is kept in every language it was written in, and a sheet reads
+		// it as a cell lands (PutArea) — a menu is not a sheet, and printed it every language at once.
+		wxString title = ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), desc.TitleForPath(field.m_name));
 		if (title.IsEmpty())
 			title = ibTitleFromName(field.m_name);
 		byMenu->Append(firstId + static_cast<int>(paths.size()), title);
@@ -291,7 +338,7 @@ void ibValueGridBox::ShowCellDetail(int row, int col, const wxString& byPath)
 		ibSettingsDescription narrowed = ibSettingsInForce(*composition, detailDesc);
 
 		ibForceAndRoot(narrowed.m_filter);
-		ibAppendContextConditions(narrowed.m_filter, context, *composition, detailDesc);
+		ibAppendContextConditions(narrowed.m_filter, context, narrowed.m_structure, *composition, detailDesc);
 
 		if (!byPath.IsEmpty()) {
 			narrowed.m_structure = ibStructureByField(byPath);
@@ -305,5 +352,7 @@ void ibValueGridBox::ShowCellDetail(int row, int col, const wxString& byPath)
 		detailDesc.GetCompositionSettingsDesc() = narrowed;
 	}
 
-	ibOpenReportOver(detailDesc);
+	// …over the report this grid stands in — the form's own object (ibValueForm::GetMetaObject).
+	const ibValueForm* form = GetOwnerForm();
+	ibOpenReportOver(detailDesc, form != nullptr ? form->GetMetaObject() : nullptr);
 }

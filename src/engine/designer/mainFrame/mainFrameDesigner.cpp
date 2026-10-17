@@ -203,10 +203,6 @@ bool ibFrontendMainFrameDesigner::Show(bool show)
 {
 	bool ret = ibFrontendMainFrame::Show(show);
 	if (ret) {
-		if (!outputWindow->IsEmpty()) {
-			outputWindow->SetFocus();
-		}
-
 		// ⭐ THE ASSISTANT COMES UP WITH THE DESIGNER, when it is switched on.
 		//
 		// The setting already said so: `m_enabled` means "assistant access is on", and pressing
@@ -219,16 +215,27 @@ bool ibFrontendMainFrameDesigner::Show(bool show)
 		//
 		// ⚠ A REFUSAL IS NOT FATAL AND IS NOT SILENT. The port may be taken by a designer already
 		// open on another base, which is an ordinary thing to happen and no reason to hold up the
-		// window — so it is said in the output pane and the designer carries on. Nothing here
-		// starts a server the settings did not ask for: Start refuses on its own when the access
-		// is switched off, and that refusal is not worth showing at every launch.
-		if (ibMcpServer* server = ibApplicationData::GetMcpServer()) {
+		// window — so it is said in the messages and the designer carries on. Nothing here starts
+		// a server the settings did not ask for: Start refuses on its own when the access is
+		// switched off, and that refusal is not worth showing at every launch.
+		//
+		// 🛑 AND IT IS SAID BEFORE THE MESSAGES ARE BROUGHT FORWARD, not after. This stood BELOW
+		// that step, so the one message the designer's own start-up writes was the one message the
+		// pane never came up for: a person launching a second designer got a server that was not
+		// listening and nothing on screen that said so (2026-09-23, exactly that). The step below
+		// is the road this tree already has for "there is something to read" — this joins it
+		// instead of raising a pane of its own.
+		if (ibMcpServer* server = ibApplicationInstance::GetMcpServer()) {
 			if (server->GetSettings().m_enabled && !server->IsRunning()) {
 
 				wxString refusal;
 				if (!server->Start(GetSession(), refusal) && !refusal.IsEmpty())
 					outputWindow->OutputWarning(refusal);
 			}
+		}
+
+		if (!outputWindow->IsEmpty()) {
+			outputWindow->SetFocus();
 		}
 
 		return true;

@@ -26,6 +26,10 @@ public:
 			return m_propertyPicture->GetValueAsBitmap();
 		return ibBackendPicture::CreatePicture(g_metaCommonMetadataCLSID);
 	}
+	// …and what the picture IS — what a server sends it by (ibBackendPicture::GetServerPicture), as a command's; none —
+	// the section shows the configuration's picture, as above.
+	ibPictureDescription GetPictureDesc() const { return m_propertyPicture->GetValueAsPictureDesc(); }
+	bool IsEmptyPicture() const { return m_propertyPicture->IsEmptyProperty(); }
 
 	virtual ibClassID ResolveChild(const ibClassID& clsid) const {
 		if (clsid == g_metaSectionCLSID ||
@@ -66,11 +70,18 @@ public:
 
 #pragma endregion
 
+	// The items a platform group shows — a command filed under a DECLARED group is not among them (see below).
 	bool GetInterfaceItemArrayObject(ibInterfaceCommandSection page,
 		std::vector<ibValueMetaObject*>& array) const;
 
-	// ⭐ THE SAME QUESTION WITHOUT AN AREA: everything the section shows, once each — its Default, Create,
-	// Report and Service items in that order, an object listed the first time it appears.
+	// …and the items filed under a group the configuration DECLARES — a command that names it in its Group.
+	// Such a command sits in no platform area, so the overload above leaves it out and this one takes it in.
+	bool GetInterfaceItemArrayObject(const class ibValueMetaObjectCommandGroup* group,
+		std::vector<ibValueMetaObject*>& array) const;
+
+	// ⭐ THE SAME QUESTION WITHOUT AN AREA: everything the section shows, once each — its Important, Default,
+	// Create, Report and Service items in that order, then those of the declared groups, an object listed the
+	// first time it appears.
 	//
 	// 🛑 THE FOUR AREAS ARE NOT FOUR DISJOINT LISTS. A catalog is "combined" — it is both a list and a
 	// create — and the overload above answers it for BOTH Default and Create (see there). A page that asks
@@ -99,7 +110,7 @@ private:
 	ibPropertyPicture* m_propertyPicture = ibPropertyObject::CreateProperty<ibPropertyPicture>(m_categoryContext, wxT("Picture"), _("Picture"),
 		_("The section's icon in the navigation panel. Empty: the configuration's own icon is shown."));
 #pragma region role
-	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), _("Use"));
+	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), wxGETTEXT_IN_CONTEXT("access right", "Use"));
 #pragma endregion
 };
 

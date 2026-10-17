@@ -12,7 +12,7 @@
 #include <array>
 #include <map>
 
-#include "backend/compiler/translateCode.h"   // the lexem stream, and what the caret stands in
+#include "core/compiler/translateCode.h"   // the lexem stream, and what the caret stands in
 #include "backend/compiler/scriptComplete.h"  // ibValueAtCaret / ibNamesAtCaret - the two answers
 
 #include "frontend/mainFrame/settings/editorsettings.h"
@@ -295,9 +295,9 @@ private:
 			// Mode is read from ibCompileCode (process-global).
 			const bool isCES = (ibCompileCode::GetCodeStyle() == CODE_CES);
 
-			const auto& lexems = m_codeEditor->m_tc.GetLexems();
-			for (size_t i = 0; i < lexems.size(); ++i) {
-				const ibLexem& lex = lexems[i];
+			const ibTranslateCode& tc = m_codeEditor->m_tc;
+			for (size_t i = 0; i < tc.GetLexCount(); ++i) {
+				const ibLexem& lex = tc.GetLexAt(i);
 
 				if (isCES && lex.m_lexType == DELIMITER) {
 					if (lex.m_numData == '{')
@@ -364,8 +364,8 @@ private:
 				// as non-terminal and skip the close.
 				if (lex.m_numData == KEY_GROUP) {
 					bool terminal = true;
-					for (size_t j = i + 1; j < lexems.size(); ++j) {
-						const ibLexem& nxt = lexems[j];
+					for (size_t j = i + 1; j < tc.GetLexCount(); ++j) {
+						const ibLexem& nxt = tc.GetLexAt(j);
 						// Stop on statement-terminator or another LINQ
 						// open/close — we're past the group's clause.
 						if (nxt.m_lexType == DELIMITER &&
@@ -522,6 +522,13 @@ public:
 	void ShowAutoComplete(
 		const ibDebugAutoCompleteData& autoCompleteData);
 
+	// ⭐ THE VALUE THE RUNTIME ANSWERED WITH, for the word the mouse is on — the one door that puts it
+	// up, so the editor also KEEPS it: the system pops a tooltip on its own schedule and shows whatever
+	// text is in place then, so the same answer is laid back down on every movement across that word
+	// (LoadToolTip). An empty value takes the hint down, which is how a step clears what it made stale.
+	// Not wxWindow::SetToolTip, which is not virtual and says nothing about where the text came from.
+	void SetDebugValue(const wxString& value);
+
 	// ⚠ THE EDITOR'S OWN POSITION, NOT THE COMPILER'S. GetRealPosition counts CHARACTERS, which is
 	// what a caret means to the compiler; a window is placed by wxSTC's document position, which is
 	// a byte offset. Any non-ASCII above the caret pulls the two apart, and the tip is drawn that
@@ -657,6 +664,14 @@ private:
 	// The hint the breakpoint margin put up (OnMouseMove) - taken down when the mouse leaves the margin,
 	// so it does not stand over the text. Empty when the margin has none up.
 	wxString m_marginHint;
+
+	// The expression the debugger was last asked the value of (LoadToolTip) - so travelling across one
+	// word does not ask again and again. Empty when nothing has been asked.
+	wxString m_askedExpression;
+
+	// …and the answer, kept because the tooltip has to be laid down again on every movement for the
+	// system to find it there when it decides to show one. Empty until the answer arrives.
+	wxString m_askedValue;
 
 protected:
 	// The context menu's debugger part, for the line it was opened on - the designer adds the

@@ -11,7 +11,7 @@
 
 void ibDialogActiveUser::RefreshActiveUserTable()
 {
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	if (reg == nullptr) return;
 	const ibSessionSnapshot arr = reg->GetClusterSnapshot();
 
@@ -34,6 +34,7 @@ void ibDialogActiveUser::RefreshActiveUserTable()
 		m_activeTable->AppendColumn(_("Started"), wxLIST_FORMAT_LEFT, 120);
 		m_activeTable->AppendColumn(_("Computer"), wxLIST_FORMAT_LEFT, 145);
 		m_activeTable->AppendColumn(_("Session"), wxLIST_FORMAT_LEFT, 0); //hide
+		m_activeTable->AppendColumn(_("State"), wxLIST_FORMAT_LEFT, 160);
 
 		m_activeTable->AssignImageList(imageList, wxIMAGE_LIST_SMALL);
 
@@ -50,6 +51,7 @@ void ibDialogActiveUser::RefreshActiveUserTable()
 			m_activeTable->SetItem(index, 3, arr.GetStartedDate(idx));
 			m_activeTable->SetItem(index, 4, arr.GetComputerName(idx));
 			m_activeTable->SetItem(index, 5, arr.GetSession(idx));
+			m_activeTable->SetItem(index, 6, arr.GetActivity(idx));
 
 			if (current_session == arr.GetSession(idx))
 				m_activeTable->SetItemState(index, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED);
@@ -69,7 +71,7 @@ void ibDialogActiveUser::RefreshLocksTable()
 
 	std::vector<ibLockSnapshotRow> rows;
 	try {
-		if (auto* lm = ibApplicationData::GetLockManager())
+		if (auto* lm = ibApplicationInstance::GetLockManager())
 			rows = lm->GetSnapshot();
 	}
 	catch (...) { rows.clear(); }
@@ -105,7 +107,7 @@ void ibDialogActiveUser::RefreshLocksTable()
 			r.lockMode == ibLockMode::Shared ? _("Shared") : _("Exclusive"));
 		m_locksTable->SetItem(index, 3, r.userName);
 		m_locksTable->SetItem(index, 4,
-			r.acquiredAt.IsValid() ? r.acquiredAt.FormatISOCombined() : wxString());
+			!r.acquiredAt.IsEmpty() ? r.acquiredAt.ToWxDateTime().FormatISOCombined() : wxString());
 		m_locksTable->SetItem(index, 5, r.lockGuid.str());
 
 		if (!selectedGuid.IsEmpty() && r.lockGuid.str() == selectedGuid)
@@ -235,7 +237,7 @@ void ibDialogActiveUser::OnKickSelected(wxCommandEvent&)
 		wxTheApp->GetAppDisplayName(), wxYES_NO | wxICON_QUESTION, this);
 	if (answer != wxYES) return;
 
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	if (reg == nullptr || !reg->Kick(guid)) {
 		ibJournalWarning(wxT("ui"), _("Failed to queue kick for session %s"), guid);
 	}
@@ -260,7 +262,7 @@ void ibDialogActiveUser::OnReloadSelected(wxCommandEvent&)
 		}
 	}
 
-	auto* reg = ibApplicationData::GetSessionRegistry();
+	auto* reg = ibApplicationInstance::GetSessionRegistry();
 	if (reg == nullptr || !reg->Reload(guid)) {
 		ibJournalWarning(wxT("ui"), _("Failed to queue reload for session %s"), guid);
 	}
@@ -309,7 +311,7 @@ void ibDialogActiveUser::OnForceReleaseSelected(wxCommandEvent&)
 			return;
 		}
 		std::vector<ibGuid> one{ g };
-		auto* lm = ibApplicationData::GetLockManager();
+		auto* lm = ibApplicationInstance::GetLockManager();
 		if (lm == nullptr) {
 			ibJournalWarning(wxT("ui"), _("Lock manager not available"));
 			return;
@@ -320,7 +322,7 @@ void ibDialogActiveUser::OnForceReleaseSelected(wxCommandEvent&)
 		m_lastLockRowCount = static_cast<size_t>(-1);
 		RefreshLocksTable();
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		ibJournalWarning(wxT("ui"), _("Failed to release lock %s: %s"),
 			lockGuid, err.GetErrorDescription());
 	}

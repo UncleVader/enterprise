@@ -6,9 +6,11 @@
 // (lifecycle / auth) + script bindings (module manager, ProcUnit map).
 //
 // Renamed from ibSessionContext as part of the session-registry
-// refactor. ibSessionScope / Current() stay available as legacy shims
-// during migration — direct ibSession pointer passing (via ibProcUnit
-// etc.) is the target, thread_local Current() is deprecated.
+// refactor. The thread's binding (ibSessionScope, Current()) is the road
+// this platform takes to "which session — and which base — is this code
+// working for": a process of several bases resolves its base through it
+// (docs/private/multi-base-process.md). Passing a session explicitly where
+// one is already in hand remains the better spelling.
 
 #include "backend/backend.h"
 #include "backend/userInfo.h"
@@ -16,6 +18,8 @@
 #include "backend/backend_exception.h"
 #include "backend/compiler/value.h" // ibValue (base for ibValuePtr)
 #include "backend/compiler/procUnitState.h"   // ibProcUnitState — per-session interpreter swap target
+#include "backend/compiler/compileState.h"    // ibCompileState — per-session compiler state
+#include "backend/translateState.h"           // ibTranslateState — per-session translation state
 #include "backend/value_ptr.h"    // ibValuePtr for m_root
 #include "backend/databaseLayer/connectionHolder.h"   // ibDatabaseConnectionHolder for m_dbHolder
 #include "backend/databaseLayer/connectionScope.h"    // ibConnectionScope for OpenScope return type
@@ -76,29 +80,25 @@ enum class ibAuthState : int {
 };
 
 // ------------------------------------------------------------------
-// ibSessionKind — sessions-layer enum. Shares numeric values with
-// ibRunMode for the 1:1 cases (Launcher/Designer/Enterprise/Service)
-// so casts round-trip; splits the web case into two distinct session
-// roles that both share ibRunMode::eWEB_RUNTIME_MODE as the host
-// process's run mode. Physically only the wes process runs — inside
-// it sessions come in two flavours:
-//   WebServer  — the process's own technical sys_session row
-//   WebClient  — per-tab / per-API-caller connections
-// Desktop binaries populate their corresponding session kind directly;
-// SessionKindFromRunMode is the default for unambiguous cases and
-// returns WebClient for eWEB_RUNTIME_MODE (the common per-tab case).
+// ibSessionKind — WHAT A SESSION IS: the designer, the application, a job,
+// a server's own login. The process says only how it holds the base
+// (ibRunMode); a file base has its designer, its runtime and its jobs as a
+// server does. A file base is started as something — its first session is that
+// (the designer's window, the client's window); a server is started as the
+// server — its first session is its own, and the clients of every kind come
+// later. A number on disk (sys_session.kind): never renumbered.
 // ------------------------------------------------------------------
 enum class ibSessionKind : int {
-	Launcher   = eLAUNCHER_MODE,       // 1
-	Designer   = eDESIGNER_MODE,       // 2
-	Enterprise = eRUNTIME_MODE,     // 3
-	Service    = eSERVICE_MODE,        // 4
-	WebServer  = eWEB_RUNTIME_MODE, // 5 — wes process technical row
+	Unknown    = 0,                    // nobody said — a row of a legacy schema, or one that slipped through
+	Launcher   = 1,
+	Designer   = 2,
+	Enterprise = 3,
+	Service    = 4,                    // a server's own login
+	WebServer  = 5,                    // the web server's own technical row
 	WebClient  = 100,                  // per-tab / API caller
-	// A job's own session. Like WebClient these live OUTSIDE the run-mode range,
-	// because a job is not a way of running the process: any host can hold one
-	// alongside its normal sessions, so "what kind of session is this" stops
-	// being answerable from how the process was started.
+	// A job's own session. A job is not a way of running the process: any host
+	// can hold one alongside its normal sessions, so "what kind of session is
+	// this" is not answerable from how the process was started.
 	//
 	// THREE kinds rather than one, because an administrator looking at Active
 	// Users has a different decision for each. A stuck BackgroundJob has a user
@@ -113,27 +113,52 @@ enum class ibSessionKind : int {
 	ScheduledJob  = 102,   // declared by the configuration, runs on its interval
 	SystemJob     = 103,   // the platform's own (totals fold, maintenance)
 
+	// A CLIENT OF THE PROTOCOL working in the application — the thin runtime, the web, the assistant (frmserver):
+	// a person at it, whatever process hosts it. Its run mode is its host's — a server's or a file base's — so the
+	// kind is what says what it is.
+	ThinClient    = 104,
+	// …working in the configuration — the thin designer. A designer as the desktop's is (IsDesignerSessionKind):
+	// no runtime, the one designer of the base.
+	ThinDesigner  = 105,
+
 };
 
 // IS THIS SESSION A JOB — one of the three above, whatever host it lives in.
 //
-// Worth one question because a job's session carries the APP MODE of whoever
-// started it: a run inside designer.exe says eDESIGNER_MODE, and anything reading
-// the app mode to decide "is this a designer" counts it as one. It is not — it is a
-// job that happens to live there. The KIND is what answers, and this is the
-// shorthand for asking.
+// Worth one question because a job lives in whatever process started it — the
+// designer's, the application's, a server — and is none of them. The KIND is what
+// answers, and this is the shorthand for asking.
 inline bool IsJobSessionKind(ibSessionKind k) {
 	return k == ibSessionKind::BackgroundJob
 	    || k == ibSessionKind::ScheduledJob
 	    || k == ibSessionKind::SystemJob;
 }
 
-inline ibSessionKind SessionKindFromRunMode(ibRunMode m) {
-	// Web run mode is ambiguous at this layer — default to WebClient
-	// (the per-tab common case). Callers that need WebServer set the
-	// kind explicitly (see ibSessionRegistry::CreateSessionWithFactory).
-	if (m == eWEB_RUNTIME_MODE) return ibSessionKind::WebClient;
-	return static_cast<ibSessionKind>(m);
+// IS THIS SESSION A DESIGNER'S — the desktop's or the thin one, whatever process hosts it. Asked of the session's
+// kind, not of the process's run mode: a server and a file base host designers alike.
+inline bool IsDesignerSessionKind(ibSessionKind k) {
+	return k == ibSessionKind::Designer
+	    || k == ibSessionKind::ThinDesigner;
+}
+
+// IS THIS SESSION A PERSON'S IN THE APPLICATION — the desktop's runtime, a web tab, a thin client — whatever process
+// hosts it.
+inline bool IsRuntimeSessionKind(ibSessionKind k) {
+	return k == ibSessionKind::Enterprise
+	    || k == ibSessionKind::WebClient
+	    || k == ibSessionKind::ThinClient;
+}
+
+// IS THIS THE PROCESS'S OWN LOGIN — what a program logs in as (the designer's window, the client's window, a
+// server's own, the web server's technical row): what a base gives only that session — the thread without a session
+// falls back to it, its person's MCP settings are read. Not a job's and not a visitor's (a web tab, a client of the
+// protocol), which come in through the same door.
+inline bool IsProcessSessionKind(ibSessionKind k) {
+	return k == ibSessionKind::Launcher
+	    || k == ibSessionKind::Designer
+	    || k == ibSessionKind::Enterprise
+	    || k == ibSessionKind::Service
+	    || k == ibSessionKind::WebServer;
 }
 
 // ------------------------------------------------------------------
@@ -161,8 +186,8 @@ struct BACKEND_API ibSessionIdentity {
 	wxString     m_userGuid;           // sys_user row, empty before Attach
 	wxString     m_computer;          // hostname
 	wxString     m_address;            // "host:port" for web; "" for desktop
-	ibRunMode    m_appMode;            // eENTERPRISE / eDESIGNER / eWEB_ENTERPRISE / ...
-	wxDateTime   m_started;
+	ibRunMode    m_appMode;            // how its process holds the base: a file base, a server, …
+	ibDateTime   m_started;
 	int          m_pid = 0;            // OS pid — for kick / attach debugger
 	bool         m_expectsAnonPhase = true;  // true: INSERT on Add; false: INSERT deferred to Attach success
 };
@@ -207,7 +232,7 @@ public:
 	// answers from wherever its window already is — the desktop pair from
 	// its main-window singleton, a web client from its tab — so nothing
 	// is stored here and there is no registration step to get wrong.
-	// Default null: daemon, codeRunner, the wes technical row have no UI.
+	// Default null: appserver, codeRunner, the wes technical row have no UI.
 	virtual ibBackendDocFrame* GetFrame() const { return nullptr; }
 
 	// Session-owned auth orchestration. Submits Attach to the registry
@@ -310,7 +335,19 @@ public:
 	// Designer / technical sessions (no enforcement). Created at authentication
 	// (EnsureRoot) for runtime sessions; the concrete impl lives in session.cpp.
 	// Returns null inside an ibAccessTrustScope (a role module runs privileged).
+	// Await pauses that window, so a task it runs while a question is open
+	// does not see the bypass.
 	const ibAccessPolicy* GetAccessPolicy() const;
+
+	// The role-handler bypass and the session-parameter write window.
+	// Await clears both for the tasks it runs and puts them back after.
+	bool AccessTrusted() const { return m_accessTrusted; }
+	bool SessionParametersOpen() const { return m_sessionParametersOpen; }
+
+	// A role handler (OnAccessRead / OnAccessWrite) may not ask the user. The frame's two
+	// doors call this (ShowModalMessage, Request). SetSessionParameters is not a role handler
+	// and may ask.
+	void RefuseQuestionFromRoleHandler() const;
 
 	// The module manager whose context (Manager / Catalogs / Documents / globals)
 	// an object/record/module compiled against `metaData` should parent to. One
@@ -421,12 +458,13 @@ public:
 	// when the session never had a root.
 	void ClearRoot();
 
-	// Idempotent CreateRoot driven by the active process-level metadata.
+	// Idempotent CreateRoot over the configuration this session acquired.
 	// Called by ibSessionRegistry::NotifyAuthenticated between the
 	// OnFirstConnect phase (which may run metadataCreate, populating
-	// activeMetaData) and the OnAuthenticated phase (whose listeners —
+	// the base's active one) and the OnAuthenticated phase (whose listeners —
 	// e.g. RunDatabase → OnBeforeRunMetaObject — need session->mm to
-	// already exist). No-op when m_root already set or activeMetaData null.
+	// already exist). No-op when m_root already set or the session
+	// holds no configuration.
 	void EnsureRoot();
 
 	// Read access — single overload, const only. The non-const reference
@@ -532,21 +570,18 @@ public:
 	// Configuration-language code for this session — selects which
 	// metadata synonym / form-label translation is shown. Distinct from
 	// the platform's wxLocale (UI gettext, process-wide via --locale=).
-	// Set after auth from the user's preferred language (or the config's
-	// default when the user has none); script can override via the
-	// CurrentLanguage() builtin. Empty => fall back to the process-wide
-	// default (ibBackendLocalization::GetUserLanguage), which is what
-	// pre-auth and headless contexts use.
+	// Lives in the session's translate state (GetTranslateState): the
+	// script's override (CurrentLanguage), else the user's preferred
+	// language, else the configuration's — each session its own.
 	//
 	// Hot path: this getter is hit per metadata-synonym lookup, hundreds
 	// of times during a single form open. m_resolvedLanguageCode is the
-	// pre-computed answer — refreshed only when the override or the user
-	// record changes (SetLanguageCode / SetUserInfo). Inline + by-const-ref
-	// keeps the read at one field load with no logic.
-	const wxString& GetLanguageCode() const { return m_resolvedLanguageCode; }
+	// pre-computed answer — refreshed only when one of the three changes.
+	// Inline + by-const-ref keeps the read at one field load with no logic.
+	const wxString& GetLanguageCode() const { return m_translateState.m_resolvedLanguageCode; }
 	void            SetLanguageCode(const wxString& code) {
-		m_languageCode = code;
-		m_resolvedLanguageCode = code.IsEmpty() ? m_userInfo.m_strLanguageCode : code;
+		m_translateState.m_languageCode = code;
+		m_translateState.Resolve();
 	}
 
 protected:
@@ -569,7 +604,7 @@ protected:
 	//
 	// The default is the other case: nothing to close. Then there is no
 	// owner whose death would release a holder — the holder sits in plain
-	// code (daemon's scope, a job runner, wes's technical global) — so
+	// code (appserver's scope, a job runner, wes's technical global) — so
 	// this IS the end and the session ends here.
 	//
 	// Returning false means "not now": nothing happened and the caller
@@ -627,13 +662,13 @@ public:
 	// sessions in the same process don't step on each other's value.
 	//
 	// Returned by value (not const ref) so a concurrent SetWorkDate can
-	// never race with a long-lived caller-side reference. wxDateTime is
-	// a small POD-like value, copy is cheap. Both Get and Set are
+	// never race with a long-lived caller-side reference. A date is one
+	// word (fdatetime.h), copy is cheap. Both Get and Set are
 	// expected to be called from the per-session script thread (single
 	// in-flight per session), so the copy itself is also race-free in
 	// practice — value semantics document the invariant.
-	wxDateTime GetWorkDate()         const { return m_workDate; }
-	void       SetWorkDate(const wxDateTime& d) { m_workDate = d; }
+	ibDateTime GetWorkDate()         const { return m_workDate; }
+	void       SetWorkDate(const ibDateTime& d) { m_workDate = d; }
 
 	// Per-session interpreter state slot — currentRunModule, runContext
 	// stack, errorPlace, recCount. Single source of truth for the script
@@ -665,6 +700,22 @@ public:
 	// answer that cannot change while the call runs.
 	static ibProcUnitState* PUStateOf(ibSession* session);
 
+	// Per-session COMPILER state — the twin of the interpreter's above (ibCompileState): what every compile of
+	// this session shares, the code style first. The current session's; a thread without one gets its own, as
+	// with GetPUState — codeRunner compiles that way.
+	static ibCompileState* GetCompileState() { return CompileStateOf(Current()); }
+
+	// The same answer, when the caller already holds the session — as PUStateOf.
+	static ibCompileState* CompileStateOf(ibSession* session);
+
+	// Per-session TRANSLATION state (ibTranslateState) — each session speaks its own language: the script's
+	// override, else the user's, else its configuration's. The current session's; a thread without one gets its
+	// own, as with GetPUState.
+	static ibTranslateState* GetTranslateState() { return TranslateStateOf(Current()); }
+
+	// The same answer, when the caller already holds the session — as PUStateOf.
+	static ibTranslateState* TranslateStateOf(ibSession* session);
+
 	// State accessors — lock-free reads.
 	ibSessionState State() const { return m_state.load(std::memory_order_acquire); }
 	ibAuthState    Auth()  const { return m_auth.load(std::memory_order_acquire); }
@@ -683,37 +734,18 @@ public:
 	// explains itself by the user having asked for it).
 	void SetReason(const wxString& reason);
 
-	// Access mode — set once by the application at startup, before any
-	// session is created.
-	//
-	//   Single — the process runs exactly one session for its entire life
-	//            (designer.exe, enterprise.exe, daemon.exe, codeRunner.exe). Current() returns the lone session
-	//            regardless of the calling thread; bindings are recorded
-	//            for diagnostics but lookup ignores them.
-	//
-	//   Shared — per-thread lookup with a process-wide fallback.
-	//            wenterprise-server.exe — workers serving a tab register
-	//            their session under their thread id; the wes process's
-	//            own system session is registered via SetFallback and
-	//            served to any thread that isn't a tab worker (registry
-	//            consumer, signal handlers, etc.).
-	enum class AccessMode { Single, Shared };
-
-	static void       SetAccessMode(AccessMode mode);
-	static AccessMode GetAccessMode();
-
-	// Canonical "session this code is currently working on". Lookup
-	// strategy depends on AccessMode (see above).
+	// Canonical "session this code is currently working on": the calling
+	// thread's own binding, else its base's fallback — the process's own
+	// session there (set by the base when that session is let in).
 	static ibSession* Current();
 
-	// Shared-mode fallback — session returned by Current() when the
-	// calling thread isn't bound. Effective only when AccessMode == Shared.
-	static void SetFallback(ibSession* s);
-	static void ClearFallback();
+	// Current() as far as the thread ALREADY KNOWS it — its own copy of its binding while no binding has
+	// changed since it was read; null otherwise. No lock and no registry, so it never waits: for callers that
+	// run under anybody's locks, the journal above all. Everything else asks Current().
+	static ibSession* CurrentCached() noexcept;
 
 	// Diagnostic — given a thread id, what session is currently scoped on
-	// that thread? In Single mode returns the lone session; in Multi mode
-	// returns the bound session or the fallback.
+	// that thread? The same rule as Current(): its binding, else the fallback.
 	static ibSession* GetByThread(std::thread::id tid);
 
 	// Explicit bind — pin a session under an arbitrary thread id without
@@ -746,7 +778,7 @@ public:
 
 	// Convenience: whether the currently-scoped session has been
 	// force-exited. Returns false when no session is bound. Drop-in
-	// replacement for the legacy process-level ibApplicationData::
+	// replacement for the legacy process-level ibApplicationInstance::
 	// IsForceExit() at frontend / GUI startup checks.
 	static bool IsCurrentForceExit() {
 		auto* s = Current();
@@ -774,7 +806,34 @@ private:
 	bool m_listed = true;
 	void SetUnlisted() { m_listed = false; }
 
+	// ⭐ ITS OWNER — the registry that made it. A process may hold several bases
+	// (docs/private/multi-base-process.md), and a session answers "which one" by itself, down the chain:
+	// session → its registry → the registry's base → that base's pool. The registry stamps every session
+	// it creates; a rented read takes the registry of the session it rents. Stamped once, never moved.
+	// Null for a session made outside any registry (tests, benchmarks) — it belongs to no base.
+	class ibSessionRegistry* m_registry = nullptr;
+
+	// THE CONFIGURATION IT WORKS IN — its own reference (GetMetaData), let go when it leaves (ReleaseMetaData).
+	// Declared before everything the session builds over it — the root, the access policy, its locals: members die
+	// in reverse, so a session that never left lets the configuration go last of all.
+	std::shared_ptr<class ibMetaDataConfigurationBase> m_metaData;
+
 public:
+	// …WHILE IT IS IN IT. A session its registry has let go (Gone — ProcessRemove's last word) answers none:
+	// that registry may be gone with its base by now — a window outlives its base on the way out — and the
+	// stamp kept past it led every `appData` and every journal line into freed memory.
+	class ibSessionRegistry* GetRegistry() const {
+		return State() == ibSessionState::Gone ? nullptr : m_registry;
+	}
+	ibApplicationInstance* GetApplicationInstance() const;   // through the registry
+
+	// ⭐ THE CONFIGURATION THIS SESSION WORKS IN — its own reference to its base's active one, taken when it is let
+	// in and kept for its whole life (Max, 2026-10-06: *"the session adds one to the count; if the active one
+	// changes, the session uses the old one"*). An update that replaces the base's active configuration does it for
+	// the sessions to come. What `activeMetaData` answers on a thread this session works on. Null before it is let
+	// in, after it has left, and in a base that holds none (the launcher).
+	ibMetaDataConfigurationBase* GetMetaData() const { return m_metaData.get(); }
+
 	// ⭐ IS THIS A RENTED READ? The registry row is the honest signature — a session minted to fetch
 	// one page on somebody's behalf takes none, and nothing else in the tree is unlisted. Asked by
 	// callers that must treat "reading FOR a session" differently from "being a session": the
@@ -792,6 +851,9 @@ private:
 	// convention, and why nothing else needs to report a close.
 	void Teardown();
 	friend class ibAccessTrustScope;   // toggles m_accessTrusted (RLS privileged window)
+	friend class ibRoleHandlerScope;   // names the OnAccess* handler that is on the stack
+	friend class ibSessionParameterWriteWindow; // toggles m_sessionParametersOpen
+	friend class ibSessionTrustPause;  // Await clears both for the tasks it runs
 
 	wxString       m_id;
 	ibSessionKind  m_kind;
@@ -811,6 +873,14 @@ private:
 	ibSessionState WaitForState(ibSessionState from, std::chrono::milliseconds timeout);
 	ibAuthState    WaitForAuth (ibAuthState    from, std::chrono::milliseconds timeout);
 
+	// Its +1 — the base's active configuration as it stands when the session is let in (GetMetaData). Acquired
+	// once, by the registry (NotifyAuthenticated), before the root is built over it; a rented read takes its
+	// parent's instead (ibJobManager).
+	void AcquireMetaData();
+	// …and its −1, when it leaves (NotifyDisconnect): the root built over it first, then the reference. The last
+	// session working in a configuration the base has replaced closes it here, on the thread that takes it down.
+	void ReleaseMetaData();
+
 	// Identity / sys_session-row tracking. Identity is filled in by the
 	// registry as the session moves through Add → Attach; the inserted
 	// flag tracks whether a sys_session row has actually been INSERTed
@@ -824,15 +894,16 @@ private:
 	// mutator of session state, callers from appData / login dialogs
 	// route through it. SetSessionRawPassword writes the plain-text
 	// cache used by the Designer "Start debugging" child spawn; the
-	// matching read accessor stays public (registry-thread is the sole
-	// writer, reads from any thread are race-free against atomic-flag
+	// matching read accessor stays public (the logging-in thread writes
+	// it — ibSessionRegistry::Attach — before the registry announces the
+	// login, so reads from any thread are race-free against atomic-flag
 	// observation of Auth() == Authenticated).
 	void SetUserInfo(const ibUserInfo& info) {
 		m_userInfo = info;
-		// Refresh cached language: explicit SetLanguageCode override
-		// wins; otherwise the new user's preferred language.
-		if (m_languageCode.IsEmpty())
-			m_resolvedLanguageCode = info.m_strLanguageCode;
+		// The new user's preferred language — under an explicit
+		// SetLanguageCode override, over the configuration's.
+		m_translateState.m_userLanguageCode = info.m_strLanguageCode;
+		m_translateState.Resolve();
 	}
 	void SetSessionRawPassword(const wxString& pwd) { m_sessionRawPassword = pwd; }
 	void ClearSessionRawPassword() { m_sessionRawPassword.clear(); }
@@ -890,7 +961,7 @@ public:
 	// to discover whether a session is attached for debugging and to
 	// access its watch list / debug-loop CV. Mutators (EnableDebug /
 	// DisableDebug) are restricted to the auth flow — see private block
-	// further down with friend ibApplicationData.
+	// further down with friend ibApplicationInstance.
 	bool IsDebug() const     { return m_debug != nullptr; }
 	ibDebugSession* Debug()  { return m_debug.get(); }
 
@@ -968,6 +1039,10 @@ private:
 	// survives a handler throw). Per-session, never process-global: a trusted
 	// window on one web session must not lift enforcement on another.
 	bool m_accessTrusted = false;
+
+	// Set only by ibRoleHandlerScope, and only around OnAccessRead / OnAccessWrite.
+	// Null the rest of the time, including inside SetSessionParameters, which may ask.
+	const wxString* m_roleHandler = nullptr;
 
 	// SESSION PARAMETERS — declared in metadata, filled once by the session module,
 	// read everywhere. Keyed by the parameter's NAME, which is what a script writes.
@@ -1057,17 +1132,7 @@ private:
 
 	// Script-visible "working date" — see GetWorkDate/SetWorkDate.
 	// Initialized to the session-creation wall-clock in the ctor.
-	wxDateTime                m_workDate;
-
-	// Per-session active configuration-language code.
-	// m_languageCode = explicit override from SetLanguageCode (empty =
-	// no override, use the user's preferred language).
-	// m_resolvedLanguageCode = pre-computed answer for GetLanguageCode —
-	// either m_languageCode if non-empty, or m_userInfo.m_strLanguageCode.
-	// Refreshed on every SetLanguageCode / SetUserInfo call so the hot
-	// read path is a single field load, no fallback logic per call.
-	wxString                  m_languageCode;
-	wxString                  m_resolvedLanguageCode;
+	ibDateTime                m_workDate;
 
 	// Force-exit request flag — see RequestForceExit / IsForceExit.
 	// One-shot: set once, never cleared. The script thread observes it
@@ -1086,6 +1151,12 @@ private:
 	// at the worker boundary land in step 2. Default-constructed empty;
 	// no reads from here yet.
 	ibProcUnitState           m_procUnitState;
+
+	// The compiler's — see GetCompileState().
+	ibCompileState            m_compileState;
+
+	// Translation's — see GetTranslateState().
+	ibTranslateState          m_translateState;
 
 	// Exclusive mode — see SetExclusive(). True only on the session that
 	// currently holds monopoly. Atomic for lock-free IsExclusive() reads
@@ -1180,7 +1251,94 @@ private:
 	bool       m_prev;
 };
 
-// ibApplicationData::CreateSession<SessionT> template bodies live in
+// Names the role handler on the stack. Question and every modal refuse while it is open.
+// Not every trusted window is a role handler: SetSessionParameters uses the trust scope
+// and may still ask. The name is copied so a temporary at the call survives the scope.
+class BACKEND_API ibRoleHandlerScope {
+public:
+	ibRoleHandlerScope(ibSession* session, const wxString& handler)
+		: m_session(session)
+		, m_name(handler)
+		, m_prev(session != nullptr ? session->m_roleHandler : nullptr)
+	{
+		if (m_session != nullptr)
+			m_session->m_roleHandler = &m_name;
+	}
+	~ibRoleHandlerScope()
+	{
+		if (m_session != nullptr)
+			m_session->m_roleHandler = m_prev;
+	}
+
+	ibRoleHandlerScope(const ibRoleHandlerScope&)            = delete;
+	ibRoleHandlerScope& operator=(const ibRoleHandlerScope&) = delete;
+
+private:
+	ibSession*       m_session;
+	wxString         m_name;
+	const wxString*  m_prev;
+};
+
+// The write window SetSessionParameters opens around the one call that may
+// write. Saves the prior flag, so a nested window composes, and closes on
+// every exit including a throw.
+class BACKEND_API ibSessionParameterWriteWindow {
+public:
+	explicit ibSessionParameterWriteWindow(ibSession* s)
+		: m_session(s), m_prev(s != nullptr && s->m_sessionParametersOpen)
+	{
+		if (m_session != nullptr) m_session->m_sessionParametersOpen = true;
+	}
+	~ibSessionParameterWriteWindow()
+	{
+		if (m_session != nullptr) m_session->m_sessionParametersOpen = m_prev;
+	}
+
+	ibSessionParameterWriteWindow(const ibSessionParameterWriteWindow&)            = delete;
+	ibSessionParameterWriteWindow& operator=(const ibSessionParameterWriteWindow&) = delete;
+
+private:
+	ibSession* m_session;
+	bool       m_prev;
+};
+
+// Await holds this for the whole wait. SetSessionParameters may ask, and its
+// trust and write window live on the session. The tasks Await runs are that
+// session's, so they would run privileged — RLS off, parameters writable —
+// for as long as the question is open. Clearing the flags here is what keeps
+// that work from inheriting the bypass; the destructor puts them back,
+// including when the wait is cancelled. A role handler never reaches this:
+// it is refused at the question, before it can park.
+class BACKEND_API ibSessionTrustPause {
+public:
+	explicit ibSessionTrustPause(ibSession* s)
+		: m_session(s)
+		, m_trusted(s != nullptr && s->m_accessTrusted)
+		, m_parametersOpen(s != nullptr && s->m_sessionParametersOpen)
+	{
+		if (m_session == nullptr)
+			return;
+		m_session->m_accessTrusted = false;
+		m_session->m_sessionParametersOpen = false;
+	}
+	~ibSessionTrustPause()
+	{
+		if (m_session == nullptr)
+			return;
+		m_session->m_accessTrusted = m_trusted;
+		m_session->m_sessionParametersOpen = m_parametersOpen;
+	}
+
+	ibSessionTrustPause(const ibSessionTrustPause&)            = delete;
+	ibSessionTrustPause& operator=(const ibSessionTrustPause&) = delete;
+
+private:
+	ibSession* m_session;
+	bool       m_trusted;
+	bool       m_parametersOpen;
+};
+
+// ibApplicationInstance::CreateSession<SessionT> template bodies live in
 // sessionRegistry.h — they delegate through ibSessionRegistry's factory
 // methods, which require the registry's full type at instantiation.
 // Callers that use the typed overload include sessionRegistry.h.

@@ -1,12 +1,11 @@
 #include "calculationRegister.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/system/value/valueDynamicList.h"   // ibValueDynamicList — the standard list migrates onto the universal dynamic list
 #include "backend/metaData.h"
 #include "backend/moduleManager/moduleManager.h"
 #include "backend/objCtor.h"   // ibCtorMetaValueType — the type the metadata REGISTERED for the chart
-#include "backend/clsid.h"   // reference_to_clsid — the calc-type attribute's type is a reference into the bound chart
+#include "core/clsid.h"   // reference_to_clsid — the calc-type attribute's type is a reference into the bound chart
 #include "chartOfCalculationTypes.h"   // the bound chart — resolved, asked for its metaID and for its relations
-#include "backend/diagnostics/journal.h"   // ibJournalInfo — a recalculation saved as an object, let go
 
 // Bind the register to a chart of calculation types: the CalculationType standard attribute becomes a
 // reference into that chart. Empty metaID leaves it untyped (no chart bound yet).
@@ -77,8 +76,12 @@ void ibValueMetaObjectCalculationRegister::ApplyChartBinding()
 ibValueMetaObjectCalculationRegister::ibValueMetaObjectCalculationRegister() : ibValueMetaObjectRegisterData()
 {
 	//set default proc
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
 }
 
 ibValueMetaObjectCalculationRegister::~ibValueMetaObjectCalculationRegister()
@@ -95,13 +98,12 @@ ibValueMetaObjectFormBase* ibValueMetaObjectCalculationRegister::GetDefaultFormB
 
 #pragma region _form_builder_h_
 // The list is ordered by the registration period — the register's one period (see HasPeriod).
-ibBackendValueForm* ibValueMetaObjectCalculationRegister::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectCalculationRegister::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectCalculationRegister::eFormList,
-		ownerControl, ibCreateList(GetQueryable(), GetRegistrationPeriod()->GetQueryColumn()),   // migrated onto the universal dynamic list
-		formGuid
+		ownerControl, ibCreateList(request.m_create, GetQueryable(), GetRegistrationPeriod()->GetQueryColumn())   // migrated onto the universal dynamic list
 	);
 }
 #pragma endregion
@@ -406,7 +408,7 @@ bool ibValueMetaObjectCalculationRegister::OnAfterRunMetaObject(int flags)
 
 		if (ibValueMetaObjectRegisterData::OnAfterRunMetaObject(flags)) {
 
-			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateRecordSetObjectValue(); }))
+			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateRecordSetObjectValue(); }))
 				return false;
 
 			return true;
@@ -478,30 +480,30 @@ void ibValueMetaObjectCalculationRegister::OnRemoveMetaForm(ibValueMetaObjectFor
 
 #include "calculationRegisterManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectCalculationRegister::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectCalculationRegister::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectCalculationRegister(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectCalculationRegister(this));
 }
 
-ibValueRecordSetObject* ibValueMetaObjectCalculationRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
+ibValuePtr<ibValueRecordSetObject> ibValueMetaObjectCalculationRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
 {
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		ibValueRecordSetObject* pDataRef = nullptr;
 		if (!cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef)) {
-			return new ibValueRecordSetObjectCalculationRegister(this, uniqueKey);
+			return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectCalculationRegister(this, uniqueKey));
 		}
-		return pDataRef;
+		return ibValuePtr<ibValueRecordSetObject>(pDataRef);
 	}
 
-	return new ibValueRecordSetObjectCalculationRegister(this, uniqueKey);
+	return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectCalculationRegister(this, uniqueKey));
 }
 
-ibSourceDataObject* ibValueMetaObjectCalculationRegister::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectCalculationRegister::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormList:
-		return ibCreateList(GetQueryable(), GetRegistrationPeriod()->GetQueryColumn());   // migrated onto the universal dynamic list
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetRegistrationPeriod()->GetQueryColumn()));   // migrated onto the universal dynamic list
 	}
 
 	return nullptr;

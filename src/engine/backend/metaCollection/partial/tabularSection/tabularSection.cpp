@@ -9,6 +9,7 @@
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/metaCollection/partial/selector/objectSelector.h"   // the selector ctor below upcasts to a second base
 #include "backend/composition/dataComposer.h"   // GetModelComposer().GroupCount/GetGroupAt — grouped-add dim seeding
+#include "backend/choiceLinkResolver.h"         // a column typed by its neighbour is narrowed on write
 
 #include "backend/appData.h"
 
@@ -84,7 +85,7 @@ wxString ibValueTabularSectionDataObjectBase::GetClassName() const
 	return _("<deleted metaobject>");
 }
 
-wxString ibValueTabularSectionDataObjectBase::GetString() const
+ibString ibValueTabularSectionDataObjectBase::GetString() const
 {
 	if (m_metaTable->IsAllowed()) {
 		const ibMetaData* metaData = m_metaTable->GetMetaData();
@@ -109,10 +110,26 @@ bool ibValueTabularSectionDataObjectBase::SetValueByMetaID(const ibDataViewItem&
 			const ibValueMetaObjectAttributeBase* attribute = ibSectionColumnById(m_metaTable, id);
 			wxASSERT(attribute);
 			if (attribute == nullptr) return false;
-			const bool ok = node->SetValue(
-				id, attribute->AdjustValue(varMetaVal), true
-			);
-			
+			// …narrowed by the column's link, with THIS ROW as the holder — a value column typed by the
+			// kind column beside it takes the kind of its OWN row (choiceLinkResolver.h).
+			const ibValue settled =
+				ibChoiceLinkResolver::Adjust(ibChoiceHolder(this, item), attribute, varMetaVal);
+
+			ibValue previous;
+			const bool changed = !node->GetValue(id, previous) || !(previous == settled);
+
+			const bool ok = node->SetValue(id, settled, true);
+
+			// …and the cells chosen within this one go with it — within THIS ROW. A column emptying a
+			// neighbour would otherwise reach across every other row, which is somebody else's line.
+			//
+			// ⚠ ON A CHANGE, NOT ON A WRITE, for the reason spelled out at the object's own write
+			// (commonObject.cpp): re-choosing what is already in the cell makes nothing stale.
+			if (ok && changed) {
+				ibChoiceHolder holder(this, item);
+				ibChoiceLinkResolver::ClearLinked(holder, id);
+			}
+
 			return ok;
 		}
 	}
@@ -273,9 +290,9 @@ bool ibValueTabularSectionDataObjectBase::LoadDataFromTable(ibValueModel* srcTab
 	return true;
 }
 
-ibValueModel* ibValueTabularSectionDataObjectBase::SaveDataToTable() const
+ibValuePtr<ibValueModel> ibValueTabularSectionDataObjectBase::SaveDataToTable() const
 {
-	ibValueModelTable* valueTable = new ibValueModelTable();
+	const ibValuePtr<ibValueModelTable> valueTable(new ibValueModelTable());
 	ibValueModelColumnCollection* colData = valueTable->GetColumnCollection();
 	for (unsigned int idx = 0; idx < m_recordColumnCollection->GetColumnCount() - 1; idx++) {
 		ibValueModelColumnCollection::ibValueModelColumnInfo* colInfo = m_recordColumnCollection->GetColumnInfo(idx);
@@ -307,18 +324,26 @@ ibValueModel* ibValueTabularSectionDataObjectBase::SaveDataToTable() const
 
 bool ibValueTabularSectionDataObjectRef::SetValueByMetaID(const ibDataViewItem& item, const ibMetaID& id, const ibValue& varMetaVal)
 {
-	if (varMetaVal != ibValueTabularSectionDataObjectBase::GetValueByMetaID(item, id)) {
-		// A LINE THAT CHANGED CHANGES ITS OBJECT — through the object, the way AppendRow does it: its own Modify
-		// tells an open window too, and its flag is what the object's write asks before writing the lines
-		// again (ibValueRecordDataObjectRef::SaveData). Telling only the window left the object believing
-		// itself unchanged.
-		const bool result = ibValueTabularSectionDataObjectBase::SetValueByMetaID(item, id, varMetaVal);
-		if (result && !ibBackendException::IsEvalMode())
-			m_objectValue->Modify(true);
-		return result;
-	}
+	// 🛑⭐ "DID IT CHANGE" IS ASKED OF WHAT WAS STORED, NOT OF WHAT WAS HANDED IN. This compared the RAW
+	// incoming value with the cell and returned before the write when they matched — ahead of the base,
+	// which is where the value is narrowed by its link. So a clearing that wrote Undefined into a cell
+	// already Undefined never reached the narrowing, the cell never became the empty value of the type
+	// its kind settles, and a characteristic in a NEW ROW stayed Undefined for good: the control then had
+	// no type to read typed text by and threw it away (Max, 2026-09-23: "in the tabular section the
+	// characteristics do not work at all"; the journal showed the clearing with no `choice.type` after it).
+	//
+	// The write always goes through the base; whether the OBJECT changed is read off the cell afterwards.
+	const ibValue before = ibValueTabularSectionDataObjectBase::GetValueByMetaID(item, id);
+	const bool result = ibValueTabularSectionDataObjectBase::SetValueByMetaID(item, id, varMetaVal);
 
-	return false;
+	// A LINE THAT CHANGED CHANGES ITS OBJECT — through the object, the way AppendRow does it: its own Modify
+	// tells an open window too, and its flag is what the object's write asks before writing the lines
+	// again (ibValueRecordDataObjectRef::SaveData). Telling only the window left the object believing
+	// itself unchanged.
+	if (result && !ibBackendException::IsEvalMode()
+		&& !(before == ibValueTabularSectionDataObjectBase::GetValueByMetaID(item, id)))
+		m_objectValue->Modify(true);
+	return result;
 }
 
 bool ibValueTabularSectionDataObjectRef::GetValueByMetaID(const ibDataViewItem& item, const ibMetaID& id, ibValue& pvarMetaVal) const
@@ -392,7 +417,7 @@ wxString ibValueTabularSectionDataObjectBase::ibValueTabularSectionDataObjectRet
 	return clsFactory->GetClassName();
 }
 
-wxString ibValueTabularSectionDataObjectBase::ibValueTabularSectionDataObjectReturnLine::GetString() const
+ibString ibValueTabularSectionDataObjectBase::ibValueTabularSectionDataObjectReturnLine::GetString() const
 {
 	const ibValueMetaObject* metaTable = m_ownerTable->GetMetaObject();
 	const ibMetaData* metaData = metaTable->GetMetaData();
@@ -477,8 +502,8 @@ namespace {
 // A filter line DETERMINES a value only when it SAYS one: an equality, switched on, on a plain column (a
 // dotted path walks into a reference — there is no cell of this table to write it into), against a literal
 // rather than another field. `>` / `LIKE` / `IN` narrow without deciding, and an OR-group decides nothing at
-// all — so neither contributes, and an OR is not walked into.
-void ibCollectFilterDefaults(const std::vector<ibFilterNodeDescription>& nodes,
+// all — so neither contributes, and an OR is not walked into. The literal is restored against `metaData`.
+void ibCollectFilterDefaults(const std::vector<ibFilterNodeDescription>& nodes, const ibMetaData* metaData,
 	std::vector<std::pair<wxString, ibValue>>& out)
 {
 	for (const ibFilterNodeDescription& node : nodes) {
@@ -486,13 +511,13 @@ void ibCollectFilterDefaults(const std::vector<ibFilterNodeDescription>& nodes,
 			continue;
 		if (node.m_kind == ibFilterNodeKind_Group) {
 			if (node.m_groupKind == ibFilterGroupKind_And)
-				ibCollectFilterDefaults(node.m_children, out);
+				ibCollectFilterDefaults(node.m_children, metaData, out);
 			continue;
 		}
 		if (node.m_comparison != ibComparisonKind_Equal) continue;
 		if (!node.m_left.IsField() || node.m_right.IsField()) continue;
 		if (node.m_left.m_path.Find(wxT('.')) != wxNOT_FOUND) continue;
-		out.emplace_back(node.m_left.m_path, node.m_right.m_value);
+		out.emplace_back(node.m_left.m_path, ibStoredValue(node.m_right.m_value, metaData));
 	}
 }
 }   // namespace
@@ -531,7 +556,7 @@ long ibValueTabularSectionDataObjectBase::AppendRow(unsigned int before, const i
 	// because it falls out at once"*). So it is filled HERE, before the notify, and the first order computed
 	// after the insert already contains the row.
 	std::vector<std::pair<wxString, ibValue>> defaults;
-	ibCollectFilterDefaults(GetModelComposer().GetCurrentFilterDesc().m_nodes, defaults);
+	ibCollectFilterDefaults(GetModelComposer().GetCurrentFilterDesc().m_nodes, GetModelComposer().GetMetaData(), defaults);
 	for (const std::pair<wxString, ibValue>& one : defaults) {
 		const ibMetaID col = GetColumnIDByName(one.first);
 		if (col != wxNOT_FOUND)

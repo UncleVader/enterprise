@@ -12,12 +12,12 @@ struct ibSourceHop;   // {id, expected type} — GetValueAsPath returns the hop 
 
 //base property for "source"
 class BACKEND_API ibPropertySource : public ibProperty {
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibValueTypes& type) const;
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibClassID& id) const;
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibTypeDescription& typeDesc) const;
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibMetaID& id) const;
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibGuid& id, bool fillTypeDesc = true) const;
-	wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibSourceDescription& desc) const;
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibValueTypes& type);
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibClassID& id);
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibTypeDescription& typeDesc);
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibMetaID& id);
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibGuid& id, bool fillTypeDesc = true);
+	static wxVariantData* CreateVariantData(const ibPropertyObject* property, const ibSourceDescription& desc);
 public:
 
 #pragma region _value_
@@ -48,6 +48,13 @@ public:
 	// Source.Ref.Field) instead of a single direct column. CHEAP — just the path
 	// length on the variant. A dot-walk binding is READ-ONLY.
 	bool IsDotWalk() const;
+
+	// The field the binding lands on is available — false when a functional option has it, or a reference on the
+	// way to it, switched off; an empty binding lands on nothing and is not this question's (IsEmptyProperty).
+	// Asked of the COLUMNS, never of the path's numbers (functionalOptionGate.h). Cheap when nothing in the base
+	// is unavailable: the source is walked only when something is.
+	bool IsAvailable() const;
+
 #pragma endregion
 
 	const class ibBackendSourceColumn* GetSourceAttributeObject() const;

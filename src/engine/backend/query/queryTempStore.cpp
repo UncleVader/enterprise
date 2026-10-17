@@ -17,18 +17,23 @@ namespace {
 class ibTempStoreColumn : public ibBackendQueryColumn
 {
 public:
-	ibTempStoreColumn(const wxString& name, const ibTypeDescription& type, ibMetaID id)
-		: m_name(name), m_type(type), m_id(id) {}
+	ibTempStoreColumn(const wxString& name, const ibTypeDescription& type, ibMetaID id, bool available)
+		: m_name(name), m_type(type), m_id(id), m_available(available) {}
 
 	wxString           GetName()         const override { return m_name; }
 	wxString           GetPhysicalName() const override { return m_name; }
 	ibTypeDescription& GetTypeDesc()     const override { return m_type; }
 	ibMetaID           GetColumnId()     const override { return m_id; }
+	// ⭐ WHETHER WHAT IT WAS MADE FROM MAY BE SHOWN (functional options) — the select that made the table
+	// answered it (OutputColumn::m_available), and the table keeps the answer. It answered yes for
+	// everything before, so a report reading a temp table showed what the base does not use.
+	bool               IsAvailable()     const override { return m_available; }
 
 private:
 	wxString                  m_name;
 	mutable ibTypeDescription m_type;   // mutable: GetTypeDesc() is const but the interface returns a non-const ref
 	ibMetaID                  m_id;
+	bool                      m_available;
 };
 
 // A snapshot standing in the source registry as an ordinary queryable, so the statements after it
@@ -38,11 +43,11 @@ private:
 class ibTempStoreQueryable : public ibBackendQueryable
 {
 public:
-	ibTempStoreQueryable(ibQueryRamTable&& rows, const std::vector<wxString>& indexedColumns)
-		: m_rows(std::move(rows))
+	ibTempStoreQueryable(ibQueryRamTable&& rows, const std::vector<wxString>& indexedColumns, const ibMetaData* metaData)
+		: m_rows(std::move(rows)), m_metaData(metaData)
 	{
 		for (const ibQueryRamColumn& c : m_rows.Columns())
-			m_columns.push_back(std::make_unique<ibTempStoreColumn>(c.m_name, c.m_type, c.m_id));
+			m_columns.push_back(std::make_unique<ibTempStoreColumn>(c.m_name, c.m_type, c.m_id, c.m_available));
 
 		// THE INDEX, built once when the table is stored. A map from the value in an indexed column
 		// to the rows carrying it — which is the whole of what an index is, and the reason a read
@@ -147,8 +152,15 @@ public:
 	wxString GetQueryTableName() const override { return wxEmptyString; }
 	ibMetaID GetQueryTableId()   const override { return 0; }
 
+	// ⭐ THE CONFIGURATION ITS REFERENCES BELONG TO — the query's, handed in when the table is stored, as the
+	// named query takes it (ibCteQueryable). With none, a reference column could not say which catalog it
+	// points at, and «IN HIERARCHY» over it stood for the named values alone: not one row under the group
+	// was found, and nothing said so (2026-09-29).
+	const ibMetaData* GetMetaData() const override { return m_metaData; }
+
 private:
 	ibQueryRamTable                                  m_rows;
+	const ibMetaData*                                m_metaData = nullptr;
 	std::vector<std::unique_ptr<ibTempStoreColumn>>  m_columns;
 	// INDEXED BY: column id -> the value each row carries -> the rows carrying it.
 	std::map<ibMetaID, std::unordered_map<ibValue, std::vector<long>, ibValueHash, ibValueEqual>> m_indexes;
@@ -170,9 +182,9 @@ bool ibQueryTempTableStore::Has(const wxString& name) const
 }
 
 void ibQueryTempTableStore::Put(const wxString& name, ibQueryRamTable&& rows,
-                                const std::vector<wxString>& indexedColumns)
+                                const std::vector<wxString>& indexedColumns, const ibMetaData* metaData)
 {
-	auto table = std::make_unique<ibTempStoreQueryable>(std::move(rows), indexedColumns);
+	auto table = std::make_unique<ibTempStoreQueryable>(std::move(rows), indexedColumns, metaData);
 	m_sources[name] = table.get();
 	m_owned.push_back(std::move(table));
 }

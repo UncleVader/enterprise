@@ -8,12 +8,12 @@
 // GetClassType()). Only CreateObject() remains.
 
 // The chart overrides the type factory's `GetTypeDesc()` with its own CONTOUR (the composition
-// `GetTypesOfCharacteristics` names), so the inherited `CreateValueRef()` already builds a value out
+// `GetTypesOfCharacteristics` names), so the inherited `CreateValue()` already builds a value out
 // of what a characteristic may be: one type in the contour gives that very type, several give an
 // undefined. Nothing to add here — a branch of our own would be the same rule spelled twice.
-ibValue* ibCtorMetaValueTypeCharacteristic::CreateObject() const
+ibValue ibCtorMetaValueTypeCharacteristic::CreateObject() const
 {
-	return m_metaObject->CreateValueRef();
+	return m_metaObject->CreateValue();
 }
 
 // ⭐ WHAT THIS TYPE ADMITS — the CONTOUR, i.e. the chart's own composition. A characteristic's value is
@@ -34,6 +34,10 @@ bool ibCtorMetaValueTypeCharacteristic::AllowValue(const ibClassID& clsid) const
 	if (clsid == g_valueUndefinedCLSID)
 		return true;
 
+	// A chart may list a FAMILY — `AnyRef`, `CatalogRef`: "any reference" is the usual type of an analytics
+	// kind. It admits each of its members, read off the two ids as everywhere (clsid_admits); a single type
+	// is a range of one. Looked up as it stood, a family let no real value through.
 	const std::vector<ibClassID>& allowed = m_metaObject->GetTypesOfCharacteristics().GetClsidList();
-	return std::find(allowed.begin(), allowed.end(), clsid) != allowed.end();
+	return std::any_of(allowed.begin(), allowed.end(),
+		[&clsid](const ibClassID& type) { return clsid_admits(type, clsid); });
 }

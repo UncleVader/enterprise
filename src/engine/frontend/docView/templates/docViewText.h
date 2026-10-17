@@ -32,6 +32,8 @@ private:
 
 	void OnFind(wxFindDialogEvent& event);
 
+protected:
+
 	ibTextEditor* m_textEditor;
 
 	wxDECLARE_EVENT_TABLE();
@@ -74,6 +76,12 @@ public:
 	
 	ibTextFileDocument() : ibTextDocument(), m_loadFromFile(false) {}
 
+	// THE TEXT FORMAT, said once: the text template is registered with it (ibDocManager::RegisterDefaultTemplates),
+	// and a text document made from no template saves by it — the way a spreadsheet answers its formats.
+	static wxString FileMask() { return wxT("*.txt;*.text"); }
+	static wxString FileExtensions() { return wxT("txt;text"); }
+	virtual wxString GetSaveFilter() const override { return _("Text document") + wxT(" (") + FileMask() + wxT(")|") + FileMask(); }
+
 	virtual bool OnCreate(const wxString& path, long flags) override;
 	virtual bool OnNewDocument() override {
 
@@ -104,6 +112,44 @@ protected:
 
 	wxDECLARE_NO_COPY_CLASS(ibTextFileDocument);
 	wxDECLARE_DYNAMIC_CLASS(ibTextFileDocument);
+};
+
+// ----------------------------------------------------------------------------
+// The document and view a form's text box holds — the grid box's arrangement (docViewSpreadsheet.h)
+// ----------------------------------------------------------------------------
+
+// A text file document in no manager's list and no tab of its own. The text is the editor's, and saving asks
+// the editor, as the text file document does.
+class FRONTEND_API ibTextBoxDocument : public ibTextFileDocument {
+public:
+
+	ibTextBoxDocument();
+
+	// Save as of its own, by its own formats — the grid box document says why (docViewSpreadsheet.h).
+	virtual bool SaveAs() override;
+
+	// The box holds this document, not its views — none of them going takes it along.
+	virtual void OnChangedViewList() override {}
+
+private:
+
+	wxDECLARE_NO_COPY_CLASS(ibTextBoxDocument);
+	wxDECLARE_DYNAMIC_CLASS(ibTextBoxDocument);
+};
+
+// Its view: created in the box's parent by the box's Create, closed and left empty by its Cleanup; its frame
+// is that parent, so there is no title to mark.
+class FRONTEND_API ibTextBoxView : public ibTextEditView {
+public:
+
+	ibTextBoxView() : ibTextEditView() {}
+
+	virtual bool OnCreate(ibDocument* doc, long flags) override;
+	virtual bool OnClose(bool deleteWindow = true) override;
+	virtual void OnChangeFilename() override {}
+
+private:
+	wxDECLARE_DYNAMIC_CLASS(ibTextBoxView);
 };
 
 #endif

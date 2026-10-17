@@ -1,6 +1,7 @@
 #include "advpropString.h"
 
 #include "backend/propertyManager/property/propertyString.h"
+#include "backend/propertyManager/property/propertyFormat.h"
 #include "backend/propertyManager/property/variant/variantTranslate.h"
 #include "frontend/propertyManager/property/private/prop.h"                 // wxPGPropertyFlags_*
 #include "frontend/propertyManager/property/private/propertyRegistry.h"
@@ -22,10 +23,15 @@ public:
 		ibPropertyRegistry::Register([](ibPropertyUString* prop) -> wxPGProperty* {
 			return new ibUStringProperty(prop->GetLabel(), prop->GetName(), prop->GetValueAsString());
 		}, ibPropertyRegistry::Priority_Base);
+		// ibPropertyFormat DERIVES from ibPropertyTString — the same order as the two above.
+		ibPropertyRegistry::Register([](ibPropertyFormat* prop) -> wxPGProperty* {
+			return new wxFormatStringProperty(prop->GetPropertyObject(), prop->GetLabel(), prop->GetName(),
+				prop->GetValueAsFormatString());
+		});
 		ibPropertyRegistry::Register([](ibPropertyTString* prop) -> wxPGProperty* {
 			return new wxTStringProperty(prop->GetPropertyObject(), prop->GetLabel(), prop->GetName(),
 				prop->GetValueAsTranslate());
-		});
+		}, ibPropertyRegistry::Priority_Base);
 		ibPropertyRegistry::Register([](ibPropertyMString* prop) -> wxPGProperty* {
 			return new wxMStringProperty(prop->GetLabel(), prop->GetName(), prop->GetValueAsString());
 		});
@@ -118,7 +124,7 @@ wxString wxTStringProperty::ValueToString(wxVariant& value, wxPGPropValFormatFla
 {
 	ibVariantDataTranslate* translateVariant = property_cast(value, ibVariantDataTranslate);
 	wxASSERT(translateVariant);
-	return translateVariant->GetTranslate();
+	return translateVariant->GetTranslate().GetString();
 }
 
 bool wxTStringProperty::StringToValue(wxVariant& variant, const wxString& text, wxPGPropValFormatFlags flags) const
@@ -153,7 +159,8 @@ bool wxTStringProperty::DisplayEditorDialog(wxPropertyGrid* pg, wxVariant& value
 	// THE SAME WINDOW the code editor opens on a string literal — see translateConstructor.h for what
 	// OK does to the text, and the three rules the window this one replaced broke quietly.
 	ibDialogTranslateConstructor dlg(pg->GetPanel(), m_dlgTitle.empty() ? GetLabel() : m_dlgTitle,
-		translateVariant->GetTranslate(), m_ownerProperty->GetMetaData(), HasFlag(wxPGFlags::ReadOnly), m_maxLen);
+		translateVariant->GetTranslate(), m_ownerProperty->GetMetaData(), HasFlag(wxPGFlags::ReadOnly), m_maxLen,
+		GetBoxEditor());
 	if (!wxPropertyGrid::IsSmallScreen())
 		dlg.Move(pg->GetGoodEditorDialogPosition(this, dlg.GetSize()));
 
@@ -163,6 +170,19 @@ bool wxTStringProperty::DisplayEditorDialog(wxPropertyGrid* pg, wxVariant& value
 	// ⚠ A NEW CELL, never an edit in place — see StringToValue.
 	value = new ibVariantDataTranslate(dlg.GetTranslate());
 	return true;
+}
+
+// -----------------------------------------------------------------------
+// wxFormatStringProperty
+// -----------------------------------------------------------------------
+
+wxPG_IMPLEMENT_PROPERTY_CLASS(wxFormatStringProperty, wxTStringProperty, TextCtrlAndButton)
+
+#include "frontend/win/dlgs/formatConstructor/formatConstructor.h"
+
+ibDialogTranslateConstructor::ibBoxEditor wxFormatStringProperty::GetBoxEditor() const
+{
+	return ibFormatBoxEditor(HasFlag(wxPGFlags::ReadOnly));
 }
 
 // -----------------------------------------------------------------------

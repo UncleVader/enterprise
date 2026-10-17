@@ -12,7 +12,7 @@ namespace {
 struct ibMetaGroupRow {
 	ibClassID       m_clsid;
 	// The SOURCE string, marked for extraction and left untranslated here: this table is static
-	// data, built before a locale is loaded (the same rule as backend/fileKind.cpp). Translating at
+	// data, built before a locale is loaded (the same rule as core/fileKind.cpp). Translating at
 	// the point of use is what lets one table answer in whatever language the session runs in.
 	const char*     m_caption;
 	ibMetaGroupBand m_band;
@@ -24,12 +24,15 @@ const ibMetaGroupRow s_groups[] = {
 	{ g_metaCommonModuleCLSID,     wxTRANSLATE("Common modules"),     ibMetaGroupBand::Common },
 	{ g_metaCommonFormCLSID,       wxTRANSLATE("Common forms"),       ibMetaGroupBand::Common },
 	{ g_metaCommonCommandCLSID,    wxTRANSLATE("Common commands"),    ibMetaGroupBand::Common },
+	{ g_metaCommandGroupCLSID,     wxTRANSLATE("Command groups"),     ibMetaGroupBand::Common },
 	{ g_metaCommonTemplateCLSID,   wxTRANSLATE("Common templates"),   ibMetaGroupBand::Common },
 	// The jobs branch holds the parameterized ones; the predefined sit in a sub-branch of it, so
 	// they are declared right after it.
 	{ g_metaParameterizedJobCLSID, wxTRANSLATE("Scheduled jobs"),     ibMetaGroupBand::Common },
 	{ g_metaScheduledJobCLSID,     wxTRANSLATE("Predefined jobs"),    ibMetaGroupBand::Common },
+	{ g_metaEventHandlerCLSID,     wxTRANSLATE("Event handlers"),     ibMetaGroupBand::Common },
 	{ g_metaSessionParameterCLSID, wxTRANSLATE("Session parameters"), ibMetaGroupBand::Common },
+	{ g_metaFunctionalOptionCLSID, wxTRANSLATE("Functional options"), ibMetaGroupBand::Common },
 	{ g_metaCommonAttributeCLSID,  wxTRANSLATE("Common attributes"),  ibMetaGroupBand::Common },
 	{ g_metaPictureCLSID,          wxTRANSLATE("Pictures"),           ibMetaGroupBand::Common },
 	{ g_metaSectionCLSID,          wxTRANSLATE("Sections"),           ibMetaGroupBand::Common },

@@ -26,15 +26,10 @@ ibValueModuleManager::ibValueModuleManager(ibMetaData* metadata, const ibValueMe
 	m_metaManager(new ibValueMetadataUnit(metadata)),
 	m_dataManager(new ibValueDataUnit(metadata))
 {
-	// "Metadata" global — bound straight into the compile module's extern map
-	// (the single source for globals; m_metaManager owns the value). m_compileModule
-	// is live here (created in the ibRuntimeModuleDataObject base ctor above). The name
-	// surface (module exports) autobinds as the helper's tail in that descriptor ctor.
-	BindExportVariable(objectMetadataManager, m_metaManager);
-	// "Data" global — the queryable-source mirror of "Metadata" (L4-2): same kind-
-	// namespace shape, leaves vend ibValueQueryable (lazy, inert — reading the value
-	// reads no data). Same ownership / binding pattern as m_metaManager.
-	BindExportVariable(objectDataManager, m_dataManager);
+	// (The "Metadata" / "Data" globals are bound by the CONFIGURATION's managers only — see
+	// ibValueModuleManagerRuntimeConfiguration's ctor. Bound here, they became exports of every
+	// module a manager is built on: an external data processor's object module among them, and
+	// the object shares that module, so `ThisObject.Metadata` / `ThisObject.Data` showed up.)
 }
 
 ibValueModuleManager::~ibValueModuleManager()
@@ -69,7 +64,7 @@ bool ibValueModuleManager::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 	return false;
 }
 
-long ibValueModuleManager::FindProp(const wxString& strName) const
+long ibValueModuleManager::FindProp(const ibString& strName) const
 {
 	if (m_procUnit != nullptr) {
 		return m_procUnit->FindProp(strName);
@@ -124,7 +119,7 @@ bool ibValueModuleRuntimeManager::RuntimeRegisterCommonModule(ibValueMetaObjectC
 			try {
 				Compile();
 			}
-			catch (const ibBackendException& err) {
+			catch (const ibCoreException& err) {
 				// ⚠ INFO, NOT WARNING — a warning is ECHOED THROUGH wxLog, and in a GUI application
 				// that opens a MODAL. A module that does not compile then stops the whole client on a
 				// dialog captioned "Warning", in front of somebody who merely opened a list; and for
@@ -168,7 +163,7 @@ bool ibValueModuleRuntimeManager::RuntimeRenameCommonModule(ibValueMetaObjectCom
 			UnbindVariable(commonModule->GetName());
 			Compile();
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			ibJournalWarning(wxT("module"),_("Rename of common module '%s' to '%s' left compile in failed state: %s"),
 				commonModule->GetName(), newName, err.GetErrorDescription());
 		};
@@ -204,10 +199,10 @@ bool ibValueModuleRuntimeManager::RuntimeUnregisterCommonModule(ibValueMetaObjec
 //*          Per-session runtime (compile / runtime split)             *
 //**********************************************************************
 
-bool ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
+void ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
 {
 	if (session == nullptr)
-		return false;
+		return;
 	// Serialize against other sessions' Init/Exit — the Execute of
 	// top-level module init + per-session parent ProcUnit chain isn't
 	// thread-safe against concurrent Execute on the same compileModule.
@@ -232,12 +227,8 @@ bool ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
 	// A RENTED run never arrives here — it is not authenticated and asks for no
 	// runtime (see ibJobTenancy) — so this gate is not what keeps it cheap.
 	const ibSessionKind kind = session->GetKind();
-	const bool noRuntime =
-		(kind == ibSessionKind::Launcher)  ||
-		(kind == ibSessionKind::Designer)  ||
-		(kind == ibSessionKind::WebServer);
-	if (noRuntime)
-		return true;
+	if (kind == ibSessionKind::Launcher || kind == ibSessionKind::WebServer || IsDesignerSessionKind(kind))
+		return;
 	// Imperative pipeline — each descriptor owns its m_procUnit.
 	// CreateMainModule already compiled m_compileModule.
 	//
@@ -248,17 +239,17 @@ bool ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
 	// `Catalogs.X.BeforeWrite(...)` from ConfigurationModule) would resolve
 	// against an empty ProcUnit ("'<method>' - not an aggregate object").
 	//
+	// ⭐ A FAILURE IS THROWN, NOT SWALLOWED. Each phase below used to catch, say a warning and return
+	// false — and ibSession::CompileRoot went on regardless: session parameters, the
+	// access policy and the lambda runtime were built over a runtime that had not come up, and the
+	// session was served half-raised. The configuration not starting is the session not starting:
+	// whoever opens it (the login, a job's launch, the application server) refuses it with the reason.
+	//
 	// Phase 1a — root: allocate the ProcUnit and register its functions WITHOUT
 	// running the body (Run(false)).
 	if (!appData->DesignerMode() && m_compileModule != nullptr) {
-		try {
-			InitializeRuntime();     // ensure root's ProcUnit exists
-			Run(false);              // register functions; do NOT run the top-level yet
-		}
-		catch (const ibBackendException& err) {
-			ibJournalWarning(wxT("module"),_("AttachRuntime main prepare: %s"), err.GetErrorDescription());
-			return false;
-		}
+		InitializeRuntime();     // ensure root's ProcUnit exists
+		Run(false);              // register functions; do NOT run the top-level yet
 	}
 	// Phase 1b — common / manager modules: each has its own compile + m_procUnit.
 	// Parent is wired in ibValueModuleUnit's ctor (SetParent(moduleManager)),
@@ -278,14 +269,8 @@ bool ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
 			// so no separate ProcUnit either. Main's ProcUnit executes
 			// the spliced code as part of its own top-level.
 			continue;
-		try {
-			moduleValue->InitializeRuntime();
-			moduleValue->Run(false);
-		}
-		catch (const ibBackendException& err) {
-			ibJournalWarning(wxT("module"),_("AttachRuntime common: %s"), err.GetErrorDescription());
-			return false;
-		}
+		moduleValue->InitializeRuntime();
+		moduleValue->Run(false);
 	}
 	// LOAD-BEARING — invalidate BEFORE Phase 2, do not drop. The compile-time
 	// helper build (inside CreateCommonModule) ran with no per-session ProcUnit,
@@ -304,16 +289,8 @@ bool ibValueModuleRuntimeManager::AttachRuntime(ibSession* session)
 	// Phase 2 — every module's ProcUnit now exists and surfaces are invalidated;
 	// run the main body. The top-level can now reach any manager / common module
 	// export and resolve it against the live runtime.
-	if (!appData->DesignerMode() && m_compileModule != nullptr) {
-		try {
-			Run(true);               // execute main module top-level
-		}
-		catch (const ibBackendException& err) {
-			ibJournalWarning(wxT("module"),_("AttachRuntime main run: %s"), err.GetErrorDescription());
-			return false;
-		}
-	}
-	return true;
+	if (!appData->DesignerMode() && m_compileModule != nullptr)
+		Run(true);               // execute main module top-level
 }
 
 void ibValueModuleRuntimeManager::DetachRuntime(ibSession* session)
@@ -342,6 +319,14 @@ ibValueModuleManagerRuntimeConfiguration::ibValueModuleManagerRuntimeConfigurati
 	ibValueMetaObjectConfiguration* metaObject)
 	: ibValueModuleRuntimeManager(metadata, metaObject ? metaObject->GetObjectModule() : nullptr)
 {
+	// ⭐ THE CONFIGURATION'S GLOBALS ARE THE EXPORTS OF ITS MODULE — and only of its module. "Metadata" is
+	// bound straight into the compile module's extern map (the single source for globals; m_metaManager
+	// owns the value); "Data" is its queryable-source mirror (L4-2): same kind-namespace shape, leaves
+	// vend ibValueQueryable (lazy, inert — reading the value reads no data). An external data processor's
+	// or report's manager does NOT bind them: its module is the object's, and it reads globals from the
+	// configuration root (GetGlobalVariables). The designer's configuration manager binds the same two.
+	BindExportVariable(objectMetadataManager, m_metaManager);
+	BindExportVariable(objectDataManager, m_dataManager);
 }
 
 //main module - initialize
@@ -381,27 +366,32 @@ bool ibValueModuleManagerRuntimeConfiguration::CreateMainModule()
 
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		// EnumManager / SystemManager — transparent scope containers too.
-		BindScopeVariable(ctor->GetClassName(), ctor->CreateObject());
+		const ibValue created = ctor->CreateObject();
+		BindScopeVariable(ctor->GetClassName(), created.GetRef());
 	}
 
 	// Compile only — runtime (ibProcUnit) is created per session by
 	// AttachRuntime(ctx). The manager itself no longer carries
 	// a ProcUnit field.
-	if (!appData->DesignerMode()) {
-		try {
-			Compile();
-		}
-		catch (const ibBackendException& err) {
-			ibJournalWarning(wxT("module"),_("Global module init failed: %s"), err.GetErrorDescription());
-			return false;
-		};
-	}
+	//
+	// A module that does not compile is thrown to whoever opens the session, like a failure in
+	// AttachRuntime: a warning here and a session served without its configuration was the old way.
+	const bool rootCompiled = !appData->DesignerMode();
+	if (rootCompiled)
+		Compile();
 
-	//Setup common modules
+	//Setup common modules — one that does not compile has said why (CreateCommonModule), and the session
+	//does not start without it: every call into it would fail one at a time instead
 	for (auto& moduleValue : m_listCommonModuleManager) {
-		if (!moduleValue->CreateCommonModule()) {
-			return false;
-		}
+		// A GLOBAL module has no bytecode of its own: its text is spliced into the root, and the root compiled
+		// just above with every global already in it (a unit loads its text when it is made, and the root's
+		// lexer walks the appended modules). Compiling a global here recompiled the WHOLE root once more per
+		// global module, with nothing new to read — and gave the root a new id and version each time.
+		if (rootCompiled && moduleValue->IsGlobalModule())
+			continue;
+		if (!moduleValue->CreateCommonModule())
+			ibBackendCoreException::Error(_("Common module '%s' did not compile - the session cannot start"),
+				moduleValue->GetObjectModule()->GetName());
 	}
 
 	m_initialized = true;
@@ -411,7 +401,7 @@ bool ibValueModuleManagerRuntimeConfiguration::CreateMainModule()
 	// reverse lookup (m_own scan, match by root mm pointer) so the
 	// fire site doesn't depend on ibSession::Current()'s thread-binding
 	// state at compile time.
-	if (auto* reg = ibApplicationData::GetSessionRegistry()) {
+	if (auto* reg = ibApplicationInstance::GetSessionRegistry()) {
 		if (auto s = reg->FindSessionByRoot(this).Share())
 			reg->NotifyAfterCompile(s.get());
 	}
@@ -503,6 +493,9 @@ ibValueModuleManagerDesigner::ibValueModuleManagerDesigner(
 	ibValueMetaObjectConfiguration* metaObject)
 	: ibValueModuleManager(metaData, metaObject ? metaObject->GetObjectModule() : nullptr)
 {
+	// The configuration's globals — see ibValueModuleManagerRuntimeConfiguration's ctor.
+	BindExportVariable(objectMetadataManager, m_metaManager);
+	BindExportVariable(objectDataManager, m_dataManager);
 }
 
 ibValueModuleManagerDesigner::ibValueModuleManagerDesigner(
@@ -550,7 +543,8 @@ bool ibValueModuleManagerDesigner::CreateMainModule()
 
 	//ctor-context objects (EnumManager / SystemManager) — transparent too.
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
-		BindScopeVariable(ctor->GetClassName(), ctor->CreateObject());
+		const ibValue created = ctor->CreateObject();
+		BindScopeVariable(ctor->GetClassName(), created.GetRef());
 	}
 
 	// No unit compilation here — see AddCommonModule. The editor parses common

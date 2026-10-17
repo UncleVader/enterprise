@@ -3,9 +3,18 @@
 
 #include <vector>
 
-#include "backend/typeDescription.h"
+#include "core/description/typeDescription.h"
 #include "backend/query/queryColumn.h"     // ibBackendAbstractColumn (name/synonym/comment) + ibBackendSourceColumn
-#include "backend/sourceDescription.h"     // ibSourceDescription — control's bound source path (GetSourceDesc / SetDefaultSourceType)
+#include "core/description/sourceDescription.h"     // ibSourceDescription — control's bound source path (GetSourceDesc / SetDefaultSourceType)
+
+//////////////////////////////////////////////////////////////
+
+// ⭐ A BINDING'S DOOR ON THIS SIDE — the core one writes every id as it is held; this one writes against the
+// configuration the binding belongs to, and asks it which ids still name an object.
+class BACKEND_API ibBackendMetaDescriptionMemory : public ibMetaDescriptionMemory {
+public:
+	static bool WriteNode(ibDataValue& value, const ibMetaDescription& metaDesc, const class ibMetaData* metaData = nullptr);
+};
 
 //////////////////////////////////////////////////////////////
 
@@ -34,18 +43,8 @@ public:
 
 #pragma endregion
 
-	//Create value by selected type
+	//Create value by selected type — the owner of a new value (born owned)
 	virtual ibValue CreateValue() const;
-	virtual ibValue* CreateValueRef() const;
-
-	//convert value
-	template<class retType = ibValue>
-	retType* CreateAndConvertValueRef() {
-		ibValue* retVal = CreateValueRef();
-		if (retVal != nullptr)
-			return CastValue<retType>(retVal);
-		return (retType*)nullptr;
-	}
 
 	//Adjust value
 	virtual ibValue AdjustValue() const;
@@ -101,6 +100,9 @@ enum ibSelectorDataType {
 	ibSelectorDataType_reference,
 	ibSelectorDataType_table,
 	ibSelectorDataType_resource,
+	// WHAT RAISES AN EVENT — an object, a manager, a record set, of one metaobject or of every one of a
+	// metatype: what an event handler names as its source.
+	ibSelectorDataType_eventSource,
 };
 
 //////////////////////////////////////////////////////////////
@@ -118,9 +120,34 @@ public:
 	// ibVariantDataAttribute::DoSetDefaultMetaType and ibValueControl::AutoBindNewSource use, so they cannot drift.
 	static ibClassID GetDefaultTypeByFilter(ibSelectorDataType filterDataType);
 
+	// ⭐⭐ AND EVERY TYPE THAT KIND MAY TAKE — the same question as the default above, asked in full.
+	// What a field may hold is a fact about the FIELD, so it is answered here, beside the registry that
+	// knows which metatypes exist, and not by whichever window happens to be asking.
+	//
+	// 🛑 IT LIVED IN THE TYPE PICKER, a static function inside a frontend dialog, and so the designer
+	// was the only door that knew it. The MCP server, which is in this library and cannot see that
+	// function, therefore accepted types the picker would never have offered — `TypeDescription` set on
+	// an ordinary attribute, a state the editor cannot produce and the platform does not mean to have
+	// (Max, 2026-09-23: "it accepted it because the filter that works for me does not fire for you —
+	// the column type throws the wrong types out while the list is still being built").
+	//
+	// Two doors, one rule, and the rule was on the side that could not be asked from the other.
+	static void GetTypesByFilter(ibSelectorDataType filterDataType, const class ibMetaData* metaData,
+		std::vector<ibClassID>& out);
+
+	// THE FORMAT A VALUE IS SHOWN WITH: `format` when written, else the one `type` gives
+	// (ibFormatString::FromTypeDesc) — for a table's
+	// column and an input field alike. A table is painted a column at a time, top to bottom, so the answer is
+	// kept per thread and read again only when the column asked is another one.
+	static const class ibFormatString& GetFormatFromColumn(const class ibTranslateString& format, const ibTypeDescription& type);
+
+	// ⭐⭐ A CHARACTERISTIC STANDS FOR ITS CHART'S TYPES — answered here, for EVERY holder of such a
+	// declaration: an attribute, a control bound to one, a filter cell, a form's own attribute. Body in
+	// backend_type.cpp.
+	virtual ibTypeDescription& GetTypeValueDesc() const override;
+
 	//Create value by selected type
 	virtual ibValue CreateValue() const;
-	virtual ibValue* CreateValueRef() const;
 
 	//Adjust value
 	virtual ibValue AdjustValue() const;

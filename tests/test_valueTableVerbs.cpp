@@ -1,9 +1,9 @@
 // =============================================================================
-// The value table's column-and-row verbs: Total, FindRows, and Sort on several keys.
+// The value table's column-and-row verbs: Total, FindRows, and Sort.
 //
 // Code ported from a table-of-values language leans on them all the time - a column's total, the rows
-// that match a filter, `Sort("Priority, Level Desc")` - and the table had none of the three (card MIG-61
-// of the migration board, issue #201): a script calling `Total` failed with "field not found".
+// that match a filter - and the table had neither (card MIG-61 of the migration board, issue #201): a
+// script calling `Total` failed with "field not found".
 //
 // What these pin down is what makes an answer TRUSTWORTHY rather than merely present:
 //
@@ -12,9 +12,9 @@
 //               worst answer a sum can give;
 //   FindRows  - every term must match, in table order; an empty filter is every row; a filter naming a column
 //               that is not there raises instead of "no rows";
-//   Sort      - several keys, each with its own way, later keys breaking only the ties of earlier ones (rows
-//               equal on every key keep their order); nothing moves when a named column is missing; and
-//               `Sort("A")` with ONE argument works (it used to read a second that was never given).
+//   Sort      - ONE column, the second argument its way; `Sort("A")` with one argument works (it used to read a
+//               second that was never given); a column that is not there raises and nothing moves. An order
+//               over several keys is not parsed out of the string: that is a query's (`orderby A, B`).
 //
 // Pure RAM: no database, no session, no configuration. Columns are untyped (typing one needs metadata).
 // =============================================================================
@@ -23,6 +23,8 @@
 
 #include "backend/backend_exception.h"
 #include "backend/system/value/valueTable.h"
+#include "backend/system/value/valueType.h"
+#include "core/core.h"
 
 #include <string>
 #include <vector>
@@ -100,76 +102,7 @@ wxString Joined(const std::vector<wxString>& items)
 
 } // namespace
 
-// --------------------------------- ParseSortSpec -----------------------------------
-
-TEST(SortSpec, OneColumn_TakesTheDefaultWay)
-{
-    std::vector<std::pair<wxString, bool>> keys;
-    wxString bad;
-    ASSERT_TRUE(ibValueModelTable::ParseSortSpec(wxT("Code"), true, keys, bad));
-    ASSERT_EQ(keys.size(), 1u);
-    EXPECT_EQ(keys[0].first, wxT("Code"));
-    EXPECT_TRUE(keys[0].second);
-
-    ASSERT_TRUE(ibValueModelTable::ParseSortSpec(wxT("Code"), false, keys, bad));
-    EXPECT_FALSE(keys[0].second) << "the second argument of Sort() is the way for a key that names none";
-}
-
-TEST(SortSpec, SeveralColumns_EachWithItsOwnWay)
-{
-    std::vector<std::pair<wxString, bool>> keys;
-    wxString bad;
-    ASSERT_TRUE(ibValueModelTable::ParseSortSpec(wxT("Priority, Level Desc"), true, keys, bad));
-    ASSERT_EQ(keys.size(), 2u);
-    EXPECT_EQ(keys[0].first, wxT("Priority"));
-    EXPECT_TRUE(keys[0].second);
-    EXPECT_EQ(keys[1].first, wxT("Level"));
-    EXPECT_FALSE(keys[1].second);
-}
-
-TEST(SortSpec, SpacingAndCaseOfTheWayAreForgiven)
-{
-    std::vector<std::pair<wxString, bool>> keys;
-    wxString bad;
-    ASSERT_TRUE(ibValueModelTable::ParseSortSpec(wxT("  A   desc ,B ASC , C  Descending,D ascending "), false, keys, bad));
-    ASSERT_EQ(keys.size(), 4u);
-    EXPECT_FALSE(keys[0].second);
-    EXPECT_TRUE(keys[1].second);
-    EXPECT_FALSE(keys[2].second);
-    EXPECT_TRUE(keys[3].second);
-    EXPECT_EQ(keys[3].first, wxT("D"));
-}
-
-TEST(SortSpec, AMisreadKey_IsRefused_AndSaidWhich)
-{
-    std::vector<std::pair<wxString, bool>> keys;
-    wxString bad;
-
-    EXPECT_FALSE(ibValueModelTable::ParseSortSpec(wxT("A Sideways"), true, keys, bad));
-    EXPECT_EQ(bad, wxT("A Sideways")) << "a misread direction must not become a silent ascending sort";
-
-    EXPECT_FALSE(ibValueModelTable::ParseSortSpec(wxT("A B C"), true, keys, bad));
-    EXPECT_FALSE(ibValueModelTable::ParseSortSpec(wxT("A,,B"), true, keys, bad)) << "an empty key between commas";
-    EXPECT_FALSE(ibValueModelTable::ParseSortSpec(wxT(""), true, keys, bad)) << "nothing to sort by";
-    EXPECT_FALSE(ibValueModelTable::ParseSortSpec(wxT("A,"), true, keys, bad)) << "a trailing comma leaves an empty key";
-}
-
 // ------------------------------------- Sort -----------------------------------------
-
-TEST_F(ValueTableVerbs, SortOnSeveralKeys_LaterKeysBreakTiesOnly)
-{
-    Column(wxT("Priority")); Column(wxT("Level")); Column(wxT("Name"));
-    AddRow({ ibValue(2.0), ibValue(1.0), Text(wxT("c")) });
-    AddRow({ ibValue(1.0), ibValue(2.0), Text(wxT("b")) });
-    AddRow({ ibValue(1.0), ibValue(1.0), Text(wxT("a")) });
-    AddRow({ ibValue(2.0), ibValue(2.0), Text(wxT("d")) });
-    AddRow({ ibValue(1.0), ibValue(1.0), Text(wxT("e")) });
-
-    Call(wxT("Sort"), { Text(wxT("Priority, Level Desc")) });
-
-    // Priority ascending; inside it Level descending; a and e are equal on both keys and keep their order.
-    EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a,e,d,c"));
-}
 
 TEST_F(ValueTableVerbs, SortWithOneArgument_DoesNotReadASecond)
 {
@@ -183,7 +116,7 @@ TEST_F(ValueTableVerbs, SortWithOneArgument_DoesNotReadASecond)
     EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("x,y,z"));
 }
 
-TEST_F(ValueTableVerbs, SortSecondArgument_IsTheWayForAKeyThatNamesNone)
+TEST_F(ValueTableVerbs, SortSecondArgument_IsTheWay)
 {
     Column(wxT("N")); Column(wxT("Name"));
     AddRow({ ibValue(1.0), Text(wxT("x")) });
@@ -201,8 +134,13 @@ TEST_F(ValueTableVerbs, SortNamingAMissingColumn_RaisesAndMovesNothing)
     AddRow({ ibValue(2.0), Text(wxT("b")) });
     AddRow({ ibValue(1.0), Text(wxT("a")) });
 
-    EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("N, NoSuchColumn")) }), ibBackendException);
-    EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a")) << "the first key must not have been carried out";
+    EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("NoSuchColumn")) }), ibBackendException);
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a")) << "nothing moves";
+
+    // Nor is a list of keys read out of the string: an order over several is a query's -
+    // `from r in t orderby r.N, r.Name`.
+    EXPECT_THROW(Call(wxT("Sort"), { Text(wxT("N, Name Desc")) }), ibBackendException);
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("b,a"));
 }
 
 // ------------------------------------- Total ----------------------------------------
@@ -339,10 +277,232 @@ TEST_F(ValueTableVerbs, FindRows_ReturnsTheTablesOwnRows)
     EXPECT_EQ(Joined(ColumnInOrder(wxT("Note"))), wxT("old,new"));
 }
 
+// A term on an INDEXED column is answered by that column's index, as Find is - and the answer is the scan's:
+// the same rows in table order, the other terms still thinning them.
+TEST_F(ValueTableVerbs, FindRows_OnAnIndexedColumn_AnswersAsTheScanDoes)
+{
+    auto* priority = Column(wxT("Priority")); Column(wxT("Level")); Column(wxT("Name"));
+    AddRow({ ibValue(1.0), ibValue(1.0), Text(wxT("a")) });
+    AddRow({ ibValue(1.0), ibValue(2.0), Text(wxT("b")) });
+    AddRow({ ibValue(2.0), ibValue(1.0), Text(wxT("c")) });
+    AddRow({ ibValue(1.0), ibValue(1.0), Text(wxT("d")) });
+
+    const ibValue filter = MakeFilter({ { wxT("Priority"), ibValue(1.0) }, { wxT("Level"), ibValue(1.0) } });
+    const auto namesFound = [&]() {
+        std::vector<wxString> names;
+        const ibValue found = Call(wxT("FindRows"), { filter });
+        ibValueArray* const rows = found.ConvertToType<ibValueArray>();
+        if (rows == nullptr)
+            return names;
+        for (unsigned int i = 0; i < rows->Count(); ++i) {
+            ibValue row;
+            rows->GetAt(ibValue(static_cast<double>(i)), row);
+            names.push_back(Cell(row, wxT("Name")));
+        }
+        return names;
+    };
+
+    const std::vector<wxString> scanned = namesFound();
+    priority->SetColumnIndexed(true);
+    const std::vector<wxString> indexed = namesFound();
+
+    EXPECT_EQ(Joined(scanned), wxT("a,d"));
+    EXPECT_EQ(Joined(indexed), Joined(scanned)) << "the index answers what the scan answered";
+}
+
 // The surface a script and the syntax helper see.
 TEST_F(ValueTableVerbs, TheTable_ExposesTheNewVerbs)
 {
     EXPECT_GE(m_table->FindMethod(wxT("Total")), 0);
     EXPECT_GE(m_table->FindMethod(wxT("FindRows")), 0);
     EXPECT_GE(m_table->FindMethod(wxT("Sort")), 0);
+}
+
+// ------------------------------------- Clone ----------------------------------------
+
+// A copy is the same columns and the same rows, and NOTHING shared. Clone answered with an EMPTY table
+// whose column collection was the original's own, so a column added to the copy appeared in the
+// original (2026-09-21).
+TEST_F(ValueTableVerbs, Clone_CopiesColumnsAndRows_AndSharesNothing)
+{
+    Column(wxT("Code")); Column(wxT("Name"));
+    AddRow({ Text(wxT("A")), Text(wxT("one")) });
+    AddRow({ Text(wxT("B")), Text(wxT("two")) });
+
+    const ibValue copyValue = Call(wxT("Clone"), {});
+    ibValueModelTable* const copy = copyValue.ConvertToType<ibValueModelTable>();
+    ASSERT_NE(copy, nullptr);
+    ASSERT_EQ(copy->GetRowCount(), 2);
+    ASSERT_EQ(copy->GetColumnCollection()->GetColumnCount(), 2u);
+
+    ibValue row;
+    ASSERT_TRUE(copy->GetAt(ibValue(1), row));
+    EXPECT_EQ(Cell(row, wxT("Code")), wxT("B"));
+    EXPECT_EQ(Cell(row, wxT("Name")), wxT("two"));
+
+    // Changing the copy does not change the original: a cell, a new row, a new column.
+    const long prop = row.FindProp(wxT("Name"));
+    ASSERT_GE(prop, 0);
+    row.SetPropVal(prop, Text(wxT("changed")));
+    copy->AppendRow();
+    copy->GetColumnCollection()->AddColumn(wxT("Extra"), ibTypeDescription(), wxT("Extra"));
+
+    EXPECT_EQ(Joined(ColumnInOrder(wxT("Name"))), wxT("one,two"));
+    EXPECT_EQ(m_table->GetRowCount(), 2);
+    EXPECT_EQ(m_table->GetColumnCollection()->GetColumnCount(), 2u);
+}
+
+// A column added with no type keeps a string of ANY length. It used to be a string column, and before
+// that the designer's ten-character default, so a cell kept the first ten of whatever was written
+// (2026-09-21). Text written into an untyped column is still that text.
+TEST_F(ValueTableVerbs, AColumnAddedWithoutAType_KeepsTextOfAnyLength)
+{
+    ibValueModelTable::ibValueModelColumnCollection* const columns = m_table->GetColumnCollection();
+    const long add = columns->FindMethod(wxT("AddColumn"));
+    ASSERT_GE(add, 0);
+    ibValue name = Text(wxT("Note")), made;
+    ibValue* args[] = { &name };
+    ASSERT_TRUE(columns->CallAsFunc(add, made, args, 1));
+
+    ibValue row = Call(wxT("Add"), {});
+    const long prop = row.FindProp(wxT("Note"));
+    ASSERT_GE(prop, 0);
+    const wxString text = wxT("abcdefghijklmnopqrstuvwxyz");
+    row.SetPropVal(prop, Text(text));
+    EXPECT_EQ(Cell(row, wxT("Note")), text);
+}
+
+// THE COLUMNS OUTLIVE THE TABLE. `t.Columns` is a value, and whoever holds it keeps the collection and
+// its columns after the table is gone - the code editor's completion held `Total.Columns` so (crash dump
+// 2026-09-27). A column that dies after its table must not reach back into it: each named the table as
+// its attach owner, and it asked the freed table to forget it.
+TEST(ValueTableColumns, OutliveTheTableThatMadeThem)
+{
+    ibValue held;
+    {
+        ibValueModelTable* const table = new ibValueModelTable();
+        const ibValue holder(table);
+        table->GetColumnCollection()->AddColumn(wxT("Code"), ibTypeDescription(), wxT("Code"));
+        table->GetColumnCollection()->AddColumn(wxT("Name"), ibTypeDescription(), wxT("Name"));
+        held = ibValue(table->GetColumnCollection());
+    }   // the table is gone here; the collection is held
+
+    const auto* const columns = held.ConvertToType<ibValueModelTable::ibValueModelColumnCollection>();
+    ASSERT_NE(columns, nullptr);
+    EXPECT_EQ(columns->GetColumnCount(), 2u) << "the collection still answers for its own columns";
+    held = ibValue();   // the collection and its columns go now - after the table, without touching it
+}
+
+// What a script reads back from a cell.
+static ibValue CellValue(ibValue row, const wxString& column)
+{
+    ibValue cell;
+    const long prop = row.FindProp(column);
+    EXPECT_GE(prop, 0);
+    if (prop >= 0)
+        row.GetPropVal(prop, cell);
+    return cell;
+}
+
+// `Columns.AddColumn("A")` named a string, so a number written there came back as text. An omitted
+// type names no type, and the cell keeps the value.
+TEST_F(ValueTableVerbs, AColumnAddedWithoutAType_KeepsANumberAsANumber)
+{
+    ibValueModelTable::ibValueModelColumnCollection* const columns = m_table->GetColumnCollection();
+    const long add = columns->FindMethod(wxT("AddColumn"));
+    ASSERT_GE(add, 0);
+    ibValue name = Text(wxT("A")), made;
+    ibValue* args[] = { &name };
+    ASSERT_TRUE(columns->CallAsFunc(add, made, args, 1));
+    EXPECT_EQ(columns->GetColumnCount(), 1u);
+    EXPECT_FALSE(columns->GetColumnInfo(0)->GetColumnType().IsOk());
+
+    ibValue row = Call(wxT("Add"), {});
+    const long prop = row.FindProp(wxT("A"));
+    ASSERT_GE(prop, 0);
+    ASSERT_TRUE(row.SetPropVal(prop, ibValue(5)));
+    const ibValue cell = CellValue(row, wxT("A"));
+    EXPECT_EQ(cell.GetType(), ibValueTypes::TYPE_NUMBER);
+    EXPECT_EQ(cell.GetInteger(), 5);
+}
+
+// `AddColumn("U", Undefined)` refused the call. Undefined is the same as leaving the type out.
+TEST_F(ValueTableVerbs, AColumnAddedWithUndefined_KeepsANumberAsANumber)
+{
+    ibValueModelTable::ibValueModelColumnCollection* const columns = m_table->GetColumnCollection();
+    const long add = columns->FindMethod(wxT("AddColumn"));
+    ASSERT_GE(add, 0);
+    ibValue name = Text(wxT("U")), omitted, made;
+    ibValue* args[] = { &name, &omitted };
+    ASSERT_TRUE(columns->CallAsFunc(add, made, args, 2));
+
+    ibValue row = Call(wxT("Add"), {});
+    const long prop = row.FindProp(wxT("U"));
+    ASSERT_GE(prop, 0);
+    ASSERT_TRUE(row.SetPropVal(prop, ibValue(5)));
+    const ibValue cell = CellValue(row, wxT("U"));
+    EXPECT_EQ(cell.GetType(), ibValueTypes::TYPE_NUMBER);
+    EXPECT_EQ(cell.GetInteger(), 5);
+}
+
+// A caller who still wants text comparison says so. A number written into that column comes back text.
+TEST_F(ValueTableVerbs, AStringColumn_NarrowsANumberToText)
+{
+    ibValueModelTable::ibValueModelColumnCollection* const columns = m_table->GetColumnCollection();
+    const long add = columns->FindMethod(wxT("AddColumn"));
+    ASSERT_GE(add, 0);
+    ibValue name = Text(wxT("Note"));
+    ibValueTypeDescription text(std::vector<ibClassID>{ g_valueStringCLSID });
+    ibValue made;
+    ibValue* args[] = { &name, &text };
+    ASSERT_TRUE(columns->CallAsFunc(add, made, args, 2));
+    EXPECT_TRUE(columns->GetColumnInfo(0)->GetColumnType().ContainType(g_valueStringCLSID));
+
+    ibValue row = Call(wxT("Add"), {});
+    const long prop = row.FindProp(wxT("Note"));
+    ASSERT_GE(prop, 0);
+    ASSERT_TRUE(row.SetPropVal(prop, ibValue(5)));
+    const ibValue cell = CellValue(row, wxT("Note"));
+    EXPECT_EQ(cell.GetType(), ibValueTypes::TYPE_STRING);
+    EXPECT_EQ(cell.GetString(), wxT("5"));
+}
+
+// `New TypeDescription("Number, String")` was one constructor name and failed to initialise.
+TEST(TypeDescriptionList, ACommaSeparatedStringNamesEachType)
+{
+    ibValueTypeDescription described;
+    ibValue names(wxT("Number, String"));
+    ibValue* args[] = { &names };
+    ASSERT_TRUE(described.Init(args, 1));
+    EXPECT_EQ(described.GetTypeDesc().GetClsidCount(), 2u);
+    EXPECT_TRUE(described.GetTypeDesc().ContainType(g_valueNumberCLSID));
+    EXPECT_TRUE(described.GetTypeDesc().ContainType(g_valueStringCLSID));
+}
+
+// One name, with the qualifier that belongs to it, is the same description it was.
+TEST(TypeDescriptionList, ASingleNameStillTakesItsQualifier)
+{
+    ibValueTypeDescription described;
+    ibValue name(wxT("Number"));
+    ibValueQualifierNumber qualifier(15, 2);
+    ibValue* args[] = { &name, &qualifier };
+    ASSERT_TRUE(described.Init(args, 2));
+    EXPECT_EQ(described.GetTypeDesc().GetClsidCount(), 1u);
+    EXPECT_TRUE(described.GetTypeDesc().ContainType(g_valueNumberCLSID));
+    EXPECT_EQ(described.GetTypeDesc().GetPrecision(), 15);
+    EXPECT_EQ(described.GetTypeDesc().GetScale(), 2);
+}
+
+TEST(TypeDescriptionList, AnUnknownNameDoesNotInitialise)
+{
+    ibValueTypeDescription described;
+    ibValue name(wxT("Number, NotAType"));
+    ibValue* args[] = { &name };
+    EXPECT_FALSE(described.Init(args, 1));
+    EXPECT_EQ(described.GetTypeDesc().GetClsidCount(), 0u);
+
+    ibValueTypeDescription alone;
+    ibValue unknown(wxT("NotAType"));
+    ibValue* one[] = { &unknown };
+    EXPECT_FALSE(alone.Init(one, 1));
 }

@@ -71,22 +71,10 @@ protected:
 		// this function is called to compare 2 items and should return -1, 0
 		// or +1 if the first item is less than, equal to or greater than the
 		// second one. The base class version performs alphabetic comparison
-		// of item labels (GetText)
+		// of item labels (GetText). Here: the metadata's order (ibMetaTreeBase::CompareItemsByPosition).
 		virtual int OnCompareItems(const wxTreeItemId& item1,
 			const wxTreeItemId& item2) {
-			int ret = wxStrcmp(GetItemText(item1), GetItemText(item2));
-			ibTreeDataObject* data1 = dynamic_cast<ibTreeDataObject*>(GetItemData(item1));
-			ibTreeDataObject* data2 = dynamic_cast<ibTreeDataObject*>(GetItemData(item2));
-			if (data1 != nullptr && data2 != nullptr && ret > 0) {
-				ibValueMetaObject* metaObject1 = data1->m_metaObject;
-				ibValueMetaObject* metaObject2 = data2->m_metaObject;
-				ibValueMetaObject* parent = metaObject1->GetParent();
-				wxASSERT(parent);
-				return parent->ChangeChildPosition(metaObject2,
-					parent->GetChildPosition(metaObject1)
-				) ? ret : wxNOT_FOUND;
-			}
-			return ret;
+			return m_ownerTree->CompareItemsByPosition(item1, item2);
 		}
 
 		//events:
@@ -128,7 +116,7 @@ protected:
 	};
 
 	ibDataReportTreeCtrl* m_metaTreeCtrl = nullptr;
-	ibMetaDataReport* m_metaData = nullptr;
+	std::shared_ptr<ibMetaDataReport> m_metaData;   // what it shows, held while it shows it
 
 private:
 
@@ -182,14 +170,14 @@ public:
 public:
 
 	// ITS OWN TYPE — covariant, see the twin in treeDataProcessor.h.
-	virtual ibMetaDataReport* GetMetaData() const { return m_metaData; }
+	virtual ibMetaDataReport* GetMetaData() const { return m_metaData.get(); }
 
 	ibDataReportTree() { }
 	ibDataReportTree(ibMetaDocument* docParent, wxWindow* parent, wxWindowID id = wxID_ANY);
 	virtual ~ibDataReportTree();
 
 	void InitTree();
-	bool Load(ibMetaDataReport* metaData);
+	bool Load(std::shared_ptr<ibMetaDataReport> metaData);
 	bool Save();
 
 	void ActivateTree();

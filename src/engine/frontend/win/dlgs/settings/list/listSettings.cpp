@@ -2,6 +2,7 @@
 #include "frontend/win/dlgs/settings/settingsFieldTree.h"     // which fields this list has — one answer
 #include "frontend/win/dlgs/settings/settingsFilterEditor.h"   // SHARED with the composer's world
 #include "frontend/win/dlgs/settings/settingsSortEditor.h"     // …and so is this one
+#include "frontend/win/dlgs/settings/settingsConditionalAppearanceEditor.h"   // …and so is the conditional appearance
 #include "frontend/win/dlgs/settings/settingsStyle.h"          // art / grid styling, spelled once
 #include "frontend/win/dlgs/queryConstructor/queryConstructor.h"   // the Query tab's constructor button
 #include "frontend/win/dlgs/callbackDropTarget.h"                  // the same-process drag: the source knows what moved
@@ -15,6 +16,8 @@
 #include "backend/tabularModel.h"                   // ibValueModel + ibValueModelColumnCollection (the flat field source)
 #include "backend/system/value/valueDynamicList.h"  // ibValueDynamicList — the dialog is built on it
 #include "backend/srcDataObject.h"                  // ibSourceDataObject — a source describes itself
+#include "backend/query/queryableFactory.h"         // the main table's descriptor — its fields, as the list has them
+#include "backend/backend_composition.h"            // ibValidateSettings — what cannot be applied is refused
 
 #include <wx/notebook.h>
 #include <wx/panel.h>
@@ -27,6 +30,7 @@
 #include <wx/stattext.h>
 #include <wx/toolbar.h>
 #include <wx/app.h>
+#include <algorithm>
 
 // Group tab dataview columns.
 // COLUMN 0 IS RESERVED by the ibDataViewCtrl fork (a model column 0 paints blank
@@ -38,23 +42,33 @@ enum { eGroupField = 1, eGroupKind };
 // ---- Group model — virtual list over the dialog's BUFFER group list (Field). ----
 class ibListSettingsPanel::ibGroupModel : public ibDataViewVirtualListModel {
 	ibListSettingsPanel* m_dialog;
+	ibSettingsListedLines m_listed;   // which lines the rows are — a line on an unavailable field is not listed
 public:
 	explicit ibGroupModel(ibListSettingsPanel* dialog) : ibDataViewVirtualListModel(), m_dialog(dialog) {}
 	ibGroupDescription* GetGroup() const { return m_dialog->GetGroupList(); }
-	void ResetFromList() { ibGroupDescription* g = GetGroup(); Reset(g != nullptr ? (unsigned int)g->m_lines.size() : 0u); }
+	void ResetFromList() {
+		m_listed = ibSettingsListedLines();
+		if (const ibGroupDescription* g = GetGroup())
+			m_listed.Read(g->m_lines, m_dialog->m_fieldSource.get());
+		Reset(m_listed.Count());
+	}
+	// The line a row is — see ibSettingsListedLines.
+	size_t LineAt(size_t row) const { return m_listed.At(row); }
+	unsigned int GetListedCount() const { return m_listed.Count(); }
 	virtual void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
 		ibGroupDescription* g = GetGroup();
 		if (g == nullptr) return;
 		// BOUNDS FIRST. The view paints rows it has, the list may already have fewer
 		// (a Reset lands after the paint is queued) — reading past the end crashed
 		// on repaint.
-		if (row >= g->m_lines.size())
+		const size_t at = LineAt(row);
+		if (at >= g->m_lines.size())
 			return;
 		if (col == eGroupField)
-			variant = g->m_lines[row].m_path;
+			variant = g->m_lines[at].m_path;
 		else if (col == eGroupKind)
 			variant = ibValue::CreateEnumObject<ibValueEnumGroupKind>(
-				g->m_lines[row].m_kind).GetString();
+				g->m_lines[at].m_kind).GetString();
 	}
 	virtual bool SetValueByRow(const wxVariant&, unsigned, unsigned) override { return false; }
 };
@@ -104,6 +118,7 @@ void ibListSettingsPanel::BuildPages()
 	wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
 
 	wxNotebook* notebook = new wxNotebook(this, wxID_ANY);
+	ibStyleSettingsTabs(notebook);
 	// ⭐ TABS ARE GATED BY WHAT THE HOST ASKED FOR, and by nothing else. A DESCRIPTION forbids no
 	// part of itself: every one of them is there to be written. The gate used to ask a MODEL for
 	// its Features — and a window opened without one got `Features{}`, flags zero, which reads as
@@ -112,7 +127,7 @@ void ibListSettingsPanel::BuildPages()
 	// THE QUERY TAB IS A DEVELOPER TOOL — writing the source query is configuring the form, not
 	// using it; an end user opening "Filter" has no business being offered it.
 	if ((m_pages & Page_Query) != 0 && m_desc != nullptr && appData->DesignerMode())
-		notebook->AddPage(BuildQueryPage(notebook), _("Query"), true);
+		notebook->AddPage(BuildQueryPage(notebook), _("Query"), true, ibSettingsTabArt(ibSettingsTab::Query));
 
 	// ⭐ THE TWO SHARED EDITORS. Built, not written: the composer's window builds the very same
 	// pair over its own buffer, which is the whole point of them living one level up.
@@ -129,17 +144,27 @@ void ibListSettingsPanel::BuildPages()
 		// author marked inaccessible is hidden from them — applied, never shown. The designer's
 		// road (no setting handed in, the description edited directly) sees everything.
 		m_filterEditor->SetAuthoring(m_settings == nullptr);
-		notebook->AddPage(m_filterEditor, _("Filter"), notebook->GetPageCount() == 0);
+		notebook->AddPage(m_filterEditor, _("Filter"), notebook->GetPageCount() == 0, ibSettingsTabArt(ibSettingsTab::Filter));
 	}
 	if ((m_pages & Page_Sort) != 0) {
 		m_sortEditor = new ibSortEditor(notebook, &EditedSettings().m_sort, m_fieldSource.get());
 		m_sortEditor->SetOnChanged([this] { MarkModified(); });
-		notebook->AddPage(m_sortEditor, _("Sort"), notebook->GetPageCount() == 0);
+		notebook->AddPage(m_sortEditor, _("Sort"), notebook->GetPageCount() == 0, ibSettingsTabArt(ibSettingsTab::Sort));
 	}
 	// …and the list's OWN fold, which the composer does not share: its structure is a tree of
 	// levels, not a flat ordered list (Max, 2026-08-20).
 	if ((m_pages & Page_Group) != 0)
-		notebook->AddPage(BuildGroupPage(notebook), _("Group"), notebook->GetPageCount() == 0);
+		notebook->AddPage(BuildGroupPage(notebook), _("Group"), notebook->GetPageCount() == 0,
+			ibSettingsTabArt(ibSettingsTab::Grouping));
+	// ⭐ …AND WHAT STANDS OUT, WHEN — the rules a list's grid paints its rows by, the very editor a report's
+	// settings carry (Max, 2026-09-30: "conditional appearance lives in lists and in reports, one mechanism").
+	if ((m_pages & Page_ConditionalAppearance) != 0) {
+		m_conditionalAppearanceEditor = new ibConditionalAppearanceEditor(notebook,
+			&EditedSettings().m_conditionalAppearance, m_fieldSource.get(), [this] { return m_metaData; });
+		m_conditionalAppearanceEditor->SetOnChanged([this] { MarkModified(); });
+		notebook->AddPage(m_conditionalAppearanceEditor, _("Conditional appearance"), notebook->GetPageCount() == 0,
+			ibSettingsTabArt(ibSettingsTab::ConditionalAppearance));
+	}
 
 	mainSizer->Add(notebook, 1, wxEXPAND);
 	SetSizer(mainSizer);
@@ -177,12 +202,39 @@ void ibListSettingsPanel::BindFieldSource()
 
 	const ibMetaData* metaData = SourceMetaData();
 
-	// ⭐ A QUERY DESCRIBES ITS OWN FIELDS — the same answer the composer's window gets, from the same
-	// function: a text and a configuration, with nothing running in between.
-	if (m_schema != nullptr && m_schema->HasQuery()) {
+	// ⭐⭐ THE MAIN TABLE'S FIELDS, AND WHAT THE QUERY ADDS ON TOP — the answer the running list gives
+	// (ibValueDynamicList::GetSourceExplorer), read here off the description. The query alone used to
+	// be the whole answer: a list over a table showed no fields until a query was written, and with
+	// one it lost every field of the table the query did not name (Max, 2026-10-13).
+	if (m_schema != nullptr && (m_schema->HasMainTable() || m_schema->HasQuery())) {
 		std::vector<ibSettingsPlainField> plain;
-		for (const ibQueryConstructorField& field : ibQueryFieldsOfText(m_schema->m_query, metaData))
-			plain.push_back({ field.m_name, wxNOT_FOUND, field.m_type });
+
+		// The table the list IS — its descriptor, through this configuration's factory.
+		ibQueryableFactory* factory = metaData != nullptr ? metaData->GetSourceFactory() : nullptr;
+		if (const ibQueryableSourceDescriptor* descriptor = (factory != nullptr && m_schema->HasMainTable())
+			? factory->ResolveDescriptorById(m_schema->m_mainTable) : nullptr) {
+			ibSourceDataObject::ibSourceExplorer explorer;
+			descriptor->FillSourceExplorer(explorer);
+			for (unsigned int i = 0; i < explorer.GetHelperCount(); ++i) {
+				const ibSourceDataObject::ibSourceExplorer* node = explorer.GetHelper(i);
+				if (node == nullptr || node->IsTableSection())
+					continue;
+				plain.push_back({ node->GetSourceName(), static_cast<ibMetaID>(node->GetSourceId()),
+					node->GetTypeValueDesc(), node->GetColumn() == nullptr || node->GetColumn()->IsAvailable(),
+					node->GetSourceSynonym() });
+			}
+		}
+
+		// ⭐ A QUERY DESCRIBES ITS OWN FIELDS — the same answer the composer's window gets, from the same
+		// function. A name the table already offers is not added twice.
+		if (m_schema->HasQuery())
+			for (const ibQueryConstructorField& field : ibQueryFieldsOfText(m_schema->m_query, metaData)) {
+				const bool already = std::any_of(plain.begin(), plain.end(),
+					[&field](const ibSettingsPlainField& f) { return f.m_name.IsSameAs(field.m_name, false); });
+				if (!already)
+					plain.push_back({ field.m_name, wxNOT_FOUND, field.m_type, field.m_available });
+			}
+
 		m_fieldSource->SetPlainFields(std::move(plain), metaData);
 		return;
 	}
@@ -468,6 +520,7 @@ void ibListSettingsPanel::LoadFromSettings()
 	if (m_filterEditor != nullptr) m_filterEditor->Reload();
 	if (m_sortEditor   != nullptr) m_sortEditor->Reload();
 	if (m_groupModel   != nullptr) m_groupModel->ResetFromList();
+	if (m_conditionalAppearanceEditor != nullptr) m_conditionalAppearanceEditor->Reload();
 }
 
 // RE-READ THE SETTINGS THEMSELVES — what the panel edits changed under it.
@@ -553,11 +606,11 @@ void ibListSettingsPanel::OnListContextMenu(ibDataViewEvent&)
 	PopupMenu(&menu);
 }
 
-// A virtual-list row id is 1-based.
+// A virtual-list row id is 1-based, and the row shows the line the model maps it to.
 size_t ibListSettingsPanel::GroupIndexAt(const ibDataViewItem& row) const
 {
 	const size_t id = reinterpret_cast<size_t>(row.GetID());
-	return id > 0 ? id - 1 : (size_t)-1;
+	return id > 0 && m_groupModel != nullptr ? m_groupModel->LineAt(id - 1) : (size_t)-1;
 }
 
 // Add the chosen available field to the grouping list (BUFFER + model refresh).
@@ -568,9 +621,10 @@ void ibListSettingsPanel::AddGroupForField(const wxTreeItemId& item)
 	if (!field || g == nullptr)
 		return;
 	g->Append(field->GetPath(), ibQueryDimUnfold::Elements);
-	if (m_groupModel != nullptr)
+	if (m_groupModel != nullptr) {
 		m_groupModel->ResetFromList();
-	ibSelectLastSettingsRow(m_groupView, g->m_lines.size());
+		ibSelectLastSettingsRow(m_groupView, m_groupModel->GetListedCount());
+	}
 }
 
 void ibListSettingsPanel::OnGroupAdd(wxCommandEvent&)
@@ -579,9 +633,10 @@ void ibListSettingsPanel::OnGroupAdd(wxCommandEvent&)
 	if (g == nullptr)
 		return;
 	g->Append(wxEmptyString, ibQueryDimUnfold::Elements);
-	if (m_groupModel != nullptr)
+	if (m_groupModel != nullptr) {
 		m_groupModel->ResetFromList();
-	ibSelectLastSettingsRow(m_groupView, g->m_lines.size());
+		ibSelectLastSettingsRow(m_groupView, m_groupModel->GetListedCount());
+	}
 }
 void ibListSettingsPanel::OnGroupFieldActivated(wxTreeEvent& e) { AddGroupForField(e.GetItem()); }
 
@@ -595,10 +650,10 @@ void ibListSettingsPanel::OnGroupRemove(wxCommandEvent&)
 		return;
 	// ONE LINE LEAVES, the rest keep their order — which is the meaning of a
 	// grouping list, so rebuilding the whole thing to drop one row is never right.
-	const size_t index = reinterpret_cast<size_t>(sel.GetID());   // 1-based
-	if (index == 0 || index > g->m_lines.size())
+	const size_t index = GroupIndexAt(sel);
+	if (index >= g->m_lines.size())
 		return;
-	g->m_lines.erase(g->m_lines.begin() + (index - 1));
+	g->m_lines.erase(g->m_lines.begin() + index);
 	if (m_groupModel != nullptr)
 		m_groupModel->ResetFromList();
 }
@@ -611,15 +666,15 @@ void ibListSettingsPanel::MoveGroupLine(int delta)
 	const ibDataViewItem& sel = m_groupView->GetSelection();
 	if (!sel.IsOk())
 		return;
-	const size_t index = reinterpret_cast<size_t>(sel.GetID());   // 1-based
-	if (index == 0 || index > g->m_lines.size())
+	const size_t index = reinterpret_cast<size_t>(sel.GetID());   // 1-based ROW
+	if (m_groupModel == nullptr || index == 0 || index > m_groupModel->GetListedCount())
 		return;
 	const int target = static_cast<int>(index - 1) + delta;
-	if (target < 0 || target >= static_cast<int>(g->m_lines.size()))
+	if (target < 0 || target >= static_cast<int>(m_groupModel->GetListedCount()))
 		return;   // already at that end
-	std::swap(g->m_lines[index - 1], g->m_lines[static_cast<size_t>(target)]);
-	if (m_groupModel != nullptr)
-		m_groupModel->ResetFromList();
+	// Traded with the next LISTED line — a hidden one keeps its place.
+	std::swap(g->m_lines[m_groupModel->LineAt(index - 1)], g->m_lines[m_groupModel->LineAt(static_cast<size_t>(target))]);
+	m_groupModel->ResetFromList();
 	const size_t moved = (size_t)((int)index + delta);
 	m_groupView->Select(ibDataViewItem(reinterpret_cast<void*>(moved)));
 }
@@ -641,7 +696,7 @@ bool ibListSettingsPanel::Commit()
 	try {
 		ibValidateSettings(EditedSettings());
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		wxMessageBox(err.GetErrorDescription(), _("List settings"), wxOK | wxICON_WARNING, this);
 		return false;   // the host stays open — nothing is committed
 	}
@@ -768,6 +823,7 @@ bool ibDialogListSettings::ShowUserSettings(wxWindow* parent, ibValueModel* mode
 				field.m_name = col->GetColumnName();
 				field.m_id   = static_cast<ibMetaID>(col->GetColumnID());
 				field.m_type = col->GetColumnTypeValue();
+				field.m_available = col->IsColumnAvailable();
 				fields.push_back(std::move(field));
 			}
 		}

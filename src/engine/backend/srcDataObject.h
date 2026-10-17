@@ -9,7 +9,7 @@
 #include "backend/lock/lockHandle.h"    // ibLockHandle (m_formLockHandle)
 #include "backend/lock/lockTypes.h"     // ibLockMode (TryAcquireFormLock)
 #include "backend/compiler/value.h"     // ibValue (inline GetValueByPath default-constructs one)
-#include "backend/sourceDescription.h"  // ibSourceHop — a binding path is {id, expected type} per hop
+#include "core/description/sourceDescription.h"  // ibSourceHop — a binding path is {id, expected type} per hop
 
 #include "backend/metaCollection/genericData.h"   // ibValueMetaObjectGenericData COMPLETE -> the covariant GetSourceMetaObject() -> GenericData* compiles (no casts). genericData.h fwd-declares ibSourceDataObject, so no cycle.
 
@@ -246,6 +246,7 @@ public:
 			ibSourceDataObject* owner = m_sourceInfo.m_owner;
 			m_sourceInfo = ibSourceInfo{};
 			m_sourceInfo.m_owner = owner;
+			m_sourceVersion = 0;
 		}
 
 		// Reset to a fresh ROOT with this info for an in-place rebuild — drops children (KEEPS capacity) and
@@ -262,8 +263,24 @@ public:
 			m_sourceInfo.m_typeDesc = typeDesc;
 			m_sourceInfo.m_flags = eSrcEnabled | eSrcVisible | (tableSection ? eSrcTableSection : 0) | (select ? eSrcSelect : 0);
 			m_sourceInfo.m_owner = owner;
+			m_sourceVersion = 0;
 			return *this;
 		}
+
+		// ⭐ …AT THE VERSION OF THE METADATA IT DESCRIBES (ibMetaData::GetFactoryCountChanges) — what a source the
+		// metadata describes resets with. Built at that version already: nothing is reset, false — read it as it is.
+		// Built at another: reset, true — fill it.
+		bool Reset(unsigned int sourceVersion, const wxString& name, const wxString& synonym, const ibMetaID& id,
+			const ibTypeDescription& typeDesc, bool tableSection = false, bool select = true) {
+			if (m_sourceVersion == sourceVersion)
+				return false;
+			Reset(name, synonym, id, typeDesc, tableSection, select);
+			m_sourceVersion = sourceVersion;
+			return true;
+		}
+
+		// The version of the metadata it was built at — 0: none (built without one, or not built yet).
+		unsigned int GetSourceVersion() const { return m_sourceVersion; }
 
 	private:
 
@@ -278,6 +295,7 @@ public:
 
 		ibSourceInfo m_sourceInfo;
 		std::vector<ibSourceExplorer> m_arraySource;
+		unsigned int m_sourceVersion = 0;
 	};
 
 
@@ -407,9 +425,11 @@ public:
 	// (optional) accumulates the dotted display name. `outLeafIsTable` / `outContainerIsTable` (optional)
 	// report the leaf's own table-ness and whether the container it sits in is a table (then the leaf is
 	// that table's per-row COLUMN) — the facts a control-class choice needs but `leaf` (null for a section)
-	// cannot carry.
+	// cannot carry. `outAvailable` (optional) — every hop may be shown (functional options): a reference the
+	// options take away takes the field behind it too, so the leaf alone does not answer.
 	bool WalkColumns(const std::vector<ibSourceHop>& path, size_t from, const ibBackendSourceColumn*& leaf,
-		wxString* outText = nullptr, bool* outLeafIsTable = nullptr, bool* outContainerIsTable = nullptr) const;
+		wxString* outText = nullptr, bool* outLeafIsTable = nullptr, bool* outContainerIsTable = nullptr,
+		bool* outAvailable = nullptr) const;
 
 protected:
 	
@@ -423,6 +443,56 @@ protected:
 	// Per-instance self-description — created WITH the source, owner-bound at construction. ONLY
 	// subclasses fill it (each source builds its own nodes); external code reads it via GetSourceExplorer.
 	mutable ibSourceExplorer m_sourceExplorer;
+};
+
+// ----------------------------------------------------------------------------
+// ibSourcePtr<T>: an owning reference to a SOURCE — ibValuePtr's twin for the interface side. A source
+// is not an ibValue, so it cannot sit in an ibValuePtr; it holds through SourceIncrRef / SourceDecrRef,
+// which ARE the refcount of the value that implements it. What hands out a new source (a form's
+// CreateSourceObject) answers with one — a new data object is born owned — and what borrows a source
+// for a while (CreateAndBuildForm) holds it in one.
+// ----------------------------------------------------------------------------
+
+template <class T>
+class ibSourcePtr {
+public:
+
+	constexpr ibSourcePtr() = default;
+	constexpr ibSourcePtr(nullptr_t) {}
+
+	explicit ibSourcePtr(T* ptr) { Bind(ptr); }
+
+	ibSourcePtr(const ibSourcePtr& to_copy) { Bind(to_copy.m_ptr); }
+
+	// generalized copy ctor: U* must be convertible to T*
+	template <typename U>
+	ibSourcePtr(const ibSourcePtr<U>& to_copy) { Bind(static_cast<U*>(to_copy)); }
+
+	~ibSourcePtr() { Reset(); }
+
+	ibSourcePtr& operator = (const ibSourcePtr& other) {
+		if (m_ptr != other.m_ptr) { Reset(); Bind(other.m_ptr); }
+		return *this;
+	}
+
+	inline T* operator->() const { return m_ptr; }
+	inline operator T* () const { return m_ptr; }
+	inline explicit operator bool() const noexcept { return m_ptr != nullptr; }
+
+private:
+
+	void Bind(T* ptr) {
+		m_ptr = ptr;
+		if (m_ptr != nullptr) m_ptr->SourceIncrRef();
+	}
+
+	void Reset() {
+		T* const ptr = m_ptr;
+		m_ptr = nullptr;
+		if (ptr != nullptr) ptr->SourceDecrRef();
+	}
+
+	T* m_ptr = nullptr;
 };
 
 // Global alias so every existing 'ibSourceExplorer' spelling keeps resolving now the type is nested.

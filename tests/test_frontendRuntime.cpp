@@ -8,7 +8,7 @@
 // that. So this first target proves exactly that seam, nothing more.
 //
 // Runtime host, because the first client is a runtime control (warehouse / TSD
-// list), not the designer editor. The designer-mode harness (eDESIGNER_MODE) is
+// list), not the designer editor. The designer harness (a Designer-kind session) is
 // a sibling target added once this one is green.
 //
 // NOTE — forms need a concrete main frame. ibFrontendMainFrame is abstract
@@ -59,9 +59,9 @@ TEST_F(FrontendRuntimeFix, HarnessBringsUpGuiAndBackend)
 
 	EXPECT_NE(wxTheApp, nullptr)
 		<< "a live GUI wxApp is required — desktop controls are wxWindow subclasses";
-	EXPECT_NE(ibApplicationData::Get(), nullptr)
+	EXPECT_NE(ibApplicationInstance::Get(), nullptr)
 		<< "runtime-mode appData env must be up";
-	EXPECT_NE(ibApplicationData::GetConnectionPool(), nullptr)
+	EXPECT_NE(ibApplicationInstance::GetConnectionPool(), nullptr)
 		<< "the connection pool must be wired after CreateAppDataEnv";
 	EXPECT_NE(ibConnectionPool::ThreadHolder(), nullptr)
 		<< "the pool must hand out the master connection holder";

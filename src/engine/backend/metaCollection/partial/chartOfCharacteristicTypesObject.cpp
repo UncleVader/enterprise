@@ -13,7 +13,7 @@
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/system/systemManager.h"
 
-#include "backend/fileSystem/fs.h"
+#include "core/fileSystem/fs.h"
 //*********************************************************************************************
 //*                          ObjectChartOfCharacteristicTypesValue                             *
 //*********************************************************************************************
@@ -32,10 +32,10 @@ ibValueRecordDataObjectChartOfCharacteristicTypes::ibValueRecordDataObjectChartO
 
 const ibSourceExplorer* ibValueRecordDataObjectChartOfCharacteristicTypes::GetSourceExplorer() const
 {
-	m_sourceExplorer.Reset(
+	if (!m_sourceExplorer.Reset(m_metaObject->GetMetaData()->GetFactoryCountChanges(),
 		wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(),
-		false
-	);
+		false))
+		return &m_sourceExplorer;   // built at this version of the metadata already — read as it is
 
 	ibValueMetaObjectChartOfCharacteristicTypes* metaRef = nullptr;
 
@@ -213,14 +213,14 @@ bool ibValueRecordDataObjectChartOfCharacteristicTypes::CallAsFunc(const long lM
 		DeleteObject();
 		return true;
 	case enPointInTime:
-		pvarRetValue = new ibValuePointInTime(wxDateTime(), GetReference());
+		pvarRetValue = new ibValuePointInTime(ibDateTime(), GetReference());   // a moment with no date: the empty date, the smallest there is
 		return true;
 	case enModified:
 		pvarRetValue = m_objModified;
 		return true;
 	case Func::enGetForm:
 		pvarRetValue = GetFormValue(
-			lSizeArray > 0 ? paParams[0]->GetString() : wxString(wxEmptyString),
+			lSizeArray > 0 ? ibFormRequest(paParams[0]->GetString()) : ibFormRequest(),
 			lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr
 		);
 		return true;

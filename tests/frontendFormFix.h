@@ -11,7 +11,8 @@
 // FrontendRuntimeFix). Build forms with NewForm().
 // =============================================================================
 
-#pragma once
+#ifndef __FRONTEND_FORM_FIX_H__
+#define __FRONTEND_FORM_FIX_H__
 
 #include "frontendFix.h"
 
@@ -20,7 +21,7 @@
 #include "frontend/visualView/ctrl/form.h"       // ibValueForm
 #include "backend/backend_form.h"                // ibBackendValueForm::CreateNewForm
 #include "backend/appData.h"                     // appData->CreateSession<T>()
-#include "backend/session/session.h"             // ibSessionThreadBinding / AccessMode
+#include "backend/session/session.h"             // ibSessionThreadBinding
 #include "backend/session/sessionHolder.h"       // ibSessionHolder — the frame takes one
 #include "backend/session/sessionRegistry.h"     // the CreateSession<T> template body
 
@@ -51,8 +52,6 @@ struct FrontendFormFix : FrontendRuntimeFix {
 		FrontendRuntimeFix::SetUp();          // wxApp + appData env + SQLite pool
 		if (!ready) return;
 
-		ibSession::SetAccessMode(ibSession::AccessMode::Shared);
-
 		// An UNLISTED session — imitated, not registered. The registered path
 		// (appData->CreateSession<T>()) makes the registry own sys_session I/O, and this
 		// harness runs against a bare SQLite :memory: database that has no system schema:
@@ -81,7 +80,16 @@ struct FrontendFormFix : FrontendRuntimeFix {
 
 	// The supported way to build a form in a test. Returns nullptr if the frame
 	// didn't come up (caller GTEST_SKIPs on !frameReady first).
+	//
+	// The form is born owned and handed to the test with a reference the test never gives back — test forms
+	// live to the end of the process, as they always did: the hosts and documents built over them are leaked
+	// on purpose (see test_frontendVisualHost.cpp), and a form freed under them would take them down.
 	ibValueForm* NewForm() {
-		return dynamic_cast<ibValueForm*>(ibBackendValueForm::CreateNewForm());
+		const ibValuePtr<ibValueForm> form(ibBackendValueForm::CreateNewForm());
+		if (form)
+			form->IncrRef();
+		return form;
 	}
 };
+
+#endif

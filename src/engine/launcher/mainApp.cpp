@@ -11,22 +11,28 @@ bool ibAppLauncher::DoOnInit()
 	if (m_launcher)
 		return false;
 
+	// The command line first, then the base — see codeRunner/mainApp.cpp: OnExit follows only an
+	// OnInit that succeeded.
+	if (!wxApp::OnInit())
+		return false;
+
 	// ibWxApp::OnInit already armed ibCrashGuard. wxApp.h is header-only,
 	// so no frontend.dll dependency was added — launcher still links
 	// only backend.lib + wxlibs.
-	ibApplicationData::CreateAppDataEnv(ibRunMode::eLAUNCHER_MODE);
+	ibApplicationInstance::CreateAppDataEnv(ibRunMode::eLAUNCHER_MODE);
 	m_launcher = new ibFrameLauncher(nullptr, wxID_ANY);
 
-	return wxApp::OnInit() && m_launcher->Show();
+	m_launcher->Show();
+	return true;
 }
 
 int ibAppLauncher::OnExit()
 {
-	ibApplicationData::DestroyAppDataEnv();
+	ibApplicationInstance::DestroyAppDataEnv();
 	return wxApp::OnExit();
 }
 
-#include "backend/diagnostics/leakTracker.h"
+#include "core/diagnostics/leakTracker.h"
 
 IB_LEAK_TRACKER_ARM();
 

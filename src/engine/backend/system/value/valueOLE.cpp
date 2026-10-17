@@ -5,7 +5,6 @@
 
 #include "valueOLE.h"
 #include "backend/backend_exception.h"
-#include "backend/appData.h"
 
 #include <wx/clipbrd.h>
 
@@ -304,16 +303,13 @@ bool ibValueOLE::FromVariant(const VARIANT& oleVariant, ibValue& pvarRetValue) c
 	case VT_DATE:
 	{
 		pvarRetValue.SetType(ibValueTypes::TYPE_DATE);
-#if wxUSE_DATETIME
 		{
+			// A VT_DATE is a wall-clock reading with no zone in it, exactly as the engine's date is
+			// (fdatetime.h): the parts cross over as they are, nothing asks the machine's clock.
 			SYSTEMTIME st;
 			VariantTimeToSystemTime(oleVariant.date, &st);
-			wxDateTime date;
-			date.SetFromMSWSysTime(st);
-			wxLongLong llValue = date.GetValue();
-			pvarRetValue.m_dData = llValue.GetValue();
+			pvarRetValue.m_dData = ibDateTime(st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
 		}
-#endif // wxUSE_DATETIME
 		return true;
 	}
 	case VT_DISPATCH:
@@ -407,13 +403,19 @@ VARIANT ibValueOLE::FromValue(const ibValue& varRetValue) const
 	}
 	case ibValueTypes::TYPE_DATE:
 	{
-#if wxUSE_DATETIME
-		wxDateTime date(wxLongLong(varRetValue.GetDate()));
+		ibDateTimeParts p;
+		varRetValue.GetDate().ToParts(p);
+		SYSTEMTIME st = {};
+		st.wYear = static_cast<WORD>(p.m_year);
+		st.wMonth = static_cast<WORD>(p.m_month);
+		st.wDay = static_cast<WORD>(p.m_day);
+		st.wDayOfWeek = static_cast<WORD>(p.m_weekDay % 7);   // SYSTEMTIME counts Sunday as 0
+		st.wHour = static_cast<WORD>(p.m_hour);
+		st.wMinute = static_cast<WORD>(p.m_minute);
+		st.wSecond = static_cast<WORD>(p.m_second);
+		st.wMilliseconds = static_cast<WORD>(p.m_millisecond);
 		oleVariant.vt = VT_DATE;
-		SYSTEMTIME st;
-		date.GetAsMSWSysTime(&st);
 		SystemTimeToVariantTime(&st, &oleVariant.date);
-#endif
 		break;
 	}
 	case ibValueTypes::TYPE_OLE: {
@@ -535,7 +537,10 @@ bool ibValueOLE::Init(ibValue** paParams, const long lSizeArray)
 
 bool ibValueOLE::Create(const wxString& strOleName)
 {
-	if (appData->DesignerMode())
+	// THE CARET'S WALK FOR COMPLETION STARTS NO COM SERVER: it builds `New COMObject("…")` to list its members,
+	// and that must not launch the application named. Asked of the evaluation, not of the process — the
+	// designer runs no other script, and the client's editors complete with the same walk (census, 2026-10-01).
+	if (ibBackendException::IsEvalComplete())
 		return true;
 
 #ifdef __WXMSW__
@@ -705,7 +710,7 @@ void ibValueOLE::FillMembers(ibMemberTable& helper) const
 #endif 
 }
 
-long ibValueOLE::FindMethod(const wxString& strMethodName) const
+long ibValueOLE::FindMethod(const ibString& strMethodName) const
 {
 #ifdef __WXMSW__
 	if (m_currentDispatch == nullptr)
@@ -730,7 +735,7 @@ long ibValueOLE::FindMethod(const wxString& strMethodName) const
 #endif 
 }
 
-long ibValueOLE::FindProp(const wxString& strPropName) const
+long ibValueOLE::FindProp(const ibString& strPropName) const
 {
 #ifdef __WXMSW__
 	if (m_currentDispatch == nullptr)

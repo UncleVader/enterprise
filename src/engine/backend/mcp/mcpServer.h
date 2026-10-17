@@ -6,7 +6,7 @@
 ////////////////////////////////////////////////////////////////////////////
 //
 // WHAT IT IS. An appData subsystem, the way ibJobManager / ibLockManager /
-// ibSettingsStorage are: constructed by ibApplicationData behind the
+// ibSettingsStorage are: constructed by ibApplicationInstance behind the
 // ib::AppDataCtorToken gate, reached through a static accessor, torn down with
 // everything else. It is IN THE CORE deliberately — not a plugin, not a mode of
 // one binary — so every host that has an appData can offer it, and a plugin
@@ -105,7 +105,7 @@ public:
 	ibMcpServer(const ibMcpServer&) = delete;
 	ibMcpServer& operator=(const ibMcpServer&) = delete;
 
-	// Construction restricted to ibApplicationData, the same gate every
+	// Construction restricted to ibApplicationInstance, the same gate every
 	// appData-owned subsystem is built behind.
 	//
 	// ⚠ BOTH OUT OF LINE, and the constructor is not an oversight: the listener
@@ -113,7 +113,9 @@ public:
 	// INLINE constructor needs the member's destructor too — for unwinding if it
 	// throws. Defined inline, this is `can't delete an incomplete type` at every
 	// call site that builds one.
-	explicit ibMcpServer(ib::AppDataCtorToken);
+	// The token names the base this server belongs to: every base has its own, so a process of several
+	// has several, and each asks ITS base (docs/private/multi-base-process.md).
+	explicit ibMcpServer(ib::AppDataCtorToken owner);
 	~ibMcpServer();
 
 	// --- the central entry point -----------------------------------------
@@ -297,6 +299,14 @@ private:
 	bool RunTool(const class ibMcpTool* tool, const class ibDataNode& arguments,
 		class ibDataNode& payload, wxString& refusal, bool* outPending = nullptr);
 
+	// The configuration its session works in — what every answer here is about. Null while it is stopped.
+	class ibMetaDataConfigurationBase* GetMetaData() const;
+
+	// Puts the bridge on the open configuration's list, moving it when that configuration is not
+	// the one it is already watching. Called from the one place every tool call passes through —
+	// a configuration can be opened, closed and reopened while the server runs.
+	void WatchMetadata();
+
 	ibMcpSettings                m_settings;
 	std::unique_ptr<ibMcpListener> m_listener;
 
@@ -312,10 +322,6 @@ private:
 	// notifier does. Nothing hands one in, nothing holds one but this.
 	std::unique_ptr<class ibMcpMetaBridge> m_metaBridge;
 
-	// Puts the bridge on the open configuration's list, moving it when that configuration is not
-	// the one it is already watching. Called from the one place every tool call passes through —
-	// a configuration can be opened, closed and reopened while the server runs.
-	void WatchMetadata();
 	std::atomic<bool>            m_running{ false };
 
 	// Not owned — the debug client's bridge list owns what it holds. Null when
@@ -336,7 +342,14 @@ private:
 	// server by construction (the server is stopped when the session closes).
 	ibSession*                   m_session = nullptr;
 
+	// The base this server belongs to — its owner, asked instead of "the current one".
+	ibApplicationInstance* const     m_applicationInstance;
+
+	// ⚠ ADDED AND REMOVED ON ONE THREAD, CALLED ON ANOTHER — a window's (the thin designer's: whichever thread serves
+	// its client) against the server's and Say's. Held for the whole of Publish, so once RemoveNotifier returns no call
+	// to that notifier is in flight and it may go.
 	std::vector<ibMcpNotifier*>  m_notifiers;
+	std::mutex                   m_notifiersMutex;
 
 	// WHAT WAS TYPED AND NOT YET COLLECTED. Written on the UI thread (the Send
 	// button), drained on the server's (a tool call), so it is guarded — the one

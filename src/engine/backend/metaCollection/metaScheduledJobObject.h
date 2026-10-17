@@ -24,7 +24,7 @@
 
 #include "metaModuleObject.h"   // ibPropertyInnerModule + ibValueMetaObjectManagerModule
 #include "backend/propertyManager/property/propertySchedule.h"
-#include "backend/job/jobSchedule.h"
+#include "core/description/jobScheduleDescription.h"
 
 class BACKEND_API ibValueMetaObjectScheduledJob : public ibValueMetaObject {
 public:
@@ -37,7 +37,7 @@ public:
 	// which is also what lets the same handler be exercised by hand while debugging.
 	const ibValueMetaObjectManagerModule* GetJobModule() const { return m_propertyJobModule->GetMetaObject(); }
 
-	// WHEN it is due. The description is the engine's own (backend/job/jobSchedule.h), so the
+	// WHEN it is due. The description is the core's (core/description/jobScheduleDescription.h), so the
 	// designer edits exactly the structure the manager evaluates.
 	ibJobScheduleDescription& GetSchedule() const { return m_propertySchedule->GetValueAsSchedule(); }
 
@@ -81,11 +81,6 @@ public:
 	virtual bool OnBeforeCloseMetaObject();
 	virtual bool OnAfterCloseMetaObject();
 
-	// Run it now, ignoring the schedule — the designer / script door. Without it a job can only be
-	// exercised by waiting out its interval, which makes "is the job wrong or is the manager wrong?"
-	// unanswerable.
-	bool RunNow() const;
-
 protected:
 
 
@@ -114,7 +109,7 @@ private:
 		ibPropertyObject::CreateProperty<ibPropertyInnerModule<ibValueMetaObjectManagerModule>>(
 			m_categoryContext, wxT("JobModule"), _("Job module"), _("The job's code: the handler the job manager calls when the job runs, compiled with the session's modules so it can call common modules like any other code."));
 
-	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), _("Use"));
+	ibRole* m_roleUse = ibValueMetaObject::CreateRole(wxT("Use"), wxGETTEXT_IN_CONTEXT("access right", "Use"));
 
 	friend class ibMetaData;
 };

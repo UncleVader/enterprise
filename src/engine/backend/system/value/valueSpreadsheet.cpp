@@ -91,9 +91,14 @@ private:
 
 };
 
+constexpr ibClassID g_valueSpreadsheetAreaCollectionCLSID = system_to_clsid("SY_SPAEA");
+
 class ibValueSpreadsheetDocumentAreaCollection :
 	public ibValueStructure {
 	public:
+
+	// Its own id — the structure it derives from answers with the structure's (valueMap.h).
+	virtual ibClassID GetClassType() const override { return g_valueSpreadsheetAreaCollectionCLSID; }
 
 public:
 
@@ -102,21 +107,21 @@ public:
 	{
 	}
 
-	ibValueSpreadsheetDocumentAreaCollection(const wxObjectDataPtr<ibBackendSpreadsheetObject>& spreadsheetDoc) :
+	ibValueSpreadsheetDocumentAreaCollection(const std::shared_ptr<ibSpreadsheetObject>& spreadsheetDoc) :
 		ibValueStructure(true), m_spreadsheetDoc(spreadsheetDoc)
 	{
 		for (int idx = 0; idx < spreadsheetDoc->GetSpreadsheetDesc().GetAreaNumberRows(); idx++) {
 			const ibSpreadsheetAreaDescription* area = spreadsheetDoc->GetSpreadsheetDesc().GetRowAreaByIdx(idx);
 			if (area == nullptr)
 				continue;
-			ibValueStructure::Insert(area->m_label,
+			ibValueStructure::Insert(area->m_label.ToWxString(),
 				new ibValueSpreadsheetDocumentRange(area->m_label, area->m_start, area->m_end));
 		}
 	}
 
 private:
 
-	wxObjectDataPtr<ibBackendSpreadsheetObject> m_spreadsheetDoc;
+	std::shared_ptr<ibSpreadsheetObject> m_spreadsheetDoc;
 };
 
 class ibValueSpreadsheetDocumentParameterCollection : public ibValueDynamicMembers {
@@ -177,7 +182,7 @@ public:
 		// No doc → no parameters; leave the helper empty (no binder).
 	}
 
-	ibValueSpreadsheetDocumentParameterCollection(const wxObjectDataPtr<ibBackendSpreadsheetObject>& spreadsheetDoc) :
+	ibValueSpreadsheetDocumentParameterCollection(const std::shared_ptr<ibSpreadsheetObject>& spreadsheetDoc) :
 		ibValueDynamicMembers(ibValueTypes::TYPE_VALUE), m_spreadsheetDoc(spreadsheetDoc)
 	{
 		m_members.Bind(this, &ibValueSpreadsheetDocumentParameterCollection::FillMembers);
@@ -188,13 +193,12 @@ public:
 	virtual bool IsEmpty() const { return false; }
 
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal) {
-		m_spreadsheetDoc->SetParameter(m_members.GetPropName(lPropNum), varPropVal);
+		m_spreadsheetDoc->SetParameter(m_members.GetPropName(lPropNum), varPropVal.ToAnyValue());
 		return true;
 	}
 
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) {
-		if (!m_spreadsheetDoc->GetParameter(m_members.GetPropName(lPropNum), pvarPropVal))
-			pvarPropVal = ibValue();   // see Get below
+		pvarPropVal = ibValue::FromAnyValue(m_spreadsheetDoc->GetParameter(m_members.GetPropName(lPropNum)));   // see Get below
 		return true;
 	}
 
@@ -210,8 +214,7 @@ public:
 			// found it on a miss, and the slot is the caller's: a script asking for a missing parameter
 			// got whatever the PREVIOUS call had answered — a figure in a column that has none (found
 			// 2026-09-12, reading a composed payroll sheet back).
-			if (!m_spreadsheetDoc->GetParameter(paParams[0]->GetString(), pvarRetValue))
-				pvarRetValue = ibValue();
+			pvarRetValue = ibValue::FromAnyValue(m_spreadsheetDoc->GetParameter(paParams[0]->GetString()));
 			return true;
 		}
 
@@ -236,14 +239,14 @@ public:
 						continue;
 					ibValue pvarRetValue;
 					paParams[0]->GetPropVal(lPropNum, pvarRetValue);
-					m_spreadsheetDoc->SetParameter(strPropName, pvarRetValue);
+					m_spreadsheetDoc->SetParameter(strPropName, pvarRetValue.ToAnyValue());
 				}
 				return true;
 			}
 			return false;
 		}
 		case enSet:
-			m_spreadsheetDoc->SetParameter(paParams[0]->GetString(), *paParams[1]);
+			m_spreadsheetDoc->SetParameter(paParams[0]->GetString(), paParams[1]->ToAnyValue());
 			return true;
 		}
 
@@ -286,7 +289,7 @@ public:
 
 private:
 
-	wxObjectDataPtr<ibBackendSpreadsheetObject> m_spreadsheetDoc;
+	std::shared_ptr<ibSpreadsheetObject> m_spreadsheetDoc;
 };
 
 
@@ -402,10 +405,10 @@ bool ibValueSpreadsheetDocument::GetPropVal(const long lPropNum, ibValue& pvarPr
 		pvarPropVal = !m_spreadsheetDoc->IsEditable();
 		return true;
 	case ePrinterName:
-		pvarPropVal = m_spreadsheetDoc->GetPrinterName();
+		pvarPropVal = m_spreadsheetDoc->GetPrinterName().ToWxString();
 		return true;
 	case eLanguageCode:
-		pvarPropVal = m_spreadsheetDoc->GetLangCode();
+		pvarPropVal = m_spreadsheetDoc->GetLangCode().ToWxString();
 		return true;
 	}
 
@@ -413,32 +416,34 @@ bool ibValueSpreadsheetDocument::GetPropVal(const long lPropNum, ibValue& pvarPr
 }
 
 #include <wx/tokenzr.h>
+#include "backend/backend_exception.h"
 
 bool ibValueSpreadsheetDocument::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
 	if (lMethodNum == eArea) {
 
-		const ibSpreadsheetCellDescription* cell = m_spreadsheetDoc->GetSpreadsheetDesc().GetCell(
-			paParams[0]->GetInteger(), lSizeArray > 1 ? paParams[1]->GetInteger() : 0);
-
-		if (cell != nullptr) {
-			pvarRetValue = new ibValueSpreadsheetDocumentArea(
-				m_spreadsheetDoc, paParams[0]->GetInteger(), lSizeArray > 1 ? paParams[1]->GetInteger() : 0);
-			return true;
-		}
-
-		return false;
+		// ⭐ A CELL, WHEREVER IT IS — a document has no edge: a cell past what is filled in reads empty and
+		// takes what is written into it (the description makes it on the first write). This answered only for
+		// cells that already existed and said nothing for the rest — and "nothing" was the previous call's
+		// value: reading a composed report cell by cell repeated its last figure past the table's end
+		// (2026-09-28).
+		const int row = paParams[0]->GetInteger();
+		const int col = lSizeArray > 1 ? paParams[1]->GetInteger() : 0;
+		if (row < 0 || col < 0)
+			ibBackendCoreException::Error(_("Cells are counted from 0 - a row or a column cannot be negative"));
+		pvarRetValue = new ibValueSpreadsheetDocumentArea(m_spreadsheetDoc, row, col);
+		return true;
 	}
 	else if (lMethodNum == eRange) {
 
-		if (paParams[0]->GetInteger() > m_spreadsheetDoc->GetNumberRows())
-			return false;
-
-		else if (paParams[1]->GetInteger() > m_spreadsheetDoc->GetNumberCols())
-			return false;
-
+		// ⭐ A REGION, WHEREVER IT IS — past what is filled in it holds nothing, so an end beyond the content is
+		// the content's own end (no empty cells made for it), and the answer is always a document. Two refusals
+		// stood here, heard by nobody (the return slot kept the call before), and the second checked the row END
+		// against the number of COLUMNS.
+		const int rowEnd = wxMin(paParams[1]->GetInteger(), m_spreadsheetDoc->GetNumberRows());
+		const int colEnd = lSizeArray > 3 ? wxMin(paParams[3]->GetInteger(), m_spreadsheetDoc->GetNumberCols()) : -1;
 		pvarRetValue = new ibValueSpreadsheetDocument(m_spreadsheetDoc->GetArea(
-			paParams[0]->GetInteger(), paParams[1]->GetInteger(), lSizeArray > 2 ? paParams[2]->GetInteger() : -1, lSizeArray > 3 ? paParams[3]->GetInteger() : -1));
+			paParams[0]->GetInteger(), rowEnd, lSizeArray > 2 ? paParams[2]->GetInteger() : -1, colEnd));
 
 		return true;
 	}
@@ -482,8 +487,6 @@ bool ibValueSpreadsheetDocument::CallAsFunc(const long lMethodNum, ibValue& pvar
 
 	return false;
 }
-
-#include "backend/backend_exception.h"
 
 bool ibValueSpreadsheetDocument::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
 {
@@ -546,7 +549,7 @@ bool ibValueSpreadsheetDocument::CallAsProc(const long lMethodNum, ibValue** paP
 
 VALUE_TYPE_REGISTER(ibValueSpreadsheetDocument, "SpreadsheetDocument", g_valueSpreadsheetCLSID);
 SYSTEM_TYPE_REGISTER(ibValueSpreadsheetDocumentRange, "SpreadsheetAreaRange", system_to_clsid("SY_SPPRA"));
-SYSTEM_TYPE_REGISTER(ibValueSpreadsheetDocumentAreaCollection, "SpreadsheetAreaCollection", system_to_clsid("SY_SPAEA"));
+SYSTEM_TYPE_REGISTER(ibValueSpreadsheetDocumentAreaCollection, "SpreadsheetAreaCollection", g_valueSpreadsheetAreaCollectionCLSID);
 SYSTEM_TYPE_REGISTER(ibValueSpreadsheetDocumentParameterCollection, "SpreadsheetParameterCollection", system_to_clsid("SY_SPPRM"));
 ENUM_TYPE_REGISTER(ibValueEnumSpreadsheetOrient, "SpreadsheetOrient", enum_to_clsid("EN_SORNT"));
 ENUM_TYPE_REGISTER(ibValueEnumSpreadsheetHorizontalAlignment, "SpreadsheetHorizontalAlignment", enum_to_clsid("EN_SHOAL"));

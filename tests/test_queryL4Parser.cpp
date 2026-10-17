@@ -9,6 +9,7 @@
 #include <functional>
 #include <vector>
 
+#include "backend/backend_exception.h"
 #include "backend/query/queryParser.h"
 // ⚠ AT THE TOP, not beside the round-trip section further down: a test up here renders an AST back
 // to text (ONTO is written where INTO is), and an include that arrives 200 lines later is not
@@ -676,6 +677,29 @@ TEST(QueryRender, PredicateProjectionRoundTrips) {
 
 TEST(QueryRender, CaseRoundTrips) {
 	ExpectRoundTrip(wxT("SELECT CASE WHEN Price > 100 THEN \"big\" ELSE \"small\" END AS size FROM Catalog.Products"));
+}
+
+// ⭐⭐ WHAT THE RENDERER WRITES, THE PARSER READS. Each shape below was written by the renderer and then
+// refused by the parser — the one failure the query constructor cannot survive, because it renders its
+// query and reads it straight back (an inventory of the two against each other, 2026-09-28).
+TEST(QueryRender, OrderByACallRoundTrips) {
+	// A word followed by `(` was read as a column, and the bracket as "unexpected text after the query".
+	ExpectRoundTrip(wxT("SELECT Date FROM Document.Sales ORDER BY YEAR(Date) DESC, SUBSTRING(Number, 1, 3)"));
+}
+
+TEST(QueryRender, GroupByAComputedKeyRoundTrips) {
+	// A group key was read as a primary, which stopped at the `*`.
+	ExpectRoundTrip(wxT("SELECT Price * Qty AS Amount, COUNT(*) AS Lines FROM Catalog.Products GROUP BY Price * Qty"));
+}
+
+TEST(QueryRender, ACaseBranchGivingAConditionRoundTrips) {
+	// THEN is read as a value: a condition there went out bare and came back as "expected END".
+	ExpectRoundTrip(wxT("SELECT CASE WHEN Qty > 0 THEN (Price > 100) ELSE FALSE END AS Flag FROM Catalog.Products"));
+}
+
+TEST(QueryRender, ARefsTestInsideAComparisonRoundTrips) {
+	// Unbracketed, the `=` after the type name belonged to nothing.
+	ExpectRoundTrip(wxT("SELECT Ref FROM Catalog.Products WHERE (Owner REFS Catalog.Vendors) = TRUE"));
 }
 
 TEST(QueryRender, TotalsRoundTrip) {
@@ -1380,6 +1404,20 @@ TEST(QueryL4Parser, TotalsSplitWithNothingInCommon)
 	EXPECT_EQ(sel->m_totalsSplits[1].m_levels.size(), 1u);
 }
 
+// …AND A NODE MAY HANG OFF THE GRAND TOTAL — `BY OVERALL SPLIT …`. The renderer writes it with no comma
+// (a node is not the next item of a list), and the parser stopped at OVERALL unless a comma followed.
+TEST(QueryL4Parser, OverallFollowedBySplitRoundTrips)
+{
+	auto sel = Parse(wxT("SELECT Item, Amount FROM Document.Sales "
+	                     "TOTALS SUM(Amount) BY OVERALL SPLIT ByItem BY Item"));
+	ASSERT_TRUE(sel != nullptr);
+	EXPECT_TRUE(sel->m_totalsOverall);
+	EXPECT_TRUE(sel->m_totalsBy.empty());
+	ASSERT_EQ(sel->m_totalsSplits.size(), 1u);
+	EXPECT_EQ(sel->m_totalsSplits[0].m_name, wxT("ByItem"));
+	ExpectRoundTrip(ibRenderQuery(*sel));
+}
+
 // ⭐ THE WORD SURVIVES THE ROUND TRIP — and this is the half that was forgotten when PERIODS went
 // into the language: a cell that shows less than it edits loses the rest on the first edit.
 TEST(QueryL4Parser, TotalsSplitRoundTrips)
@@ -1483,4 +1521,112 @@ TEST(QueryL4Parser, TotalsAggregateOverAPartitionIsRefused)
 	EXPECT_THROW(Parse(wxT("SELECT Item, Amount FROM Document.Sales "
 	                       "TOTALS SUM(Amount) OVER (PARTITION BY Item) BY Item")),
 	             ibBackendException);
+}
+
+// ===========================================================================
+// CAST TO A PRIMITIVE — the type a temporary table's field is described by, written in the text.
+// ===========================================================================
+
+#include "core/description/typeDescription.h"
+
+// The qualifiers ride in the text and come back as the type they say.
+TEST(QueryL4Parser, CastToAPrimitiveReadsItsQualifiers)
+{
+	auto sel = Parse(wxT("SELECT CAST(T.Qty AS Number(15, 2)) AS Qty, CAST(T.Name AS String(50)) AS Name, "
+	                     "CAST(T.Day AS Date(Date)) AS Day, CAST(T.Flag AS Boolean) AS Flag, "
+	                     "CAST(T.Note AS String) AS Note INTO Goods FROM &Goods AS T"));
+	ASSERT_EQ(sel->m_projections.size(), 5u);
+	std::vector<ibTypeDescription> types(5);
+	for (size_t i = 0; i < 5; ++i)
+		ASSERT_TRUE(ibQueryCastType(*sel->m_projections[i].m_expr, types[i])) << i;
+
+	EXPECT_TRUE(types[0].ContainType(ibValueTypes::TYPE_NUMBER));
+	EXPECT_EQ(types[0].GetPrecision(), 15);
+	EXPECT_EQ(types[0].GetScale(), 2);
+	EXPECT_TRUE(types[1].ContainType(ibValueTypes::TYPE_STRING));
+	EXPECT_EQ(types[1].GetLength(), 50);
+	EXPECT_TRUE(types[2].ContainType(ibValueTypes::TYPE_DATE));
+	EXPECT_EQ(types[2].GetDateFraction(), ibDateFractions_Date);
+	EXPECT_TRUE(types[3].ContainType(ibValueTypes::TYPE_BOOLEAN));
+	EXPECT_EQ(types[4].GetLength(), 0);   // no qualifier limits nothing
+}
+
+// A narrowing CAST is not a primitive one — the reading says so rather than guessing a type.
+TEST(QueryL4Parser, CastToATableIsNotAPrimitive)
+{
+	auto sel = Parse(wxT("SELECT CAST(Recorder AS Document.Order) AS R FROM AccumulationRegister.Stock"));
+	ibTypeDescription type;
+	EXPECT_FALSE(ibQueryCastType(*sel->m_projections[0].m_expr, type));
+}
+
+TEST(QueryL4Parser, CastQualifiedWronglyIsRefused)
+{
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Qty AS Number(40)) FROM Catalog.X")), ibBackendException);        // too many digits
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Qty AS Number(5, 6)) FROM Catalog.X")), ibBackendException);      // scale beyond them
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Qty AS String(Day)) FROM Catalog.X")), ibBackendException);
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Qty AS Date(Month)) FROM Catalog.X")), ibBackendException);
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Qty AS Boolean(1)) FROM Catalog.X")), ibBackendException);
+	EXPECT_THROW(Parse(wxT("SELECT CAST(Ref AS Document.Order(1)) FROM Catalog.X")), ibBackendException);
+}
+
+TEST(QueryRender, CastToAPrimitiveRoundTrips) {
+	ExpectRoundTrip(wxT("SELECT CAST(T.Qty AS Number(15, 2)) AS Qty, CAST(T.Name AS String(50)) AS Name, "
+	                    "CAST(T.Day AS Date(Time)) AS Day, CAST(T.Flag AS Boolean) AS Flag INTO Goods FROM &Goods AS T"));
+	ExpectRoundTrip(wxT("SELECT Code FROM Catalog.X WHERE CAST(Code AS Number(10)) > 5"));
+}
+
+// ⭐ THE WINDOW'S DIRECTION — a type made into a CAST, written, read back: the same type.
+TEST(QueryRender, ATypeMadeIntoACastComesBackFromTheText)
+{
+	std::vector<ibTypeDescription> types;
+	types.emplace_back(g_valueNumberCLSID, ibTypeDescription::ibTypeData(12, 3));
+	types.emplace_back(g_valueStringCLSID, ibTypeDescription::ibTypeData(static_cast<unsigned short>(25)));
+	types.emplace_back(g_valueDateCLSID, ibTypeDescription::ibTypeData(ibDateFractions_Date));
+	types.emplace_back(g_valueBooleanCLSID);
+	for (const ibTypeDescription& type : types) {
+		ibQueryParser parser;
+		const ibQueryAstExprPtr cast = ibQueryMakeCast(parser.ParseExpression(wxT("T.Field")), type);
+		ASSERT_NE(cast, nullptr);
+		const wxString written = ibRenderQueryExpr(*cast);
+		ibTypeDescription back;
+		ASSERT_TRUE(ibQueryCastType(*parser.ParseExpression(written), back)) << written.ToStdString();
+		EXPECT_TRUE(back.EqualType(type.GetFirstClsid(), type)) << written.ToStdString();
+	}
+	// A composite has no CAST to say it.
+	EXPECT_EQ(ibQueryMakeCast(nullptr, ibTypeDescription(std::vector<ibClassID>{ g_valueNumberCLSID, g_valueStringCLSID })), nullptr);
+}
+
+// ⭐⭐ `<expr> ROLE <word> [n] AS <name>` — what a field is in a balance, said between the expression and its
+// name, optional as AS is. Contextual: `ROLE` followed by none of the five words is a name, so a field
+// called `Role` stays one. And the text makes the round trip whole — the words, and a period's number.
+TEST(QueryL4Parser, RoleSaysWhatAFieldIsInABalance)
+{
+	auto sel = Parse(wxT("SELECT T.Day ROLE PERIOD 2 AS Day, T.Item ROLE DIMENSION AS Item, ")
+	                 wxT("T.Start ROLE OPENING AS Start, T.Finish ROLE CLOSING, T.Receipt, T.Extra ROLE NONE AS Extra, ")
+	                 wxT("T.Kind AS Role, T.Code Role FROM Catalog.X AS T"));
+	ASSERT_EQ(sel->m_projections.size(), 8u);
+	const auto& p = sel->m_projections;
+	EXPECT_TRUE(p[0].m_roleSaid);  EXPECT_EQ(p[0].m_role, ibBalanceRole::Moment);    EXPECT_EQ(p[0].m_periodRank, 2);
+	EXPECT_EQ(p[0].m_alias, wxT("Day"));
+	EXPECT_EQ(p[1].m_role, ibBalanceRole::Dimension);
+	EXPECT_EQ(p[2].m_role, ibBalanceRole::Opening);
+	EXPECT_TRUE(p[3].m_roleSaid);  EXPECT_EQ(p[3].m_role, ibBalanceRole::Closing);   EXPECT_TRUE(p[3].m_alias.IsEmpty());
+	EXPECT_FALSE(p[4].m_roleSaid);                                                    // unsaid: the source's
+	EXPECT_TRUE(p[5].m_roleSaid);  EXPECT_EQ(p[5].m_role, ibBalanceRole::None);      // said NONE: taken away
+	EXPECT_FALSE(p[6].m_roleSaid); EXPECT_EQ(p[6].m_alias, wxT("Role"));             // a field named Role
+	EXPECT_FALSE(p[7].m_roleSaid); EXPECT_EQ(p[7].m_alias, wxT("Role"));             // …aliased without AS too
+
+	// THE ROUND TRIP — written back and read again, every word and number where it was.
+	const wxString written = ibRenderQuery(*sel);
+	auto back = Parse(written);
+	ASSERT_EQ(back->m_projections.size(), p.size()) << written.ToStdString();
+	for (size_t i = 0; i < p.size(); ++i) {
+		EXPECT_EQ(back->m_projections[i].m_roleSaid, p[i].m_roleSaid) << i << ": " << written.ToStdString();
+		EXPECT_EQ(back->m_projections[i].m_role, p[i].m_role) << i;
+		EXPECT_EQ(back->m_projections[i].m_periodRank, p[i].m_periodRank) << i;
+		EXPECT_EQ(back->m_projections[i].m_alias, p[i].m_alias) << i;
+	}
+
+	// A period's number is a whole number from 1, below the band a source orders its own periods in.
+	EXPECT_THROW(Parse(wxT("SELECT T.Day ROLE PERIOD 0 AS Day FROM Catalog.X AS T")), ibBackendException);
 }

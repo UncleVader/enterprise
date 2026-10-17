@@ -29,8 +29,8 @@
 // Everything about who may use which category is decided by whoever owns the
 // category, never here.
 //
-// OWNED BY ibApplicationData, like the job manager and the lock manager —
-// created with it, reached through ibApplicationData::GetSettingsStorage()
+// OWNED BY ibApplicationInstance, like the job manager and the lock manager —
+// created with it, reached through ibApplicationInstance::GetSettingsStorage()
 // (nullptr pre-appData / post-appData; callers must null-check).
 /////////////////////////////////////////////////////////////////////////////
 
@@ -38,8 +38,6 @@
 #include "backend/compiler/value.h"
 
 #include <vector>
-
-#include <wx/datetime.h>   // wxDateTime — when a setting was last written (MSVC drags it in, libstdc++ does not)
 
 class ibDataNode;
 
@@ -118,12 +116,12 @@ struct BACKEND_API ibSettingsKey {
 // answer it would make opening a menu as expensive as restoring all of them.
 struct BACKEND_API ibSettingsEntry {
 	ibGuid     m_settingKey;   // the address INSIDE the object — an identity, not a caption
-	wxDateTime m_changed;
+	ibDateTime m_changed;
 };
 
 class BACKEND_API ibSettingsStorage {
 public:
-	// Construction restricted to ibApplicationData via the token gate — the same
+	// Construction restricted to ibApplicationInstance via the token gate — the same
 	// pattern as the connection pool, the lock manager and the job manager.
 	explicit ibSettingsStorage(ib::AppDataCtorToken);
 	~ibSettingsStorage();

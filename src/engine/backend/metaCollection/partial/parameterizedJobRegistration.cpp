@@ -16,16 +16,16 @@
 //*                    NextRun — the moved computation                  *
 //***********************************************************************
 
-wxDateTime ibValueMetaObjectParameterizedJob::ComputeNextRun(const ibJobScheduleDescription& schedule, const wxDateTime& lastRun)
+ibDateTime ibValueMetaObjectParameterizedJob::ComputeNextRun(const ibJobScheduleDescription& schedule, const ibDateTime& lastRun)
 {
 	// NOT simply lastRun + interval: a schedule is interval AND calendar joined by AND, so the
 	// interval says "no earlier than" and the calendar moves that to the next permitted window and
 	// day. Without the second half an hourly job with a 02:00–05:00 window would be scheduled for
 	// 14:00. This is deliberately the SAME formula the manager uses for a job as a whole, so a row
 	// inherits "a time of day means NOT BEFORE" rather than inventing a stricter reading.
-	const wxDateTime countFrom = lastRun.IsValid()
-		? lastRun + wxTimeSpan::Seconds(schedule.m_intervalSeconds > 0 ? schedule.m_intervalSeconds : 0)
-		: wxDateTime::Now();
+	const ibDateTime countFrom = !lastRun.IsEmpty()
+		? lastRun.AddMilliseconds((schedule.m_intervalSeconds > 0 ? schedule.m_intervalSeconds : 0) * 1000ll)
+		: ibDateTime::Now();
 
 	return ibJobScheduleRules::NextAllowedAfter(schedule, countFrom);
 }
@@ -86,41 +86,28 @@ bool RunParameterizedRowBody(ibSession* session, const ibValueMetaObjectParamete
 }
 
 } // namespace
-#include "backend/session/session.h"   // ibSession::GetManagerModule — the runtime the handler lives in
 
 bool ibValueMetaObjectParameterizedJob::RunHandler(const ibGuid& objGuid) const
 {
 	// ONE VERB, four initiators — the tick, the list command, the card's button and script. None
 	// of them brings a mechanism of its own, so this is the only place that knows how a job's
 	// handler is actually called. What differs is only WHO stamps the row afterwards; see below.
-	const ibValueMetaObjectCommonModule* jobModule = GetManagerModule();
-	if (jobModule == nullptr)
-		ibBackendCoreException::Error(_("the job module is missing"));
-
-	// THE SAME LOOKUP THE MANAGER VALUE USES (commonObject.cpp, ibValueManagerDataObject::
-	// CallAsProc): EditModuleManagerFor, not the session's runtime root.
 	//
-	// Not a nicety — the two are different managers. The root holds the configuration's COMMON
-	// modules; a manager module belongs to its metaobject and is registered where that metaobject's
-	// metadata lives, which in the Designer is a compile-cache manager and has no runtime root at
-	// all. Asking the root found nothing, so a job "ran" and did nothing at all.
-	ibValueModuleManager* const mm = ibSession::EditModuleManagerFor(GetMetaData());
-	if (mm == nullptr)
-		ibBackendCoreException::Error(_("the session has no runtime"));
-
-	ibValueModuleManager::ibValueModuleUnit* const unit = mm->FindCommonModule(jobModule);
-	if (unit == nullptr)
-		ibBackendCoreException::Error(_("the job module is not registered in this session"));
-
 	// The ONLY argument is the job itself. Everything it needs it reads off its own row, on its own
 	// side, under its own rights — which is also what the value gate requires: a loaded object does
 	// not cross a session boundary, a reference always does.
 	ibValuePtr<ibValueReferenceDataObject> reference(ibValueReferenceDataObject::Create(this, objGuid));
 	ibValue jobReference(reference);
 
+	// THE MANAGER'S EVENT, WHOLE — its module's procedure, then every event handler of it, the manager
+	// (ScheduledJobs.Parameterized.<Name>) handed over as Source. The door finds the module itself, once;
+	// not finding it — no runtime, or a module not registered where this runs — is this job's refusal.
+	//
 	// A throw travels: the worker's promise captures it, the manager journals the run as failed.
 	// Swallowing it here would make a broken job look like one that did nothing.
-	unit->ExecAsProc(wxT("JobProcessing"), jobReference);
+	ibValue* params[] = { &jobReference };
+	if (!ibRuntimeModuleDataObject::ExecAsManagerEvent(this, wxT("JobProcessing"), params, 1))
+		ibBackendCoreException::Error(_("the job module is not registered in this session"));
 	return true;
 }
 
@@ -143,7 +130,7 @@ void ibValueMetaObjectParameterizedJob::StampLastRun(const ibGuid& objGuid) cons
 	//     so an open card would be told its data "was changed by another user" — by itself.
 	//   * RUNNING IS NOT EDITING. Execute is its own right; a stamp through the object write would
 	//     silently require Write as well.
-	ibJobManager::WriteSharedLastRun(objGuid, GetRowJobName(objGuid), wxDateTime::Now());
+	ibJobManager::WriteSharedLastRun(objGuid, GetRowJobName(objGuid), ibDateTime::Now());
 }
 
 bool ibValueMetaObjectParameterizedJob::RunJobByReference(const ibGuid& objGuid) const
@@ -179,7 +166,7 @@ bool ibValueMetaObjectParameterizedJob::RegisterRow(const ibGuid& objGuid, bool 
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		return true;   // launcher / pre-bootstrap — nothing to declare against
 
@@ -212,7 +199,7 @@ bool ibValueMetaObjectParameterizedJob::RegisterRow(const ibGuid& objGuid, bool 
 	//
 	// That is the difference between "not due" and "not there". A registered-but-inactive job is
 	// never picked up by the schedule (ibJobManager::IsDue answers false on m_active), and yet it
-	// is a job the manager knows: RunNow finds it, gives it a session of its own and runs it once,
+	// is a job the manager knows: Execute finds it, gives it a session of its own and runs it once,
 	// out of turn, ignoring both the calendar and the switch. Withdrawing it instead would leave
 	// "Execute" on a switched-off row with nothing to ask — which is exactly what it did.
 	//
@@ -297,7 +284,7 @@ bool ibValueMetaObjectParameterizedJob::UnregisterRow(const ibGuid& objGuid, boo
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
 
-	if (ibJobManager* const manager = ibApplicationData::GetJobManager())
+	if (ibJobManager* const manager = ibApplicationInstance::GetJobManager())
 		manager->Unregister(GetRowJobName(objGuid));
 
 	// A row that was DELETED takes its shared record with it — otherwise sys_job keeps the
@@ -315,7 +302,7 @@ bool ibValueMetaObjectParameterizedJob::RegisterJobs()
 	// The Designer never runs a configuration's jobs. It edits them.
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
-	if (ibApplicationData::GetJobManager() == nullptr)
+	if (ibApplicationInstance::GetJobManager() == nullptr)
 		return true;
 
 	const ibBackendQueryable* queryable = GetQueryable();
@@ -361,7 +348,7 @@ bool ibValueMetaObjectParameterizedJob::RegisterJobs()
 			RegisterRow(rowGuid, activeValue.GetBoolean(), schedule->GetSchedule(), description.GetString());
 		}
 	}
-	catch (const ibBackendException& err) {
+	catch (const ibCoreException& err) {
 		// A table that cannot be read at start-up must not stop the configuration from opening —
 		// the rows are still there and re-register themselves as they are written.
 		ibJournalInfo(wxT("job.register"),wxT("scheduled job '%s': rows were not registered: %s"),
@@ -376,7 +363,7 @@ bool ibValueMetaObjectParameterizedJob::UnregisterJobs()
 	if (appData == nullptr || appData->DesignerMode())
 		return true;
 
-	ibJobManager* const manager = ibApplicationData::GetJobManager();
+	ibJobManager* const manager = ibApplicationInstance::GetJobManager();
 	if (manager == nullptr)
 		return true;
 

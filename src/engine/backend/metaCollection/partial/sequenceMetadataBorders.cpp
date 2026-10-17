@@ -17,6 +17,7 @@ wxString ibValueMetaObjectSequence::ibBackendColumnPointInTime::GetSynonym()    
 wxString ibValueMetaObjectSequence::ibBackendColumnPointInTime::GetPhysicalName() const { return m_seq->GetPointInTime()->GetPhysicalName(); }
 ibMetaID ibValueMetaObjectSequence::ibBackendColumnPointInTime::GetColumnId()     const { return m_seq->GetPointInTime()->GetColumnId(); }
 ibTypeDescription& ibValueMetaObjectSequence::ibBackendColumnPointInTime::GetTypeDesc() const { return m_seq->GetPointInTime()->GetTypeDesc(); }
+bool     ibValueMetaObjectSequence::ibBackendColumnPointInTime::IsAvailable()     const { return m_seq->GetPointInTime()->IsAvailable(); }
 
 // THE MOMENT LIES IN TWO OTHER COLUMNS — the period first, then the recorder. Each describes itself,
 // so this is their layouts one after the other: sorting by the moment IS sorting by the period and
@@ -71,7 +72,7 @@ bool ibValueMetaObjectSequence::ibBackendColumnPointInTime::ReadValue(const wxSt
 	ibColumnCodec::ReadField(recorderBase, ibFieldTypes_Reference,
 		recorder, metaData, vRecorder, result, createData);
 
-	retValue = new ibValuePointInTime(vPeriod.GetDateTime(), vRecorder);
+	retValue = new ibValuePointInTime(vPeriod.GetDate(), vRecorder);
 	return true;
 }
 
@@ -80,15 +81,15 @@ bool ibValueMetaObjectSequence::ibBackendColumnPointInTime::ReadValue(const wxSt
 void ibValueMetaObjectSequence::ibBackendColumnPointInTime::BindValue(ibQueryStatement& statement, const ibMetaData* /*metaData*/,
 	const ibValue& value, int& position) const
 {
-	wxDateTime date;
-	ibValue    reference;
+	ibDateTime   date;
+	ibValue      reference;
 	ibValuePointInTime* moment = nullptr;
 	if (value.ConvertToValue(moment) && moment != nullptr) {
 		date      = moment->m_date;
 		reference = moment->m_reference;
 	}
 	else {
-		date = value.GetDateTime();   // a bare date is a legitimate right-hand side: the instant itself
+		date = value.GetDate();   // a bare date is a legitimate right-hand side: the instant itself
 	}
 
 	ibClassID   refClsid = 0;
@@ -251,8 +252,9 @@ void ibValueMetaObjectSequence::ContributeTables(ibSchemaSnapshot& out) const
 		std::vector<const ibBackendQueryColumn*> byKey;
 		for (const ibValueMetaObjectDimension* dimension : GetDimensionArrayObject())
 			byKey.push_back(dimension->GetQueryColumn());
-		byKey.push_back(GetRegisterPeriod()->GetQueryColumn());
-		ibDeclareLookupIndex(t, t.m_name + wxT("_KIX"), byKey);
+		// The period CLOSES the index whatever is cut: what stands between the border and a registration is a
+		// RANGE on it, served only while it stands right after the key's equalities - the totals' `_DL` twin.
+		ibDeclareLookupIndex(t, t.m_name + wxT("_KIX"), byKey, /*closing*/ GetRegisterPeriod()->GetQueryColumn());
 	}
 
 	// …and the borders, one row per key.

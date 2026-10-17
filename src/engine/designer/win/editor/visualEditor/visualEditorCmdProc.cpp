@@ -8,6 +8,7 @@
 
 #include "frontend/mainFrame/mainFrame.h"
 #include "frontend/mainFrame/objinspect/objinspect.h"
+#include "frontend/win/typeconv.h"   // _STDSTR — a class name as the factory takes it
 
 #include "backend/backend_exception.h"   // ibBackendException — caught explicitly; it is NOT a std::exception
 #include "backend/propertyManager/propertyManager.h"
@@ -867,7 +868,7 @@ ibValueFrame* ibVisualEditorNotebook::ibVisualEditor::CreateObject(const wxStrin
 	wxASSERT(m_valueForm);
 	try
 	{
-		//LogDebug("[ibApplicationData::CreateObject] New " + name );
+		//LogDebug("[ibApplicationInstance::CreateObject] New " + name );
 		ibValueFrame* old_selected = GetSelectedObject();
 		ibValueFrame* parent = old_selected;
 
@@ -922,7 +923,7 @@ ibValueFrame* ibVisualEditorNotebook::ibVisualEditor::CreateObject(const wxStrin
 	// so without this branch it flies straight past both handlers and out of the event handler.
 	// Creating a control walks the metadata (property manager, attribute / command values), which
 	// is exactly the code that raises it.
-	catch (const ibBackendException& err)
+	catch (const ibCoreException& err)
 	{
 		ibJournalError(wxT("designer"), wxT("%s"), err.GetErrorDescription());
 	}
@@ -1342,7 +1343,7 @@ bool ibVisualEditorNotebook::ibVisualEditor::PasteObject(ibValueFrame* dstObject
 		SelectObject(obj, true, true);
 	}
 	// The project's own exception first — see the twin note above.
-	catch (const ibBackendException& err)
+	catch (const ibCoreException& err)
 	{
 		ibJournalError(wxT("designer"), wxT("%s"), err.GetErrorDescription());
 		return false;

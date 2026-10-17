@@ -17,8 +17,7 @@
 #include <utility>
 
 #include "backend/session/session.h"   // ibSession::Current — the register lives on the session
-#include "backend/diagnostics/journal.h"   // a read refused across sessions is said out loud
-#include "backend/utils/debugTrace.h"      // ibDebugTraceEnabled — the register measurement is opt-in
+#include "core/diagnostics/debugTrace.h"      // ibDebugTraceEnabled — the register measurement is opt-in
 #include <unordered_map>
 #include <unordered_set>         // Unread — an identity filed twice is told once
 #include <mutex>                 // the table is read by a rented read on another thread
@@ -507,7 +506,8 @@ void ibValueReferenceDataObject::PrepareRef(bool createData)
 }
 
 ibValueReferenceDataObject::ibValueReferenceDataObject(const ibValueMetaObjectRecordDataRef* metaObject, const ibGuid& objGuid) : ibValueDynamicMembers(ibValueTypes::TYPE_VALUE, true), ibValueDataObject(objGuid, !objGuid.isValid()),
-m_metaObject(metaObject), m_reference_impl(nullptr), m_foundedRef(false)
+m_metaObject(metaObject), m_metaclass(clsid_metaclass(metaObject->GetClassType())),
+m_reference_impl(nullptr), m_foundedRef(false)
 {
 	m_members.Bind(this, &ibValueReferenceDataObject::FillMembers);
 	// The stored key (_RRRef) is the pure object guid; the type is carried separately (metaObject / _RTRef).
@@ -698,7 +698,7 @@ ibValueReferenceDataObject* ibValueReferenceDataObject::Create(const ibMetaData*
 	// pays for resolving the metaobject, and only a miss needs one.
 	if (::IsReference(refClsid))   // the free clsid classifier — ibValue has a same-named member that hides it
 		if (ibValueReferenceDataObject* const live = ibReferenceRegistry::Find(
-				static_cast<ibMetaID>(metaID_from_clsid(refClsid)), reference->m_guid))
+				static_cast<ibMetaID>(clsid_metaID(refClsid)), reference->m_guid))
 			return ReadAsAsked(live, load);
 
 	return Create(MetaObjectFromClsid(metaData, refClsid), reference->m_guid, load);
@@ -788,18 +788,32 @@ bool ibValueReferenceDataObject::CoerceHopType(const ibSourceHop& hop, ibValue& 
 // the kind-byte shortcut mis-classified composite branches (a clsid that is not a constructive reference id).
 // Non-reference clsids (a list / object / primitive branch) are skipped. Pickers call it to enumerate a
 // COMPOSITE reference's branches.
+//
+// ⭐ AN "ANY" IS SEEN AS ITS FACADE — `CatalogRef` as every catalog's reference, `AnyRef` as every reference —
+// the way a characteristic is seen as its chart's types: a filter, a field tree, a picker offers what can be
+// CHOSEN, and nothing is ever "a CatalogRef". Read off its bits (clsid_admits), so a catalog added later is in
+// it. A field declared with one stores the same members (ibVariantDataAttribute::DoRefreshTypeDesc); this
+// answers for a type handed in on its own.
 std::vector<ibMetaID> ibValueReferenceDataObject::ConvertToMetaIds(const std::vector<ibClassID>& clsids, const ibMetaData* metaData)
 {
 	std::vector<ibMetaID> targets;
 	if (metaData == nullptr)
 		return targets;
-	for (const ibClassID& clsid : clsids) {
-		const ibCtorMetaValueType* typeCtor = metaData->GetTypeCtor(clsid);
-		if (typeCtor == nullptr || typeCtor->GetMetaTypeCtor() != ibCtorObjectMetaType::ibCtorObjectMetaType_Reference)
-			continue;
-		const ibValueMetaObject* metaObj = typeCtor->GetMetaObject();
-		if (metaObj != nullptr)
+	const auto add = [&targets](const ibValueMetaObject* metaObj) {
+		if (metaObj != nullptr && std::find(targets.begin(), targets.end(), metaObj->GetMetaID()) == targets.end())
 			targets.push_back(metaObj->GetMetaID());
+	};
+	for (const ibClassID& clsid : clsids) {
+		if (const ibCtorMetaValueType* typeCtor = metaData->GetTypeCtor(clsid)) {
+			if (typeCtor->GetMetaTypeCtor() == ibCtorObjectMetaType::ibCtorObjectMetaType_Reference)
+				add(typeCtor->GetMetaObject());
+			continue;
+		}
+		if (!::IsReference(clsid) || !clsid_is_any(clsid))   // the kind byte — ibValue has an IsReference() of its own
+			continue;
+		for (const ibCtorMetaValueType* member : metaData->GetListCtorsByType(ibCtorObjectMetaType::ibCtorObjectMetaType_Reference))
+			if (clsid_admits(clsid, member->GetClassType()))
+				add(member->GetMetaObject());
 	}
 	return targets;
 }
@@ -809,17 +823,15 @@ void ibValueReferenceDataObject::ShowValue()
 {
 	ibValueMetaObjectRecordDataMutableRef* metaObject = nullptr;
 	if (m_metaObject->ConvertToValue(metaObject)) {
-		ibValueRecordDataObject* objValue = nullptr;
-		if (metaObject != nullptr && m_objGuid.isValid())
-			objValue = metaObject->CreateObjectValue(m_objGuid);
-		else
-			objValue = metaObject->CreateObjectValue();
+		const ibValuePtr<ibValueRecordDataObjectRef> objValue = metaObject != nullptr && m_objGuid.isValid()
+			? metaObject->CreateObjectValue(m_objGuid)
+			: metaObject->CreateObjectValue();
 		if (objValue != nullptr)
 			objValue->ShowFormValue();
 	}
 }
 
-ibValueRecordDataObjectRef* ibValueReferenceDataObject::GetObject() const
+ibValuePtr<ibValueRecordDataObjectRef> ibValueReferenceDataObject::GetObject() const
 {
 	ibValueMetaObjectRecordDataMutableRef* metaObject = nullptr;
 	if (m_metaObject->ConvertToValue(metaObject)) {
@@ -832,9 +844,12 @@ ibValueRecordDataObjectRef* ibValueReferenceDataObject::GetObject() const
 
 #include "backend/objCtor.h"
 
-// ⭐⭐ A DYNAMIC VALUE'S CLSID IS CONSTRUCTIVE — kind plus metaID, and both are already in hand. There is
-// nothing to look up: `reference_to_clsid(metaID)` IS the id the registry would have handed back, by the
-// same construction that put it there (`make_clsid_dynamic`, clsid.h).
+// ⭐⭐ A DYNAMIC VALUE'S CLSID IS CONSTRUCTIVE — kind, metaclass and metaID: `reference_to_clsid(metaID,
+// metaclass)` IS the id the registry would have handed back, by the same construction that put it there
+// (`make_clsid_dynamic`, clsid.h). So it is composed here, bit by bit, from the metaobject's metaID and the
+// reference's family (m_metaclass): the one part a metaobject answers through the class registry (by its C++
+// type) is asked once, when the reference is made, and never per question (Max, 2026-09-27: keep the family,
+// compose the id).
 //
 // 🛑 It used to walk to the class registry for it — `GetTypeCtor(...)->GetClassType()` — which made the
 // cheapest question in the engine expensive. And it IS the cheapest question: the KIND lives in the top
@@ -843,7 +858,7 @@ ibValueRecordDataObjectRef* ibValueReferenceDataObject::GetObject() const
 ibClassID ibValueReferenceDataObject::GetClassType() const
 {
 	return m_metaObject != nullptr
-		? reference_to_clsid(m_metaObject->GetMetaID())
+		? reference_to_clsid(m_metaObject->GetMetaID(), m_metaclass)
 		: ibClassID(0);
 }
 
@@ -866,13 +881,15 @@ const ibSourceExplorer* ibValueReferenceDataObject::GetSourceExplorer() const
 	const ibValueMetaObjectRecordData* metaObject = GetMetaObject();
 	if (metaObject == nullptr)
 		return nullptr;   // unresolved / empty reference — no target type to describe, so the hop stops here
-	m_sourceExplorer.Reset(wxT("Ref"), _("Ref"), metaObject->GetMetaID(), GetClassType(), false, false);
+	if (!m_sourceExplorer.Reset(metaObject->GetMetaData()->GetFactoryCountChanges(),
+		wxT("Ref"), _("Ref"), metaObject->GetMetaID(), GetClassType(), false, false))
+		return &m_sourceExplorer;   // built at this version of the metadata already — read as it is
 	for (const auto object : metaObject->GetGenericAttributeArrayObject())
 		m_sourceExplorer.AppendColumn(object->GetQueryColumn());
 	return &m_sourceExplorer;
 }
 
-wxString ibValueReferenceDataObject::GetString() const
+ibString ibValueReferenceDataObject::GetString() const
 {
 	// ⭐⭐ IN THE DESIGNER A REFERENCE IS A TYPE AND A GUID, AND NOTHING ELSE — "what matters to the
 	// designer is that the reference has a guid, and that's it" (Max, 2026-08-28). There is no row to
@@ -917,6 +934,25 @@ wxString ibValueReferenceDataObject::GetClassName() const
 		m_metaObject->GetTypeCtor(ibCtorObjectMetaType::ibCtorObjectMetaType_Reference);
 	wxASSERT(clsFactory);
 	return clsFactory->GetClassName();
+}
+
+// ⭐⭐ A REFERENCE PASSES THE VERB ON, and that is the whole of its part. It holds the two things the
+// answer needs — the metaobject that GOVERNS it and the element it STANDS FOR — so it hands both over
+// and gives back whatever comes. It does not know what narrows a value, which attribute carries a type,
+// or that such a thing as a type description exists.
+//
+// 🛑 AND WHATEVER COMES BACK IS THE ANSWER — there is no second try here. The governor's `false` means
+// "the value did not fit", and it arrives WITH the narrowed value in `out`; reading it as "not mine" and
+// asking somebody else overwrote a correct empty goods reference with an undefined value, which is a
+// subconto quietly losing its type (measured 2026-09-24 on the ledger base). A metaobject that declares
+// no limit answers by its own class in its own place (genericData.h), so every road is already covered
+// before the question reaches here.
+bool ibValueReferenceDataObject::AdjustOutValue(const ibValue& varValue, ibValue& out) const
+{
+	const ibValueMetaObjectGenericData* metaObject = GetSourceMetaObject();
+	return metaObject != nullptr
+		? metaObject->AdjustOutValue(*this, varValue, out)
+		: ibValue::AdjustOutValue(varValue, out);
 }
 
 //****************************************************************************
@@ -1003,6 +1039,9 @@ bool ibValueReferenceDataObject::GetPropVal(const long lPropNum, ibValue& pvarPr
 		if (lPropAlias == eTable && GetValueByMetaID(id, pvarPropVal)) {
 			ibValueTabularSectionDataObjectRef* tabularSection = nullptr;
 			if (pvarPropVal.ConvertToValue(tabularSection)) {
+				// ONCE, WHILE THE READ IS STILL PENDING — the flag says whether the rows are here yet, and
+				// LoadData clears it. Reading again would begin by CLEARING the model and detach every row
+				// already handed out; see the note on IsReadAfter.
 				if (tabularSection->IsReadAfter()) {
 					if (!tabularSection->LoadData(m_objGuid, true)) {
 						pvarPropVal.Reset();
@@ -1055,12 +1094,12 @@ bool ibValueReferenceDataObject::CallAsFunc(const long lMethodNum, ibValue& pvar
 		// It carries THIS reference, not a copy: `GetValue(true)` is the verb for handing out this
 		// very value, where a second ibValueReferenceDataObject over the same (type, guid) would be
 		// a second object for one identity -- the thing a reference exists to prevent.
-		wxDateTime when;
+		ibDateTime when;
 		const ibValueMetaObjectRecordDataRecorderRef* recorder = nullptr;
 		if (!IsEmptyRef() && m_metaObject->ConvertToValue(recorder) && recorder != nullptr) {
 			ibValue date;
 			if (GetValueByMetaID(recorder->GetDocumentDate()->GetMetaID(), date) && date.GetType() == ibValueTypes::TYPE_DATE)
-				when = date.GetDateTime();
+				when = date.GetDate();
 		}
 		pvarRetValue = new ibValuePointInTime(when, GetValue(true));
 		return true;
@@ -1083,7 +1122,7 @@ bool ibValueReferenceDataObject::CallAsFunc(const long lMethodNum, ibValue& pvar
 // in is still a reference, and the far side must be able to compare and assign
 // it without a type error.
 
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 
 bool ibValueReferenceDataObject::DoSerialize(ibDataNode& node) const
 {

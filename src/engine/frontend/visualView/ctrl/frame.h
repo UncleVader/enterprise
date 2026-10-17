@@ -14,6 +14,8 @@
 #include "backend/backend_localization.h"
 #include "backend/eventDispatcher.h"   // ibEventDispatcher — CallAsEvent dispatches the event's value through it
 
+#include "frontend/win/typeconv.h"   // the properties' colour, font, point and size, as the widgets take them
+
 #include "frontend/visualView/formdefs.h"
 #include "frontend/visualView/controlCtor.h"
 #include "frontend/visualView/visualHost.h"
@@ -41,7 +43,7 @@ class FRONTEND_API ibVisualHostClient;
 #define wxDefaultStypeFGColour wxColour(0x3F, 0x5C, 0x77)  // #3F5C77 deep dusty blue
 #define wxDefaultStypeBGColour wxColour(0xFA, 0xF7, 0xF0)  // #FAF7F0 cream content
 
-#include "backend/fileSystem/fs.h"
+#include "core/fileSystem/fs.h"
 
 class FRONTEND_API ibFormVisualDocument;
 
@@ -238,6 +240,10 @@ public:
 	*/
 	virtual bool CanDeleteControl() const = 0;
 
+	// Available by the functional options of this base — answered by an element of a form (control.h);
+	// anything else in the tree (a form, a sizer item) always is.
+	virtual bool IsAvailable() const { return true; }
+
 public:
 
 	// before/after run 
@@ -374,8 +380,12 @@ public:
 	ibFrontendVisualEditorNotebook* FindVisualEditor() const;
 #endif
 
-	//support printing 
-	virtual wxPrintout* CreatePrintout() const { return nullptr; }
+	// ⭐ A CONTROL THAT IS A DOCUMENT OF ITS OWN HANDS OVER ITS VIEW (Max, 2026-09-22: "the form is the same
+	// doc/view, redirecting to the active element… the form's doc is only a facade"). The grid box and the
+	// text box hold a document and its view; while the control is the active element, the form's view
+	// (ibFormVisualEditView) is a facade over this one: menu, toolbar, commands, PRINTING — there is no
+	// printout of a control's own any more, the view prints it — and saving. Everything else answers nothing.
+	virtual ibView* GetControlView() const { return nullptr; }
 
 public:
 

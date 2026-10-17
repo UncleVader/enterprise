@@ -25,9 +25,9 @@
 #include "backend/appData.h"
 #include "backend/metaCollection/metaIntrospect.h"   // ibConfigurationWritesInWords — the dialect this configuration uses
 #include "backend/metadataConfiguration.h"
-#include "backend/syntaxHelper/helpCorpus.h"
-#include "backend/syntaxHelper/helpEntry.h"
-#include "backend/syntaxHelper/helpService.h"
+#include "core/syntaxHelper/helpCorpus.h"
+#include "core/syntaxHelper/helpEntry.h"
+#include "core/syntaxHelper/helpService.h"
 
 namespace {
 
@@ -54,6 +54,16 @@ wxString KindWord(ibHelpKind kind)
 	case ibHelpKind::kCollection:          return wxT("collection");
 	case ibHelpKind::kEvent:               return wxT("event");
 	case ibHelpKind::kOperator:            return wxT("operator");
+	// The member kinds, and the two globals beside them. Until 2026-09-22 the loader had no word
+	// for any of these and handed them over as kKeyword, so every property and method of every
+	// class answered `help_read` with "keyword" — the one classification that is never true of a
+	// member. The words differ from the metaobject ones on purpose: "attribute" and "method"
+	// there are about a CONFIGURATION's object, these are about a platform class.
+	case ibHelpKind::kProperty:            return wxT("property");
+	case ibHelpKind::kMethod:              return wxT("classMethod");
+	case ibHelpKind::kProcedure:           return wxT("classProcedure");
+	case ibHelpKind::kSystemProcedure:     return wxT("procedure");
+	case ibHelpKind::kEnumType:            return wxT("enumType");
 	}
 
 	return wxT("unknown");
@@ -61,7 +71,7 @@ wxString KindWord(ibHelpKind kind)
 
 std::shared_ptr<const ibHelpCorpus> Corpus(wxString& refusal)
 {
-	ibHelpService* service = ibApplicationData::GetHelpService();
+	ibHelpService* service = ibApplicationInstance::GetHelpService();
 	if (service == nullptr) {
 		refusal = ibMcpText("The syntax helper is not loaded in this process.");
 		return nullptr;
@@ -380,6 +390,11 @@ public:
 		result.SetValue(wxT("nameEn"), entry->nameEn);
 		result.SetValue(wxT("kind"), KindWord(entry->kind));
 
+		// The runtime class the article is about, named by the REGISTRY from the article's hidden class id
+		// (helpEntry.h) - the name `New` takes, whatever the article is called in this locale.
+		if (entry->classId != 0)
+			result.SetValue(wxT("class"), ibValue::GetNameObjectFromID(entry->classId));
+
 		if (!entry->signature.IsEmpty())   result.SetValue(wxT("signature"), entry->signature);
 		if (!entry->description.IsEmpty()) result.SetValue(wxT("description"), entry->description);
 		if (!entry->parameters.IsEmpty())  result.SetValue(wxT("parameters"), entry->parameters);
@@ -413,7 +428,7 @@ public:
 			result.SetValue(wxT("syntaxNote"),
 				ibMcpText("This entry is written down only in the other syntax form."));
 
-		// WHERE IT IS VALID AT ALL. "Works in the daemon, not in the designer" is
+		// WHERE IT IS VALID AT ALL. "Works in appserver, not in the designer" is
 		// the class of mistake that costs a run to discover.
 		if (!entry->availability.IsEmpty())
 			result.SetValue(wxT("availability"), entry->availability);

@@ -2,7 +2,7 @@
 #define __META_CONTEXT_H__
 
 #include "backend/metaCollection/attribute/metaAttributeObject.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (String guid)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (String guid)
 
 #pragma region __property_standart_h__
 
@@ -200,7 +200,7 @@ protected:
 	}
 
 	ibValueMetaObjectAttributePredefined* CreateDate(const wxString& name, const wxString& synonym, const wxString& comment,
-		ibDateFractions dateTime, bool fillCheck, const wxDateTime& defValue, ibItemMode useItem = ibItemMode::ibItemMode_Item, ibSelectMode selectMode = ibSelectMode::ibSelectMode_Items, ibIndexingMode indexingMode = ibIndexingMode::ibIndexingMode_DontIndex) {
+		ibDateFractions dateTime, bool fillCheck, const ibDateTime& defValue, ibItemMode useItem = ibItemMode::ibItemMode_Item, ibSelectMode selectMode = ibSelectMode::ibSelectMode_Items, ibIndexingMode indexingMode = ibIndexingMode::ibIndexingMode_DontIndex) {
 		return ibValueMetaObject::CreateMetaObjectAndSetParent<ibValueMetaObjectAttributePredefined>(name, synonym, comment, ibQualifierDate(dateTime), fillCheck, ibValue(defValue), useItem, selectMode, indexingMode);
 	}
 

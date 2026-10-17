@@ -7,20 +7,20 @@
 #include "form.h"
 
 #include "backend/metaCollection/partial/commonObject.h"   // ibSourceDataObject
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/system/value/valueType.h"                 // ibValueTypeDescription::AdjustValue
-#include "backend/compositionDescription.h"                 // ibCompositionDescription (list settings form)
+#include "core/description/compositionDescription.h"        // ibCompositionDescription (list settings form)
 #include "backend/tabularModel.h"                        // ibValueModel (table-source check)
-#include "backend/typeDescription.h"                          // ibTypeDescription::GetFirstClsid (value materialise)
+#include "core/description/typeDescription.h"                          // ibTypeDescription::GetFirstClsid (value materialise)
 #include "backend/system/systemManager.h"                    // ibValueSystemFunction::Message — the filling check reports
 #include "backend/metaData.h"                                // GetTypeCtor
 #include "backend/objCtor.h"                                 // ibCtorMetaValueType / ibCtorObjectMetaType
-#include "backend/appData.h"                                 // ibApplicationData::GetActiveMetaData (metadata fallback)
+#include "backend/appData.h"                                 // ibApplicationInstance::GetActiveMetaData (metadata fallback)
 #include "backend/metadataConfiguration.h"                   // ibMetaDataConfigurationBase : ibMetaData (upcast)
-#include "backend/clsid.h"
+#include "core/clsid.h"
 #include "backend/metaCollection/metaFormObject.h"            // ibValueMetaObjectFormBase::SaveFormData — the live form back into its blob
 #include "backend/backend_core.h"                            // oes_clipboard_attribute
-#include "backend/fileSystem/fs.h"                           // ibWriterMemory / ibReaderMemory (clipboard serialize)
+#include "core/fileSystem/fs.h"                           // ibWriterMemory / ibReaderMemory (clipboard serialize)
 #ifndef OES_USE_WEB
 #include "frontend/visualView/visualHost.h"                  // g_visualHostContext / RefreshEditor (designer refresh)
 #include <wx/clipbrd.h>
@@ -583,7 +583,7 @@ const ibMetaData* ibFormAttributeValue::ibFormAttribute::GetMetaData() const
 	// no longer delegates to the form's SOURCE object (which, for a held dynamic list, walked back here → stack
 	// overflow). A dynamically-created form yields null → fall back to the ACTIVE config (always correct).
 	const ibMetaData* md = m_ownerForm != nullptr ? m_ownerForm->GetMetaData() : nullptr;
-	return md != nullptr ? md : ibApplicationData::GetActiveMetaData();
+	return md != nullptr ? md : ibApplicationInstance::GetActiveMetaData();
 }
 
 // Editable only when the owner form is — a form opened over a read-only metadata (a DB / file config, not the

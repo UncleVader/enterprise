@@ -30,9 +30,9 @@
 
 #include <wx/init.h>                                         // wxInitializer — bring up wxBase
 
-#include "backend/appData.h"                                 // ibApplicationData
+#include "backend/appData.h"                                 // ibApplicationInstance
 #include "backend/compiler/value.h"                          // ibValue / ibNumber / g_value*CLSID
-#include "backend/typeDescription.h"                         // ibTypeDescription
+#include "core/description/typeDescription.h"                         // ibTypeDescription
 #include "backend/databaseLayer/connectionPool.h"            // ibConnectionPool::ThreadHolder
 #include "backend/databaseLayer/connectionHolder.h"          // ibDatabaseConnectionHolder
 #include "backend/databaseLayer/sqllite/sqliteDatabaseLayer.h"
@@ -47,7 +47,7 @@
 #include "backend/compiler/compileCode.h"     // ibCompileCode — script lexer feeding the LINQ recorder
 #include "backend/compiler/lambdaQueryAST.h"  // ibBuildLambdaQueryAstFromCode (L4-2 recorder)
 
-#include "backend/clsid.h"                                   // reference_to_clsid — a reference column's type
+#include "core/clsid.h"                                   // reference_to_clsid — a reference column's type
 #include "backend/metadataConfiguration.h"                   // ibMetaDataConfigurationFile — a catalog to point references at
 #include "backend/metaCollection/metaObject.h"               // g_metaCatalogCLSID
 #include "backend/metaCollection/partial/reference/reference.h"   // ibValueReferenceDataObject::Create
@@ -153,9 +153,9 @@ struct ComputedServerFix : ::testing::Test {
 	void SetUp() override {
 		if (!m_wxInit.IsOk())
 			GTEST_SKIP() << "wxBase init failed (no wxApp host)";
-		if (!ibApplicationData::CreateAppDataEnv(ibRunMode::eRUNTIME_MODE))
+		if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
 			GTEST_SKIP() << "appData env unavailable headless";
-		ibConnectionPool* pool = ibApplicationData::GetConnectionPool();
+		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool after CreateAppDataEnv";
 		db = std::make_shared<ibDatabaseLayerSQLite>();
@@ -165,8 +165,8 @@ struct ComputedServerFix : ::testing::Test {
 		ready = true;
 	}
 	void TearDown() override {
-		if (ibApplicationData::Get() != nullptr)
-			ibApplicationData::DestroyAppDataEnv();
+		if (ibApplicationInstance::Get() != nullptr)
+			ibApplicationInstance::DestroyAppDataEnv();
 	}
 };
 
@@ -219,7 +219,7 @@ TEST_F(ComputedServerFix, Aggregate_PromotesToServer)
 TEST_F(ComputedServerFix, Linq_WherePushesToServer)
 {
 	if (!ready) return;
-	ibCompileCode::SetCodeStyle(CODE_CES);   // the lambda body below is CES ('{ return … ; }')
+	ibTestCodeStyle style(CODE_CES);   // the lambda body below is CES ('{ return … ; }')
 
 	db->RunQuery(wxT("CREATE TABLE t (region TEXT, qty INTEGER)"));
 	db->RunQuery(wxT("INSERT INTO t (region, qty) VALUES ('North', 10), ('South', 5), ('North', 7), ('East', 3)"));
@@ -617,7 +617,7 @@ TEST_F(ComputedServerFix, In_ReferencesOfOneTableSayTheTableOnce)
 	ReferenceSetFix f;
 	ASSERT_TRUE(f.Ready());
 
-	TypedCol item(wxT("item"), 340, ibTypeDescription(reference_to_clsid(f.items->GetMetaID())));
+	TypedCol item(wxT("item"), 340, ibTypeDescription(reference_to_clsid(f.items->GetMetaID(), clsid_metaclass(f.items->GetClassType()))));
 	const std::vector<wxString> fields = ColumnFieldNames(&item);
 	ASSERT_EQ(fields.size(), 3u) << "a single-target reference is expected to spread as _TYPE + _RTRef + _RRRef";
 
@@ -634,26 +634,27 @@ TEST_F(ComputedServerFix, In_ReferencesOfOneTableSayTheTableOnce)
 	EXPECT_TRUE(sql.Contains(fields[2] + wxT(" IN (")));
 }
 
-// References of TWO tables do not agree on the table, so nothing may be said once: pair by pair, as before —
-// and folded as a balanced tree, which a renderer can walk whatever the size of the set.
-TEST_F(ComputedServerFix, In_ReferencesOfTwoTablesFoldPairByPair)
+// References of TWO tables do not agree on the table — so each table says itself once over its own ids, and the
+// tables are ORed: one IN per table (DecomposeIn, 2026-10-05). It was pair by pair, a thousand ORs for a thousand
+// references, where a walk filter's set of a few thousand documents is the ordinary case.
+TEST_F(ComputedServerFix, In_ReferencesOfTwoTablesSayEachTableOnce)
 {
 	if (!ready) return;
 	ReferenceSetFix f;
 	ASSERT_TRUE(f.Ready());
 
-	ibTypeDescription both(reference_to_clsid(f.items->GetMetaID()));
-	both.AppendMetaType(reference_to_clsid(f.units->GetMetaID()));
+	ibTypeDescription both(reference_to_clsid(f.items->GetMetaID(), clsid_metaclass(f.items->GetClassType())));
+	both.AppendMetaType(reference_to_clsid(f.units->GetMetaID(), clsid_metaclass(f.units->GetClassType())));
 	TypedCol subject(wxT("subject"), 341, both);
 
 	std::vector<ibValue> values;
 	for (int i = 0; i < 1000; ++i)
 		values.push_back(f.RefTo(i % 2 ? f.items : f.units));
 
-	const wxString sql = f.SqlOfSet(&subject, 344, values);   // a chain a thousand deep is what this must survive
+	const wxString sql = f.SqlOfSet(&subject, 344, values);
 	ASSERT_FALSE(sql.IsEmpty());
-	EXPECT_EQ(ReferenceSetFix::CountOf(sql, wxT(" IN (")), 0) << "two tables share no tag to say once";
-	EXPECT_EQ(ReferenceSetFix::CountOf(sql, wxT(" OR ")), 999);
+	EXPECT_EQ(ReferenceSetFix::CountOf(sql, wxT(" IN (")), 2) << "one IN per table: " << sql.Left(400);
+	EXPECT_EQ(ReferenceSetFix::CountOf(sql, wxT(" OR ")), 1) << "the two tables, ORed";
 }
 
 // 🛑 AN EMPTY REFERENCE IN THE LIST, AND THE WHOLE LIST GOES PAIR BY PAIR. "Not filled" is the zero-guid
@@ -665,7 +666,7 @@ TEST_F(ComputedServerFix, In_AnEmptyReferenceAmongTheValuesGoesPairByPair)
 	ReferenceSetFix f;
 	ASSERT_TRUE(f.Ready());
 
-	TypedCol item(wxT("item"), 342, ibTypeDescription(reference_to_clsid(f.items->GetMetaID())));
+	TypedCol item(wxT("item"), 342, ibTypeDescription(reference_to_clsid(f.items->GetMetaID(), clsid_metaclass(f.items->GetClassType()))));
 	const std::vector<ibValue> values{ f.RefTo(f.items), f.RefTo(f.items), ibValue(), f.RefTo(f.items) };
 
 	const wxString sql = f.SqlOfSet(&item, 345, values);

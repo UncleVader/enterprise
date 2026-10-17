@@ -13,6 +13,8 @@
 #if wxUSE_DATAVIEWCTRL
 
 #include "dataview.h"
+#include "backend/backend_picture.h"   // ibBackendPicture::GetPicture — a row's state picture, by its id
+#include "frontend/win/typeconv.h"     // ColourToWxColour — an item's colours are the model's data
 #ifndef WX_PRECOMP
 #ifdef __WXMSW__
 #include <wx/app.h>          // GetRegisteredClassName()
@@ -1267,7 +1269,7 @@ wxSize ibDataViewTextRenderer::GetSize() const
 			ibDataViewCtrl* const view = GetView();
 			wxClientDC dc(view);
 			if (GetAttr().HasFont())
-				dc.SetFont(GetAttr().GetEffectiveFont(view->GetFont()));
+				dc.SetFont(ibEffectiveFont(GetAttr(), view->GetFont()));
 
 			return m_markupText->Measure(dc);
 		}
@@ -1495,7 +1497,7 @@ ibDataViewProgressRenderer::Render(wxRect rect, wxDC* dc, int WXUNUSED(state))
 {
 	const ibDataViewItemAttr& attr = GetAttr();
 	if (attr.HasColour())
-		dc->SetBackground(attr.GetColour());
+		dc->SetBackground(typeConv::ColourToWxColour(attr.GetColour()));
 
 	// This is a hack, but native renderers don't support using custom colours,
 	// but typically gauge colour is important (e.g. it's commonly green/red to
@@ -2100,6 +2102,19 @@ ibDataViewCtrl::StartEditing(const ibDataViewItem& item,
 	ibDataViewRenderer* renderer = col->GetRenderer();
 	if (!IsCellEditableInMode(item, col, wxDATAVIEW_CELL_EDITABLE))
 		return;
+
+	// ⭐ ONE EDITOR AT A TIME — asked here, the door every start goes through (a click, a key, EditItem). A
+	// renderer holds ONE editor, and a double-click on a cell that edits on one click starts it twice: the first
+	// click opens the editor, the second arrives as an activation whose handler asks for the cell again. The second
+	// editor took the renderer's place and the first stayed on the screen with nobody left to close it, over a box
+	// read again from the model (Max, 2026-09-29, the composer's Fields page: "the editor either resets all the time,
+	// or it cannot be closed"). An editor still shown for this column is the cell already being edited — a click
+	// elsewhere would have closed it first; one of another column is finished before this one opens.
+	if (m_editorCtrl && m_editorCtrl->IsShown()) {
+		if (m_editorRenderer == renderer)
+			return;
+		m_editorRenderer->FinishEditing();
+	}
 
 	wxRect itemRect = GetItemRect(item, col);
 
@@ -3177,6 +3192,19 @@ int ibDataViewCtrl::GetLineHeight(unsigned int row) const
 
 	height = QueryAndCacheLineHeight(row, item);
 	return height;
+}
+
+// THE PICTURE FOR AN ID, MADE ONCE. A row's state picture is one of a handful, repeated down the whole list, so each
+// is taken from the picture registry the first time a row shows it and kept here by its id; every row after draws
+// the same bitmap.
+const wxBitmap& ibDataViewCtrl::RowPictureBitmap(const ibPictureID& picture)
+{
+	if (picture == 0)
+		return wxNullBitmap;
+	std::map<ibPictureID, wxBitmap>::const_iterator it = m_rowPictures.find(picture);
+	if (it == m_rowPictures.end())
+		it = m_rowPictures.emplace(picture, ibBackendPicture::GetPicture(picture)).first;
+	return it->second;
 }
 
 int ibDataViewCtrl::QueryAndCacheLineHeight(unsigned int row, ibDataViewItem item) const
@@ -5997,6 +6025,12 @@ public:
 			ibDataViewTreeNode* node = m_dvc->GetTreeNodeByRow(row);
 			item = node->GetItem();
 			width = m_dvc->GetIndent() * node->GetIndentLevel() + m_expanderSize;
+			// …and the row's state picture, drawn after the expander (DrawTableContent).
+			if (m_model != NULL) {
+				const ibPictureID picture = m_model->GetRowPicture(item);
+				if (picture != 0)
+					width += ibBackendPicture::GetPicture(picture).GetLogicalWidth() + m_dvc->FromDIP(4);
+			}
 		}
 		else
 		{
@@ -7002,9 +7036,14 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 	CalcDataViewWindowUnscrolledPosition(cw + gridOffset.x, ch + gridOffset.y, &right, &bottom, tableWindow);
 
 	// compute which items needs to be redrawn
+	//
+	// 🛑 UP TO THE LINE AT THE BOTTOM EDGE — `bottom` is a POSITION, like `top`, not a height. It read
+	// `GetLineAt(top + bottom)`, upstream's `update.y + update.height` with the height swapped for a second
+	// position, so the scroll counted twice: ninety rows down, a pass drew 101 rows for the 11 on screen,
+	// and every one of them went through the model, the format and the drawing (paint probe, 2026-09-26).
 	unsigned int item_start = GetLineAt(wxMax(0, top));
 	unsigned int item_count =
-		wxMin((int)(GetLineAt(wxMax(0, top + bottom)) - item_start + 1),
+		wxMin((int)(GetLineAt(wxMax(0, bottom)) - item_start + 1),
 			(int)(GetRowCount() - item_start));
 	unsigned int item_last = item_start + item_count;
 
@@ -7433,9 +7472,10 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 	// expander column's content x; the per-row indent + expander width are added at the draw site below.
 	int grpCaptionColX = 0;
 	{
-		const unsigned int expIdx = GetColumnIndex(expander);
-		for (unsigned int c = 0; c < expIdx; c++) {
-			ibDataViewColumn* cc = GetColumn(c);
+		// SIGNED, as the answer is: wxNOT_FOUND read as unsigned is four billion columns to walk (WXColumnTreeChanged).
+		const int expIdx = GetColumnIndex(expander);
+		for (int c = 0; c < expIdx; c++) {
+			ibDataViewColumn* cc = GetColumn(static_cast<unsigned int>(c));
 			if (cc != nullptr && !cc->IsHidden())
 				grpCaptionColX += cc->GetWidth();
 		}
@@ -7462,6 +7502,7 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 
 		int line_top = first_line_start;
 
+		cell->StartColumn(model, col->GetModelColumn());
 		for (unsigned int item = item_start; item < item_last; item++)
 		{
 			// get the cell value and set it into the renderer
@@ -7574,6 +7615,21 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 #endif
 			}
 
+			// ⭐ THE ROW'S STATE PICTURE — the ROW's, drawn here once per row, in the first column after the expander
+			// and before the value, the way the expander is: asked of the model (GetRowPicture) and drawn from this
+			// control's own bitmaps (RowPictureBitmap). The cell's renderer draws its value after it and never sees it.
+			// A GROUP row has one too (the grouping picture): it is the row's, not a cell's, so it is drawn here as
+			// well, and the caption pass below starts after it.
+			if (col == expander && !IsVirtualList()) {
+				const wxBitmap& picture = RowPictureBitmap(model->GetRowPicture(dataitem));
+				if (picture.IsOk()) {
+					wxDCClipper clipPicture(dc, cell_rect);
+					dc.DrawBitmap(picture, cell_rect.x + FromDIP(PADDING_RIGHTLEFT) + indent,
+						cell_rect.y + (cell_rect.height - picture.GetLogicalHeight()) / 2, true);
+					indent += picture.GetLogicalWidth() + FromDIP(4);
+				}
+			}
+
 			wxRect item_rect = cell_rect;
 			item_rect.Deflate(FromDIP(PADDING_RIGHTLEFT), 0);
 
@@ -7604,6 +7660,7 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 
 			line_top += line_height;
 		}
+		cell->FinishColumn();
 	}
 
 	// GROUP-row captions — drawn LAST, as ONE continuous span per row, so nothing (column rules, per-cell padding,
@@ -7620,8 +7677,11 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 			if (gnode != NULL && gnode->GetItem().GetGroupCaption(grpCaption))
 			{
 				const ibDataViewItem gitem = gnode->GetItem();
+				// …after the row's picture, which the cell loop drew in the expander column.
+				const wxBitmap& picture = RowPictureBitmap(GetModel()->GetRowPicture(gitem));
 				const int capX = grpCaptionColX + FromDIP(PADDING_RIGHTLEFT)
-					+ GetIndent() * gnode->GetIndentLevel() + grpExpanderWidth;
+					+ GetIndent() * gnode->GetIndentLevel() + grpExpanderWidth
+					+ (picture.IsOk() ? picture.GetLogicalWidth() + FromDIP(4) : 0);
 				// ⭐⭐ AND IT RUNS TO THE END OF THE ROW. A grouping is ONE line saying what it groups by —
 				// that is what this pass exists for and what the model's door was added for
 				// (ibDataViewItem::GetGroupCaption). No cell is drawn under it (see `isGroupRow` in the
@@ -7646,14 +7706,14 @@ void ibDataViewCtrl::DrawTableContent(wxDC& dc, ibDataViewMainWindow* tableWindo
 					ibDataViewItemAttr attr;
 					GetModel()->GetAttr(gitem, expander->GetModelColumn(), attr);
 					const wxColour fg = sel ? wxSystemSettings::GetColour(wxSYS_COLOUR_HIGHLIGHTTEXT)
-					                  : attr.HasColour() ? attr.GetColour()
+					                  : attr.HasColour() ? typeConv::ColourToWxColour(attr.GetColour())
 					                  : GetForegroundColour();
 					int flags = 0;
 					if (sel)          flags |= wxCONTROL_SELECTED;
 					if (!IsEnabled()) flags |= wxCONTROL_DISABLED;
 					const wxRect capRect(capX, grp_line, rightX - capX, lh);
 					wxDCClipper     clip(dc, capRect);
-					wxDCFontChanger fontChg(dc, attr.HasFont() ? attr.GetEffectiveFont(GetFont()) : GetFont());
+					wxDCFontChanger fontChg(dc, attr.HasFont() ? ibEffectiveFont(attr, GetFont()) : GetFont());
 					dc.SetTextForeground(fg);
 					wxRendererNative::Get().DrawItemText(this, dc, grpCaption, capRect,
 						wxALIGN_LEFT | wxALIGN_CENTRE_VERTICAL, flags, wxELLIPSIZE_END);

@@ -2,7 +2,7 @@
 #define __PROPERTY_DATA_COMPOSITION_H__
 
 #include "backend/propertyManager/propertyObject.h"
-#include "backend/compositionDescription.h"   // what it stores — the SAME composer a list stores
+#include "core/description/compositionDescription.h"   // what it stores — the SAME composer a list stores
 
 // ---------------------------------------------------------------------------
 // ibPropertyDataComposition — backend half of the "data composer settings"
@@ -23,8 +23,8 @@
 class BACKEND_API ibPropertyDataComposition : public ibProperty {
 	// ONE maker with a default — the dynamic list's shape over the same description, because a list
 	// and a report SAVE the same thing.
-	wxVariantData* CreateVariantData(ibPropertyObject* property,
-	                                 const ibCompositionDescription& val = ibCompositionDescription()) const;
+	static wxVariantData* CreateVariantData(ibPropertyObject* property,
+	                                        const ibCompositionDescription& val = ibCompositionDescription());
 public:
 
 	// ⭐⭐ IT HOLDS A DESCRIPTION, and the action is what the inspector shows over it (2026-08-23).

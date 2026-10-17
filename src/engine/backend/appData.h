@@ -17,37 +17,31 @@
 // includes this header) back in.
 #include "backend/session/sessionHolder.h"
 
-#define appData				(ibApplicationData::Get())
+#define appData				(ibApplicationInstance::Get())
 
-#define appDataCreateFile(mode,database,locale) (ibApplicationData::CreateFileAppDataEnv(mode,database,locale))
-#define appDataCreateServer(mode,server,port,user,password,database,locale) (ibApplicationData::CreateServerAppDataEnv(mode,server,port,user,password,database,locale))
+#define appDataDestroy()	(ibApplicationInstance::DestroyAppDataEnv())
 
-#define appDataDestroy()	(ibApplicationData::DestroyAppDataEnv())
-
-#define db_query  (ibApplicationData::GetDatabaseLayer())
+#define db_query  (ibApplicationInstance::GetDatabaseLayer())
 
 // Queryable-source factory — the L4 query engine resolves a source namespace
 // (Catalog / Document / a plugin / an external DB) to a queryable through it.
 // POINTER (nullptr pre-appData / post-appData), like GetLockManager; null-check it.
-#define query_sources (ibApplicationData::GetQueryableFactory())
+#define query_sources (ibApplicationInstance::GetQueryableFactory())
 
 // Audit + trace logger. One per process, lifetime managed by
-// ibApplicationData. Resolves to nullptr before Init / after Destroy.
-#define ibLog     (ibApplicationData::GetLogger())
+// ibApplicationInstance. Resolves to nullptr before Init / after Destroy.
+#define ibLog     (ibApplicationInstance::GetLogger())
 
+// HOW THE PROCESS HOLDS ITS BASES — and nothing else. Whether a session designs the configuration or runs the
+// application is the session's (ibSessionKind): a file base has its designer, its runtime, its jobs exactly as a
+// server does. A number on disk (sys_session's appMode): never renumbered; 2, 3 and 5 were the designer, the
+// runtime and the web runtime, and are not taken again.
 enum ibRunMode {
-	eLAUNCHER_MODE = 1,		// for create db, only backmode
-	eDESIGNER_MODE = 2,		// backmode + frontmode
-	eRUNTIME_MODE = 3,	// backmode + frontmode (thick client)
-	eSERVICE_MODE = 4,		// only backmode
-	eWEB_RUNTIME_MODE = 5	// backmode + wfrontend (web — wes process)
-};
-
-enum ibDatabaseMode {
-	eFILE,
-	eSERVER,
-
-	eNONE = 1000
+	eUNKNOWN_MODE  = 0,   // nobody said — the default; a base is not opened with it (ibApplicationHost::Ensure throws)
+	eLAUNCHER_MODE = 1,   // the launcher: holds no base — makes and lists them
+	eSERVER_MODE   = 4,   // a server: holds bases for other people's clients, as its settings say (the application server)
+	eFILE_MODE     = 6,   // a file base: holds its base itself, in its own process (designer.exe, enterprise.exe, wes, a thin client)
+	eSANDBOX_MODE  = 7,   // a sandbox: opens a base, runs, closes (codeRunner)
 };
 
 //////////////////////////////////////////////////////////////////
@@ -57,23 +51,14 @@ enum ibDatabaseMode {
 
 class BACKEND_API ibDatabaseLayer;
 class BACKEND_API ibSession;
-class BACKEND_API ibHelpService;  // defined in backend/help/helpService.h
+class ibHelpService;  // defined in core/syntaxHelper/helpService.h
+
 enum class ibSessionKind : int;   // defined in backend/session/session.h
 
 // ibSessionSnapshot — cluster-wide sys_session snapshot — moved to
 // backend/session/sessionSnapshot.h. Producer is ibSessionRegistry's
 // JobRefreshSnapshot; consumers (designer Active Users dialog) read
-// it through ibApplicationData::GetSessionRegistry()->GetClusterSnapshot().
-
-#pragma region config
-struct ibApplicationDataConfigInfo {
-
-	bool IsSetLocale() const { return !m_strLocale.IsEmpty(); }
-
-	//Locale info 
-	wxString m_strLocale;
-};
-#pragma endregion 
+// it through ibApplicationInstance::GetSessionRegistry()->GetClusterSnapshot().
 
 #pragma region user
 // ibUserInfo lives in backend/userInfo.h so ibSession can reach it
@@ -83,31 +68,98 @@ struct ibApplicationDataConfigInfo {
 #include "backend/userInfo.h"
 #pragma endregion
 
-// This class is a singleton class.
-class BACKEND_API ibApplicationData {
+// ⭐ WHAT OPENING A BASE NEEDS — a shape rather than a growing argument list (Max, 2026-10-01): the opener
+// fills what it knows and the rest keeps its default; a new field is one edit, not one per caller. A base's
+// own settings are not here: they live in its folder, in infobase.conf (the connections to its DBMS), and the
+// process's in backend.conf.
+// THE TYPE SAYS HOW THE PROCESS HOLDS THE BASE — a file base (ibFileInstanceRequest) or a server
+// (ibServerInstanceRequest). What a session works in is said when it is created (CreateSession), not here.
+struct BACKEND_API ibInstanceRequest {
+	// The base's name in the journal; empty — its folder's (Firebird), its database's (PostgreSQL). A server's:
+	// the base's group in server.conf.
+	wxString  m_name;
+	wxString  m_locale;      // empty — the process's
+};
 
-	ibApplicationData(ibRunMode runMode);
+// WHERE A BASE LIVES — a Firebird base in its folder, or a PostgreSQL one on the server named.
+struct BACKEND_API ibInstanceStorage {
+	// The base's folder — its journal and its infobase.conf, and a Firebird base's sys.fdb. A PostgreSQL base's may
+	// be left empty — the user's local data, as before.
+	wxString  m_directory;
+	// A PostgreSQL base — on the server named; no server — the base is the folder's sys.fdb (Firebird).
+	wxString  m_server;
+	wxString  m_port;
+	wxString  m_user;        // the DBMS's
+	wxString  m_password;
+	wxString  m_database;
+};
+
+// A FILE BASE — the process holds it itself, and its opener says where it lives.
+struct BACKEND_API ibFileInstanceRequest : ibInstanceRequest, ibInstanceStorage {
+	// A base not made yet is made — its tables, its settings file: the designer's opening. Otherwise a base with
+	// nothing in it is refused. A server makes none — that is the launcher's.
+	bool      m_create = false;
+};
+
+// A SERVER — started from its settings: it reads where the base lives itself, from the base's group (m_name) in
+// server.conf of its folder. Nobody hands it a DBMS.
+struct BACKEND_API ibServerInstanceRequest : ibInstanceRequest {
+	wxString  m_folder;      // the server folder — server.conf and server.key in it
+};
+
+// ONE BASE. A process holds one (every host of today) or several (the application server); the set and what belongs
+// to the process rather than to a base live in ibApplicationHost (appHost.h). docs/private/multi-base-process.md
+class BACKEND_API ibApplicationInstance {
+
+	// host — the process that holds it (ibApplicationHost): the top of the chain session → registry →
+	// base → host.
+	ibApplicationInstance(class ibApplicationHost* host, ibRunMode runMode);
+
+	// Opening a base held as `runMode` says: its database — a Firebird folder or a PostgreSQL server, as `storage`
+	// says — and then the road below. `create` — a base not made yet is made.
+	static ibApplicationInstance* Open(ibRunMode runMode, const ibInstanceRequest& request,
+		const ibInstanceStorage& storage, bool create);
+	// The one road a base comes up by once its database is open, a file base and a server base alike (the
+	// pool, the tables, the locale, the journal, the jobs): the base it now is, or null — refused or thrown, it
+	// is closed again. `folder` keeps its infobase.conf; `request` says the locale.
+	static ibApplicationInstance* Open(std::unique_ptr<ibApplicationInstance> opening,
+		std::shared_ptr<class ibDatabaseLayer> db, const wxString& folder, const ibInstanceRequest& request, bool create);
+
+	// Its teardown, in order — run by its owner while it is still listed (ibApplicationHost::Close), before it
+	// is freed. Idempotent: the destructor runs it again over the empty shell.
+	void Close();
+	friend class ibApplicationHost;
 
 public:
 
-	virtual ~ibApplicationData();
-	static ibApplicationData* Get() { return s_instance; }
+	class ibApplicationHost* GetHost() const { return m_host; }
+
+	virtual ~ibApplicationInstance();
+
+	// THE CURRENT BASE — THROUGH THE SESSION: the base of the session this thread works for (ibSession::Current),
+	// else the base the thread is bound to (ibApplicationInstanceScope — the thread that opened it, a base's own
+	// service thread). There is no global one. Null while the process holds no base. A thread that has neither:
+	// an exception — or null when it is not `required` (a destructor, a teardown path: they must not throw).
+	static ibApplicationInstance* Get(bool required = true);
 
 
 	///////////////////////////////////////////////////////////////////////////
-	static bool CreateAppDataEnv(ibRunMode runMode = ibRunMode::eRUNTIME_MODE);
+	static bool CreateAppDataEnv(ibRunMode runMode = ibRunMode::eUNKNOWN_MODE);
 	///////////////////////////////////////////////////////////////////////////
 
-	static bool CreateFileAppDataEnv(ibRunMode runMode, const wxString& strDirDatabase, const wxString& strLocale = wxT(""));
-	static bool CreateServerAppDataEnv(ibRunMode runMode, const wxString& strServer, const wxString& strPort,
-		const wxString& strUser = wxT(""), const wxString& strPassword = wxT(""), const wxString& strDatabase = wxT(""), const wxString& strLocale = wxT(""));
+	// Open a base and ADD it to the process's set — answering the base itself, or null when it did not open (a
+	// base that fails half-way closes itself, never the others). A host that opens once holds a set of one.
+	// The request's type is the run mode: a file base, a server.
+	static ibApplicationInstance* CreateAppDataEnv(const ibFileInstanceRequest& request);
+	static ibApplicationInstance* CreateAppDataEnv(const ibServerInstanceRequest& request);
 
 	static bool SetLocaleAppDataEnv(const wxString& strLocale = wxT(""));
-	static bool DestroyAppDataEnv();
-	///////////////////////////////////////////////////////////////////////////
 
-	// Initialize application
-	bool InitLocale(const wxString& locale = wxT(""));
+	// Every base this process holds, newest first, and the process with them.
+	static bool DestroyAppDataEnv();
+	// …or one of them — the process and the other bases stay.
+	static bool DestroyAppDataEnv(ibApplicationInstance* applicationInstance);
+	///////////////////////////////////////////////////////////////////////////
 
 	// ------------------------------------------------------------------
 	// Phased startup — split of Connect(). Apps compose:
@@ -132,34 +184,35 @@ public:
 	// a bare live session: whoever calls this holds the session's life in
 	// its hands until it moves the holder into a real owner (a frame), and
 	// an empty holder is the failure case (policy veto, duplicate id).
-	ibSessionHolder CreateSession();
+	// `kind` — what the session is (the server's own login, the designer's window…); Unknown unless said.
+	ibSessionHolder CreateSession(ibSessionKind kind = ibSessionKind{});
 
 	// Typed overload of CreateSession. The caller (enterprise/mainApp.cpp,
 	// designer/mainApp.cpp, web code) picks the concrete derived session
 	// class (ibGUISession on desktop, ibWebClientSession per web tab, …).
 	// Template bodies live in backend/session/sessionRegistry.h (callers
 	// that instantiate the typed overload include it) so the registry's
-	// CreateSessionWithFactory is visible at instantiation.
+	// CreateSessionOfKind is visible at instantiation.
 	// Flow:
-	//   1. m_sessionRegistry->CreateSessionWithFactory runs
+	//   1. m_sessionRegistry->CreateSessionOfKind runs
 	//      EnsureStartedForCreateSession + Connect(req) under a factory
-	//      that builds SessionT instead of the plain base.
+	//      that builds SessionT instead of the plain base, of the kind said.
 	//   2. The holder comes back to the caller, which moves it into the
 	//      window it builds. An empty holder means Connect failed.
 	template<class SessionT>
-	ibSessionHolder CreateSession();
+	ibSessionHolder CreateSession(ibSessionKind kind = ibSessionKind{});
 
-	// Per-tab variant for the wes web frontend. Caller supplies the cookie
-	// guid (used as sys_session.session PK + the registry's session id —
-	// one identifier across cookie / SessionManager / sys_session row) and
-	// the listener address ("host:port", surfaced in admin UI). Kind is
-	// fixed at WebClient (per-tab), independent of process run mode.
+	// A visitor's session — a wes tab (WebClient), a client of the protocol (ThinClient, ThinDesigner). Caller
+	// supplies the kind, independent of process run mode, the guid it already knows the visitor by (used as
+	// sys_session.session PK + the registry's session id — one identifier across cookie / SessionManager /
+	// sys_session row) and the listener address ("host:port", surfaced in admin UI).
 	// Server() is auto-populated by the registry — it tracks the most
 	// recent WebServer-kind session in the process and attaches subsequent
 	// non-server sessions to it. Single-session apps never register a
 	// WebServer session so their Server() stays null.
 	template<class SessionT>
-	ibSessionHolder CreateSession(const wxString& presetGuid,
+	ibSessionHolder CreateSession(ibSessionKind kind,
+	                              const wxString& presetGuid,
 	                              const wxString& address);
 
 private:
@@ -169,11 +222,6 @@ private:
 	void WireSessionEvents();
 public:
 
-#pragma region config
-	// Read setting from file
-	void ReadEngineConfig();
-#pragma endregion
-
 	// Returns the connection the current thread should use for
 	// database work. Resolution order:
 	//   1. Thread-local active-TX connection (pool-tracked) — while a
@@ -182,7 +230,7 @@ public:
 	//   2. Thread-local current connection set by the innermost live
 	//      ibConnectionScope on this thread.
 	//   3. Process-wide m_db — the legacy single shared connection
-	//      held directly by ibApplicationData. Unchanged fallback
+	//      held directly by ibApplicationInstance. Unchanged fallback
 	//      for code that hasn't been migrated to ibConnectionScope.
 	//
 	// This is what the `db_query` macro expands to. Defined out-of-
@@ -195,8 +243,9 @@ public:
 	// Its descriptor CONTENTS are registered on metadata open and dropped on close; the
 	// factory object lives with appData. Reached via the `query_sources` macro. Present
 	// even with no metadata (external sources still resolve).
-	static class ibQueryableFactory* GetQueryableFactory() {
-		return s_instance != nullptr ? s_instance->m_queryableFactory.get() : nullptr;
+	static class ibQueryableFactory* GetQueryableFactory() { return GetQueryableFactory(Get()); }
+	static class ibQueryableFactory* GetQueryableFactory(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_queryableFactory.get() : nullptr;
 	}
 
 	// Process-wide connection pool — the sole owner of every live
@@ -204,14 +253,15 @@ public:
 	// m_source and lazily clones up to maxSize on demand. Init/
 	// Shutdown are driven by CreateFile/Server AppDataEnv and
 	// DestroyAppDataEnv respectively. Borrowed pointer — lifetime
-	// tied to ibApplicationData; never null while s_instance is alive.
-	static class ibConnectionPool* GetConnectionPool() {
-		return s_instance != nullptr ? s_instance->m_connectionPool.get() : nullptr;
+	// tied to ibApplicationInstance; never null while the base is alive.
+	static class ibConnectionPool* GetConnectionPool() { return GetConnectionPool(Get()); }
+	static class ibConnectionPool* GetConnectionPool(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_connectionPool.get() : nullptr;
 	}
 
 #pragma region execute
 	// RunApplication overloads spawn any OES bin (enterprise / designer /
-	// daemon / codeRunner / wenterprise-server). Connection flags are
+	// appserver / codeRunner / wenterprise-server). Connection flags are
 	// emitted in unified `--flag=value` form which every bin's parser
 	// accepts.
 	// useManifest=true switches to wenterprise-server's bind-handshake
@@ -237,49 +287,32 @@ public:
 	ibRunMode GetAppMode() const { return m_runMode; }
 
 	bool LauncherMode() const { return m_runMode == ibRunMode::eLAUNCHER_MODE; }
-	bool DesignerMode() const { return m_runMode == ibRunMode::eDESIGNER_MODE; }
-	bool EnterpriseMode() const {
-		return m_runMode == ibRunMode::eRUNTIME_MODE
-			|| m_runMode == ibRunMode::eWEB_RUNTIME_MODE;
-	}
-	bool WebEnterpriseMode() const { return m_runMode == ibRunMode::eWEB_RUNTIME_MODE; }
-	bool ServiceMode() const { return m_runMode == ibRunMode::eSERVICE_MODE; }
+	// THE DESIGNER'S WORK, OR THE APPLICATION'S — asked of the session doing it, not of the process: a thin designer
+	// and a thin runtime live in one application server side by side. A session nobody sits at and a thread
+	// without a session go by the process's own session (appData.cpp).
+	bool DesignerMode() const;
+	bool EnterpriseMode() const;
+	// What the process itself is — by the session it logs in as: the old web server, the application server.
+	bool WebEnterpriseMode() const;
+	bool ServiceMode() const;
 
 	inline wxString GetRunModeDescr(const ibRunMode& mode) const {
 		switch (mode)
 		{
+		case eUNKNOWN_MODE:
 		case eLAUNCHER_MODE:
 			return wxEmptyString;
-		case eDESIGNER_MODE:
-			return _("Designer");
-		case eRUNTIME_MODE:
-			return _("Thick client (GUI)");
-		case eWEB_RUNTIME_MODE:
-			return _("Web server");
-		case eSERVICE_MODE:
-			return _("Daemon");
+		case eSERVER_MODE:
+			return _("Application server");
+		case eFILE_MODE:
+			return _("File base");
+		case eSANDBOX_MODE:
+			return _("Sandbox");
 		}
 		return wxEmptyString;
 	}
 
 	inline wxString GetRunModeDescr() const { return GetRunModeDescr(m_runMode); }
-
-	ibDatabaseMode GetDatabaseMode() const { return m_dbMode; }
-
-	inline wxString GetDatabaseModeDescr(const ibDatabaseMode& mode) const {
-		switch (mode)
-		{
-		case eNONE:
-			return wxEmptyString;
-		case eFILE:
-			return _("File");
-		case eSERVER:
-			return _("Server");
-		}
-		return wxEmptyString;
-	}
-
-	inline wxString GetDatabaseModeDescr() const { return GetDatabaseModeDescr(m_dbMode); }
 
 	// Verify credentials and install the resolved user onto the current
 	// ibSessionScope's ibSession. Single entry point used by both the GUI
@@ -296,9 +329,10 @@ public:
 	// Pure credential check used by Login above. Looks up the user, verifies
 	// the password (PBKDF2 with silent MD5→PBKDF2 upgrade via NeedsRehash),
 	// fills `outInfo` on success, and does NOT mutate any session state.
-	// Returns true for open-access mode too (empty sys_user populating +
-	// any creds → pass with outInfo.IsOk()==false). Safe to call from the
-	// registry thread without a ibSessionScope. Exposed as a building block
+	// An empty name is open access only when the user list was read and is
+	// empty, on every host (outInfo stays empty). A list that could not be
+	// read returns false.
+	// Safe to call from the registry thread without a ibSessionScope. Exposed as a building block
 	// so registry's ProcessAttach can short-circuit on bad creds before
 	// pinning a session scope.
 	bool AuthenticateUser(const wxString& strUserName,
@@ -329,19 +363,25 @@ public:
 	const ibUserInfo& GetUserInfo() const;
 
 	wxString GetComputerName() const { return m_strComputer; }
-	const wxString& GetFile() const { return m_strFile; } // file-mode config/db path (VCS working copy root)
 
-	wxString GetLocale() const { return m_locale.GetCanonicalName(); }
+	// The base's name, as its opening request gave it (ibInstanceRequest::m_name) — else the directory of a
+	// file base or the name of a server one. Read by the journal.
+	wxString GetInstanceName() const { return m_strInstance; }
+	const wxString& GetFile() const { return m_strFile; } // a Firebird base's folder (VCS working copy root)
+
+	// The platform locale — the PROCESS's (ibApplicationHost), asked here so its readers need not know that.
+	wxString GetLocale() const;
 
 #pragma region session
 
 	// Cluster-wide sys_session snapshot — readers go through
-	// ibApplicationData::GetSessionRegistry()->GetClusterSnapshot()
+	// ibApplicationInstance::GetSessionRegistry()->GetClusterSnapshot()
 	// directly (the accessor returns nullptr pre-appData / post-appData;
 	// callers MUST null-check). Snapshot type ibSessionSnapshot lives
 	// in backend/session/sessionSnapshot.h.
 
-	class ibPluginManager* GetPluginManager() const { return m_pluginManager.get(); }
+	// Plugins are loaded once for the PROCESS (ibApplicationHost); asked here so its readers need not know that.
+	class ibPluginManager* GetPluginManager() const;
 
 #pragma endregion
 
@@ -352,7 +392,6 @@ public:
 
 #pragma region language
 
-	ibGuid   GetUserLanguageGuid() const;
 	wxString GetUserLanguageCode() const;
 
 #pragma endregion
@@ -369,7 +408,7 @@ public:
 	// directly — no longer through this class.
 
 	// User-record DB I/O lives on ibUserInfo as static factories
-	// (see backend/userInfo.h). ibApplicationData is no longer the
+	// (see backend/userInfo.h). ibApplicationInstance is no longer the
 	// gateway to sys_user — call sites use ibUserInfo::Read /
 	// ibUserInfo::Save directly.
 
@@ -378,11 +417,16 @@ public:
 	bool LoadDatabase(const wxString& strFullPath);
 	bool SaveDatabase(const wxString& strFullPath);
 
+	// The same, over a stream — a file of the session's temporary storage, which a client uploaded or takes down
+	// (ibTempFileInputStream / ibTempFileOutputStream). The stream is the caller's to close.
+	bool LoadDatabase(class wxInputStream& stream);
+	bool SaveDatabase(class wxOutputStream& stream);
+
 	bool ClearDatabase();
 
 #pragma endregion 
 
-	wxString GetDatabaseDescription();
+	wxString GetDatabaseDescription() const;
 
 private:
 
@@ -400,6 +444,9 @@ private:
 	static void CreateTableSession();
 	static void CreateTableEvent();
 	static void CreateTableLock();
+#ifdef OES_TESTING
+	friend struct LockSchemaAccess;   // the race test opens a base that already has sys_lock
+#endif
 	// Additive — creates sys_job if missing. The shared last-run clock for
 	// scheduled jobs; independent table, not part of TableAlreadyCreated()'s
 	// init contract, so existing databases pick it up on next open.
@@ -413,6 +460,9 @@ private:
 	// of TableAlreadyCreated()'s init contract, so existing databases pick it up
 	// on next open. See backend/settings/settingsStorage.h.
 	static void CreateTableSettings();
+	// Additive — creates sys_file if missing. The sessions' temporary files, in parts; independent
+	// table, not part of TableAlreadyCreated()'s init contract. See backend/temp/tempStorage.h.
+	static void CreateTableFile();
 	// Additive — creates sys_bytecode_cache if missing. Runs in any
 	// runMode after the existing-tables gate, so DBs initialised before
 	// AOT cache landed pick the table up on next open. Independent
@@ -423,28 +473,29 @@ private:
 
 private:
 
-	static ibApplicationData* s_instance;
+	class ibApplicationHost* const m_host;
 
 	ibRunMode m_runMode;
 	wxString m_strComputer;
 
-#pragma region config
-	ibApplicationDataConfigInfo m_configInfo;
-#pragma endregion
+	// The name a person calls this base by — written before every journal line about it. Declared before the
+	// subsystems below so it dies after them: they still write lines while they are destroyed, and those lines
+	// ask for it.
+	wxString m_strInstance;
 
 	// Subsystem ownership — order below is THE teardown contract.
 	// C++ destroys members in reverse declaration order, so the last
-	// field declared dies first. We use that to encode dependencies
-	// without any explicit `reset()` in ~ibApplicationData; the dtor
-	// only calls the business-level hooks (Stop / UnloadAll / OnDestroy
-	// / Shutdown) and then lets default destruction unwind in the
-	// safe order.
+	// field declared dies first; Close() calls the business-level hooks
+	// (Stop / UnloadAll / OnDestroy / Shutdown) and then releases the
+	// fields itself in that same order, each one null before it dies.
 	//
 	// Destruction order (top of stack = destroyed first):
-	//   1. m_activeMetaData   — OnDestroy already ran above; its
-	//                            polymorphic dtor (Storage→Configuration→
-	//                            File→Base) needs db_query for some
-	//                            paths, so it goes BEFORE pool / registry.
+	//   1. m_activeMetaData   — OnDestroy already ran above; the base
+	//                            lets its reference go BEFORE pool /
+	//                            registry, and the polymorphic dtor
+	//                            (Storage→Configuration→File→Base) runs
+	//                            with the LAST holder: here, for the
+	//                            sessions let theirs go as they left.
 	//   2. m_sessionRegistry  — Stop() already drained workers; dtor
 	//                            cleans up the session vector. Session
 	//                            destructors may still want pool.
@@ -453,10 +504,7 @@ private:
 	//                            while everything below is still alive
 	//                            for the rare audit-on-shutdown row.
 	//   4. m_lockManager      — no external deps.
-	//   5. m_pluginManager    — UnloadAll already called Destroy on
-	//                            each plugin while host was live; dtor
-	//                            just clears the vector.
-	//   6. m_connectionPool   — last to die. Holds the master DB layer
+	//   5. m_connectionPool   — last to die. Holds the master DB layer
 	//                            that every other subsystem might want
 	//                            during their own destruction.
 	//
@@ -465,13 +513,8 @@ private:
 	// Connection pool — the sole owner of every ibDatabaseLayer in
 	// the process. Master (opened at Init) plus lazy clones up to
 	// maxSize. `db_query` / GetDatabaseLayer resolve through the
-	// pool; ibApplicationData keeps no direct DB handle of its own.
+	// pool; ibApplicationInstance keeps no direct DB handle of its own.
 	std::unique_ptr<class ibConnectionPool> m_connectionPool;
-
-	// Plugin manager — registry of loaded backend plugins. UnloadAll
-	// is called explicitly in ~ibApplicationData so each plugin sees
-	// Destroy() while the host is still up.
-	std::unique_ptr<class ibPluginManager> m_pluginManager;
 
 	// Long-held pessimistic lock coordinator (sys_lock table). No
 	// external dependencies on teardown.
@@ -490,8 +533,8 @@ private:
 
 	// Session manager (registry). Owned here — created in ctor, destroyed
 	// in dtor. Single coordinator pattern: appData owns the registry,
-	// the connection pool, the lock manager, plugin manager — everything
-	// process-wide lives only for the duration of appData. No subsystem
+	// the connection pool, the lock manager — everything of this base
+	// lives only for the duration of the base. No subsystem
 	// has its own static `Instance()`; readers go through the static
 	// accessors below, which return nullptr pre-appData and post-appData
 	// (no AV, no hidden assert in Release).
@@ -516,19 +559,22 @@ private:
 	// here because it is read at the same moments jobs are: while a base is open.
 	std::unique_ptr<class ibSettingsStorage> m_settingsStorage;
 
-	// Syntax-helper corpus owner. Same ownership shape as logger /
-	// lockManager — lives with appData. Lazy-built in InitLocale once
-	// the platform locale is settled; null before that.
-	std::unique_ptr<class ibHelpService> m_helpService;
+	// The sessions' temporary files (sys_file). Its own connection, taken from the pool above and given
+	// back when the pool shuts down — the lock manager's arrangement, for the lock manager's reason.
+	std::unique_ptr<class ibTempStorage> m_tempStorage;
 
-	// Active configuration metadata. Polymorphic — concrete subclass
-	// (`ibMetaDataConfiguration` for runtime modes,
-	// `ibMetaDataConfigurationStorage` for designer) chosen by the
-	// fabric `CreateActiveMetaData` based on runMode. nullptr in
+	// ⭐ THE ACTIVE CONFIGURATION — held FOR THE SESSIONS STILL TO COME (Max, 2026-10-06: *"the active metadata
+	// holds for new sessions"*). A session let in takes its own reference to it (ibSession::GetMetaData, +1) and
+	// works in that one for its whole life, so an update that puts another one here leaves every working session
+	// in the configuration it came in with; the old one goes with the last of them. A shared_ptr, swapped under the
+	// process's lock (ReplaceActiveMetaData).
+	// Polymorphic — concrete subclass (`ibMetaDataConfiguration` for the application,
+	// `ibMetaDataConfigurationStorage` for a designer's process) chosen by the
+	// fabric `CreateActiveMetaData` by the process's own session. nullptr in
 	// launcher / codeRunner (no DB-backed metadata). Declared last so
-	// reverse-order destruction kills it first — OnDestroy ran already
-	// in the dtor above, dtor itself wraps up.
-	std::unique_ptr<class ibMetaDataConfigurationBase> m_activeMetaData;
+	// reverse-order destruction lets it go first — OnDestroy ran already
+	// in the dtor above.
+	std::shared_ptr<class ibMetaDataConfigurationBase> m_activeMetaData;
 
 public:
 	// Static accessor — returns nullptr when no appData is alive.
@@ -537,54 +583,57 @@ public:
 	// Hot path: backend code that already has an `appData` pointer in
 	// scope can short-circuit to `appData->m_sessionRegistry.get()`
 	// through the private field — but the public surface is one entry.
-	static class ibSessionRegistry* GetSessionRegistry() {
-		return s_instance != nullptr ? s_instance->m_sessionRegistry.get() : nullptr;
+	//
+	// ⭐ EVERY ACCESSOR HAS TWO FORMS — the CURRENT base's (through the session: Get) and the base NAMED as an
+	// argument, for a subsystem that knows its owner and must not ask which base is current: the registry,
+	// the job manager, the MCP server, the metadata and the debugger it owns (multi-base-process.md).
+	static class ibSessionRegistry* GetSessionRegistry() { return GetSessionRegistry(Get()); }
+	static class ibSessionRegistry* GetSessionRegistry(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_sessionRegistry.get() : nullptr;
 	}
 
 	// Returns nullptr when no appData is alive. Replaces the historical
 	// `ibLockManager::Instance()` Meyers singleton — same nullable shape
 	// as the other subsystem accessors.
-	static class ibLockManager* GetLockManager() {
-		return s_instance != nullptr ? s_instance->m_lockManager.get() : nullptr;
+	static class ibLockManager* GetLockManager() { return GetLockManager(Get()); }
+	static class ibLockManager* GetLockManager(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_lockManager.get() : nullptr;
 	}
 
-	// Syntax-helper corpus service. Null before InitLocale runs (the
-	// service is constructed lazily there, once the platform locale is
-	// settled) and after DestroyAppDataEnv. Callers MUST null-check.
-	static class ibHelpService* GetHelpService() {
-		return s_instance != nullptr ? s_instance->m_helpService.get() : nullptr;
-	}
+	// Syntax-helper corpus service — the PROCESS's (ibApplicationHost). Null
+	// before the locale is settled (the service is constructed there) and
+	// after DestroyAppDataEnv. Callers MUST null-check.
+	static class ibHelpService* GetHelpService();
 
-	// Active configuration metadata accessor. nullptr in launcher /
-	// codeRunner; nullptr before CreateActiveMetaData fires for the
-	// first time. The legacy `activeMetaData` macro redirects to
-	// `appEnv::ActiveMetaData()` which calls this.
-	static class ibMetaDataConfigurationBase* GetActiveMetaData() {
-		return s_instance != nullptr ? s_instance->m_activeMetaData.get() : nullptr;
-	}
+	// Active configuration metadata accessor — the configuration this thread works in: its session's own, else the
+	// one its scope holds, else the base's active one (held for the sessions to come). nullptr in launcher /
+	// codeRunner; nullptr before CreateActiveMetaData fires for the first time. The legacy `activeMetaData` macro
+	// redirects to `appEnv::ActiveMetaData()` which calls this. Whoever works in it holds `shared_from_this()`.
+	static class ibMetaDataConfigurationBase* GetActiveMetaData() { return GetActiveMetaData(Get()); }
+	static class ibMetaDataConfigurationBase* GetActiveMetaData(const ibApplicationInstance* applicationInstance);
 
-	// Fabric — pick subclass by runMode and stash it in m_activeMetaData.
-	// Returns false if construction or OnInitialize failed; nullptr modes
-	// (launcher) return true with no-op so callers can branch uniformly.
-	// Replaces the historical `ibMetaDataConfigurationBase::Initialize`
-	// static. The `metaDataCreate(mode, f)` macro routes here.
-	static bool CreateActiveMetaData(enum ibRunMode mode, int flags);
+	// The active configuration replaced — by the one handed in: the designer's apply hands in what the database now
+	// publishes. The sessions working in the old one keep it; it goes with the last of them.
+	void ReplaceActiveMetaData(std::shared_ptr<class ibMetaDataConfigurationBase> metaData);
 
-	// Symmetric tear-down — fires OnDestroy via the polymorphic dtor
-	// chain when the unique_ptr resets, drops the ptr. Idempotent (no-op
-	// when already null). No public macro for this one — the legacy
-	// `metaDataDestroy()` was retired; ~ibApplicationData calls this on
-	// shutdown, and external callers go through the function directly.
-	static bool DestroyActiveMetaData();
+	// Fabric — pick subclass by the kind of the base's first session (a designer's: the
+	// configuration to edit; anyone else's: the one the application runs) and
+	// stash it in m_activeMetaData. Returns false if construction or
+	// OnInitialize failed; the launcher returns true with no-op so callers can
+	// branch uniformly.
+	// Replaces the historical `ibMetaDataConfigurationBase::Initialize` static.
+	static bool CreateActiveMetaData(ibApplicationInstance* applicationInstance, ibSessionKind kind, int flags);
+	// (Its tear-down is the base's own Close: OnDestroy, then the field released.)
 
 	// Audit + trace logger. Created during CreateFile/Server AppDataEnv
 	// once the DB is open + the connection pool is initialised; destroyed
-	// at the top of ~ibApplicationData before the registry stops, so
+	// at the top of ~ibApplicationInstance before the registry stops, so
 	// teardown writes still find a live sink. Returns nullptr if logger
 	// initialisation failed (disk full, no write permission on log dir);
 	// callers must null-check.
-	static class ibLogger* GetLogger() {
-		return s_instance != nullptr ? s_instance->m_logger.get() : nullptr;
+	static class ibLogger* GetLogger() { return GetLogger(Get()); }
+	static class ibLogger* GetLogger(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_logger.get() : nullptr;
 	}
 
 	// (The technology journal is deliberately NOT here. It lives ABOVE application data — opened by
@@ -596,30 +645,39 @@ public:
 	// Job manager — the schedule and the sessions behind scheduled /
 	// background work. Same nullptr-before-and-after contract as the
 	// accessors above. See backend/job/jobManager.h and docs/private/job-manager.md.
-	static class ibJobManager* GetJobManager() {
-		return s_instance != nullptr ? s_instance->m_jobManager.get() : nullptr;
+	static class ibJobManager* GetJobManager() { return GetJobManager(Get()); }
+	static class ibJobManager* GetJobManager(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_jobManager.get() : nullptr;
 	}
 
 	// The MCP server. Same nullptr-before-and-after contract as the accessors
 	// above; it exists from startup but LISTENS only once somebody starts it in
 	// the name of a session. See backend/mcp/mcpServer.h.
-	static class ibMcpServer* GetMcpServer() {
-		return s_instance != nullptr ? s_instance->m_mcpServer.get() : nullptr;
+	static class ibMcpServer* GetMcpServer() { return GetMcpServer(Get()); }
+	static class ibMcpServer* GetMcpServer(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_mcpServer.get() : nullptr;
 	}
 
 	// Saved settings — the two doors a caller wants are Save / Restore on the
 	// storage itself. Same nullptr-before-and-after contract as the accessors
 	// above. See backend/settings/settingsStorage.h.
-	static class ibSettingsStorage* GetSettingsStorage() {
-		return s_instance != nullptr ? s_instance->m_settingsStorage.get() : nullptr;
+	static class ibSettingsStorage* GetSettingsStorage() { return GetSettingsStorage(Get()); }
+	static class ibSettingsStorage* GetSettingsStorage(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_settingsStorage.get() : nullptr;
+	}
+
+	// The sessions' temporary files. Same nullptr-before-and-after contract. See backend/temp/tempStorage.h.
+	static class ibTempStorage* GetTempStorage(const ibApplicationInstance* applicationInstance) {
+		return applicationInstance != nullptr ? applicationInstance->m_tempStorage.get() : nullptr;
 	}
 
 private:
 
 	// Build the absolute path for the .olg directory:
-	//   - file-mode   → <m_strFile>/oeslog
-	//   - server-mode → <wxStandardPaths::GetUserLocalDataDir>/OES/<db>/logs
-	// Called from CreateFile/Server AppDataEnv after m_dbMode is set.
+	//   - a Firebird base   → <m_strFile>/oeslog
+	//   - a PostgreSQL base → <m_strDirLocal>/oeslog when the opener named the base's folder,
+	//                         else <wxStandardPaths::GetUserLocalDataDir>/OES/<server>_<db>/logs
+	// Called from the opening once the base's fields are set.
 	wxString ResolveLogDir() const;
 
 	// Stand up m_logger using ResolveLogDir(). No-op for LAUNCHER mode
@@ -640,12 +698,10 @@ public:
 	int  m_loadMetadataFlags = _app_start_default_flag;
 private:
 
-	ibDatabaseMode m_dbMode;
-
-	// FILE ENTRY
+	// A FIREBIRD BASE — its folder
 	wxString m_strFile;
 
-	// SERVER ENTRY
+	// A POSTGRESQL BASE — the server named; none — the base is Firebird (ibInstanceStorage says the same)
 	wxString m_strServer;
 	wxString m_strPort;
 	wxString m_strDatabase;
@@ -653,9 +709,8 @@ private:
 	wxString m_strUser;
 	wxString m_strPassword;
 
-	// LOCALE
-	wxLocale m_locale;
-	int m_locale_lang;
+	// A PostgreSQL base's own folder on this machine, when its opener keeps one (ibInstanceRequest::m_directory).
+	wxString m_strDirLocal;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -665,6 +720,11 @@ private:
 #define event_table				wxT("sys_event")
 #define bytecode_cache_table	wxT("sys_bytecode_cache")
 #define lock_table				wxT("sys_lock")
+// One row per key, primary key (namespace, keyHash). Acquire locks this row for the
+// transaction, then reads and writes sys_lock. Release does not delete it. The
+// sweep does, once nobody holds the key. An old binary on the same base still
+// acquires without this row, so the race stays open until every process is upgraded.
+#define lock_key_table			wxT("sys_lock_key")
 // sys_job — one row per scheduled job, holding the LAST RUN as every process on
 // this base sees it. Without it each process keeps its own clock and a job runs
 // once per process per interval instead of once per interval.
@@ -673,6 +733,9 @@ private:
 // address of category + object + name + user. What a person arranged survives
 // the form that arranged it. See backend/settings/settingsStorage.h.
 #define settings_table			wxT("sys_settings")
+// sys_file — the sessions' temporary files: one row per PART of a file (its header first), owned by a
+// session and gone with it. See backend/temp/tempStorage.h.
+#define file_table				wxT("sys_file")
 ///////////////////////////////////////////////////////////////////////////////
 
 #endif

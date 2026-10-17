@@ -48,6 +48,9 @@ enum {
 	wxID_DESIGNER_DATABASE_CLEAR,
 
 	wxID_DESIGNER_ABOUT,
+
+	wxID_DESIGNER_DEBUG_START_THIN,
+	wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_THIN,
 	wxID_DESIGNER_END
 };
 
@@ -117,16 +120,8 @@ public:
 		m_outputWindow->ClearOutput();
 	}
 
-	void BackendError(const wxString& strFileName, const wxString& strDocPath, const long line, const wxString& strErrorMessage) const {
+	void BackendError(const wxString& strFileName, const wxString& strDocPath, const long line, const wxString& strErrorMessage) {
 		m_outputWindow->SharedOutput(strErrorMessage, ibStatusMessage::ibStatusMessage_Error, strFileName, strDocPath, line);
-	}
-
-	// A MODAL BOX IS THE LOUDEST OF THEM, and the only one that never reaches the
-	// pane at all — it is shown to the person in front of it and to nobody else.
-	int ShowModalMessage(const wxString& message, const wxString& caption, int style) override {
-		ibDesignerMessages::Report({ caption.IsEmpty() ? message : caption + wxT(": ") + message,
-			ibStatusMessage::ibStatusMessage_Warning, wxEmptyString, wxNOT_FOUND, true });
-		return ibFrontendMainFrame::ShowModalMessage(message, caption, style);
 	}
 
 	// What the running application says, arriving over the debugger — it used to
@@ -176,6 +171,14 @@ protected:
 
 	void InitializeDefaultMenu();
 
+	// A MODAL BOX IS THE LOUDEST OF THE MESSAGES, and the only one that never reaches the
+	// pane at all — it is shown to the person in front of it and to nobody else.
+	virtual int DoShowModalMessage(const wxString& message, const wxString& caption, int style) override {
+		ibDesignerMessages::Report({ caption.IsEmpty() ? message : caption + wxT(": ") + message,
+			ibStatusMessage::ibStatusMessage_Warning, wxEmptyString, wxNOT_FOUND, true });
+		return ibFrontendMainFrame::DoShowModalMessage(message, caption, style);
+	}
+
 	virtual void CreateMetadataPane();
 	virtual void CreateGitPane();
 	virtual void CreateBottomPane();
@@ -208,6 +211,8 @@ protected:
 	void OnStartDebugWithoutDebug(wxCommandEvent& WXUNUSED(event));
 	void OnStartDebugWeb(wxCommandEvent& WXUNUSED(event));
 	void OnStartDebugWithoutDebugWeb(wxCommandEvent& WXUNUSED(event));
+	void OnStartDebugThin(wxCommandEvent& WXUNUSED(event));
+	void OnStartDebugWithoutDebugThin(wxCommandEvent& WXUNUSED(event));
 	void OnAttachForDebugging(wxCommandEvent& WXUNUSED(event));
 
 	void OnOpenConfiguration(wxCommandEvent& event);

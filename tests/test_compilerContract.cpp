@@ -70,6 +70,25 @@
 // EXACTLY TWO, and that is the reading that justifies pasting: an operand that
 // changed for one construct moves the digests of the sources using it and no
 // others. Sixteen at once would have meant something global again. (AOT v29.)
+//
+// AND FOUR MOVED 2026-09-28 — `FunctionsAndForwardReference`, `LambdaWithCapture`,
+// `LambdaWithoutCapture`, `MethodStyleLinqPipeline`. `OPER_FUNC` now carries its
+// function's index into `m_listFunc` in `m_param4.m_numIndex`, so a call reaches the
+// function by index instead of walking the list for the entry line. The reading: the
+// four are exactly the sources with a named function at an index other than 0 — the
+// rest render `p4(0,0)` as before — and each new digest, taken again with every
+// OPER_FUNC's p4 set back to zero, is the old one: nothing else moved. No AOT version
+// for it: an older blob has 0 there, which the runtime checks against the entry line
+// and walks past when it is not this function.
+//
+// AND ALL SIXTEEN MOVED 2026-10-09. `OPER_ITER` left the opcode list. It sat between
+// `OPER_INVERT` and `OPER_GT`, so every opcode from `OPER_GT` through `OPER_END` — and
+// `TYPE_DELTA`, which is measured from `OPER_END` — shifted by one. The rendering
+// prints those numbers, and `OPER_END` closes every module here, so every digest
+// moved and none of the instruction sequences did. Opcodes at or before `OPER_INVERT`
+// kept their numbers (the `op=1` / `op=8` / `op=9` / `op=14` rows in the failures).
+// The AOT format version moved with them (byteCodeAOT.cpp, 35 → 36): a stored blob
+// holds the old numbers and would dispatch the wrong handler.
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -77,9 +96,10 @@
 #include <cstdint>
 #include <vector>
 
+#include "backend/backend_exception.h"
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/compileContext.h"   // CODE_VES / CODE_CES
-#include "backend/compiler/codeDef.h"
+#include "core/compiler/codeDef.h"
 #include "backend/compiler/byteCode.h"
 #include "backend/compiler/value.h"
 
@@ -301,7 +321,7 @@ TEST(CompilerContract, ArithmeticPrecedence) {
 		wxT("a = 1 + 2 * 3 - 4 / 2;\n")
 		wxT("b = (1 + 2) * (3 - 4);\n")
 		wxT("c = 10 % 3 + a * b;\n"),
-		5643730180419156171ULL);
+		8448001462682893779ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, UnaryAndNot) {
@@ -310,7 +330,7 @@ TEST(CompilerContract, UnaryAndNot) {
 		wxT("a = -5;\n")
 		wxT("b = 2 * -a;\n")
 		wxT("b = Not (a > b);\n"),
-		12019024692853249572ULL);   // 2026-09-17: Not binds looser than a comparison — the comparison to a temp, then Not over it
+		2950024576718926863ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, ComparisonAndLogical) {
@@ -320,7 +340,10 @@ TEST(CompilerContract, ComparisonAndLogical) {
 		wxT("r = a < b And b > 0 Or a = b;\n")
 		wxT("r = a <> b;\n")
 		wxT("r = a <= b And a >= b;\n"),
-		9926730261470300737ULL);
+		15294174076167625395ULL);   // 2026-10-10: and/or short-circuit. `a < b And b > 0 Or a = b`
+		                           // is (a<b) and (b>0), then or (a=b). Each logical op still ends in one
+		                           // OPER_AND/OPER_OR. A false AND jumps over `b > 0` (that IF carries
+		                           // p4(-1,1), so a SQL NULL left does not skip). A true OR jumps over `a = b`.
 }
 
 // `x = a op b` emits ONE opcode writing `x`, not an opcode into a temp and a LET
@@ -336,7 +359,7 @@ TEST(CompilerContract, CompoundAssignmentFusion) {
 		wxT("i = i * 2;\n")
 		wxT("s = \"a\";\n")
 		wxT("s = s + \"b\";\n"),
-		3815150277359227768ULL);
+		1790108512806842433ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, NestedExpressionTemporaries) {
@@ -344,7 +367,7 @@ TEST(CompilerContract, NestedExpressionTemporaries) {
 		wxT("var a; var b; var c; var d; var r;\n")
 		wxT("a = 1; b = 2; c = 3; d = 4;\n")
 		wxT("r = (a + b) * (c - d) + (a * c) / (b + 1);\n"),
-		13859179706644134736ULL);
+		11759659650775318486ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 // ===========================================================================
@@ -374,7 +397,7 @@ TEST(CompilerContract, IfElseIfElse) {
 		// long as the break was steady. The emission was read before this number was replaced —
 		// the two conditionals now jump to 7 and 11, both arms jump to 12, and instruction 0
 		// carries a clean operand.
-		8744460667167399924ULL);
+		9124729449200840891ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, WhileWithTwoBreaksAndTwoContinues) {
@@ -388,7 +411,7 @@ TEST(CompilerContract, WhileWithTwoBreaksAndTwoContinues) {
 		wxT("  If i = 30 Then Break; EndIf;\n")
 		wxT("  If i = 40 Then Break; EndIf;\n")
 		wxT("EndDo;\n"),
-		10205036441203862171ULL);
+		18263727229462172402ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, ForLoop) {
@@ -398,7 +421,7 @@ TEST(CompilerContract, ForLoop) {
 		wxT("For i = 1 To 10 Do\n")
 		wxT("  s = s + i;\n")
 		wxT("EndDo;\n"),
-		16193131315832706463ULL);
+		7309648572648208764ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, ForeachLoop) {
@@ -409,7 +432,7 @@ TEST(CompilerContract, ForeachLoop) {
 		wxT("Foreach it In arr Do\n")
 		wxT("  s = s + 1;\n")
 		wxT("EndDo;\n"),
-		1730109863474551500ULL);
+		17681444340034192045ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, TryExcept) {
@@ -420,7 +443,7 @@ TEST(CompilerContract, TryExcept) {
 		wxT("Except\n")
 		wxT("  r = 0;\n")
 		wxT("EndTry;\n"),
-		5201982589343693378ULL);
+		14799822321381933800ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 // ===========================================================================
@@ -439,7 +462,7 @@ TEST(CompilerContract, FunctionsAndForwardReference) {
 		wxT("Procedure Entry()\n")
 		wxT("  var r; r = Caller(3);\n")
 		wxT("EndProcedure\n"),
-		17872137707533945073ULL);
+		16592719761311645649ULL); // the outbound forward-call goto marks p2, so a try around it stays
 }
 
 TEST(CompilerContract, TypedParametersAndLocals) {
@@ -449,7 +472,7 @@ TEST(CompilerContract, TypedParametersAndLocals) {
 		wxT("  label = \"x\";\n")
 		wxT("  If cancel Then depth = depth + 1; EndIf;\n")
 		wxT("EndProcedure\n"),
-		17263237664001252769ULL);
+		16328009134746159344ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, MethodCallChain) {
@@ -459,7 +482,7 @@ TEST(CompilerContract, MethodCallChain) {
 		wxT("  arr.Add(1); arr.Add(2);\n")
 		wxT("  Return arr.Count();\n")
 		wxT("EndFunction\n"),
-		17752133319479305487ULL);
+		16792428074418362447ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 // ===========================================================================
@@ -473,7 +496,7 @@ TEST(CompilerContract, LambdaWithCapture) {
 		wxT("           Return x + n;\n")
 		wxT("         EndFunction;\n")
 		wxT("EndFunction\n"),
-		15162364356553405039ULL);
+		16538828517165381097ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, LambdaWithoutCapture) {
@@ -483,7 +506,7 @@ TEST(CompilerContract, LambdaWithoutCapture) {
 		wxT("           Return x * 2;\n")
 		wxT("         EndFunction;\n")
 		wxT("EndFunction\n"),
-		11654458325135447023ULL);
+		14736460406722046680ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }
 
 TEST(CompilerContract, MethodStyleLinqPipeline) {
@@ -492,5 +515,5 @@ TEST(CompilerContract, MethodStyleLinqPipeline) {
 		wxT("  Return arr.Where(Function(x) Return x > 100 EndFunction)")
 		wxT(".Select(Function(x) Return x * 2 EndFunction).Count();\n")
 		wxT("EndFunction\n"),
-		16600608637943105378ULL);
+		7989586976537065504ULL);   // 2026-10-09: OPER_ITER removed; later opcodes and TYPE_DELTA shifted
 }

@@ -46,7 +46,7 @@
 
 #include "backend/mcp/mcpTool.h"
 
-#include "backend/compositionDescription.h"
+#include "core/description/compositionDescription.h"
 #include "backend/metaCollection/metaComposerObject.h"
 #include "backend/metadataConfiguration.h"
 #include "backend/composition/dataComposer.h"                    // ibDataDBComposer — folding the settings
@@ -292,6 +292,11 @@ public:
 			"many documents are unposted, what a register holds, what the largest payments are - "
 			"and not only when there is a report involved.\n"
 			  "\n"
+			"IT COMPOSES AS THE APPLICATION DOES: the functional options of the base apply here as they "
+			"do on the person's screen - a grouping or a selected field on something this base does not "
+			"use is left out, while a filter or a sort on it still applies. What the AUTHOR declared, "
+			"whatever the options say, is report_get's answer.\n"
+			  "\n"
 			"THE OTHER ROAD IS THE WRONG ONE FOR A QUESTION. `code_run` executes configuration "
 			"code as a BACKGROUND JOB: it answers with a session id, never with a value, so the only "
 			"way to see what it worked out is to have it write journal lines and read them back - "
@@ -507,7 +512,7 @@ public:
 				ibQueryLexer lexer;
 				lexer.Tokenize(bareQuery);
 			}
-			catch (const ibBackendException& error) {
+			catch (const ibCoreException& error) {
 				refusal = wxString::Format(ibMcpText("The query does not read as a query: %s"), error.GetErrorDescription());
 				return false;
 			}
@@ -529,7 +534,7 @@ public:
 			subject = ibMcpText("the query given");
 		}
 		else if (givenSchema != nullptr) {
-			if (!ibCompositionDescriptionMemory::ReadNode(*givenSchema, description, activeMetaData)) {
+			if (!ibCompositionDescriptionMemory::ReadNode(*givenSchema, description)) {
 				refusal = ibMcpText("`schema` could not be read as a composition. report_get on any report "
 					"shows the shape one has.");
 				return false;
@@ -764,7 +769,7 @@ public:
 			// it, and two people may well use the same word for different things.
 			node->SetValue(wxT("id"), wxString(entry.m_id));
 			node->SetValue(wxT("name"), entry.m_name);
-			if (entry.m_changed.IsValid())
+			if (!entry.m_changed.IsEmpty())
 				node->SetValue(wxT("changed"), entry.m_changed);
 			if (preferred.isValid() && entry.m_id == preferred)
 				node->SetValue(wxT("default"), true);   // …and this is the one running right now

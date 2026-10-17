@@ -5,6 +5,11 @@
 #include "queryParser.h"
 
 #include "queryException.h"   // ibBackendQuerySourceException — L4 refuses in its own variety
+#include "core/description/typeDescription.h"   // ibTypeDescription — what a CAST to a primitive converts to
+#include "core/fiber/fiber.h"          // StackLow — a parenthesized expression is native recursion
+
+#include <algorithm>
+#include <iterator>
 
 namespace {
 
@@ -15,7 +20,122 @@ bool IsAggregateKw(const ibQueryToken& t)
 	return t.m_kind == ibQueryTokenKind::Keyword && ibIsAggregateKeyword(t.m_keyword);
 }
 
+// ⭐ THE PRIMITIVES A CAST CONVERTS TO, named as the value registry names them — the `Number` a script writes in
+// `New TypeDescription("Number")`, not a second vocabulary kept here.
+const ibValueTypes s_castPrimitives[] = {
+	ibValueTypes::TYPE_NUMBER, ibValueTypes::TYPE_STRING, ibValueTypes::TYPE_DATE, ibValueTypes::TYPE_BOOLEAN };
+
+// …and a date's composition, as the word that qualifies `Date(…)`.
+const std::pair<ibDateFractions, const wxChar*> s_dateFractions[] = {
+	{ ibDateFractions_Date, wxT("Date") }, { ibDateFractions_Time, wxT("Time") }, { ibDateFractions_DateTime, wxT("DateTime") } };
+
+// The primitive a Cast names, with its qualifiers. False = the target is not a primitive (a narrowing CAST).
+// True with `wrong` set = a primitive qualified in a way it cannot be, said in words the parser raises.
+//
+// No qualifier limits nothing, as for a type a script names (ibValueTypeDescription::Unqualified): a Number
+// is not rounded, a String not cut, a Date keeps its time.
+bool ReadCastPrimitive(const ibQueryAstExpr& cast, ibTypeDescription& type, wxString& wrong)
+{
+	if (cast.m_kind != ibQueryAstExprKind::Cast || cast.m_path.size() != 1)
+		return false;
+	const ibValueTypes* const vt = std::find_if(std::begin(s_castPrimitives), std::end(s_castPrimitives),
+		[&cast](ibValueTypes t) { return cast.m_path.front().IsSameAs(ibValue::GetNameObjectFromVT(t), false); });
+	if (vt == std::end(s_castPrimitives))
+		return false;
+
+	std::vector<unsigned int> numbers;
+	std::vector<wxString>     words;
+	for (const ibQueryAstExprPtr& q : cast.m_args) {
+		if (!q || q->m_kind != ibQueryAstExprKind::Literal)
+			continue;
+		if (q->m_literal.GetType() == ibValueTypes::TYPE_NUMBER) numbers.push_back(static_cast<unsigned int>(q->m_literal.GetNumber().ToUInt()));
+		else                                                     words.push_back(q->m_literal.GetString());
+	}
+
+	ibQualifierNumber number(0, 0);
+	ibQualifierDate   date(ibDateFractions_DateTime);
+	ibQualifierString text(0);
+	switch (*vt) {
+	case ibValueTypes::TYPE_NUMBER:
+		if (!words.empty() || numbers.size() > 2 || (!numbers.empty() && (numbers[0] == 0 || numbers[0] > MAX_PRECISION_NUMBER))
+		    || (numbers.size() == 2 && numbers[1] > numbers[0]))
+			wrong = wxString::Format(_("a Number is qualified by its digits and the digits after the point: Number(15, 2), at most %d digits"),
+				MAX_PRECISION_NUMBER);
+		else if (!numbers.empty())
+			number = ibQualifierNumber(static_cast<unsigned char>(numbers[0]), static_cast<unsigned char>(numbers.size() > 1 ? numbers[1] : 0));
+		break;
+	case ibValueTypes::TYPE_STRING:
+		if (!words.empty() || numbers.size() > 1 || (!numbers.empty() && numbers[0] > MAX_LENGTH_STRING))
+			wrong = wxString::Format(_("a String is qualified by its length: String(50), at most %d; none for an unlimited one"),
+				MAX_LENGTH_STRING);
+		else if (!numbers.empty())
+			text = ibQualifierString(static_cast<unsigned short>(numbers[0]));
+		break;
+	case ibValueTypes::TYPE_DATE: {
+		const auto fraction = words.size() == 1
+			? std::find_if(std::begin(s_dateFractions), std::end(s_dateFractions),
+				[&words](const std::pair<ibDateFractions, const wxChar*>& f) { return words[0].IsSameAs(f.second, false); })
+			: std::end(s_dateFractions);
+		if (!numbers.empty() || words.size() > 1 || (words.size() == 1 && fraction == std::end(s_dateFractions)))
+			wrong = _("a Date is qualified by what it holds: Date(Date), Date(Time) or Date(DateTime)");
+		else if (fraction != std::end(s_dateFractions))
+			date = ibQualifierDate(fraction->first);
+		break;
+	}
+	default:
+		if (!cast.m_args.empty())
+			wrong = _("a Boolean takes no qualifier");
+		break;
+	}
+	type = ibTypeDescription(ibValue::GetIDByVT(*vt), ibTypeDescription::ibTypeData(number, date, text));
+	return true;
+}
+
 } // namespace
+
+wxArrayString ibQueryCastPrimitiveWords()
+{
+	wxArrayString words;
+	for (const ibValueTypes vt : s_castPrimitives)
+		words.Add(ibValue::GetNameObjectFromVT(vt));
+	return words;
+}
+
+bool ibQueryCastType(const ibQueryAstExpr& cast, ibTypeDescription& type)
+{
+	wxString wrong;
+	return ReadCastPrimitive(cast, type, wrong) && wrong.IsEmpty();
+}
+
+ibQueryAstExprPtr ibQueryMakeCast(ibQueryAstExprPtr value, const ibTypeDescription& type)
+{
+	if (type.GetClsidCount() != 1)
+		return nullptr;
+	const ibValueTypes vt = ibValue::GetVTByID(type.GetFirstClsid());
+	if (std::find(std::begin(s_castPrimitives), std::end(s_castPrimitives), vt) == std::end(s_castPrimitives))
+		return nullptr;
+
+	auto cast = ibQueryAstExpr::Make(ibQueryAstExprKind::Cast);
+	cast->m_arg  = std::move(value);
+	cast->m_path = { ibValue::GetNameObjectFromVT(vt) };
+	auto qualify = [&cast](const ibValue& q) {
+		auto literal = ibQueryAstExpr::Make(ibQueryAstExprKind::Literal);
+		literal->m_literal = q;
+		cast->m_args.push_back(literal);
+	};
+	// Only what limits something is written: `Number`, `String` and `Date` alone limit nothing (ReadCastPrimitive).
+	if (vt == ibValueTypes::TYPE_NUMBER && type.GetPrecision() > 0) {
+		qualify(ibValue(ibNumber(type.GetPrecision())));
+		if (type.GetScale() > 0) qualify(ibValue(ibNumber(type.GetScale())));
+	}
+	else if (vt == ibValueTypes::TYPE_STRING && type.GetLength() > 0)
+		qualify(ibValue(ibNumber(type.GetLength())));
+	else if (vt == ibValueTypes::TYPE_DATE && type.GetDateFraction() != ibDateFractions_DateTime) {
+		for (const std::pair<ibDateFractions, const wxChar*>& f : s_dateFractions)
+			if (f.first == type.GetDateFraction()) qualify(ibValue(wxString(f.second)));
+	}
+	return cast;
+}
 
 //////////////////////////////////////////////////////////////////////
 // token cursor helpers
@@ -308,7 +428,9 @@ ibQuerySelectPtr ibQueryParser::ParseSelectCore()
 
 	if (AcceptKw(ibQueryKeyword::Group)) {
 		ExpectKw(ibQueryKeyword::By, wxT("BY"));
-		do { sel->m_groupBy.push_back(ParsePrimary()); } while (AcceptPunct(wxT(',')));
+		// A KEY IS AN EXPRESSION, as a window's PARTITION BY key already is: `GROUP BY Price * Qty` is
+		// what the renderer writes for a computed key, and a primary stopped at the `*`.
+		do { sel->m_groupBy.push_back(ParseAddSub()); } while (AcceptPunct(wxT(',')));
 	}
 
 	// ⚠ HAVING IS ITS OWN CLAUSE, not a tail of GROUP BY. Nested inside it, `SELECT … FROM …
@@ -383,32 +505,12 @@ ibQuerySelectPtr ibQueryParser::ParseSelectStatement()
 			ThrowQueryException(at, _("INDEX BY needs INTO: only a temporary table this statement makes can be indexed"));
 	}
 
-	// ⭐ A TABLE HANDED IN GOES INTO A TEMPORARY TABLE, AND ONLY THERE. `FROM &Goods` is legal in a
-	// statement that writes `INTO`, and nowhere else:
-	//
-	//     SELECT * INTO Goods FROM &GoodsTable;      -- materialise it, once
-	//     SELECT … FROM Catalog.Products JOIN Goods … -- and from here it is an ordinary table
-	//
-	// The reason is not ceremony. A value table lives in RAM: every query that names it directly
-	// forces the read to be stitched in memory, and it is stitched AGAIN for every statement that
-	// mentions it. Materialised once into a temp table, it is a table the engine can promote and
-	// JOIN server-side — so the discipline is what makes the rest of the package fast, and the
-	// refusal is what stops somebody paying the RAM cost five times without knowing.
-	//
-	// Refused HERE, at the parse, so the constructor's live check says it the moment it is typed.
-	{
-		auto handedIn = [](const ibQuerySource& source) { return source.m_parameter; };
-		bool usesParameter = handedIn(sel->m_from);
-		for (const ibQueryAstJoin& join : sel->m_joins)
-			usesParameter = usesParameter || handedIn(join.m_source);
-		for (const ibQuerySelectPtr& branch : sel->m_unions)
-			if (branch)
-				usesParameter = usesParameter || handedIn(branch->m_from);
-
-		if (usesParameter && sel->m_intoTemp.IsEmpty())
-			ThrowQueryException(Cur(), _("a table passed in as a parameter can only be read INTO a temporary table: "
-			              "write `SELECT * INTO <name> FROM &<parameter>` first, then read that name"));
-	}
+	// ⭐ A TABLE HANDED IN IS A TABLE LIKE ANY OTHER — `FROM &Goods` reads a value table given as a parameter,
+	// in a temporary table's statement or in an ordinary select alike; `FROM Goods`, with no ampersand, reads
+	// the temporary table of that name, made earlier in the package or held by the temporary tables manager.
+	// The ampersand says where the rows come from, as it does for any other value (Max, 2026-09-28). It used
+	// to be refused outside `INTO`, so that a value table read by several statements was put away once;
+	// that stays the author's choice to make, and the text still says it: `SELECT * INTO Goods FROM &Goods`.
 
 	// FOR UPDATE — last, because it qualifies the whole statement: the rows this select
 	// returned are HELD until the transaction ends.
@@ -456,6 +558,33 @@ ibQueryProjection ibQueryParser::ParseProjection()
 	// A special case for "starts with" is almost always a parser deciding a shape by its first token
 	// instead of parsing it.
 	p.m_expr = ParsePredicate();
+
+	// ⭐⭐ `ROLE <word>` — WHAT THE FIELD IS IN A BALANCE, between the expression and its name (Max, 2026-09-29:
+	// `field1 ROLE <word> AS Field1`). Optional: unsaid, the field is what its source says. Contextual, not
+	// reserved — `ROLE` is this only when one of the five words follows it, so a field named `Role` stays a
+	// name, with or without AS.
+	if (Cur().m_kind == ibQueryTokenKind::Ident && Cur().m_text.IsSameAs(wxT("ROLE"), false)) {
+		const ibQueryToken& word = Peek();
+		if (word.m_kind == ibQueryTokenKind::Ident || word.m_kind == ibQueryTokenKind::Keyword)
+			for (const ibBalanceRole role : { ibBalanceRole::None, ibBalanceRole::Moment, ibBalanceRole::Dimension,
+			                                  ibBalanceRole::Opening, ibBalanceRole::Closing })
+				if (word.m_text.IsSameAs(ibBalanceRoleWord(role), false)) {   // the words the renderer writes
+					Next();
+					Next();
+					p.m_roleSaid = true;
+					p.m_role     = role;
+					// `PERIOD <n>` — its seniority, a whole number from 1, counted before any order a source gives
+					// its own periods (ibSourcePeriodRank); left out, the field keeps the order it had.
+					if (role == ibBalanceRole::Moment && Cur().m_kind == ibQueryTokenKind::Number) {
+						long rank = 0;
+						if (!Cur().m_text.ToLong(&rank) || rank < 1 || rank >= ibSourcePeriodRank(0))
+							ThrowQueryException(Cur(), _("ROLE PERIOD takes a whole number from 1 to 999: which period is compared first"));
+						p.m_periodRank = static_cast<int>(rank);
+						Next();
+					}
+					break;
+				}
+	}
 
 	// AS alias, or an implicit bare-identifier alias (SELECT Code c)
 	//
@@ -635,7 +764,14 @@ void ibQueryParser::ParseOrderBy(ibQuerySelect& sel)
 			// A LEADING SIGN starts an expression too — `ORDER BY -Total` is "biggest first" written
 			// the short way, and it reads as a name only until the minus is accounted for.
 			|| (tk.m_kind == ibQueryTokenKind::Op && (tk.m_text == wxT("-") || tk.m_text == wxT("+")))
-			|| (tk.m_kind == ibQueryTokenKind::Punct && tk.m_text == wxT("("));
+			|| (tk.m_kind == ibQueryTokenKind::Punct && tk.m_text == wxT("("))
+			// ⚠ …AND A WORD WITH A BRACKET BEHIND IT IS A CALL — `ORDER BY YEAR(Date)`,
+			// `CAST(x AS Number)`, `VALUE(Enum.Kind.Retail)`. No attribute name is ever followed by `(`,
+			// so the bracket settles what the word alone could not. Read as a name, the word came back
+			// as a column and the `(` as "unexpected text after the query" — for text the renderer
+			// itself writes, so the constructor broke its own query on the way back (2026-09-28).
+			|| ((tk.m_kind == ibQueryTokenKind::Ident || tk.m_kind == ibQueryTokenKind::Keyword)
+			    && Peek().IsPunct(wxT('(')));
 
 		if (startsExpression) {
 			it.m_expr = ParsePredicate();
@@ -816,8 +952,10 @@ void ibQueryParser::ParseTotals(ibQuerySelect& sel)
 	if (AcceptKw(ibQueryKeyword::Overall)) {
 		sel.m_totalsOverall = true;
 		// `BY OVERALL` alone is a whole totals query — one row over everything. The comma is what
-		// says dimensions follow.
-		if (!AcceptPunct(wxT(',')))
+		// says dimensions follow — and so does SPLIT, which opens a node of its own and needs no comma
+		// before it: `BY OVERALL SPLIT ByItem BY Item` is what the renderer writes for a report whose
+		// only node hangs off the grand total, and this line used to stop at OVERALL and refuse the rest.
+		if (!AcceptPunct(wxT(',')) && !Cur().IsKeyword(ibQueryKeyword::Split))
 			return;
 	}
 
@@ -995,16 +1133,16 @@ ibQueryAstExprPtr ibQueryParser::ParseComparison()
 	// ⭐ `<expr> [NOT] REFS <Kind>.<Name>` — the type TEST. Written where LIKE and IN are written,
 	// because it is the same sort of thing: a predicate over one operand and a fixed right-hand
 	// side. The right side is a TYPE NAME rather than a value, so it is read as a dotted name — the
-	// same way CAST reads the type it narrows to, and refused here if it is a bare word (a type is
-	// `Catalog.Goods`, and `Goods` alone would name a table nobody declared).
+	// same way CAST reads the type it narrows to. One word is a FAMILY of them (`CatalogRef`,
+	// `AnyRef`); whether it is one is the lowering's question, which knows the types.
 	if (AcceptKw(ibQueryKeyword::Refs)) {
 		const ibQueryToken at = Cur();
 		auto n = ibQueryAstExpr::Make(ibQueryAstExprKind::Refs);
 		n->m_negated = negated; n->m_lhs = lhs;
 		n->m_line = at.m_line; n->m_col = at.m_col;
 		n->m_path = ParseDottedName(/*firstMayBeKeyword*/true);
-		if (n->m_path.size() < 2)
-			ThrowQueryException(at, _("REFS takes a type: <Kind>.<Name>, as CAST does"));
+		if (n->m_path.empty())
+			ThrowQueryException(at, _("REFS takes a type: <Kind>.<Name>, as CAST does, or a family of them (CatalogRef, AnyRef)"));
 		return n;
 	}
 	if (AcceptKw(ibQueryKeyword::In)) {
@@ -1155,7 +1293,7 @@ ibQueryAstExprPtr ibQueryParser::ParseCase()
 // A SCALAR CALL — the second family of calls, read where a name stands before a `(`.
 //
 // ⭐ THE ARGUMENT COUNT IS THE TABLE'S ANSWER, not a number written here. Each call declares its own
-// range beside its word (queryLexer.cpp), so `DATEADD` needing three is stated in ONE place — the
+// range beside its word (core/query/queryKeywords.cpp), so `DATEADD` needing three is stated in ONE place — the
 // same place the palette writes its skeleton from and the syntax helper reads its signature out of.
 // A count checked here against a literal would be a second authority on the language, free to
 // disagree with the first the day a call gains an optional argument (DATETIME already has four).
@@ -1214,6 +1352,11 @@ ibQueryAstExprPtr ibQueryParser::ParseIsNullCall()
 ibQueryAstExprPtr ibQueryParser::ParsePrimary()
 {
 	const ibQueryToken& tk = Cur();
+	// The frame is already this call. Another parenthesized primary would be
+	// another frame, and a query of nothing but brackets used to run off the
+	// stack with no refusal.
+	if (ibFiber::StackLow())
+		ThrowQueryException(tk, _("it is nested deeper than the stack allows"));
 
 	// ⭐ A LEADING MINUS — `-Quantity`, `SELECT -Amount AS Refund`, `ORDER BY -Total`. It is how a
 	// person writes "the other direction", and the grammar simply had no place for it: the parser
@@ -1299,6 +1442,20 @@ ibQueryAstExprPtr ibQueryParser::ParsePrimary()
 		++m_pos;
 		auto e = ibQueryAstExpr::Make(ibQueryAstExprKind::Literal);
 		e->m_literal.SetType(ibValueTypes::TYPE_NULL);
+		return e;
+	}
+	// ⭐ …AND `UNDEFINED` — THE RUNTIME'S OWN EMPTY VALUE, the same one a script writes by that name
+	// (Max, 2026-09-24: "Undefined is just the runtime's empty value"). The word is not being invented for
+	// the query: it is being let in, so a query can say what every other tier already says.
+	//
+	// ⚠ NOT `NULL`, which is the DATABASE's absence — a join that did not match, a column with nothing in
+	// it. The two meet in the same cell often enough to be taken for one, and they part the moment the
+	// field could hold an EMPTY REFERENCE: that is a value OF A TYPE, and this is a value of none
+	// (queryKeywords.h).
+	if (tk.IsKeyword(ibQueryKeyword::Undefined)) {
+		++m_pos;
+		auto e = ibQueryAstExpr::Make(ibQueryAstExprKind::Literal);
+		e->m_literal.SetType(ibValueTypes::TYPE_EMPTY);
 		return e;
 	}
 
@@ -1576,7 +1733,30 @@ ibQueryAstExprPtr ibQueryParser::ParseCast()
 	ExpectKw(ibQueryKeyword::As, wxT("AS in CAST"));
 	// THE TARGET TYPE, as the language names a source: `Document.Order`. Written the same way a FROM
 	// writes it, because it IS the same thing — the table whose fields the walk continues into.
+	const ibQueryToken& typeAt = Cur();
 	cast->m_path = ParseDottedName();
+	// …OR A PRIMITIVE, WITH ITS QUALIFIERS: `Number(15, 2)`, `String(50)`, `Date(Date)`. Kept as literals in
+	// m_args in written order — a number as the number, a word as its text — and read by ibQueryCastType.
+	if (AcceptPunct(wxT('('))) {
+		do {
+			const ibQueryToken& q = Cur();
+			if (q.m_kind != ibQueryTokenKind::Number && q.m_kind != ibQueryTokenKind::Ident
+			    && q.m_kind != ibQueryTokenKind::Keyword)
+				ThrowQueryException(q, _("expected a number or a word qualifying the cast type"));
+			auto qualifier = ibQueryAstExpr::Make(ibQueryAstExprKind::Literal);
+			qualifier->m_line = q.m_line; qualifier->m_col = q.m_col;
+			qualifier->m_literal = q.m_kind == ibQueryTokenKind::Number ? q.m_literal : ibValue(q.m_text);
+			cast->m_args.push_back(qualifier);
+			++m_pos;
+		} while (AcceptPunct(wxT(',')));
+		ExpectPunct(wxT(')'), wxT("')' after the qualifiers of the cast type"));
+	}
+	wxString wrong;
+	ibTypeDescription primitive;
+	if (!ReadCastPrimitive(*cast, primitive, wrong) && !cast->m_args.empty())
+		wrong = _("only a primitive type is qualified: Number(15, 2), String(50), Date(Date)");
+	if (!wrong.IsEmpty())
+		ThrowQueryException(typeAt, wrong);
 	ExpectPunct(wxT(')'), wxT("')' after the cast type"));
 
 	// ⚠ THE DOT IS CONSUMED, not merely looked at. Peeking and then calling ParseDottedName left the

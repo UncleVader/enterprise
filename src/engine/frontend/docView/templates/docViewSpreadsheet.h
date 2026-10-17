@@ -37,6 +37,8 @@ private:
 
 	void OnMenuEvent(wxCommandEvent& event);
 
+protected:
+
 	ibGridEditor* m_gridEditor;
 
 	wxDECLARE_EVENT_TABLE();
@@ -73,7 +75,7 @@ private:
 class FRONTEND_API ibSpreadsheetFileDocument : public ibSpreadsheetDocument {
 public:
 
-	ibSpreadsheetFileDocument(const wxObjectDataPtr<ibBackendSpreadsheetObject>& spreadSheetDocument = wxObjectDataPtr<ibBackendSpreadsheetObject>(new ibBackendSpreadsheetObject)) : ibSpreadsheetDocument(), m_spreadSheetDocument(spreadSheetDocument) { m_childDoc = false; }
+	ibSpreadsheetFileDocument(const std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument = std::make_shared<ibSpreadsheetObject>()) : ibSpreadsheetDocument(), m_spreadSheetDocument(spreadSheetDocument) { m_childDoc = false; }
 
 	virtual bool OnCreate(const wxString& path, long flags) override;
 
@@ -108,7 +110,7 @@ protected:
 	virtual bool DoSaveDocument(const wxString& filename) override;
 	virtual bool DoOpenDocument(const wxString& filename) override;
 
-	wxObjectDataPtr<ibBackendSpreadsheetObject> m_spreadSheetDocument;
+	std::shared_ptr<ibSpreadsheetObject> m_spreadSheetDocument;
 
 private:
 
@@ -132,6 +134,54 @@ private:
 
 	wxDECLARE_NO_COPY_CLASS(ibSpreadsheetEditDocument);
 	wxDECLARE_DYNAMIC_CLASS(ibSpreadsheetEditDocument);
+};
+
+// ----------------------------------------------------------------------------
+// The document and view a form's grid box holds (docview-fork.md, "the form is a facade")
+// ----------------------------------------------------------------------------
+
+// A spreadsheet file document — it holds the sheet the box shows and saves it as every format the registry
+// writes — in no manager's list and no tab of its own.
+class FRONTEND_API ibSpreadsheetGridBoxDocument : public ibSpreadsheetFileDocument {
+public:
+
+	ibSpreadsheetGridBoxDocument();
+
+	// The one door a sheet is shown through: held here, and loaded into the editor while there is one.
+	void SetSpreadsheetDocument(const std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument);
+
+	// SAVE AS OF ITS OWN. Made from no template and kept in no manager's list, it asks no manager: the
+	// formats are its own answer (GetSaveFilter — the sheet format registry), and the file joins no
+	// history. It used to borrow the manager's template for this, and the box outlives the manager: a
+	// form compiled into the designer's cache is let go with the configuration after the main window has
+	// deleted the manager and its templates, and the view's destructor followed the borrowed template
+	// into freed memory — the designer's crash on exit, 2026-10-04.
+	virtual bool SaveAs() override;
+
+	// The box holds this document, not its views — none of them going takes it along.
+	virtual void OnChangedViewList() override {}
+
+private:
+
+	wxDECLARE_NO_COPY_CLASS(ibSpreadsheetGridBoxDocument);
+	wxDECLARE_DYNAMIC_CLASS(ibSpreadsheetGridBoxDocument);
+};
+
+// Its view, for as long as the box lives. The box's Create creates it in the box's parent — its OnCreate makes
+// the editor the box returns; the box's Cleanup closes it and it stays empty: the editor is destroyed by the
+// visual host, the document is the box's. Its frame is that parent, not a frame of its own, so there is no
+// title to mark.
+class FRONTEND_API ibSpreadsheetGridBoxView : public ibSpreadsheetEditView {
+public:
+
+	ibSpreadsheetGridBoxView() : ibSpreadsheetEditView() {}
+
+	virtual bool OnCreate(ibDocument* doc, long flags) override;
+	virtual bool OnClose(bool deleteWindow = true) override;
+	virtual void OnChangeFilename() override {}
+
+private:
+	wxDECLARE_DYNAMIC_CLASS(ibSpreadsheetGridBoxView);
 };
 
 #endif

@@ -1,5 +1,5 @@
 #include "backend/system/value/valueDataComposition.h"
-#include "backend/compositionDescription.h"   // WHAT a saved composition consists of — the one file
+#include "backend/backend_composition.h"   // WHAT a saved composition consists of — the one file — and its values restored
 #include "backend/composition/composeEvaluate.h"   // …and how a parameter WORKED OUT is worked out
 #include "backend/appData.h"                         // appData / GetActiveMetaData
 #include "backend/query/queryable.h"                 // ibBackendQueryable
@@ -17,7 +17,7 @@
 #include "backend/query/queryRender.h"               // ibRenderQuery / ibQueryColumnFromPath — the seed query, written out
 #include "backend/backend_exception.h"               // the engine's verdict on a query that will not resolve
 #include "backend/srcDataObject.h"                   // ibSourceExplorer
-#include "backend/serialize/dataBuilder.h"           // ibDataNode (object-level save/load)
+#include "core/serialize/dataBuilder.h"           // ibDataNode (object-level save/load)
 #include "backend/metadataConfiguration.h"           // ibMetaDataConfigurationBase (GetSourceMetaData)
 #include "backend/composition/drivers/spreadsheetComposeDriver.h"   // the OUTPUT — composition → document
 #include "backend/system/value/composition/valueComposerSettings.h"   // ibValueEnumComparisonKind — a condition's word
@@ -276,7 +276,7 @@ void ibValueDataComposition::RebuildSource()
 			if (ast)
 				ibQueryLowering::DescribeOutput(*ast, ParameterValues(), m_querySchema);
 		}
-		catch (const ibBackendException& error) {
+		catch (const ibCoreException& error) {
 			// AT ONCE, AND IN THE ENGINE'S WORDS. A query that cannot be described is a query that
 			// cannot be run, and learning that when the report is first composed — in front of a user
 			// rather than its author — is the thing worth avoiding.
@@ -634,10 +634,12 @@ std::map<wxString, ibValue> ibValueDataComposition::ParameterValues() const
 // THE ONE POINT WHERE A RUN SETTLES ITS PARAMETERS: evaluate what is an expression, then hand every
 // value to the composer. Called by the one reader there is now — Compose — so "what the query was
 // given" is settled in exactly one place.
-void ibValueDataComposition::PrepareParametersForRun()
+std::map<wxString, ibValue> ibValueDataComposition::PrepareParametersForRun()
 {
-	for (const auto& parameter : EvaluatedParameterValues())
+	std::map<wxString, ibValue> settled = EvaluatedParameterValues();
+	for (const auto& parameter : settled)
 		GetModelComposer().Parameter(parameter.first, parameter.second);
+	return settled;
 }
 
 // (RunComposerPage is gone: it was the LIST's fetch — a page, an anchor, a direction. A composition
@@ -699,11 +701,11 @@ bool ibValueDataComposition::GetResourceAt(size_t idx, wxString& func, wxString&
 // 🛑 IT BUILDS INTO A DOCUMENT OF ITS OWN FIRST, then swaps. Writing into the shown one would fire
 // its notifiers from a worker thread — that is GUI touched off the UI thread — and would show the
 // report half-drawn while it is built. The swap is one move, on a handle: the backend document
-// carries a refcount of its own (wxObjectDataPtr), parallel to the value refcount, so the old sheet
+// carries a refcount of its own (std::shared_ptr), parallel to the value refcount, so the old sheet
 // lives exactly as long as somebody still holds it.
 bool ibValueDataComposition::Compose()
 {
-	wxObjectDataPtr<ibBackendSpreadsheetObject> composed(new ibBackendSpreadsheetObject());
+	std::shared_ptr<ibSpreadsheetObject> composed(std::make_shared<ibSpreadsheetObject>());
 	if (!Compose(composed.get()))
 		return false;
 
@@ -717,7 +719,7 @@ bool ibValueDataComposition::Compose()
 // …AND THE ONE ROUTINE BOTH ENTRANCES USE. The script hands over a document it owns
 // (`Compose(Document)`); the model's own verb hands over a fresh one and installs it. Nothing here
 // knows which of the two it is — and no finished sheet is ever copied afterwards.
-bool ibValueDataComposition::Compose(ibBackendSpreadsheetObject* target)
+bool ibValueDataComposition::Compose(ibSpreadsheetObject* target)
 {
 	if (target == nullptr)
 		return false;
@@ -739,7 +741,7 @@ bool ibValueDataComposition::Compose(ibBackendSpreadsheetObject* target)
 
 	// THE PARAMETERS ARE SETTLED FIRST — the same door the fetch uses (PrepareParametersForRun):
 	// expressions evaluated once, values handed to the composer, and only then the read.
-	PrepareParametersForRun();
+	const std::map<wxString, ibValue> settled = PrepareParametersForRun();
 	ibDataComposer& composer = GetModelComposer();
 
 	// ⭐⭐ AND THE SETTINGS ARE DRIVEN IN HERE — at the moment the composer FIRES (Max, 2026-08-23:
@@ -796,17 +798,9 @@ bool ibValueDataComposition::Compose(ibBackendSpreadsheetObject* target)
 		// 🛑 IT READ THE DESCRIPTION'S FIRST VARIANT REGARDLESS, and that is what lost every per-node
 		// edit: a reader set a grouping's own filter, the window handed it back, and this line put
 		// the AUTHOR's structure over it on the next compose.
-		{
-			// Asked of the SECTION — the question is about the structure, so it is put to the accessor
-			// that answers it.
-			const std::vector<ibOutputDescription>& stored = composer.GetCurrentStructure();
-			if (!stored.empty()) {
-				std::vector<ibDataComposer::Output>& live = composer.Outputs();
-				live.resize(stored.size());
-				for (size_t i = 0; i < stored.size(); ++i)
-					static_cast<ibOutputDescription&>(live[i]) = stored[i];   // the driver each output has stays
-			}
-		}
+		// Asked of the SECTION — the question is about the structure, so it is put to the accessor that
+		// answers it — and applied by the composer's one door, less what this base does not use.
+		composer.ApplyAvailableStructure();
 	}
 
 	ibSpreadsheetComposeDriver driver(target);
@@ -814,12 +808,40 @@ bool ibValueDataComposition::Compose(ibBackendSpreadsheetObject* target)
 	// THE HEADING SAYS WHAT WAS ASKED. A report without its conditions cannot be defended a week
 	// later, and the conditions are not a second store — they are the filters the composition
 	// already carries, read back through the same door the settings window reads.
-	driver.SetTitle(GetSourceCaption());
+	//
+	// ⭐ …AND WHAT THE OTHER SETTINGS LET IT SAY (ibOutputParameter) — the report's own storey, the setting in
+	// force. `Auto` is what a heading does by itself: a title and the conditions print, the parameters do not.
+	const ibOutputParametersDescription& other = composer.GetCurrentOutputParametersDesc();
+	const auto shows = [&other](ibOutputParameter parameter, bool byItself) {
+		if (!other.Says(parameter))
+			return byItself;
+		const ibShowMode mode = static_cast<ibShowMode>(ibStoredValue(other.ValueInForce(parameter), nullptr).GetInteger());
+		return mode == ibShowMode::Auto ? byItself : mode == ibShowMode::Show;
+	};
+	if (shows(ibOutputParameter::ShowTitle, true)) {
+		// A title a person wrote, read in the reader's language — else what the report is called.
+		const wxString title = ibStoredValue(other.ValueInForce(ibOutputParameter::Title), nullptr).GetString();
+		driver.SetTitle(title.IsEmpty() ? GetSourceCaption() : ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), title));
+	}
+	// …THE VALUES THE READER FILLED IN, as the query was given them — only the ones offered to the reader: a
+	// value the author settles is not a condition anybody chose.
+	if (shows(ibOutputParameter::ShowParameters, false)) {
+		for (const ibCompositionParameter& parameter : Parameters()) {
+			if (!parameter.m_userSettable)
+				continue;
+			const auto value = settled.find(parameter.m_name);
+			if (value != settled.end())
+				driver.AddHeaderLine(ibTitleFromName(parameter.m_name) + wxT(": ") + value->second.GetString());
+		}
+	}
 	// 🛑 IT PRINTED THE SCOPE AND NOT THE FILTER. This walked the flat list — the engine's own
 	// per-fetch conditions — while everything a PERSON asked for lives in the filter in force. So a
 	// report run with conditions printed a heading that said there were none, which is the one thing
 	// a heading exists to prevent (2026-08-24).
-	for (const ibFilterNodeDescription& node : composer.GetCurrentFilterDesc().m_nodes) {
+	const std::vector<ibFilterNodeDescription> noConditions;
+	const std::vector<ibFilterNodeDescription>& conditions = shows(ibOutputParameter::ShowFilter, true)
+		? composer.GetCurrentFilterDesc().m_nodes : noConditions;
+	for (const ibFilterNodeDescription& node : conditions) {
 		if (!node.m_use || node.m_kind != ibFilterNodeKind_Condition)
 			continue;   // a line switched off was not asked for; a group is not one condition
 		// ⭐ THE LINE'S OWN LABEL WINS, AND THIS IS WHAT IT IS FOR. `m_presentation` is the wording a
@@ -827,17 +849,18 @@ bool ibValueDataComposition::Compose(ibBackendSpreadsheetObject* target)
 		// consulted by nothing at all (audit, 2026-08-24). A heading is exactly where somebody's own
 		// phrasing of a condition belongs.
 		if (!node.m_presentation.IsEmpty()) {
-			driver.AddHeaderLine(node.m_presentation);
+			driver.AddHeaderLine(ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), node.m_presentation));
 			continue;
 		}
 		// …and generated otherwise. A SIDE READS AS ITS OWN TEXT — a field as its presentation, a
 		// value as its value: the same rule the settings window prints a line by
 		// (ibFilterTreeModel::GetValueByRow), so a heading and the window a person set it in cannot
-		// word one condition two ways.
-		auto side = [](const ibFilterOperandDescription& operand) {
+		// word one condition two ways. A presentation is kept in every language it was written in and
+		// read in the reader's, as the title above is — a heading line is text, not a cell PutArea reads.
+		auto side = [this](const ibFilterOperandDescription& operand) {
 			return operand.IsField()
-				? (operand.m_presentation.IsEmpty() ? operand.m_path : operand.m_presentation)
-				: operand.m_value.GetString();
+				? (operand.m_presentation.IsEmpty() ? operand.m_path : ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), operand.m_presentation))
+				: ibStoredValue(operand.m_value, GetSourceMetaData()).GetString().ToWxString();
 		};
 		driver.AddHeaderLine(side(node.m_left) + wxT(" ")
 			+ ibValue::CreateEnumObject<ibValueEnumComparisonKind>(node.m_comparison).GetString()
@@ -886,7 +909,7 @@ void ibValueDataComposition::SubmitFetchAsync(std::function<void()> work)
 	// ONE SHEET, ONE SLOT: a second Compose means the first read is no longer wanted.
 	CancelFetch();
 
-	if (ibJobManager* const jobs = ibApplicationData::GetJobManager()) {
+	if (ibJobManager* const jobs = ibApplicationInstance::GetJobManager()) {
 		try {
 			// The handle is KEPT: CancelFetch waits on it, so a read cannot outlive this composition.
 			//
@@ -907,7 +930,7 @@ void ibValueDataComposition::SubmitFetchAsync(std::function<void()> work)
 				ibJobTenancy::Tenant);
 			return;
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			// Nothing to rent — fall through and read on this thread.
 		}
 	}
@@ -956,10 +979,10 @@ void ibValueDataComposition::GetCommandCollection(const ibFormID& formType, std:
 {
 	// COMPOSE changes what is SHOWN, not what is stored — live even on a view-only form.
 	commands.push_back(ibCommandItem(ibSpreadsheetModelCommand_Compose, wxT("Compose"), _("Compose"),
-		ibPictureDescription(g_picGenerateCLSID), true).SetModify(false));
+		ibPictureDescription(g_picComposeCLSID), true).SetModify(false));
 	commands.push_back(ibCommandItem());   // separator — "show it" is not "arrange it"
 	commands.push_back(ibCommandItem(ibSpreadsheetModelCommand_Settings, wxT("Settings"), _("Settings"),
-		ibPictureDescription(g_picStructureCLSID), false).SetModify(false));
+		ibPictureDescription(g_picComposerSettingsCLSID), false).SetModify(false));
 	// ⭐ AND THE VARIANTS — the settings the author NAMED, offered as a menu. A verb of the
 	// composition like the two above: picking one sets the reader's setting and nothing is stored
 	// as "the active variant" (ibDialogComposerSettings::ShowVariantPicker). Shows what is READ, so
@@ -973,7 +996,7 @@ void ibValueDataComposition::GetCommandCollection(const ibFormID& formType, std:
 	// all seven.
 	commands.push_back(ibCommandItem());   // separator — the author's named arrangements are their own group
 	commands.push_back(ibCommandItem(ibSpreadsheetModelCommand_Variants, wxT("Variants"), _("Variants"),
-		ibPictureDescription(g_picSelectCLSID), true).SetModify(false));
+		ibPictureDescription(g_picVariantsCLSID), true).SetModify(false));
 
 	commands.push_back(ibCommandItem());   // separator — …and the reader's own shelf is another
 
@@ -981,9 +1004,9 @@ void ibValueDataComposition::GetCommandCollection(const ibFormID& formType, std:
 	// with the configuration, a saved setting is what THIS person arranged and kept. Both show what
 	// is READ — nothing in the base's data changes — so they stay live on a view-only form.
 	commands.push_back(ibCommandItem(ibSpreadsheetModelCommand_RestoreSettings, wxT("RestoreSettings"), _("Restore settings"),
-		ibPictureDescription(g_picSelectCLSID), true).SetModify(false));
+		ibPictureDescription(g_picRestoreSettingsCLSID), true).SetModify(false));
 	commands.push_back(ibCommandItem(ibSpreadsheetModelCommand_SaveSettings, wxT("SaveSettings"), _("Save settings"),
-		ibPictureDescription(g_picSaveCLSID), true).SetModify(false));
+		ibPictureDescription(g_picSaveSettingsCLSID), true).SetModify(false));
 
 	// …then whatever the SOURCE offers, after a rule.
 	if (const ibQueryableSourceDescriptor* holder = GetSourceDescriptor()) {
@@ -1041,7 +1064,7 @@ const ibSourceExplorer* ibValueDataComposition::GetSourceExplorer() const
 		else
 			m_sourceExplorer.AppendColumn(column.m_name,
 				column.m_col != nullptr ? column.m_col->GetColumnId() : wxNOT_FOUND,
-				column.m_col != nullptr ? column.m_col->GetTypeDesc() : ibTypeDescription());
+				column.GetTypeDesc());
 	}
 	return &m_sourceExplorer;
 }
@@ -1058,7 +1081,7 @@ wxString ibValueDataComposition::GetSourceCaption() const
 	// (the payroll demo, 2026-09-10).
 	const ibCompositionDescription& desc = GetCompositionDesc();
 	if (!desc.m_variants.empty() && !desc.m_variants.front().m_synonym.IsEmpty())
-		return desc.m_variants.front().GetPresentation();
+		return ibVariantCaption(desc.m_variants.front());
 
 	return GetClassName();
 }
@@ -1071,7 +1094,7 @@ const ibMetaData* ibValueDataComposition::GetMetaData() const
 	if (const ibPropertyObject* o = GetAttachOwner())
 		return o->GetMetaData();
 
-	return ibApplicationData::GetActiveMetaData();
+	return ibApplicationInstance::GetActiveMetaData();
 }
 
 const ibMetaData* ibValueDataComposition::GetSourceMetaData() const
@@ -1079,7 +1102,7 @@ const ibMetaData* ibValueDataComposition::GetSourceMetaData() const
 	// READ — the STORED source config, captured in RebuildSource. Returned straight from the field: no
 	// owner-walk, no queryable re-resolve, so a form's metadata may fall back here without looping.
 	// Nothing stored yet → the ACTIVE config.
-	return m_sourceMetaData != nullptr ? m_sourceMetaData : ibApplicationData::GetActiveMetaData();
+	return m_sourceMetaData != nullptr ? m_sourceMetaData : ibApplicationInstance::GetActiveMetaData();
 }
 
 // --- settings surface -------------------------------------------------------
@@ -1160,7 +1183,7 @@ bool ibValueDataComposition::ReadProperty(const ibDataNode& node)
 	// ⚠ AGAINST ITS OWN CONFIGURATION — the one this composition was made with. The values inside a
 	// saved composition (a filter's right side, a parameter) are references and enum members, and
 	// those are built by the metadata, not by the value factory.
-	return ibCompositionDescriptionMemory::ReadNode(node, GetCompositionDesc(), GetSourceMetaData());
+	return ibBackendCompositionDescriptionMemory::ReadNode(node, GetCompositionDesc(), GetSourceMetaData());
 }
 
 // …AND THE OTHER HALF OF THE TRANSLATION: a description becomes live objects. Nothing here reads a

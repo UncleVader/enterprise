@@ -27,7 +27,7 @@
 #include "backend/query/queryable.h"         // ibBackendQueryable / ibQueryCondition
 #include "backend/query/queryColumn.h"       // ibBackendQueryColumn / ibBackendColumnRawDB
 #include "backend/query/tempTableQueryable.h" // ibCteQueryable — what a declared query publishes
-#include "backend/clsid.h"                    // reference_to_clsid — a reference-typed column (multi-field spread)
+#include "core/clsid.h"                    // reference_to_clsid — a reference-typed column (multi-field spread)
 
 namespace {
 
@@ -167,6 +167,7 @@ struct SpecBuf {
 	// groupBy / aggs empty — which is exactly what the gate used to be blind to.
 	std::vector<ibTotalLevel> totals;
 	std::vector<ibDataQueryBuilder::AggregateItem> totalAggs;
+	std::vector<ibQueryColumnSelect> computed;   // SelectExpr — a constant, a window beside the select list
 
 	ibDataQuerySpec Make(const ibQueryNode* root, const ibBackendQueryable* primary) {
 		ibDataQuerySpec s;
@@ -176,6 +177,7 @@ struct SpecBuf {
 		s.m_writeRows = &writeRows; s.m_dotWalks = &dots; s.m_selectCols = &sel;
 		s.m_groupPaths = &groupPaths; s.m_dimWalks = &dimWalks;
 		s.m_totals = &totals; s.m_totalAggregates = &totalAggs;
+		s.m_selectExprs = &computed;
 		return s;
 	}
 };
@@ -757,6 +759,30 @@ TEST(QueryComposerGate, Aggregate_GroupBySum_Colocatable)
 	const ibDataQuerySpec spec = buf.Make(root.get(), &A);
 
 	EXPECT_TRUE(ibDbTableProvider::CanColocateAggregate(spec));
+}
+
+// …but NOT with something computed beside the groups. That road drains its rows into memory by keys and figures
+// alone, and a constant beside a GROUP BY came back as an empty column (2026-10-01). Refused here, the query goes
+// to the fold in memory, which carries it.
+TEST(QueryComposerGate, Aggregate_ConstantBesideTheGroups_NotColocatable)
+{
+	ibBackendColumnRawDB aKey = ibBackendColumnRawDB::Number(wxT("a_key"));
+	ibBackendColumnRawDB aDim = ibBackendColumnRawDB::String(wxT("a_dim"));
+	ibBackendColumnRawDB bKey = ibBackendColumnRawDB::Number(wxT("b_key"));
+	ibBackendColumnRawDB bAmt = ibBackendColumnRawDB::Number(wxT("b_amt"));
+	TestQueryable A(wxT("TableA"), 1); A.AddCol(&aKey); A.AddCol(&aDim);
+	TestQueryable B(wxT("TableB"), 2); B.AddCol(&bKey); B.AddCol(&bAmt);
+
+	auto root = Join2(&A, &B, &aKey, &bKey);
+	SpecBuf buf;
+	buf.groupBy = { &aDim };
+	ibDataQueryBuilder::AggregateItem sum;
+	sum.m_fn = ibDataQueryBuilder::AggregateFn::Sum; sum.m_col = &bAmt; sum.m_alias = wxT("total");
+	buf.aggs = { sum };
+	buf.computed = { ibQueryColumnSelect{ ibQueryColumnExpr::Const(ibValue(7)), wxT("seven") } };
+	const ibDataQuerySpec spec = buf.Make(root.get(), &A);
+
+	EXPECT_FALSE(ibDbTableProvider::CanColocateAggregate(spec));
 }
 
 // ===========================================================================
@@ -1418,6 +1444,56 @@ ibQueryRamTable GroupDetail()
 }
 
 } // namespace
+
+// Select(ByGroups) on a query that named no grouping. `SELECT 1 AS A` then
+// Select(QueryResultIteration.ByGroups) used to die in BuildHierarchyTree: the
+// walk was handed no totals, no group columns and no parent key, and the fold
+// dereferenced the key. The records themselves are the walk, the same rows a
+// direct selection hands out, and an empty result is an empty walk.
+TEST(QuerySelector, ByGroupsWithoutAGroupingReadsTheRows)
+{
+	const ibMetaID A = 1;
+	const auto twoRows = [&]() {
+		ibQueryRamTable rows;
+		rows.AddColumn(A, wxT("A"), ibTypeDescription());
+		const auto add = [&](const wxString& v) {
+			const long r = rows.AppendRow();
+			rows.SetCell(r, A, ibValue(v));
+		};
+		add(wxT("1"));
+		add(wxT("2"));
+		return rows;
+	};
+	const auto walked = [](ibSelector& sel) {
+		std::vector<wxString> got;
+		while (sel.Next())
+			got.push_back(sel.GetColumn(wxT("A")).GetString());
+		return got;
+	};
+
+	ibSelector direct(twoRows(), ibSelectKind::ibSelectKind_Direct);
+	const std::vector<wxString> asDirect = walked(direct);
+
+	ibSelector groups(twoRows(), ibSelectKind::ibSelectKind_ByGroups);
+	EXPECT_EQ(groups.NodeCount(), static_cast<long>(asDirect.size()));
+	EXPECT_EQ(walked(groups), asDirect);
+
+	ibSelector hier(twoRows(), ibSelectKind::ibSelectKind_ByGroupsHierarchy);
+	EXPECT_EQ(hier.NodeCount(), static_cast<long>(asDirect.size()));
+	EXPECT_EQ(walked(hier), asDirect);
+
+	// The road result.Select takes: a cursor, and no totals configured on it.
+	ibQueryRamTable held = twoRows();
+	ibSelector fromRead(std::make_unique<ibRamTableCursor>(held), ibSelectKind::ibSelectKind_ByGroups);
+	EXPECT_EQ(fromRead.NodeCount(), static_cast<long>(asDirect.size()));
+	EXPECT_EQ(walked(fromRead), asDirect);
+
+	ibQueryRamTable empty;
+	empty.AddColumn(A, wxT("A"), ibTypeDescription());
+	ibSelector none(std::move(empty), ibSelectKind::ibSelectKind_ByGroups);
+	EXPECT_EQ(none.NodeCount(), 0);
+	EXPECT_FALSE(none.Next());
+}
 
 TEST(QuerySelector, WithNoOrderStatedALevelKeepsFoldOrder)
 {
@@ -2088,4 +2164,25 @@ TEST(QueryComputedAggregate, TopTakesTheFirstGroupsInTheirOrder)
 	ASSERT_EQ(2u, totals.size());
 	EXPECT_EQ(ibNumber(40), totals[0]);
 	EXPECT_EQ(ibNumber(12), totals[1]);
+}
+
+// The page cache's signature compares the query's parameters as VALUES. It used to print them into one text:
+// a date became its raw count, and a string spelling `;b=` read the same as two parameters.
+TEST(PageSignature, TheParametersAreComparedAsValuesNotAsTheirText)
+{
+	const auto sign = [](std::vector<wxString> names, std::vector<ibValue> values) {
+		ibPageSignature s;
+		s.m_text = wxT("SELECT 1");
+		s.m_count = 50;
+		s.m_names = std::move(names);
+		s.m_values = std::move(values);
+		return s;
+	};
+	const ibValue day(ibDateTime(2026, 3, 29));
+	EXPECT_EQ(sign({ wxT("d") }, { day }), sign({ wxT("d") }, { ibValue(ibDateTime(2026, 3, 29)) }));
+	EXPECT_NE(sign({ wxT("d") }, { day }), sign({ wxT("d") }, { ibValue(ibDateTime(2026, 3, 29).AddMilliseconds(1)) }));
+	EXPECT_NE(sign({ wxT("a") }, { ibValue(wxT("x;b=S1")) }),
+	          sign({ wxT("a"), wxT("b") }, { ibValue(wxT("x")), ibValue(wxT("1")) })) << "a string cannot stand for a second parameter";
+	EXPECT_NE(sign({ wxT("n") }, { ibValue(1) }), sign({ wxT("n") }, { ibValue(wxT("1")) })) << "a number is not its text";
+	EXPECT_EQ(sign({ wxT("n") }, { ibValue(1) }), sign({ wxT("n") }, { ibValue(ibNumber(wxT("1.0"))) })) << "1 and 1.0 are one number";
 }

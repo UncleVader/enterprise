@@ -1,7 +1,7 @@
 #include "tableBox.h"
 #include "tableBoxColumnRenderer.h"             // ibDataViewColumnObject — the current column carries its control
 #include "backend/composition/drivers/spreadsheetComposeDriver.h"   // the SAME driver a report's sheet is drawn by
-#include "backend/backend_spreadsheet.h"        // ibBackendSpreadsheetObject — the document the list is printed into
+#include "core/spreadsheet/spreadsheetObject.h"   // ibSpreadsheetObject — the document the list is printed into
 #include "backend/session/session.h"            // ibSession::CurrentFrame — the door a finished document is shown through
 #include "backend/system/systemManager.h"       // ibValueSystemFunction::Message — the platform's own way to speak
 #include "backend/backend_mainFrame.h"          // ibBackendDocFrame — ShowSpreadsheetDocument lives on it
@@ -9,10 +9,9 @@
 #include <memory>
 #include <wx/choicdlg.h>
 #include "backend/metaCollection/partial/commonObject.h"
-#include "backend/picturePredefined.h"          // g_pic*CLSID — the TableBox composes the standard command band
-#include "backend/compositionDescription.h"     // the description the quick filter writes into
+#include "core/picturePredefined.h"          // g_pic*CLSID — the TableBox composes the standard command band
+#include "backend/backend_composition.h"        // the description the quick filter writes into + ibStoreValue
 #include "backend/appData.h"
-#include "backend/diagnostics/journal.h"        // the probe on where the output list thinks it stands
 #include "frontend/win/dlgs/settings/list/listSettings.h"   // the ONE door a model's settings are opened by
 #include "frontend/win/dlgs/settings/composer/composerSettings.h"   // the saved-settings shelf — shared with the report's world
 #include "backend/settings/settingsComposer.h"              // ibSettingsCategory — which shelf a list's settings sit on
@@ -319,7 +318,7 @@ void ibValueModelTableBox::Command_FilterByCurrentColumn()
 		// condition, and hand the whole of it back as the user's. The list's own description, what the
 		// configuration saved, is untouched.
 		ibSettingsDescription settings = m_tableModel->GetModelComposer().GetCurrentSettingsDesc();
-		settings.m_filter.Append(name, ibComparisonKind_Equal, value);
+		settings.m_filter.Append(name, ibComparisonKind_Equal, ibStoreValue(value));
 		m_tableModel->GetModelComposer().SetUserSettingsDesc(settings);
 		m_tableModel->RefetchAll();
 		KeepInView(ctrl, sel);   // the row whose value this filter is — it stays in view
@@ -502,9 +501,16 @@ void ibValueModelTableBox::Command_OutputList()
 			// selection — so the widget is not asked for it (Max, 2026-08-30: *"the current row you can
 			// get from the box itself"*). One holder of that fact, and the print reads the same one
 			// every other command on this band reads.
+			//
+			// ⭐⭐ …AND WHAT DELIMITS IS THE GROUP THE ROW STANDS IN, not the row. A heading's path ends with its
+			// own value, so standing on a heading printed that one group alone, while a person means the level
+			// they are looking at (Max, 2026-09-29: *"not where you stand, but which group you are in"*). The
+			// group a row stands in is its parent in the tree; a top-level heading has none, and the whole list
+			// is printed.
 			const ibValueModel::ibValueModelReturnLine* const line = GetCurrentLine();
 			const ibDataViewItem where = line != nullptr ? line->GetLineItem() : ibDataViewItem();
-			const ibComposerNode* const node = m_tableModel->GetViewData<ibComposerNode>(where);
+			const ibDataViewItem in = m_tableModel->GetParent(where);
+			const ibComposerNode* const node = m_tableModel->GetViewData<ibComposerNode>(in);
 			const std::vector<ibValue> path = node != nullptr ? node->GetGroupPath() : std::vector<ibValue>();
 			const std::vector<ibGroupLineDescription>& rungs = settings.m_group.m_lines;
 
@@ -512,15 +518,16 @@ void ibValueModelTableBox::Command_OutputList()
 			for (size_t at = 0; at < path.size() && at < rungs.size(); ++at) {
 				if (rungs[at].m_path.IsEmpty())
 					continue;
-				settings.m_filter.Append(rungs[at].m_path, ibComparisonKind_Equal, path[at]);
+				settings.m_filter.Append(rungs[at].m_path, ibComparisonKind_Equal, ibStoreValue(path[at]));
 				fixed++;
 			}
 
 			// The probe separates the ways this comes back empty, because they want different answers:
-			// no current item, an item that is not a node, and a node standing at the root.
+			// no current item, a row standing at the root, and a group that is not a node.
 			ibJournalInfo(wxT("ui.list"),
-				wxT("output list: item %s, node %s, %u rung(s) deep, %u grouping line(s), %u filter(s)"),
-				where.IsOk() ? wxT("ok") : wxT("none"), node != nullptr ? wxT("yes") : wxT("no"),
+				wxT("output list: item %s, in %s, %u rung(s) deep, %u grouping line(s), %u filter(s)"),
+				where.IsOk() ? wxT("ok") : wxT("none"),
+				!in.IsOk() ? wxT("the root") : node != nullptr ? wxT("a group") : wxT("not a node"),
 				(unsigned)path.size(), (unsigned)rungs.size(), (unsigned)fixed);
 
 			// 🛑 …AND ONLY WHEN WHAT WE ARE INSIDE IS A ROW. `InHierarchy` below is stated over the
@@ -542,7 +549,7 @@ void ibValueModelTableBox::Command_OutputList()
 						ibValuePtr<ibValueModel::ibValueModelReturnLine> folder(m_tableModel->GetRowAt(drilled));
 						if (folder != nullptr)
 							settings.m_filter.Append(key.front()->GetName(),
-								ibComparisonKind_InHierarchy, folder->GetSelectValue());
+								ibComparisonKind_InHierarchy, ibStoreValue(folder->GetSelectValue()));
 					}
 				}
 		}
@@ -567,7 +574,7 @@ void ibValueModelTableBox::Command_OutputList()
 	const wxString title = m_formOwner != nullptr && !m_formOwner->GetCaption().IsEmpty()
 		? m_formOwner->GetCaption() : wxString(_("List"));
 
-	wxObjectDataPtr<ibBackendSpreadsheetObject> sheet(new ibBackendSpreadsheetObject());
+	std::shared_ptr<ibSpreadsheetObject> sheet = std::make_shared<ibSpreadsheetObject>();
 	ibSpreadsheetComposeDriver driver(sheet.get());
 	driver.SetTitle(title);
 

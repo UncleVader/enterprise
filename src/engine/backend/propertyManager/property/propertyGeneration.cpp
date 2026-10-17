@@ -1,11 +1,11 @@
 #include "propertyGeneration.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/propertyManager/property/variant/variantGen.h"
 
 
 /////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyGeneration::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc) const
+wxVariantData* ibPropertyGeneration::CreateVariantData(ibPropertyObject* property, const ibMetaDescription& typeDesc)
 {
 	// No cast: the variant needs the owner only to reach GetMetaData, which ibPropertyObject answers.
 	return new ibVariantDataGeneration(property, typeDesc);
@@ -66,11 +66,11 @@ bool ibPropertyGeneration::GetDataValue(ibValue& pvarPropVal) const
 
 bool ibPropertyGeneration::ReadNodeValue(const ibDataValue& value)
 {
-	return ibMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
+	return ibBackendMetaDescriptionMemory::ReadNode(value, GetValueAsMetaDesc());
 }
 
 bool ibPropertyGeneration::WriteNodeValue(ibDataValue& value) const
 {
 	const ibPropertyObject* owner = m_owner;   // CONST overload — the non-const one returns null (see propertyObject.h)
-	return ibMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
+	return ibBackendMetaDescriptionMemory::WriteNode(value, GetValueAsMetaDesc(), owner->GetMetaData());
 }

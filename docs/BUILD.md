@@ -26,6 +26,7 @@ This document covers how to build OES on Windows (MSBuild), macOS (CMake), and L
 |---|---|---|
 | Visual Studio | 2022 (17.x) | "Desktop development with C++" workload; platform toolset is `v143` |
 | Windows SDK | 10.0 (latest) | Installed by VS workload (`WindowsTargetPlatformVersion=10.0`) |
+| CMake | Any recent | Only for the CMake presets. The MSBuild build does not need it: `backend.vcxproj` computes the engine hash in the bytecode cache key itself (an inline MSBuild task, the same rule as `compiler/engineFingerprint.cmake`) |
 | Git | Any recent | For submodule initialisation |
 
 MSBuild (`enterprise.sln`) is the shipping build on Windows. CMake (`CMakeLists.txt` at repo root) is the build for macOS / Linux — **and it also works on Windows**: `CMakePresets.json` ships four host-conditioned presets (`windows-x64-debug`, `windows-x64-release`, `windows-x86-debug`, `windows-x86-release`), and that is the path the Google Test targets are built through (see [engineering-playbook/10-testing.md](private/engineering-playbook/10-testing.md)).
@@ -66,7 +67,7 @@ sudo apt install -y \
 ```
 
 `libgtk-3-dev` and `uuid-dev` are **not optional**: the build defines `__WXGTK__` and the CMake configure step
-pkg-checks `gtk+-3.0`, so wx will not configure without it; and under GTK `guid.cpp` generates guids through libuuid's `uuid_generate`, which the backend links against. `ninja-build` is what the
+pkg-checks `gtk+-3.0`, so wx will not configure without it; and under GTK `guid.cpp` generates guids through libuuid's `uuid_generate`, which `core` links against. `ninja-build` is what the
 `linux-debug` / `linux-release` presets generate for. The driver `-dev` packages are only needed
 for the `OES_USE_*` options you turn on — SQLite is always embedded.
 
@@ -85,21 +86,42 @@ git clone https://github.com/open-enterprise-solutions/enterprise.git
 cd enterprise
 
 # Initialise wxWidgets (located at src/3rdparty/wxWidgets, pinned to the 3.2 branch)
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 ```
 
 The `--recursive` flag is required because wxWidgets itself contains submodules.
 
-**Initialise wxWidgets by name, not the whole set.** Since 2026-08-23 `docs/` is a second
-submodule and a **private** repository (`enterprise-docs`): a bare `--init --recursive` fails for
-anyone outside the organisation, before a single file is compiled. Nothing in the build reads
-`docs/`, and CI checks out with `submodules: false` and then initialises wxWidgets by path for the
-same reason. Members who want the documentation as well run `git submodule update --init docs`.
+**A CMake configure fetches what is missing.** wxWidgets, cpp-httplib, Mbed TLS and nlohmann/json are
+each checked before use, and one that is not there is fetched with `git submodule update --init --recursive` for
+that path (three attempts); only a tree with no git, or no network, stops with the command to run. A
+checkout that fetched less than the tree needs - an older workflow, a partial clone - still builds.
 
-To update the wxWidgets submodule to the pinned commit after a `git pull`:
+**A third-party header is named by its library** — `src/3rdparty` is on every include path:
+`<cpp-httplib/httplib.h>`, `<nlohmann/json.hpp>` (from its `single_include`, also on the path), Mbed TLS's
+`<mbedtls/…>` and wx's `<wx/…>` from their own include folders.
+
+**nlohmann/json is the upstream repository, pinned to a release** (`src/3rdparty/nlohmann`). Updating it is
+moving the pin:
+`git -C src/3rdparty/nlohmann fetch --tags && git -C src/3rdparty/nlohmann checkout vX.Y.Z`, then commit
+the new pointer.
+
+**Take them all; the private one takes itself out.** `docs/private` is a **private** repository
+(`enterprise-docs`) that nothing in the build reads, and a bare `--init --recursive` used to fail on
+it for anyone outside the organisation, before a single file was compiled. It now carries
+`update = none` in `.gitmodules`, which a fetch naming no path obeys, so the line above takes
+every submodule this tree names and leaves that one alone. CI runs exactly the same line, which
+is why nothing has to be added here when a submodule is. Members who want the documentation ask for
+it by hand, and `--checkout` is what overrides the line:
 
 ```bash
-git submodule update --recursive src/3rdparty/wxWidgets
+git submodule update --init --checkout docs/private
+```
+
+To move the submodules to the commits this tree pins, after a `git pull` - `--init` because a pull can
+bring a submodule that was not there before:
+
+```bash
+git submodule update --init --recursive
 ```
 
 ---
@@ -148,21 +170,31 @@ folder `Win32`/`Win64`):
 bin\
   Win32\            (Platform=x86)
     Debug\      or  Release\
+      core.dll
       backend.dll
       frontend.dll
       wfrontend.dll
+      protocol.dll
+      frmserver.dll
+      frmclient.dll
+      fileserver.dll
+      enterprise-thin.exe
       enterprise.exe
+      designer-thin.exe
       designer.exe
       launcher.exe
-      daemon.exe
+      appserver.exe
       codeRunner.exe
       wenterprise-server.exe
   Win64\            (Platform=x64)
     ...
 ```
 
+`core.dll` is the shared layer under `backend.dll` and `frmclient.dll` (wx base only); every
+project that links `backend.lib` also links `core.lib`.
 `wfrontend.dll` + `wenterprise-server.exe` are the web runtime (headless
-server + web frontend). `simplePlugin.dll` is the plugin example; it builds into
+server + web frontend). `protocol.dll`, `frmserver.dll`, `frmclient.dll`, `fileserver.dll`, `enterprise-thin.exe` and
+`designer-thin.exe` are the thin client and its server side ([thin-client.md](public/thin-client.md)). `simplePlugin.dll` is the plugin example; it builds into
 `bin\<Platform>\<Configuration>\plugins\` — the directory the plugin manager scans at
 startup.
 
@@ -225,7 +257,7 @@ CMake cross-platform build is available. wxWidgets 3.3.2 is built from the in-tr
 cd /path/to/enterprise
 
 # Ensure the wxWidgets submodule is initialised
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 
 # Configure (Debug)
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
@@ -252,6 +284,7 @@ cmake --build build --parallel 6
 | `OES_FB_LOCALSERVER` | ON | Firebird out-of-process local server (Phase 6, leader-election); needs `firebird.exe` in `_fb/` at runtime |
 | `OES_USE_TBB` | (undeclared) | Intel TBB parallelism (`USE_TBB_PARALLEL`); **not declared via `option()`** in the root `CMakeLists.txt` — only read by `backend/CMakeLists.txt`, so it never appears in `cmake-gui` / `ccmake`. Pass `-DOES_USE_TBB=ON` explicitly if you want it |
 | `BUILD_TESTING` | OFF | Build the Google Test suite under `tests/` |
+| `OES_SANITIZE` | (empty) | Sanitizers passed to `-fsanitize=`: `address`, `undefined`, `address,undefined`, `thread` (MSVC takes it as `/fsanitize=`, where only `address` applies, without a leak detector). CI builds `address,undefined` and `thread` (see [Continuous integration](#continuous-integration)). Under `thread` the fiber switch reports itself to ThreadSanitizer (`ibFiber::SwitchTo`), since TSan cannot see the assembly switch |
 
 SQLite is always enabled (embedded sources, no option). `OES_USE_FIREBIRD`
 and `OES_USE_POSTGRESQL` link their clients dynamically, so a system library
@@ -264,22 +297,30 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DOES_USE_POSTGRESQL=ON
 
 ### Build Targets
 
-The root `CMakeLists.txt` adds eight engine subdirectories, each with its own
-`CMakeLists.txt`:
+The root `CMakeLists.txt` adds fifteen engine subdirectories, each with its own
+`CMakeLists.txt`, in this order — `core` first, `backend` second:
 
 | Target | Type |
 |---|---|
-| backend | shared lib (`BACKEND_EXPORTS`) |
+| core | shared lib (`CORE_EXPORTS`; of wx, `wx::base` only; plus libuuid / CoreFoundation for `guid.cpp`) |
+| backend | shared lib (`BACKEND_EXPORTS`, links `core` PUBLIC) |
 | frontend | shared lib (`FRONTEND_EXPORTS`, links wx GUI) |
-| daemon | executable (console) |
+| protocol | shared lib (`PROTOCOL_EXPORTS`) — does not link `core` |
+| frmserver | shared lib (`FRMSERVER_EXPORTS`) |
+| fileserver | shared lib (`FILESERVER_EXPORTS`) |
+| frmclient | shared lib (`FRMCLIENT_EXPORTS`, links `core` + `protocol`) |
+| appserver | executable (console) — the application server; `daemon` is kept as an alias target |
 | enterprise | executable (GUI) |
+| enterprise-thin | executable (GUI) — the thin client |
 | designer | executable (GUI) |
+| designer-thin | executable (GUI) — the thin designer |
 | launcher | executable (GUI) |
 | codeRunner | executable (GUI) |
 | simplePlugin | shared lib (plugin example) |
 
-The web runtime targets (`wfrontend`, `wenterprise-server`) build under the
-MSBuild solution only; they are not yet wired into the CMake build.
+The web runtime targets (`wfrontend`, `wenterprise-server`) build under CMake with
+`-DOES_BUILD_WEB=ON` (default OFF) and under the MSBuild solution. CI does not set the option, so
+the web is not built there.
 
 ### macOS-specific Notes
 
@@ -291,6 +332,15 @@ MSBuild solution only; they are not yet wired into the CMake build.
   icon placed into `Resources` and `Info.plist` filled in (`CFBundleIdentifier`,
   `CFBundleExecutable`, icon name). Treat the `if(APPLE)` branches in the designer /
   enterprise / launcher CMake files as working code, not scaffolding
+- **Inside a bundle, the program folder is the one that holds the `.app`** (`core/programFolder.h`).
+  A program running from `X.app/Contents/MacOS/` looks beside the bundle for everything a Windows
+  or Linux build keeps beside its executable: `backend.conf`, `lang/`, `help/`, `plugins/`, `_fb/`,
+  `web/`, the application server's default `server/`, `libfileserver.dylib`, and the other
+  programs (as `<name>.app` or flat). A binary outside a bundle uses its own folder
+- **A program running from a bundle writes its logs under `~/Library/Logs/OES`**: `journal/`,
+  `crashdumps/` and `oes-debug.log`. The folder beside an installed `.app` is usually
+  `/Applications`, which a normal user cannot write. A binary outside a bundle — and every
+  Windows or Linux program — keeps them in the program folder
 
 ---
 
@@ -299,7 +349,7 @@ MSBuild solution only; they are not yet wired into the CMake build.
 ```bash
 cd /path/to/enterprise
 
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 
 # Configure
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -376,13 +426,16 @@ Paths use the `oesPlatform` macro (`Win32` for `x86`, `Win64` for `x64`):
 ## Continuous integration
 
 `.github/workflows/ci.yml` (added 2026-08-02) runs on pushes to `develop` / `master`, on PRs into
-`develop`, and on demand (`workflow_dispatch`). Six jobs:
+`develop`, and on demand (`workflow_dispatch`). Nine jobs:
 
 | Job | Runner | What it proves |
 |---|---|---|
 | **Tests (Linux, Debug)** | ubuntu-22.04 | The backend suite (`oes_tests`) passes. The primary signal. |
 | **Build (Windows, x64 Debug)** | windows-2022 | The shipping platform still compiles under MSVC, and the suite passes there too. |
 | **Dialect (PostgreSQL, Debug)** | ubuntu-22.04 | A second DBMS actually executes, against a `postgres:16` service container. The connection arrives through the environment and the target skips itself when `OES_PG_USER` is unset — which is what lets the same binary be a no-op on a developer machine. |
+| **Firebird (Linux, Debug)** | ubuntu-22.04 | Firebird actually executes. The pinned Firebird 5 kit (`.github/firebird-kit-linux.sh`, the one the nightly package ships) is laid out as `_fb/` beside `oes_tests`, and the `Firebird*` tests run through the embedded engine — no server. The tests skip where no client loads; here a skip FAILS the job, since a kit that stopped loading would otherwise leave it green. Added 2026-09-22. |
+| **Tests (Linux, ASan + UBSan)** | ubuntu-22.04 | The suite of *Tests (Linux, Debug)* built with `-DOES_SANITIZE=address,undefined`: no use after free, no overflow, no undefined behaviour, and — LeakSanitizer rides in with ASan on Linux — no leak at exit. Leak detection is off while BUILDING, because `gtest_discover_tests` runs each binary then. **Not blocking yet** (`continue-on-error`): the first runs are a harvest; the job becomes blocking once it is fixed. Added 2026-09-22. |
+| **Tests (Linux, TSan)** | ubuntu-24.04 | No data race in the code a fiber can race. `oes_tests` built with `-DOES_SANITIZE=thread` and run on the suites that park a fiber, share a session, pool a connection, take a lock or run the job manager (`WorkerPool*`, `Fiber*`, `SessionHolder`, `SessionDbLayer`, `ConnectionPool`, `SocketLockFix`, `JobManager`, `JobSchedule`) — not the whole backend. The fiber switch is assembly TSan cannot see, so `ibFiber` tells it which fiber runs (`__tsan_switch_to_fiber`). **Blocking**: a race in our code fails the job; `.github/tsan-suppressions.txt` takes third-party code only, each line with its reason. GCC 13, hence the newer runner: GCC 11's libtsan reports a double lock of a destroyed mutex when a fiber locks a mutex on the calling thread's stack, and GCC 13 does not. Added 2026-10-10. |
 | **GUI tests (Linux, Xvfb)** | ubuntu-22.04 | `oes_frontend_runtime_test` — links `frontend.dll`, needs a live wxApp. Separate job: its failure mode (a modal on an assert, or a process that passes every test and then does not exit) is unlike a backend test's. Xvfb is started by the step itself rather than through `xvfb-run`, so `$!` is the process under test — see the § below on what the wrapper cost. |
 | **Tests (macOS 14, arm64, Debug)** | macos-14 | The third toolchain, and a different CPU with it: AArch64 (unsigned `char`, a weaker memory model, its own alignment), Apple libc++ rather than libstdc++, and wx against Cocoa instead of GTK — including the `APPLE` branch of `guid.cpp` (CFUUID) that nothing else compiles. Added 2026-08-03. |
 | **Benchmarks (Linux, Release) — record only** | ubuntu-22.04 | The only job that builds Release. It runs on `develop` and `master` (and on demand), never on a PR, and **gates nothing** — `|| true`, no threshold: a benchmark that fails CI on a shared runner becomes a flaky test nobody trusts. A performance figure is worth what it is worth next to the commit it belongs to, so develop pays the ~16 minutes of building wx from scratch. |
@@ -420,7 +473,9 @@ Five notes on why it is shaped this way — each one paid for by a wasted round:
 
 - **Everything goes through the CMake presets, including Windows.** `enterprise.sln` carries 10
   C++ projects and none is wxWidgets, so MSBuild cannot bootstrap a clean runner — it expects wx
-  libraries to exist already. The preset path builds wx from the submodule.
+  libraries to exist already. The preset path builds wx from the submodule. So CI never builds
+  `enterprise.sln`: a step only the solution runs — `backend.vcxproj`'s call to
+  `engineFingerprint.cmake`, say — is checked by a local build alone.
 - **No build-directory cache.** Caching `build/` keyed on the submodule commit looks obvious and
   is wrong with Ninja: `actions/cache` restores files with the *current* timestamp, so every
   restored object looks newer than its source and the build skips work it needed to do. The
@@ -442,7 +497,7 @@ Five notes on why it is shaped this way — each one paid for by a wasted round:
   locally, and 0.09–0.37 s for the backend-linking suite — so `tests/CMakeLists.txt` registers
   every suite through one `oes_discover_tests()` wrapper carrying `DISCOVERY_TIMEOUT 120`. Add a
   new suite through that wrapper, not through `gtest_discover_tests` directly.
-- **The solution compiles no tests.** `enterprise.sln` carries the 10 shipping projects and nothing
+- **The solution compiles no tests.** `enterprise.sln` carries the 17 shipping projects and nothing
   from `tests/` — the test tree is reached through CMake only. So a rename or a header move that a
   local `Debug|x86` build accepts can still leave test sources naming a file that no longer exists,
   and CI is what says so. Three did, on 2026-08-20
@@ -475,13 +530,15 @@ takes from the system and Ubuntu does not install by default, `libtommath.so.1`,
 package. The kit's libraries find each other on their own — `$ORIGIN/../lib` on Linux, `@rpath/lib/…`
 answered by the programs' rpath to `_fb` on macOS — and the engine loads `_fb/lib/libfbclient` by its
 full path (`firebirdInterface.cpp`; a POSIX loader has no `SetDllDirectory`, so a bare name found the
-system's alone), with `_fb` also looked for beside an application bundle (`firebirdBootstrap.cpp`).
+system's alone), with `_fb` looked for in the program folder — beside the executable, or beside the
+`.app` for a program inside a bundle (`firebirdBootstrap.cpp`, `core/programFolder.h`).
 Each packing script then **creates a UTF8 base embedded, with a case-insensitive Unicode collation, and
 reads a row back** — Firebird's own `isql` put into the kit for that minute — because resolved libraries
 are not a working engine: the engine plugin, the character sets and ICU are loaded at run time.
 
 It is a separate workflow from `ci.yml`: no tests (CI runs them on every push), Release built from
-scratch, only the programs' own targets (`enterprise designer launcher codeRunner daemon simplePlugin`).
+scratch, only the programs' own targets (`enterprise designer launcher codeRunner appserver simplePlugin`;
+the nightly that master still runs names `daemon`, which CMake keeps as an alias of `appserver`).
 The release is published only when **all three** packed, so it never offers one platform from tonight
 beside another from last week. Each packing script under `.github/nightly/` **refuses** a tree that
 would not start — a missing piece, or a library that does not resolve from the unpacked folder — and
@@ -522,7 +579,7 @@ only from the workflow file on `master`; what it builds is `develop`. The workfl
 
 **Symptom:** `fatal error: wx/wx.h: No such file or directory`
 
-**Fix:** Run `git submodule update --init --recursive src/3rdparty/wxWidgets`. On Windows, verify the wxWidgets pre-built binaries are in `src\3rdparty\wxWidgets\`.
+**Fix:** Run `git submodule update --init --recursive`. On Windows, verify the wxWidgets pre-built binaries are in `src\3rdparty\wxWidgets\`.
 
 ### Firebird embedded not found at runtime
 
@@ -544,11 +601,18 @@ General > Platform Toolset** and install the VS 2022 C++ toolset if missing.
 
 **Fix:** Build `backend` first. In the solution, right-click the failing project, select **Project Dependencies**, and ensure `backend` is checked.
 
+### `cmake` not found while MSBuild builds `backend`
+
+**Symptom:** `backend` stops before compiling anything: `MSB3073: The command "cmake -D OES_COMPILER_DIR=…" exited with code 9009`.
+
+**Fix:** Pull: the project no longer calls cmake (2026-10-10). The `EngineFingerprint` target computes the hash
+in MSBuild and writes `engineFingerprintBuild.h`, which the bytecode cache includes.
+
 ### CMake cannot find wxWidgets
 
 **Symptom:** `Could not find wxWidgets`
 
-**Fix:** Run `git submodule update --init --recursive src/3rdparty/wxWidgets`. The CMake build uses the in-tree submodule automatically.
+**Fix:** Run `git submodule update --init --recursive`. The CMake build uses the in-tree submodule automatically.
 
 ### Out of memory during build (macOS/Linux)
 
@@ -563,7 +627,7 @@ General > Platform Toolset** and install the VS 2022 C++ toolset if missing.
 **Fix:**
 ```bash
 rm -rf src/3rdparty/wxWidgets
-git submodule update --init --recursive src/3rdparty/wxWidgets
+git submodule update --init --recursive
 ```
 
 ### Build of another OES process is running
@@ -571,4 +635,4 @@ git submodule update --init --recursive src/3rdparty/wxWidgets
 **Symptom:** `LNK1168: cannot open <name>.exe for writing` during link.
 
 **Fix:** Close any running OES processes (`enterprise.exe`, `designer.exe`,
-`launcher.exe`, `daemon.exe`) before linking — they hold the output file open.
+`launcher.exe`, `appserver.exe`) before linking — they hold the output file open.

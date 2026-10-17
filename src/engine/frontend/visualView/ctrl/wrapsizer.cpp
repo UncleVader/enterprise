@@ -1,6 +1,6 @@
 
 #include "sizer.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 #ifdef OES_USE_WEB
 #include "frontend/web/webSizer.h"
 #endif
@@ -40,7 +40,7 @@ void ibValueWrapSizer::Update(wxObject* wxobject, ibVisualHost *visualHost)
 	wxWrapSizer*    wrapsizer = static_cast<wxWrapSizer*>(wxobject);
 #endif
 	wrapsizer->SetOrientation(m_propertyOrient->GetValueAsInteger());
-	wrapsizer->SetMinSize(m_propertyMinSize->GetValueAsSize());
+	wrapsizer->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 	UpdateSizer(wrapsizer);
 }
 

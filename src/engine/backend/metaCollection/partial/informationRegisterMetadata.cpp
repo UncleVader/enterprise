@@ -1,5 +1,5 @@
 #include "informationRegister.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/system/value/valueDynamicList.h"   // ibValueDynamicList — the standard list migrates onto the universal dynamic list
 #include "backend/metaData.h"
 #include "backend/moduleManager/moduleManager.h"
@@ -15,8 +15,12 @@ ibValueMetaObjectInformationRegister::ibValueMetaObjectInformationRegister() : i
 m_metaRecordManager(new ibValueMetaObjectRecordManager())
 {
 	//set default proc
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
 }
 
 ibValueMetaObjectInformationRegister::~ibValueMetaObjectInformationRegister()
@@ -48,23 +52,21 @@ ibValueMetaObjectFormBase* ibValueMetaObjectInformationRegister::GetDefaultFormB
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectInformationRegister::GetRecordForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectInformationRegister::GetRecordForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectInformationRegister::eFormRecord,
-		ownerControl, CreateRecordManagerObjectValue(),
-		formGuid
+		ownerControl, CreateRecordManagerObjectValue()
 	);
 }
 
-ibBackendValueForm* ibValueMetaObjectInformationRegister::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectInformationRegister::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectInformationRegister::eFormList,
-		ownerControl, ibCreateList(GetQueryable(), HasPeriod() ? GetRegisterPeriod()->GetQueryColumn() : nullptr),   // migrated onto the universal dynamic list
-		formGuid
+		ownerControl, ibCreateList(request.m_create, GetQueryable(), HasPeriod() ? GetRegisterPeriod()->GetQueryColumn() : nullptr)   // migrated onto the universal dynamic list
 	);
 }
 #pragma endregion
@@ -220,10 +222,10 @@ bool ibValueMetaObjectInformationRegister::OnAfterRunMetaObject(int flags)
 
 		if (ibValueMetaObjectRegisterData::OnAfterRunMetaObject(flags)) {
 
-			if (!cc->AddCompileModule(m_metaRecordManager, [this]() -> ibValue* { return CreateRecordManagerObjectValue(); }))
+			if (!cc->AddCompileModule(m_metaRecordManager, [this]() -> ibValue { return CreateRecordManagerObjectValue(); }))
 				return false;
 
-			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateRecordSetObjectValue(); }))
+			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateRecordSetObjectValue(); }))
 				return false;
 
 			return true;
@@ -330,44 +332,44 @@ void ibValueMetaObjectInformationRegister::OnRemoveMetaForm(ibValueMetaObjectFor
 
 #include "informationRegisterManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectInformationRegister::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectInformationRegister::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectInformationRegister(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectInformationRegister(this));
 }
 
-ibValueRecordSetObject* ibValueMetaObjectInformationRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
+ibValuePtr<ibValueRecordSetObject> ibValueMetaObjectInformationRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
 {
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		ibValueRecordSetObject* pDataRef = nullptr;
 		if (!cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef)) {
-			return new ibValueRecordSetObjectInformationRegister(this, uniqueKey);
+			return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectInformationRegister(this, uniqueKey));
 		}
-		return pDataRef;
+		return ibValuePtr<ibValueRecordSetObject>(pDataRef);
 	}
 
-	return new ibValueRecordSetObjectInformationRegister(this, uniqueKey);
+	return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectInformationRegister(this, uniqueKey));
 }
 
-ibValueRecordManagerObject* ibValueMetaObjectInformationRegister::CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
+ibValuePtr<ibValueRecordManagerObject> ibValueMetaObjectInformationRegister::CreateRecordManagerObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
 {
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		ibValueRecordManagerObject* pDataRef = nullptr;
 		if (!cc->FindCompileModule(m_metaRecordManager, pDataRef)) {
-			return new ibValueRecordManagerObjectInformationRegister(this, uniqueKey);
+			return ibValuePtr<ibValueRecordManagerObject>(new ibValueRecordManagerObjectInformationRegister(this, uniqueKey));
 		}
-		return pDataRef;
+		return ibValuePtr<ibValueRecordManagerObject>(pDataRef);
 	}
-	return new ibValueRecordManagerObjectInformationRegister(this, uniqueKey);
+	return ibValuePtr<ibValueRecordManagerObject>(new ibValueRecordManagerObjectInformationRegister(this, uniqueKey));
 }
 
-ibSourceDataObject* ibValueMetaObjectInformationRegister::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectInformationRegister::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
 	case eFormRecord:
-		return CreateRecordManagerObjectValue();
+		return ibSourcePtr<ibSourceDataObject>(CreateRecordManagerObjectValue());
 	case eFormList:
-		return ibCreateList(GetQueryable(), HasPeriod() ? GetRegisterPeriod()->GetQueryColumn() : nullptr);   // migrated onto the universal dynamic list
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), HasPeriod() ? GetRegisterPeriod()->GetQueryColumn() : nullptr));   // migrated onto the universal dynamic list
 	}
 
 	return nullptr;

@@ -14,8 +14,8 @@
 #include "frontend/visualView/ctrl/gridBox.h"                           // g_controlGridBoxCLSID
 #include "backend/metaCollection/attribute/metaAttributeObject.h"      // GetIconGroup (default attribute icon)
 #include "backend/srcDataObject.h"                                      // ibSourceDataObject / ibSourceExplorer / ConvertToMetaIds
-#include "backend/sourceDescription.h"                                   // ibSourceDescription / ibSourceDescriptionMemory (drag payload = the source path, unified serialize)
-#include "backend/fileSystem/fs.h"                                       // ibWriterMemory (drag payload buffer)
+#include "core/description/sourceDescription.h"                          // ibSourceDescription / ibSourceDescriptionMemory (drag payload = the source path, unified serialize)
+#include "core/fileSystem/fs.h"                                       // ibWriterMemory (drag payload buffer)
 #include "backend/metaCollection/partial/reference/reference.h"        // ibValueReferenceDataObject::Create (reference-as-source)
 #include "backend/system/value/valueTable.h"                           // ibValueModelTable — value-table attribute column add
 
@@ -457,7 +457,7 @@ void ibAttributeTree::OnItemExpanding(wxTreeEvent& event)
 			// PIN this reference hop to the branch we descend into — the child fields carry it, so the DRAG /
 			// serialized path coerces the composite reference to THIS target (else it read back <not selected>).
 			if (const ibSourceExplorer* explorer = refSource->GetSourceExplorer())
-				AppendComposition(m_tcAttributes, event.GetItem(), data->ChildPrefix(reference_to_clsid(target)), *explorer, metaData,
+				AppendComposition(m_tcAttributes, event.GetItem(), data->ChildPrefix(refValue.GetClassType()), *explorer, metaData,
 					multi ? refSource->GetSourceCaption() : wxString(wxEmptyString), data->IsUnderList());
 		}
 	}

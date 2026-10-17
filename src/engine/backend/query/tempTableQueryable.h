@@ -67,6 +67,23 @@ public:
 	// its columns are named by whoever made it, and that name IS the caption.
 	wxString           GetSynonym()      const override { return m_synonym.IsEmpty() ? m_name : m_synonym; }
 
+	// ⭐ WHAT IT STANDS FOR, when that is something the configuration declared — a register's dimension,
+	// resource or analytics slot published into a view. Handed over by the publisher at the moment it hands
+	// over the picture; the attribute lives as long as the configuration, and so does the surface this
+	// column belongs to.
+	ibTempColumn& StandsFor(const ibBackendSourceColumn* declared) { m_standsFor = declared; return *this; }
+
+	// …AND WHAT IT IS IN A BALANCE (ibBalanceRole), handed over at the same moment by the view that
+	// publishes it. An ordinary temp table's column is an ordinary value.
+	// `rank` — a period's seniority (GetPeriodRank): 1 the period, 2 a recorder, 3 a line number.
+	ibTempColumn& PlaysInBalance(ibBalanceRole role, int rank = 0) { m_balanceRole = role; m_periodRank = rank; return *this; }
+	ibBalanceRole GetBalanceRole() const override { return m_balanceRole; }
+	int           GetPeriodRank()  const override { return m_periodRank; }
+
+	// ⭐ AVAILABLE AS WHAT IT STANDS FOR (functional options) — asked live, so a view column of a dimension this
+	// base does not use goes with the dimension. An ordinary temp table's column stands for nothing: available.
+	bool IsAvailable() const override { return m_standsFor == nullptr || m_standsFor->IsAvailable(); }
+
 private:
 	wxString                  m_name;
 	wxString                  m_physical;   // == m_name unless the storage spells it differently
@@ -75,6 +92,9 @@ private:
 	wxString                  m_synonym;    // empty = the name
 	Kind                      m_kind = Kind::Composite;   // see GetColumnKind
 	wxIcon                    m_icon;       // none = the base's default
+	const ibBackendSourceColumn* m_standsFor = nullptr;   // see StandsFor
+	ibBalanceRole                m_balanceRole = ibBalanceRole::None;   // see PlaysInBalance
+	int                          m_periodRank  = 0;
 };
 
 class ibTempTableQueryable : public ibBackendQueryable
@@ -83,7 +103,9 @@ public:
 	// Build from a pre-filled RAM table (an ibValue wrapping ibValueModelTable): derive
 	// the generic columns from its collection (name / id / type), each keyed by the SAME
 	// id the rows are stored at — so the RAM source reads every column by GetColumnId().
-	explicit ibTempTableQueryable(ibValue table) : m_table(std::move(table))
+	// `metaData` — the configuration its references belong to (see GetMetaData).
+	explicit ibTempTableQueryable(ibValue table, const ibMetaData* metaData = nullptr)
+		: m_table(std::move(table)), m_metaData(metaData)
 	{
 		ibValueModelTable* rows = nullptr;
 		if (m_table.ConvertToValue(rows) && rows != nullptr) {
@@ -169,8 +191,14 @@ public:
 	wxString GetQueryTableName() const override { return wxEmptyString; }
 	ibMetaID GetQueryTableId()    const override { return 0; }
 
+	// ⭐ THE CONFIGURATION ITS REFERENCES BELONG TO — handed in by whoever wraps the table (the query it is
+	// read by, the Data unit, the other side of a join). With none, a reference column could not say which
+	// catalog it points at, and «IN HIERARCHY» over it stood for the named values alone (2026-09-29).
+	const ibMetaData* GetMetaData() const override { return m_metaData; }
+
 private:
 	ibValue                                    m_table;     // owns the pre-filled rows
+	const ibMetaData*                          m_metaData = nullptr;
 	std::vector<std::unique_ptr<ibTempColumn>> m_columns;   // generic columns, keyed by source-id
 };
 
@@ -355,6 +383,10 @@ public:
 		// across the declaration. A CTE has no storage to ask, so the only honest moment to know it is
 		// where the declaration is built and the inner source is still in hand.
 		bool                        m_isKey = false;
+		// …and what it is in a balance, carried across the declaration as the type is: a register's period
+		// read one level down is still the moment its totals are taken at.
+		ibBalanceRole               m_balanceRole = ibBalanceRole::None;
+		int                         m_periodRank  = 0;
 	};
 
 	// `firstOrdinal` — the ORDINARY number the minted columns are counted from, one per declaration
@@ -388,6 +420,7 @@ public:
 				field.m_physical.IsEmpty() ? field.m_name : field.m_physical, field.m_type,
 				ibBackendQueryColumn::SyntheticId(ibBackendQueryColumn::SyntheticKind::Subquery, ordinal++),
 				wxEmptyString, field.m_kind));
+			m_owned.back()->PlaysInBalance(field.m_balanceRole, field.m_periodRank);
 			m_columns.push_back(m_owned.back().get());
 			if (field.m_isKey) m_keys.push_back(m_columns.back());
 		}

@@ -47,6 +47,10 @@ public:
 
 	void OnMcpExchange(const wxString& method, const wxString& request, const wxString& answer) override
 	{
+		// A message collected — not a line: the waiting strip asks PendingCount on its own tick (RefreshWaiting).
+		if (method == wxT("taken"))
+			return;
+
 		// ⚠ THIS RUNS ON THE SERVER'S THREAD. A widget belongs to the main one,
 		// so nothing here touches it: the line is built and handed over, and the
 		// append happens where it is legal.
@@ -127,7 +131,7 @@ bool ibAssistantView::OnCreate(ibDocument* doc, long flags)
 
 	// ATTACHED ONLY WHILE THE WINDOW IS OPEN. The server keeps raw pointers to
 	// its notifiers, so this pairs with the removal in OnClose.
-	if (ibMcpServer* server = ibApplicationData::GetMcpServer()) {
+	if (ibMcpServer* server = ibApplicationInstance::GetMcpServer()) {
 
 		// ⭐ WHAT WAS ALREADY SAID, BEFORE ANYTHING NEW. This window used to be filled ONLY by
 		// live notifications, so closing the tab threw the conversation away and reopening it
@@ -353,7 +357,7 @@ void ibAssistantView::OnSend(wxCommandEvent& WXUNUSED(event))
 	if (text.IsEmpty())
 		return;
 
-	ibMcpServer* server = ibApplicationData::GetMcpServer();
+	ibMcpServer* server = ibApplicationInstance::GetMcpServer();
 	if (server == nullptr)
 		return;
 
@@ -412,7 +416,7 @@ void ibAssistantView::RefreshWaiting()
 	if (m_waiting == nullptr)
 		return;
 
-	ibMcpServer* server = ibApplicationData::GetMcpServer();
+	ibMcpServer* server = ibApplicationInstance::GetMcpServer();
 
 	// ⚠ TWO SILENCES, TOLD APART BY ASKING. A message still sitting in the queue has been
 	// collected by nobody — calling that "processing" would be the window inventing an assistant
@@ -433,7 +437,7 @@ bool ibAssistantView::OnClose(bool deleteWindow)
 	// BEFORE THE WIDGETS GO. Removal is by pointer identity, and a notifier left
 	// registered would be written to after this view is gone.
 	if (m_notifier) {
-		if (ibMcpServer* server = ibApplicationData::GetMcpServer())
+		if (ibMcpServer* server = ibApplicationInstance::GetMcpServer())
 			server->RemoveNotifier(m_notifier.get());
 		m_notifier.reset();
 	}

@@ -21,6 +21,7 @@
 #include "backend/compiler/procUnitState.h"   // m_errorPlace — which opcode raised
 #include "backend/session/session.h"
 #include "backend/appData.h"                // the built-in dispatcher reads appData on entry
+#include "backend/system/value/valueDynamicList.h"
 
 #include <wx/init.h>
 #include <wx/image.h>  // wxInitAllImageHandlers — wx decodes nothing until registered
@@ -72,8 +73,8 @@ struct BuiltInRuntime : ::testing::Test {
 		if (wxLog::GetActiveTarget() != nullptr)
 			delete wxLog::SetActiveTarget(new wxLogStderr());
 
-		if (ibApplicationData::Get() == nullptr
-		 && !ibApplicationData::CreateAppDataEnv(ibRunMode::eRUNTIME_MODE))
+		if (ibApplicationInstance::Get() == nullptr
+		 && !ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
 			GTEST_SKIP() << "appData env unavailable headless";
 	}
 };
@@ -349,6 +350,425 @@ TEST(RuntimeTest, IfElseTakesElseBranch) {
 	ibValue v;
 	ASSERT_TRUE(pu.GetPropVal(wxT("a"), v));
 	EXPECT_EQ(v.GetInteger(), 2);
+}
+
+// ===========================================================================
+// ?(cond, a, b) — only the chosen branch runs
+//
+// It used to compile both values and then copy one (OPER_ITER), so the branch
+// the condition did not pick still ran: a call there raised, and
+// `?(Ref <> Undefined, Ref.Description, "")` died reading Description of
+// Undefined. The chosen value is what the expression answers; the other
+// branch's call does not happen.
+// ===========================================================================
+
+TEST(RuntimeTest, TernaryChoosesAValue) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var yes public; var no public;\n")
+		wxT("yes = ?(1 = 1, 10, 20);\n")
+		wxT("no  = ?(1 = 2, 10, 20);\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("yes"), v));
+	EXPECT_EQ(v.GetInteger(), 10);
+	ASSERT_TRUE(pu.GetPropVal(wxT("no"), v));
+	EXPECT_EQ(v.GetInteger(), 20);
+}
+
+TEST(RuntimeTest, TernaryDoesNotRunTheBranchItDidNotChoose) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var calls public; var fromFalse public; var fromTrue public;\n")
+		wxT("Function Touch(n) Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Return n;\n")
+		wxT("EndFunction\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen branch ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("fromFalse = ?(False, Boom(), Touch(7));\n")
+		wxT("fromTrue  = ?(True, Touch(3), Boom());\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("fromFalse"), v));
+	EXPECT_EQ(v.GetInteger(), 7);
+	ASSERT_TRUE(pu.GetPropVal(wxT("fromTrue"), v));
+	EXPECT_EQ(v.GetInteger(), 3);
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 2) << "each chosen branch ran once; the raising branch did not";
+}
+
+// The branch that IS chosen still runs, including when it raises. A ternary
+// that skipped both branches would pass the test above.
+TEST(RuntimeTest, TernaryRunsTheBranchItChoosesEvenWhenThatBranchRaises) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("Function Boom() Public\n")
+		wxT("  Raise(\"chosen branch ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("var result public;\n")
+		wxT("result = ?(True, Boom(), 1);\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	const auto failed = TryExecute(pu, cc.m_cByteCode);
+	EXPECT_FALSE(failed);
+	EXPECT_NE(std::string(failed.message()).find("chosen branch ran"), std::string::npos)
+		<< failed.message();
+}
+
+// The guard the old ternary could not express: a member of a reference is
+// read only when the reference is there.
+TEST(RuntimeTest, TernaryGuardsAMemberOfUndefined) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var Ref public; var missing public; var present public;\n")
+		wxT("Ref = Undefined;\n")
+		wxT("missing = ?(Ref <> Undefined, Ref.Description, \"\");\n")
+		wxT("Ref = New Structure(\"Description\", \"Goods\");\n")
+		wxT("present = ?(Ref <> Undefined, Ref.Description, \"\");\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("missing"), v));
+	EXPECT_EQ(v.GetString(), wxT(""));
+	ASSERT_TRUE(pu.GetPropVal(wxT("present"), v));
+	EXPECT_EQ(v.GetString(), wxT("Goods"));
+}
+
+// A ternary inside a ternary patches its own jumps. The outer branch that is
+// not taken does not run, and the inner one still chooses.
+TEST(RuntimeTest, TernaryNestedChoosesTheInnerBranch) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var calls public; var inner public; var outer public;\n")
+		wxT("Function Touch(n) Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Return n;\n")
+		wxT("EndFunction\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen branch ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("inner = ?(True, ?(False, Boom(), Touch(2)), Boom());\n")
+		wxT("outer = ?(False, ?(True, Boom(), 1), Touch(4));\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("inner"), v));
+	EXPECT_EQ(v.GetInteger(), 2);
+	ASSERT_TRUE(pu.GetPropVal(wxT("outer"), v));
+	EXPECT_EQ(v.GetInteger(), 4);
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 2) << "each chosen branch ran once; neither Boom ran";
+}
+
+// A Number condition takes the typed OPER_IF (CorrectTypeDef, TYPE_DELTA1):
+// zero is the branch not taken, any other number is the branch taken.
+TEST(RuntimeTest, TernaryWithANumberConditionUsesTheTypedTest) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("Number n;\n")
+		wxT("var calls public; var whenZero public; var whenOther public;\n")
+		wxT("Function Touch(k) Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Return k;\n")
+		wxT("EndFunction\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen branch ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("n = 0;\n")
+		wxT("whenZero = ?(n, Boom(), Touch(20));\n")
+		wxT("n = 4;\n")
+		wxT("whenOther = ?(n, Touch(10), Boom());\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("whenZero"), v));
+	EXPECT_EQ(v.GetInteger(), 20);
+	ASSERT_TRUE(pu.GetPropVal(wxT("whenOther"), v));
+	EXPECT_EQ(v.GetInteger(), 10);
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 2);
+}
+
+// `and` / `or` used to run both operands, so a guard written the 1C way
+// (`u <> Undefined and u.Property(...)`) raised on the reference it had just
+// tested. The side that cannot change the answer does not run; the side that
+// can still does, including when it raises.
+TEST(RuntimeTest, AndOrDoesNotRunTheOperandItDidNotChoose) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var calls public; var fromAnd public; var fromOr public;\n")
+		wxT("var guarded public; var took public; var present public;\n")
+		wxT("Function Touch(n) Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Return n;\n")
+		wxT("EndFunction\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen operand ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("fromAnd = False And Boom();\n")
+		wxT("fromOr  = True Or Boom();\n")
+		wxT("fromAnd = fromAnd Or Touch(1);\n")
+		wxT("fromOr  = True And Touch(1);\n")
+		wxT("var Ref;\n")
+		wxT("Ref = Undefined;\n")
+		wxT("guarded = Ref <> Undefined And Ref.Description;\n")
+		wxT("If Ref = Undefined Or Ref.Description Then\n")
+		wxT("  took = 1;\n")
+		wxT("EndIf;\n")
+		wxT("Ref = New Structure(\"Description\", \"Goods\");\n")
+		wxT("present = Ref <> Undefined And Ref.Description;\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("fromAnd"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("fromOr"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("guarded"), v));
+	EXPECT_EQ(ibValueTypes::TYPE_BOOLEAN, v.GetType());
+	EXPECT_FALSE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("took"), v));
+	EXPECT_EQ(v.GetInteger(), 1);
+	ASSERT_TRUE(pu.GetPropVal(wxT("present"), v));
+	EXPECT_EQ(ibValueTypes::TYPE_BOOLEAN, v.GetType());
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 2) << "each chosen Touch ran once; neither Boom ran";
+}
+
+TEST(RuntimeTest, AndOrRunsTheOperandItChoosesEvenWhenThatOperandRaises) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("Function Boom() Public\n")
+		wxT("  Raise(\"chosen operand ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("var result public;\n")
+		wxT("result = True And Boom();\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	const auto failed = TryExecute(pu, cc.m_cByteCode);
+	EXPECT_FALSE(failed);
+	EXPECT_NE(std::string(failed.message()).find("chosen operand ran"), std::string::npos)
+		<< failed.message();
+}
+
+// `a and b and c` is (a and b) and c, and `a or b and c` is a or (b and c).
+// A false and-chain never reaches the later calls; a true or never enters the
+// and that follows it.
+TEST(RuntimeTest, AndOrNestedShortCircuit) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("var calls public; var chain public; var mixed public;\n")
+		wxT("Function Touch(n) Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Return n;\n")
+		wxT("EndFunction\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen operand ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("chain = False And Boom() And Touch(1);\n")
+		wxT("mixed = True Or False And Boom();\n")
+		wxT("chain = chain Or Touch(1);\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("chain"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("mixed"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 1) << "only the chosen Touch ran";
+}
+
+// A declared Number or Boolean used to make `if (a And b)` read the operand's
+// own field: And's answer was typed as the left side, and a non-zero number
+// then took the branch. The answer is Boolean, and a zero / False left still
+// does not run the right side.
+TEST(RuntimeTest, AndOrTypedConditionsShortCircuit) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("Number a; Number b; Number n;\n")
+		wxT("Boolean t; Boolean f;\n")
+		wxT("var branch public; var both public; var calls public;\n")
+		wxT("var whenZero public; var whenOther public;\n")
+		wxT("Function Boom() Public\n")
+		wxT("  calls = calls + 1;\n")
+		wxT("  Raise(\"unchosen operand ran\");\n")
+		wxT("  Return 0;\n")
+		wxT("EndFunction\n")
+		wxT("calls = 0;\n")
+		wxT("a = 1; b = 0;\n")
+		wxT("If a And b Then\n")
+		wxT("  branch = 1;\n")
+		wxT("Else\n")
+		wxT("  branch = 2;\n")
+		wxT("EndIf;\n")
+		wxT("t = True; f = False;\n")
+		wxT("If t And Not f Then\n")
+		wxT("  both = 1;\n")
+		wxT("Else\n")
+		wxT("  both = 0;\n")
+		wxT("EndIf;\n")
+		wxT("n = 0;\n")
+		wxT("whenZero = n And Boom();\n")
+		wxT("n = 4;\n")
+		wxT("whenOther = n Or Boom();\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("branch"), v));
+	EXPECT_EQ(v.GetInteger(), 2) << "1 And 0 is false, so If takes Else";
+	ASSERT_TRUE(pu.GetPropVal(wxT("both"), v));
+	EXPECT_EQ(v.GetInteger(), 1);
+	ASSERT_TRUE(pu.GetPropVal(wxT("whenZero"), v));
+	EXPECT_FALSE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("whenOther"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	ASSERT_TRUE(pu.GetPropVal(wxT("calls"), v));
+	EXPECT_EQ(v.GetInteger(), 0) << "a zero and a non-zero or both skip Boom";
+}
+
+// A BODY WITHOUT BRACES IS ONE STATEMENT, whatever word it opens with. A statement opened by a
+// keyword (`if`, `while`, `try`) used to run on into the next one: `else if (…) { … } b = 7;` put
+// `b = 7` inside the else, and a loop counting its passes that way never ended. The forms that
+// always stopped — an assignment, `a = 1; else …` — are here too, so the fix is held to both.
+TEST(RuntimeTest, ABraceLessBodyIsOneStatementOfAnyKind) {
+	struct StyleGuard {
+		const short saved = ibCompileCode::GetCodeStyle();
+		~StyleGuard() { ibCompileCode::SetCodeStyle(saved); }
+	} guard;
+	ibCompileCode::SetCodeStyle(CODE_CES);
+
+	struct Case { const wxChar* body; int a; int b; };
+	const Case cases[] = {
+		{ wxT("if (1 = 1) { a = 1; } else if (1 = 2) { a = 2; } b = 7;"), 1, 7 },
+		{ wxT("if (1 = 2) { a = 1; } else if (1 = 1) { a = 2; } b = 7;"), 2, 7 },
+		{ wxT("if (1 = 2) while (a < 3) { a = a + 1; } b = 7;"),          0, 7 },
+		{ wxT("if (1 = 2) try { a = 1; } except { a = 2; } b = 7;"),      0, 7 },
+		{ wxT("if (1 = 2) if (1 = 1) { a = 1; } b = 7;"),                 0, 7 },
+		{ wxT("if (1 = 1) a = 1; else a = 2; b = 7;"),                     1, 7 },
+		{ wxT("if (1 = 2) a = 1; else a = 2; b = 7;"),                     2, 7 },
+	};
+	for (const Case& c : cases) {
+		const std::string body = wxString(c.body).ToStdString();
+		ibCompileCode cc(wxT("test"), wxT("memory"), false);
+		ASSERT_TRUE(TryCompile(cc, wxString(wxT("var a public; var b public; a = 0; b = 0; ")) + c.body)) << body;
+
+		ibProcUnit pu;
+		ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode)) << body;
+
+		ibValue v;
+		ASSERT_TRUE(pu.GetPropVal(wxT("a"), v)); EXPECT_EQ(v.GetInteger(), c.a) << body;
+		ASSERT_TRUE(pu.GetPropVal(wxT("b"), v)); EXPECT_EQ(v.GetInteger(), c.b) << body;
+	}
+}
+
+// A call compiled before its function exists is a jump to the end of the module,
+// where the real call is appended, and a jump back. The outbound jump used to
+// leave the try, so an exception from a function declared later was not caught.
+// The same call is caught when the callee is declared first, because that call
+// is emitted in place.
+TEST(RuntimeTest, TryCatchesAFunctionDeclaredLater) {
+	struct StyleGuard {
+		const short saved = ibCompileCode::GetCodeStyle();
+		~StyleGuard() { ibCompileCode::SetCodeStyle(saved); }
+	} guard;
+	ibCompileCode::SetCodeStyle(CODE_CES);
+
+	const wxChar* const caught[] = {
+		wxT("function C(d) { try { return N(); } except { return d; } }\n")
+		wxT("function N() { Raise(\"boom\"); return 0; }\n")
+		wxT("var r public; r = C(7);\n"),
+
+		wxT("function C(d) { var v; try { v = N(); return v; } except { return d; } }\n")
+		wxT("function N() { Raise(\"boom\"); return 0; }\n")
+		wxT("var r public; r = C(7);\n"),
+
+		wxT("function C(s, p, d) { try { return N(s, p); } except { return d; } }\n")
+		wxT("function N(s, p) { return s[p]; }\n")
+		wxT("var r public; r = C(New Structure(\"A\", 1), \"NoSuch\", 7);\n"),
+
+		wxT("function N() { Raise(\"boom\"); return 0; }\n")
+		wxT("function C(d) { try { return N(); } except { return d; } }\n")
+		wxT("var r public; r = C(7);\n"),
+	};
+	for (const wxChar* src : caught) {
+		ibCompileCode cc(wxT("test"), wxT("memory"), false);
+		ASSERT_TRUE(TryCompile(cc, src)) << wxString(src).ToStdString();
+
+		ibProcUnit pu;
+		ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode)) << wxString(src).ToStdString();
+
+		ibValue v;
+		ASSERT_TRUE(pu.GetPropVal(wxT("r"), v));
+		EXPECT_EQ(v.GetInteger(), 7) << wxString(src).ToStdString();
+	}
+
+	// The try finishes, then the function calls a callee declared later. That
+	// call is not inside the try. Catching it would mean the handler was left
+	// in place. The try must not return, or the call is never reached.
+	{
+		ibCompileCode cc(wxT("test"), wxT("memory"), false);
+		const wxString src =
+			wxT("function C() { try { var x; x = 1; } except { return 2; } return N(); }\n")
+			wxT("function N() { Raise(\"left the try\"); return 0; }\n")
+			wxT("var r public; r = C();\n");
+		ASSERT_TRUE(TryCompile(cc, src));
+
+		ibProcUnit pu;
+		const ::testing::AssertionResult ran = TryExecute(pu, cc.m_cByteCode);
+		EXPECT_FALSE(ran);
+		if (!ran) {
+			EXPECT_NE(std::string(ran.message()).find("left the try"), std::string::npos) << ran.message();
+		}
+	}
 }
 
 TEST(RuntimeTest, WhileLoopCountsToTen) {
@@ -933,7 +1353,7 @@ TEST(RuntimeTest, LinqOrderBy_SecondKeyBreaksTheTie) {
 	EXPECT_EQ(ret.GetInteger(), 111221);
 }
 
-TEST(RuntimeTest, LinqOrderBy_DescendingReversesTheWholeOrdering) {
+TEST(RuntimeTest, LinqOrderBy_DescendingTurnsOnlyItsKey) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	const wxString src =
 		wxT("Function TwoKeysDown() Public\n")
@@ -953,10 +1373,41 @@ TEST(RuntimeTest, LinqOrderBy_DescendingReversesTheWholeOrdering) {
 
 	ibValue ret;
 	pu.CallAsFunc(wxT("TwoKeysDown"), ret);
-	// The direction is written ONCE, after the last key, and turns the whole
-	// ordering round: (2,1) (1,2) (1,1) -> 21, 12, 11. Applying it to the LAST
-	// key only would have given 12 before 11 but left A ascending: 11, 12, 21.
-	EXPECT_EQ(ret.GetInteger(), 211211);
+	// The direction is the KEY'S it is written after: A ascending, and within
+	// A = 1 the larger B first - (1,2) (1,1) (2,1) -> 12, 11, 21. Until 2026-09-21
+	// it was one flag for the whole query and turned A round too: 21, 12, 11.
+	EXPECT_EQ(ret.GetInteger(), 121121);
+}
+
+// Every key its own way, the one in the middle included - `orderby f1, f2
+// descending, f3` (Max, 2026-09-21). A key before a comma could not carry a
+// direction at all until then.
+TEST(RuntimeTest, LinqOrderBy_EachKeyRunsItsOwnWay) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	const wxString src =
+		wxT("Function ThreeWays() Public\n")
+		wxT("  var rows; var q;\n")
+		wxT("  rows = New Array;\n")
+		wxT("  rows.Add(New Structure(\"A, B, C\", 1, 1, 2));\n")
+		wxT("  rows.Add(New Structure(\"A, B, C\", 2, 1, 1));\n")
+		wxT("  rows.Add(New Structure(\"A, B, C\", 1, 2, 2));\n")
+		wxT("  rows.Add(New Structure(\"A, B, C\", 1, 1, 1));\n")
+		wxT("  rows.Add(New Structure(\"A, B, C\", 1, 2, 1));\n")
+		wxT("  q = from r in rows orderby r.A, r.B descending, r.C select { V = r.A * 100 + r.B * 10 + r.C };\n")
+		wxT("  If q.Count() <> 5 Then Return -1; EndIf;\n")
+		wxT("  If q[3].V <> 112 Or q[4].V <> 211 Then Return -2; EndIf;\n")
+		wxT("  Return q[0].V * 1000000 + q[1].V * 1000 + q[2].V;\n")
+		wxT("EndFunction\n");
+	ASSERT_TRUE(TryCompile(cc, src));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue ret;
+	pu.CallAsFunc(wxT("ThreeWays"), ret);
+	// A up; within A = 1, B down; within each B, C up again - C is what puts 121
+	// before 122, which arrived the other way round: 121, 122, 111, 112, 211.
+	EXPECT_EQ(ret.GetInteger(), 121122111);
 }
 
 TEST(RuntimeTest, LinqOrderBy_ThirdKeyIsStillConsulted) {
@@ -1346,6 +1797,51 @@ TEST(RuntimeTest, ClosureWritesBackIntoItsCapturedSlot) {
 }
 
 // ===========================================================================
+// A SLOT HOLDING A REFERENCE THAT RECEIVES A STRING SUM RELEASES IT ONCE
+//
+// CHECK_READONLY (procUnit.cpp) released the destination's reference and left
+// its tag and pointer in place; the string branch of AddValue then cleared the
+// destination again and released the SAME reference a second time. An object a
+// variable still held was freed under it - the three corpus scripts the address
+// sanitizer stopped on (test_closure_iterator, test_closure_linq,
+// test_linq_chain_extended). The probe counts its own destruction, so the second
+// release shows in any build, with a sanitizer or without.
+// ===========================================================================
+
+namespace {
+class ReleaseProbe : public ibValue {
+public:
+	explicit ReleaseProbe(int* destroyed)
+		: ibValue(ibValueTypes::TYPE_VALUE, false), m_destroyed(destroyed) {}
+	~ReleaseProbe() override { ++*m_destroyed; }
+private:
+	int* m_destroyed;
+};
+} // namespace
+
+TEST(RuntimeTest, AStringSumIntoASlotHoldingAReferenceReleasesItOnce) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var keep public; var slot public;\n")
+		wxT("Procedure Run() Public\n")
+		wxT("  slot = keep;\n")
+		wxT("  slot = \"n=\" + 1;\n")
+		wxT("EndProcedure\n")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	int destroyed = 0;
+	ASSERT_TRUE(pu.SetPropVal(wxT("keep"), ibValue(static_cast<ibValue*>(new ReleaseProbe(&destroyed)))));
+	pu.CallAsProc(wxT("Run"));
+
+	EXPECT_EQ(destroyed, 0) << "released by the slot that stopped holding it, and once more";
+	ibValue slot;
+	ASSERT_TRUE(pu.GetPropVal(wxT("slot"), slot));
+	EXPECT_EQ(slot.GetString(), wxString(wxT("n=1")));
+}
+
+// ===========================================================================
 // A BUILT-IN GLOBAL CALLED WITH FEWER ARGUMENTS THAN IT DECLARES
 //
 // `Message` declares two parameters (text, status) and every script passes one.
@@ -1463,7 +1959,7 @@ TEST_F(BuiltInRuntime, DISABLED_DumpBuiltInCall) {
 	for (size_t i = 0; i < bc.m_listConst.size(); i++)
 		std::printf("  [%u] type=%d text=%s\n", (unsigned)i,
 			(int)bc.m_listConst[i].GetType(),
-			(const char*)bc.m_listConst[i].GetString().ToUTF8());
+			bc.m_listConst[i].GetString().ToUTF8().c_str());
 	std::printf("code %u\n", (unsigned)bc.m_listCode.size());
 	for (size_t i = 0; i < bc.m_listCode.size(); i++) {
 		const ibByteUnit& u = bc.m_listCode[i];
@@ -1562,7 +2058,7 @@ TEST_F(BuiltInRuntime, TheBuiltInSurfaceAnswersDirectly) {
 	std::printf("direct sqrt(16) = %s\n", (const char*)direct.ToString().ToUTF8());
 
 	std::printf("arg: type=%d text=%s\n",
-		(int)arg.GetType(), (const char*)arg.GetString().ToUTF8());
+		(int)arg.GetType(), arg.GetString().ToUTF8().c_str());
 
 	ASSERT_TRUE(valueSystem.CallAsFunc(numSqrt, ret, params, 1));
 
@@ -1571,7 +2067,7 @@ TEST_F(BuiltInRuntime, TheBuiltInSurfaceAnswersDirectly) {
 	// "Sqrt returned zero" and "the root is right but the conversion is not"
 	// are different defects and this tells them apart.
 	std::printf("ret: type=%d text=%s int=%d\n",
-		(int)ret.GetType(), (const char*)ret.GetString().ToUTF8(), (int)ret.GetInteger());
+		(int)ret.GetType(), ret.GetString().ToUTF8().c_str(), (int)ret.GetInteger());
 
 	EXPECT_EQ(ret.GetInteger(), 4);
 }
@@ -1817,8 +2313,8 @@ TEST_F(BuiltInRuntime, AModuleVarAfterAPipelineLambda) {
 //
 // The suspected cause is that the pipeline invoke path (procUnitLINQ.cpp,
 // CallLambdaWithArgs) builds a C-stack frame and never honours
-// `m_needsHeapFrame`, so the inner lambda's weak_from_this() on the outer frame
-// is already expired. Promoting it was tried once and made things worse; the
+// `m_needsHeapFrame`, so the outer frame is an ordinary one and the inner
+// lambda finds nothing it may capture. Promoting it was tried once and made things worse; the
 // note there says not to re-apply without a repro that fails first.
 //
 // This is that repro.
@@ -1926,6 +2422,63 @@ TEST(RuntimeTest, ALiteralArgumentToAParentModuleFunctionKeepsItsValue) {
 	ASSERT_TRUE(puLocal.GetPropVal(wxT("r"), r));
 	EXPECT_EQ(r.GetString(), wxT("CALLER"))
 		<< "a WRONG-* value here means the argument was read from the callee's pool";
+}
+
+// An object module and its manager are different methods. The same exported
+// name in both used to be refused while compiling the object module, because
+// the manager's export was treated as a declaration in this module. The
+// object's own function is the one its body calls. Two exports in one module
+// are still one name.
+TEST(RuntimeTest, AnObjectModuleMayExportTheManagersName) {
+	struct StyleGuard {
+		const short saved = ibCompileCode::GetCodeStyle();
+		~StyleGuard() { ibCompileCode::SetCodeStyle(saved); }
+	} guard;
+	ibCompileCode::SetCodeStyle(CODE_VES);
+
+	ParentedCompiler manager(wxT("manager"));
+	ASSERT_TRUE(manager.CompileUnder(nullptr,
+		wxT("Function GetRate() Public\n")
+		wxT("  Return 1;\n")
+		wxT("EndFunction\n")
+		wxT("var managerResult public;\n")
+		wxT("managerResult = GetRate();\n")));
+
+	ParentedCompiler object(wxT("object"));
+	ASSERT_TRUE(object.CompileUnder(&manager,
+		wxT("Function GetRate() Public\n")
+		wxT("  Return 2;\n")
+		wxT("EndFunction\n")
+		wxT("var objectResult public;\n")
+		wxT("objectResult = GetRate();\n")));
+
+	ibProcUnit puManager;
+	ASSERT_TRUE(TryExecute(puManager, manager.m_cByteCode));
+	ibValue managerValue;
+	ASSERT_TRUE(puManager.GetPropVal(wxT("managerResult"), managerValue));
+	EXPECT_EQ(managerValue.GetInteger(), 1);
+
+	ibProcUnit puObject;
+	puObject.SetParent(&puManager);
+	wxString strError;
+	ASSERT_TRUE(RunBound(object, puObject, strError)) << strError.ToStdString();
+	ibValue objectValue;
+	ASSERT_TRUE(puObject.GetPropVal(wxT("objectResult"), objectValue));
+	EXPECT_EQ(objectValue.GetInteger(), 2) << "the object called the manager's function";
+
+	ibCompileCode again(wxT("test"), wxT("memory"), false);
+	const ::testing::AssertionResult duplicate = TryCompile(again,
+		wxT("Function GetRate() Public\n")
+		wxT("  Return 1;\n")
+		wxT("EndFunction\n")
+		wxT("Function GetRate() Public\n")
+		wxT("  Return 2;\n")
+		wxT("EndFunction\n"));
+	EXPECT_FALSE(duplicate);
+	if (!duplicate) {
+		EXPECT_NE(std::string(duplicate.message()).find("already defined"), std::string::npos)
+			<< duplicate.message();
+	}
 }
 
 // ===========================================================================
@@ -2601,4 +3154,76 @@ TEST_F(BuiltInRuntime, AVariadicBuiltInAcceptsEveryCount) {
 	EXPECT_EQ(v.GetInteger(), 9);
 	ASSERT_TRUE(pu.GetPropVal(wxT("many"), v));
 	EXPECT_EQ(v.GetInteger(), 2);
+}
+
+// ===========================================================================
+// ⭐⭐ A FRAME'S SLOTS LET GO OF ONE ARRAY ONCE, and the walk that reads it is a
+// SECOND holder, not a second owner.
+//
+// AddressSanitizer, nightly of 2026-09-24: a heap-use-after-free inside
+// ibRunContextSmall::DestroyLocals — the SAME loop freed the object and then read
+// it. The 64-byte region was an ibValueArray minted by `New Array`
+// (ibValue::CreateObject, OPER_NEW), and the two readers were two slots of one
+// module frame: whoever walks an array holds it while the walk lasts, and the
+// counting has to survive both ends.
+//
+// It surfaced through ScriptCorpus.EveryScriptRuns — every script of the corpus in
+// one run, so the stack named the destructor and nothing about the shape that got
+// there. This is that shape alone: make an array, walk it, make a second one from
+// it, walk that. Under a sanitiser it either passes or names the place directly.
+//
+// ⚠ It PASSED under ASan on 34715afe while the corpus still failed, so this is not
+// the shape. The corpus now runs one case per script
+// (Corpus/ScriptCorpusRun.RunsToTheEnd/<file>), and the next sanitiser run names
+// the file instead.
+// ===========================================================================
+
+TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var total public; var kept public;\n")
+		wxT("var arr; arr = New Array;\n")
+		wxT("arr.Add(10); arr.Add(20); arr.Add(30);\n")
+		wxT("total = 0;\n")
+		wxT("Foreach x In arr Do\n")
+		wxT("  total = total + x;\n")
+		wxT("EndDo;\n")
+		// A second array, made from the first by a pipeline that walks it — the
+		// iterator holds the source for the length of the fold, and the fold's own
+		// result is then walked in its turn.
+		wxT("var picked; picked = arr.Where(Function(v) Return v >= 20 EndFunction).ToArray();\n")
+		wxT("kept = 0;\n")
+		wxT("Foreach y In picked Do\n")
+		wxT("  kept = kept + 1;\n")
+		wxT("EndDo;\n")))
+		<< "the shape this test is about did not compile";
+
+	ibProcUnit pu;
+	wxString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("total"), v));
+	EXPECT_EQ(v.GetInteger(), 60) << "the walk itself must still be right";
+	ASSERT_TRUE(pu.GetPropVal(wxT("kept"), v));
+	EXPECT_EQ(v.GetInteger(), 2);
+
+	// The frame goes here, with both arrays in it. That is the moment the nightly
+	// caught: passing under a sanitiser is the whole assertion.
+}
+
+// A list form's DataSource is a dynamic list. It already knows its source
+// metaobject; the script could not ask, because FillMembers was never bound
+// and named no such method. An empty list (no source) answers empty.
+TEST_F(BuiltInRuntime, DynamicList_GetMetadataIsCallable) {
+	ibValueDynamicList list;
+	const long method = list.FindMethod(wxT("GetMetadata"));
+	ASSERT_GE(method, 0);
+	ibValue result(1);
+	ASSERT_TRUE(list.CallAsFunc(method, result, nullptr, 0));
+	EXPECT_TRUE(result.IsEmpty());
+
+	const long refresh = list.FindMethod(wxT("Refresh"));
+	EXPECT_GE(refresh, 0);
+	EXPECT_NE(refresh, method);
 }

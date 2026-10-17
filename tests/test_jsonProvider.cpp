@@ -8,9 +8,24 @@
 
 #include <gtest/gtest.h>
 #include <cstring>
+#include <functional>
+#include <string>
 
-#include "backend/serialize/jsonProvider.h"
+#include "core/serialize/jsonProvider.h"
 #include "backend/backend_exception.h"
+
+// After wx: windows.h first would leave its macros in wx's way.
+#if defined(_WIN32)
+#	ifndef NOMINMAX
+#		define NOMINMAX
+#	endif
+#	ifndef WIN32_LEAN_AND_MEAN
+#		define WIN32_LEAN_AND_MEAN
+#	endif
+#	include <windows.h>
+#else
+#	include <pthread.h>
+#endif
 
 namespace {
 
@@ -192,7 +207,7 @@ TEST(JsonProvider, NodeType_NameFormNeedsLookup) {
 // wire it is indistinguishable from a string that looks like a date.
 TEST(JsonProvider, Date_DegradesToString_ByDesign) {
 	ibDataNode n;
-	n.AddField(wxT("when"), ibDataValue::Date(1700000000000LL));
+	n.AddField(wxT("when"), ibDataValue::Date(ibDateTime(2023, 11, 14, 22, 13, 20)));
 
 	const ibDataNode back = Parse(Emit(n));   // named — FindField points into it
 	const ibDataValue* v = back.FindField(wxT("when"));
@@ -244,7 +259,7 @@ TEST(JsonProvider, MalformedInput_Throws) {
 
 	ibReaderMemory reader(bad);
 	ibDataNode out;
-	EXPECT_THROW(ibJsonProvider().Read(reader, out), ibBackendException);
+	EXPECT_THROW(ibJsonProvider().Read(reader, out), ibCoreException);
 }
 
 // An empty buffer is "nothing to read", not a parse error.
@@ -253,4 +268,147 @@ TEST(JsonProvider, EmptyInput_ReturnsFalse) {
 	ibReaderMemory reader(empty);
 	ibDataNode out;
 	EXPECT_FALSE(ibJsonProvider().Read(reader, out));
+}
+
+// ---------------------------------------------------------------------------
+// Nesting. The reader recurses, and a request is parsed before authentication.
+// A few thousand brackets overflow the stack (measured on a Linux Debug build
+// of this reader, N ≈ 5000–6000, about 12 KB). The ceiling is one number, and
+// both containers count: the root object is one, each nested array or object
+// is one more.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+wxMemoryBuffer Text(const std::string& text)
+{
+	wxMemoryBuffer buf;
+	buf.AppendData(text.data(), text.size());
+	return buf;
+}
+
+// A root object whose field "v" is `arrays` nested arrays around the number 1.
+wxMemoryBuffer NestedArrays(int arrays)
+{
+	std::string text;
+	text.reserve(static_cast<size_t>(arrays) * 2 + 16);
+	text += "{\"v\":";
+	text.append(static_cast<size_t>(arrays), '[');
+	text += '1';
+	text.append(static_cast<size_t>(arrays), ']');
+	text += '}';
+	return Text(text);
+}
+
+// `levels` nested objects, the outermost being the root. The innermost field is n = 1.
+wxMemoryBuffer NestedObjects(int levels)
+{
+	std::string text;
+	text.reserve(static_cast<size_t>(levels) * 8);
+	for (int i = 1; i < levels; ++i)
+		text += "{\"c\":";
+	text += "{\"n\":1}";
+	text.append(static_cast<size_t>(levels > 0 ? levels - 1 : 0), '}');
+	return Text(text);
+}
+
+// Runs `body` on a thread whose stack is `bytes`, and waits for it.
+void RunOnStack(size_t bytes, const std::function<void()>& body)
+{
+#if defined(_WIN32)
+	struct Call { const std::function<void()>* body; };
+	Call call{ &body };
+	HANDLE thread = ::CreateThread(nullptr, bytes,
+		[](LPVOID arg) -> DWORD { (*static_cast<Call*>(arg)->body)(); return 0; },
+		&call, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+	ASSERT_NE(thread, nullptr);
+	::WaitForSingleObject(thread, INFINITE);
+	::CloseHandle(thread);
+#else
+	pthread_attr_t attr;
+	ASSERT_EQ(pthread_attr_init(&attr), 0);
+	ASSERT_EQ(pthread_attr_setstacksize(&attr, bytes), 0);
+	pthread_t thread;
+	auto entry = [](void* arg) -> void* { (*static_cast<const std::function<void()>*>(arg))(); return nullptr; };
+	ASSERT_EQ(pthread_create(&thread, &attr, entry, const_cast<std::function<void()>*>(&body)), 0);
+	pthread_join(thread, nullptr);
+	pthread_attr_destroy(&attr);
+#endif
+}
+
+const ibDataValue* InnermostArray(const ibDataNode& node, int arrays)
+{
+	const ibDataValue* v = node.FindField(wxT("v"));
+	for (int i = 0; i < arrays; ++i) {
+		if (v == nullptr || v->Kind() != ibDataKind::Array || v->AsArray().size() != 1)
+			return nullptr;
+		v = &v->AsArray()[0];
+	}
+	return v;
+}
+
+} // namespace
+
+// The deepest legal text is still a value: the leaf is the number that was written.
+TEST(JsonProvider, Nesting_AtTheLimit_IsRead) {
+	// Root plus (limit - 1) arrays is exactly `limit` containers.
+	const int limit = ibJsonProvider::kMaxNesting;
+	const ibDataNode arrays = Parse(NestedArrays(limit - 1));
+	const ibDataValue* leaf = InnermostArray(arrays, limit - 1);
+	ASSERT_NE(leaf, nullptr);
+	EXPECT_EQ(leaf->Kind(), ibDataKind::Number);
+	EXPECT_EQ(leaf->AsInt(), (s64)1);
+
+	const ibDataNode objects = Parse(NestedObjects(limit));
+	const ibDataNode* inner = &objects;
+	for (int i = 1; i < limit; ++i) {
+		inner = inner->FindChild(wxT("c"));
+		ASSERT_NE(inner, nullptr);
+	}
+	EXPECT_EQ(inner->GetValue<s32>(wxT("n")), 1);
+}
+
+// One container past the ceiling is a parse error, not a deeper call.
+TEST(JsonProvider, Nesting_OnePastTheLimit_IsRefused) {
+	const int limit = ibJsonProvider::kMaxNesting;
+	EXPECT_THROW(Parse(NestedArrays(limit)), ibCoreException);
+	EXPECT_THROW(Parse(NestedObjects(limit + 1)), ibCoreException);
+}
+
+// The request that took the application server down: thousands of brackets, a few kilobytes.
+TEST(JsonProvider, Nesting_TheReportedCrashDepth_IsRefused) {
+	EXPECT_THROW(Parse(NestedArrays(8000)), ibCoreException);
+}
+
+// Two containers at the ceiling side by side. A level that was not released on the way out
+// would count the second one as deeper and refuse it.
+TEST(JsonProvider, Nesting_SiblingsAtTheLimit_AreBothRead) {
+	const int arrays = ibJsonProvider::kMaxNesting - 1;
+	std::string text = "{\"a\":";
+	for (int side = 0; side < 2; ++side) {
+		if (side == 1) text += ",\"b\":";
+		text.append(static_cast<size_t>(arrays), '[');
+		text += '1';
+		text.append(static_cast<size_t>(arrays), ']');
+	}
+	text += '}';
+	const ibDataNode node = Parse(Text(text));
+	EXPECT_NE(node.FindField(wxT("a")), nullptr);
+	EXPECT_NE(node.FindField(wxT("b")), nullptr);
+}
+
+// The deepest legal text on the stack a worker thread has on macOS (512 KB). Each level moves
+// its subtree up rather than copying it, so the depth costs the descent and nothing more.
+TEST(JsonProvider, Nesting_AtTheLimit_FitsASmallThreadStack) {
+	bool read = false;
+	RunOnStack(512 * 1024, [&read] {
+		try {
+			const ibDataNode node = Parse(NestedArrays(ibJsonProvider::kMaxNesting - 1));
+			read = InnermostArray(node, ibJsonProvider::kMaxNesting - 1) != nullptr;
+		}
+		catch (...) {
+			read = false;
+		}
+	});
+	EXPECT_TRUE(read);
 }

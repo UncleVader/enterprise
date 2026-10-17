@@ -5,6 +5,7 @@
 #include "jobManager.h"
 
 #include "backend/appData.h"
+#include "backend/appHost.h"                   // SetThreadOwner — the tick's journal lines name its base
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"   // a run opens a session of its own
 #include "backend/lock/lockManager.h"          // cross-process claim on a job's key
@@ -13,7 +14,6 @@
 
 #include <algorithm>
 
-#include <wx/datetime.h>
 #include <wx/log.h>
 
 namespace {
@@ -83,7 +83,10 @@ void ibJobManager::CheckTransferable(const std::vector<ibValue>& args)
 		args[static_cast<std::size_t>(bad)].GetClassName());
 }
 
-ibJobManager::ibJobManager(ib::AppDataCtorToken)
+// A manager made outside any base (the tests) takes the base of the thread that makes it — the one that
+// opened it — so it works for exactly what the caller does.
+ibJobManager::ibJobManager(ib::AppDataCtorToken owner)
+	: m_applicationInstance(owner.GetApplicationInstance() != nullptr ? owner.GetApplicationInstance() : ibApplicationInstance::Get())
 {
 }
 
@@ -122,33 +125,34 @@ bool ibJobManager::IsDue(const ibJobEntry& e, std::chrono::steady_clock::time_po
 	// What protects a plain cadence ("every six hours", no time of day) from firing on every launch
 	// is that its calendar allows any moment, so the interval from registration is the whole answer.
 	// SWITCHED OFF is not "not due yet" — it is "not on the schedule at all". The entry stays
-	// registered and stays in the list, and RunNow still runs it by hand: turning a job off must
+	// registered and stays in the list, and Execute still runs it by hand: turning a job off must
 	// not also take away the ability to fire it once and watch what happens.
 	if (!e.m_desc.m_active)
 		return false;
 
 	const ibJobScheduleDescription& sched = e.m_desc.m_schedule;
-	wxDateTime countFrom;
-	if (e.m_retryAt.IsValid()) {
+	const long long intervalMs = sched.m_intervalSeconds * 1000ll;
+	ibDateTime countFrom;
+	if (!e.m_retryAt.IsEmpty()) {
 		// A RETRY counts from its own moment, not from the interval — the previous pass did not
 		// happen, so there is no gap between runs to space out. The calendar below still applies:
 		// a second chance must not sneak the job into an hour its window forbids.
 		countFrom = e.m_retryAt;
 	}
 	else if (e.m_everRun) {
-		countFrom = e.m_lastRunAt.IsValid() ? e.m_lastRunAt : e.m_registeredAtWall;
-		countFrom += wxTimeSpan::Seconds(sched.m_intervalSeconds);
+		countFrom = !e.m_lastRunAt.IsEmpty() ? e.m_lastRunAt : e.m_registeredAtWall;
+		countFrom = countFrom.AddMilliseconds(intervalMs);
 	}
 	else {
 		countFrom = e.m_registeredAtWall;
 		if (sched.m_startMinute < 0 && sched.m_endMinute < 0)
-			countFrom += wxTimeSpan::Seconds(sched.m_intervalSeconds);
+			countFrom = countFrom.AddMilliseconds(intervalMs);
 	}
 
-	const wxDateTime dueAt = ibJobScheduleRules::NextAllowedAfter(sched, countFrom);
-	if (!dueAt.IsValid())
+	const ibDateTime dueAt = ibJobScheduleRules::NextAllowedAfter(sched, countFrom);
+	if (dueAt.IsEmpty())
 		return false;   // the calendar names no moment at all — a schedule that can never run
-	if (dueAt.IsLaterThan(wxDateTime::Now()))
+	if (dueAt > ibDateTime::Now())
 		return false;   // still ahead
 
 	// The due moment has arrived. One guard left: a WALL clock decided that, and a wall clock can be
@@ -188,15 +192,15 @@ void ibJobManager::HarvestFinished(ibJobEntry& e, std::vector<std::shared_ptr<ib
 		// whoever reads the list.
 		if (e.m_outcome == ibJobOutcome::Succeeded) {
 			e.m_retriesLeft = e.m_desc.m_retryCount;
-			e.m_retryAt     = wxDateTime();
+			e.m_retryAt     = ibDateTime();
 		}
 		else if (e.m_outcome == ibJobOutcome::Failed && e.m_retriesLeft > 0) {
 			--e.m_retriesLeft;
 			const int wait = e.m_desc.m_retryIntervalSeconds > 0 ? e.m_desc.m_retryIntervalSeconds : 1;
-			e.m_retryAt = wxDateTime::Now() + wxTimeSpan::Seconds(wait);
+			e.m_retryAt = ibDateTime::Now().AddMilliseconds(wait * 1000ll);
 		}
 		else {
-			e.m_retryAt = wxDateTime();
+			e.m_retryAt = ibDateTime();
 		}
 
 		std::lock_guard<std::mutex> lk(e.m_result->m_mtx);
@@ -296,10 +300,10 @@ bool ibJobManager::Launch(ibJobEntry& e)
 	// Exclusive jobs only: a parameterised one has an entry per instance, so there
 	// is no shared "when did THIS last run" that means anything.
 	if (!e.m_workRemains && e.m_desc.m_exclusive) {
-		const wxDateTime sharedLast = ReadSharedLastRun(KeyOf(e.m_desc));
-		if (sharedLast.IsValid()) {
-			const wxTimeSpan since    = wxDateTime::Now() - sharedLast;
-			const wxTimeSpan interval = wxTimeSpan::Seconds(e.m_desc.m_schedule.m_intervalSeconds);
+		const ibDateTime sharedLast = ReadSharedLastRun(KeyOf(e.m_desc), m_applicationInstance);
+		if (!sharedLast.IsEmpty()) {
+			const long long since    = ibDateTime::Now().ElapsedSince(sharedLast);          // ms of real time, a clock change counted
+			const long long interval = e.m_desc.m_schedule.m_intervalSeconds * 1000ll;    // ms
 			if (since < interval) {
 				// Somebody already did it. Adopt their time as ours so the local
 				// clock stops asking the database on every tick.
@@ -312,7 +316,24 @@ bool ibJobManager::Launch(ibJobEntry& e)
 		}
 	}
 
-	auto runSession = std::make_shared<ibSessionHolder>(OpenRunSession(e.m_desc));
+	// A SESSION THAT REFUSED TO COME UP is this run's failure: its configuration did not start — a module
+	// that does not compile, a module body that throws (ibSession::CompileRoot). Said where a run's failure
+	// is said, the job's outcome and the journal's error row, and the next attempt waits for the schedule
+	// as after any run instead of coming back every tick. The tick's catch around Launch says nothing.
+	std::shared_ptr<ibSessionHolder> runSession;
+	try {
+		runSession = std::make_shared<ibSessionHolder>(OpenRunSession(e.m_desc));
+	}
+	catch (const ibCoreException& err) {
+		e.m_everRun   = true;
+		e.m_lastRun   = std::chrono::steady_clock::now();
+		e.m_lastRunAt = ibDateTime::Now();
+		e.m_outcome   = ibJobOutcome::Failed;
+		e.m_error     = err.GetErrorDescription();
+		if (ibLogger* const log = ibApplicationInstance::GetLogger())
+			log->Error(wxT("job"), wxT("failed"), wxString::Format(_("Job '%s' failed: %s"), desc.m_name, e.m_error));
+		return false;
+	}
 	if (!*runSession)
 		return false;   // no session — try again on the next tick
 
@@ -327,7 +348,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 		// have several instances running at once, so there is nothing to claim and
 		// nothing to be blocked by — see ibJobDescription::m_exclusive.
 		if (ibLockManager* const locks = desc.m_exclusive
-			? ibApplicationData::GetLockManager() : nullptr) {
+			? ibApplicationInstance::GetLockManager() : nullptr) {
 			try {
 				std::vector<ibLockItem> items;
 				// `.str()` spelled out, and the literal wrapped: a bare `wxT("Job.") + guid` is a
@@ -339,7 +360,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 				ibJobSessionLockHolder owner(session, desc.m_name);
 				claim = locks->Acquire(items, {}, &owner);
 			}
-			catch (const ibBackendException&) {
+			catch (const ibCoreException&) {
 				// SOMEBODY ELSE HOLDS IT. Not an error and not a retry — the work
 				// is being done, just not by us. A job that must not run twice
 				// (the totals fold corrupts sums if two passes race on one table)
@@ -348,7 +369,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 				//
 				// Logged, because "it did not run here" is a question an
 				// administrator will otherwise ask the wrong way round.
-				if (ibLogger* const log = ibApplicationData::GetLogger()) {
+				if (ibLogger* const log = ibApplicationInstance::GetLogger()) {
 					log->Audit(wxT("job"), wxT("blocked"),
 					           wxString::Format(_("Job '%s' is already running elsewhere"),
 					                            desc.m_name));
@@ -366,18 +387,18 @@ bool ibJobManager::Launch(ibJobEntry& e)
 		//
 		//    Exclusive jobs only: a parameterised job has one record per instance,
 		//    so there is no shared "when did THIS last run" to consult.
-		const wxDateTime sharedLast = desc.m_exclusive ? ReadSharedLastRun(KeyOf(desc))
-		                                              : wxInvalidDateTime;
-		if (sharedLast.IsValid()) {
-			// Compare SPANS, never a span converted to long. A row that exists but
-			// has never actually run comes back as a zero date, and the distance
-			// from year zero to now is some 63 billion seconds — wxLongLong::ToLong
-			// asserts on that, which under Debug is an int 3 and takes the process
-			// down. It also took the run with it, which is why these sessions
-			// looked like they were hanging: the task died here and never reached
-			// the line that releases the session.
-			const wxTimeSpan since    = wxDateTime::Now() - sharedLast;
-			const wxTimeSpan interval = wxTimeSpan::Seconds(desc.m_schedule.m_intervalSeconds);
+		const ibDateTime sharedLast = desc.m_exclusive ? ReadSharedLastRun(KeyOf(desc))
+		                                              : ibDateTime();
+		if (!sharedLast.IsEmpty()) {
+			// Compare SPANS in whole milliseconds, never a span narrowed to long. A row
+			// that exists but has never actually run once came back as a zero date, and
+			// the distance from year zero to now is some 63 billion seconds — narrowed
+			// through wxLongLong::ToLong it asserted, which under Debug is an int 3 and
+			// takes the process down. It also took the run with it, which is why these
+			// sessions looked like they were hanging: the task died here and never
+			// reached the line that releases the session.
+			const long long since    = ibDateTime::Now().ElapsedSince(sharedLast);       // ms of real time, a clock change counted
+			const long long interval = desc.m_schedule.m_intervalSeconds * 1000ll;      // ms
 			if (since < interval) {
 				result->m_skipped.store(true, std::memory_order_release);
 				result->m_done.store(true, std::memory_order_release);
@@ -390,7 +411,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 		// flight must see the job as taken. The claim covers that window too, but
 		// the stamp is what survives this process letting go — including by dying.
 		if (desc.m_exclusive)
-			WriteSharedLastRun(KeyOf(desc), desc.m_name, wxDateTime::Now());
+			WriteSharedLastRun(KeyOf(desc), desc.m_name, ibDateTime::Now());
 
 		// 4. THE BODY, wrapped. Visible in Active Users while it lasts.
 		session->SetActivity(wxString::Format(wxT("job: %s"), desc.m_name));
@@ -398,7 +419,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 			result->m_more.store(desc.m_body(session), std::memory_order_release);
 			result->m_ok.store(true, std::memory_order_release);
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			std::lock_guard<std::mutex> lk(result->m_mtx);
 			result->m_error = err.GetErrorDescription();
 		}
@@ -412,7 +433,7 @@ bool ibJobManager::Launch(ibJobEntry& e)
 		//    afterwards. A scheduled job runs unattended by definition — without a
 		//    row here, "did it run last night, and how did it go?" has no answer
 		//    short of watching Active Users at the right moment.
-		if (ibLogger* const log = ibApplicationData::GetLogger()) {
+		if (ibLogger* const log = ibApplicationInstance::GetLogger()) {
 			const bool ok = result->m_ok.load(std::memory_order_acquire);
 			if (ok) {
 				// A completed run is a business event: it belongs to the trail an administrator
@@ -445,13 +466,13 @@ bool ibJobManager::Launch(ibJobEntry& e)
 
 	// The pending attempt has been taken — a new failure will schedule the next one. Cleared HERE
 	// rather than on the verdict, so a retry that is still waiting survives an intervening tick.
-	e.m_retryAt = wxDateTime();
+	e.m_retryAt = ibDateTime();
 
 	e.m_runSession = runSession;   // released by HarvestFinished, off the worker
 	e.m_result    = std::move(result);
 	e.m_everRun   = true;
 	e.m_lastRun   = std::chrono::steady_clock::now();
-	e.m_lastRunAt = wxDateTime::Now();
+	e.m_lastRunAt = ibDateTime::Now();
 	e.m_outcome   = ibJobOutcome::Running;
 	e.m_error.clear();
 	// Cleared here rather than after: the pass is under way, so "work remained
@@ -469,7 +490,7 @@ bool ibJobManager::Register(ibJobDescription desc)
 	// A schedule that can never match is refused HERE rather than left to be
 	// debugged as silence — an empty window, an inverted validity range or a
 	// non-positive interval all produce a job that simply never runs.
-	if (!desc.m_schedule.IsValid()) {
+	if (!ibJobScheduleRules::IsValid(desc.m_schedule)) {
 		ibJournalInfo(wxT("job"),wxT("job '%s' rejected: the schedule can never match"), desc.m_name);
 		return false;
 	}
@@ -508,7 +529,7 @@ bool ibJobManager::Register(ibJobDescription desc)
 			desc.m_active = stored.m_active;
 			// An empty stored schedule (a row written by an older build) is not an opinion —
 			// keeping the declaration's is better than scheduling nothing.
-			if (stored.m_schedule.IsValid())
+			if (ibJobScheduleRules::IsValid(stored.m_schedule))
 				desc.m_schedule = stored.m_schedule;
 		}
 		else {
@@ -543,7 +564,7 @@ bool ibJobManager::Register(ibJobDescription desc)
 	}
 
 	// DECLARATION ONLY — no session is built here. Registering has to be callable
-	// from wherever the platform's job list lives (ibApplicationData, right after
+	// from wherever the platform's job list lives (ibApplicationInstance, right after
 	// the database opens), and at that moment there is no metadata, no user and
 	// no reason to spend a Connect on a job that may not come due for six hours.
 	// The session is materialised on first launch instead; see EnsureSession.
@@ -565,7 +586,8 @@ bool ibJobManager::Register(ibJobDescription desc)
 
 ibSessionHolder ibJobManager::OpenRunSession(const ibJobDescription& desc)
 {
-	if (ibApplicationData::GetSessionRegistry() == nullptr || appData == nullptr)
+	ibSessionRegistry* const registry = ibApplicationInstance::GetSessionRegistry(m_applicationInstance);
+	if (registry == nullptr)
 		return ibSessionHolder();
 
 	// The session's KIND follows the job's origin, so Active Users shows what is
@@ -574,14 +596,21 @@ ibSessionHolder ibJobManager::OpenRunSession(const ibJobDescription& desc)
 		? ibSessionKind::SystemJob
 		: ibSessionKind::ScheduledJob;
 
-	ibSessionHolder holder = ibApplicationData::GetSessionRegistry()->CreateSessionOfKind(
-		appData->GetAppMode(), appData->GetComputerName(), kind,
+	ibSessionHolder holder = registry->CreateSessionOfKind(
+		m_applicationInstance->GetAppMode(), m_applicationInstance->GetComputerName(), kind,
 		&ib_detail::MakeSessionFactory<ibSession>);
 
 	if (!holder) {
 		ibJournalInfo(wxT("job"),wxT("job '%s': session could not be created"), desc.m_name);
 		return ibSessionHolder();
 	}
+
+	// ⭐ THE TICK WORKS FOR THIS RUN'S SESSION while it makes it ready — the user read from sys_user through
+	// `db_query`, the identity installed, the Authenticated notification that builds its runtime. The tick's
+	// own thread works for no base: read without the session, the user came back "not found", and a
+	// configuration's job with a run-as user never ran (2026-10-01, the census of threads without a base).
+	// Scoped, because the notification binds the session to the thread, and the scope gives that back.
+	const ibSessionScope preparing(holder.Get());
 
 	// WHOSE session this is.
 	//
@@ -594,8 +623,6 @@ ibSessionHolder ibJobManager::OpenRunSession(const ibJobDescription& desc)
 	// same RLS, same result as if they had run it themselves. The identity is
 	// installed without a password: `Login` is already split into the check and the
 	// commit, and only the commit applies here.
-	ibSessionRegistry* const registry = ibApplicationData::GetSessionRegistry();
-
 	if (desc.m_runAsUser.isValid()) {
 		// BY GUID, never by name: a user can be renamed, and a schedule that
 		// resolved by name would then either stop running or — worse — find
@@ -718,6 +745,9 @@ void ibJobManager::ThreadBody()
 	// 5 seconds" mean something else.
 	constexpr auto kInterval = std::chrono::seconds(1);
 
+	// Its lines name its base — the journal's label, not a binding: the manager asks its own base.
+	ibApplicationHost::SetThreadOwner(m_applicationInstance);
+
 	while (!m_tickStop.load(std::memory_order_acquire)) {
 		{
 			// Sleep on the CV rather than sleep_for, so Stop() wakes us at once
@@ -737,7 +767,7 @@ void ibJobManager::ThreadBody()
 		try {
 			(void)Tick();
 		}
-		catch (const ibBackendException& err) {
+		catch (const ibCoreException& err) {
 			ibJournalInfo(wxT("job"),wxT("job tick failed: %s"), err.GetErrorDescription());
 		}
 		catch (...) {
@@ -851,7 +881,7 @@ int ibJobManager::Tick()
 	return started;
 }
 
-bool ibJobManager::RunNow(const wxString& name)
+bool ibJobManager::Execute(const wxString& name)
 {
 	// DECIDE UNDER THE LOCK, RUN OUTSIDE IT — the same division Tick makes, and for the same
 	// reason: Launch creates a session, and creating one waits on the registry and takes a
@@ -942,9 +972,9 @@ std::vector<ibJobState> ibJobManager::Snapshot() const
 		// runs on Tuesdays. Left empty when the job is due right now (never ran,
 		// or work remained), so an empty cell reads as "on the next tick" rather
 		// than as a missing value.
-		if (e.m_everRun && !e.m_workRemains && e.m_lastRunAt.IsValid()) {
-			const wxDateTime earliest =
-				e.m_lastRunAt + wxTimeSpan::Seconds(e.m_desc.m_schedule.m_intervalSeconds);
+		if (e.m_everRun && !e.m_workRemains && !e.m_lastRunAt.IsEmpty()) {
+			const ibDateTime earliest =
+				e.m_lastRunAt.AddMilliseconds(e.m_desc.m_schedule.m_intervalSeconds * 1000ll);
 			state.m_nextRunAt = ibJobScheduleRules::NextAllowedAfter(e.m_desc.m_schedule, earliest);
 		}
 

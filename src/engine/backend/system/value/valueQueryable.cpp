@@ -11,7 +11,7 @@
 #include "valueTable.h"                          // ibValueModelTable — the ToTable materialised result
 
 #include "backend/query/queryable.h"             // ibBackendQueryable / ibBackendQueryColumn
-#include "backend/diagnostics/journal.h"         // says which step fell to the RAM floor, and why
+#include "backend/query/querySelector.h"         // ibSelector::Snapshot — ToTable's rows as the fast table
 #include "backend/system/value/valueType.h"      // ibValueTypeDescription::AdjustValue — an empty value of a declared type
 #include "backend/query/queryReadState.h"        // ibQueryReadState — one state for a whole pipeline
 #include "backend/query/queryAST.h"              // ibQueryAstExpr — the tree a predicate lowers from
@@ -32,7 +32,7 @@ namespace {
 // ⭐⭐ AT THE ADDRESS THE COMPILER WORKED OUT — no search at all.
 //
 // The lambda body's own instruction says `frame, cell`, and that is verbatim how the INVOKED lambda
-// addresses the same value: `m_capturedFrames[k]` IS depth k+1 for the call duration
+// addresses the same value: `CapturedAt(k)` IS depth k+1 for the call duration
 // (procUnitLambda.h, the OPER_CALL_LAMBDA shim). So the fold reads what the interpreter would read,
 // by the same coordinates, with nothing to look up.
 //
@@ -42,9 +42,9 @@ namespace {
 bool ResolveCapturedAt(const ibValueFunction* fn, long frame, long slot, ibValue& out)
 {
 	const long k = frame - 1;   // frame 1 = the context the lambda was written in
-	if (k < 0 || (size_t)k >= fn->m_capturedFrames.size())
+	if (k < 0)
 		return false;
-	const ibRunContext* const ctx = fn->m_capturedFrames[(size_t)k].get();
+	const ibRunContext* const ctx = fn->CapturedAt((size_t)k);
 	if (ctx == nullptr || ctx->m_pRefLocVars == nullptr)
 		return false;
 	if (slot < 0 || slot >= ctx->GetLocalCount() || ctx->m_pRefLocVars[slot] == nullptr)
@@ -63,8 +63,8 @@ bool ResolveCapturedAt(const ibValueFunction* fn, long frame, long slot, ibValue
 // engine takes the road above.
 bool ResolveCapturedByName(const ibValueFunction* fn, const wxString& name, ibValue& out)
 {
-	for (const std::shared_ptr<ibRunContext>& sp : fn->m_capturedFrames) {
-		const ibRunContext* frame = sp.get();
+	for (size_t k = 0; k < fn->CapturedDepth(); ++k) {
+		const ibRunContext* frame = fn->CapturedAt(k);
 		if (frame == nullptr || frame->m_currentFunction == nullptr)
 			continue;
 		for (const ibByteCode::ibByteCodeVarInfo& local : frame->m_currentFunction->m_listLocals) {
@@ -316,7 +316,7 @@ std::shared_ptr<const ibBackendQueryable> ibValueQueryable::AsSource() const
 	return std::make_shared<ibSubqueryQueryable>(inner, m_take);
 }
 
-wxString ibValueQueryable::GetString() const
+ibString ibValueQueryable::GetString() const
 {
 	if (m_ops.empty())
 		return wxString::Format(wxT("Queryable(%s)"), m_sourceName);
@@ -516,7 +516,8 @@ bool ibValueQueryable::TryJoinThroughL3(ibValue& receiver, ibValue& ret, ibValue
 	// RAM table is the OUTER (computed) leaf, the inner DB queryable is args[0]. The composer
 	// temp-promotes the computed outer and runs the join server-side. leftKey / rightKey /
 	// projection map 1:1 onto JoinPushDown's outer / inner / result-selector.
-	ibValueQueryable wrapped(std::make_shared<ibTempTableQueryable>(ibValue(&receiver)), wxT("Join"));
+	ibValueQueryable wrapped(std::make_shared<ibTempTableQueryable>(ibValue(&receiver), innerQV->GetQueryable()->GetMetaData()),
+	                         wxT("Join"));   // its references are read in the configuration of the side it joins
 	return wrapped.JoinPushDown(ret, args, n);
 }
 
@@ -642,35 +643,19 @@ void ibValueQueryable::DispatchLinqMethod(ibLinqMethod method, ibValue& ret, ibV
 
 	case M::ToTable: {
 		// Materialise into the BUILT-IN value table (ibValueModelTable): every column of
-		// the source becomes a typed table column, rows fill by model id — the result is
-		// UI-bindable and round-trips straight back through Data.From.
-		ibValueModelTable* table = new ibValueModelTable();
-		// 🛑⭐⭐ HOLD THE TABLE WHILE ITS ROWS ARE MADE. Since 7090aa6f (2026-09-09) a return line HOLDS its
-		// model (tabularModel.h, HoldOwnerModel) — the right fix for a row outliving a temporary table. Its
-		// other face is this loop: a table fresh from `new` has refcount 0, the first GetRowAt takes it to
-		// 1, and `wxDELETE(line)` brings it back to 0 — which DELETES THE TABLE, so the second row is
-		// written into freed memory. MEASURED 2026-09-10: `Data.Catalogs.Goods.ToTable()` on a nine-row
-		// catalog took the whole application down; the same rows iterated by foreach came back fine.
-		// Every "new table + GetRowAt + wxDELETE" builder has the same shape — see the other sites that
-		// cite this note. A reference held here keeps the count off zero between rows.
-		const ibValue keep(table);
-		ibValueModelTable::ibValueModelColumnCollection* tcols = table->GetColumnCollection();
-		const std::vector<const ibBackendQueryColumn*> cols = m_queryable->GetColumns();
-		for (const ibBackendQueryColumn* c : cols) {
-			if (c == nullptr) continue;
-			ibValueModelTable::ibValueModelColumnCollection::ibValueModelColumnInfo* tc =
-				tcols->AddColumn(c->GetName(), c->GetTypeDesc(), c->GetName());
-			tc->SetColumnID(c->GetColumnId());
-		}
+		// the source becomes a typed table column — the result is UI-bindable and
+		// round-trips straight back through Data.From.
+		//
+		// 🛑⭐⭐ THE TABLE IS HELD WHILE ITS ROWS ARE MADE (ibQueryRamTable::ToValueTable). Since 7090aa6f
+		// (2026-09-09) a return line HOLDS its model (tabularModel.h, HoldOwnerModel) — the right fix for a row
+		// outliving a temporary table. Its other face was the loop that stood here: a table fresh from `new` has
+		// refcount 0, the first GetRowAt takes it to 1, and `wxDELETE(line)` brings it back to 0 — which DELETES
+		// THE TABLE, so the second row is written into freed memory. MEASURED 2026-09-10:
+		// `Data.Catalogs.Goods.ToTable()` on a nine-row catalog took the whole application down; the same rows
+		// iterated by foreach came back fine.
 		ibDataQueryResult sel = ExecuteAccumulated();
-		std::vector<std::pair<ibMetaID, ibValue>> row;
-		while (sel.Next()) {
-			row.clear();
-			for (const ibBackendQueryColumn* c : cols)
-				if (c != nullptr) row.emplace_back(c->GetColumnId(), sel.GetValue(c));
-			table->AppendRow(row);
-		}
-		ret = table;
+		sel.SetMaterialiseColumns(m_queryable->GetColumns());
+		ret = sel.Select().Snapshot().ToValueTable();
 		return;
 	}
 
@@ -870,7 +855,7 @@ ibValueQueryDecorator::ibValueQueryDecorator(ibDataQueryBuilder* target, const i
 	// Join/Where in here and running it does NOT re-enter the policy — no recursion.
 }
 
-wxString ibValueQueryDecorator::GetString() const
+ibString ibValueQueryDecorator::GetString() const
 {
 	return wxString::Format(wxT("QueryDecorator(%s)"), m_sourceName);
 }

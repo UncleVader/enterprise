@@ -5,15 +5,14 @@
 #include "valueMap.h"
 
 #include "backend/tabularModel.h"
-#include "backend/picturePredefined.h"                 // g_pic*CLSID — this model emits its own standard command icons
+#include "backend/system/value/valueType.h"            // ibValueTypeDescription::AdjustValue — a cell takes its column's type
+#include "core/picturePredefined.h"                 // g_pic*CLSID — this model emits its own standard command icons
 #include "backend/srcDataObject.h"                    // ibSourceDataObject / ibSourceExplorer — the table IS a form data source
 #include "backend/propertyManager/propertyManager.h"  // ibPropertyObject / ibPropertyUString / ibPropertyType — columns surface / persist AND edit with the form attribute
-#include "backend/stringUtils.h"                       // stringUtils::GenerateSynonym — Caption-empty header fallback (mirror ibFormAttribute)
+#include "core/stringUtils.h"                       // stringUtils::GenerateSynonym — Caption-empty header fallback (mirror ibFormAttribute)
 
 #include <memory>
 #include <vector>
-
-constexpr ibClassID g_valueTableCLSID = value_to_clsid("VL_TABL");
 
 class ibValueModelTable;
 
@@ -348,7 +347,9 @@ public:
 	}
 
 	ibValueModelTable();
-	ibValueModelTable(const ibValueModelTable& val);
+	// No copy constructor: the one there was built no rows and took the SAME column collection, so the only
+	// caller - Clone - answered with an empty table whose columns were the original's. A copy is Clone.
+	ibValueModelTable(const ibValueModelTable& val) = delete;
 	virtual ~ibValueModelTable();
 
 	// Two different questions, and the front answers both: WHERE it goes is the selection (user on row 3 + Add
@@ -366,17 +367,6 @@ public:
 	void DeleteValue(const ibDataViewItem& row) { DeleteRow(row); }
 	// PHYSICAL — the rows are re-seated, and that is the order the table then IS. See the body.
 	void SortValue(const ibDataViewColumnItem& column, bool ascending);
-
-	// ⭐ THE SAME SORT ON SEVERAL KEYS AT ONCE — `Sort("Priority, Level Desc")`. Each key is a column and the
-	// way it runs (true = ascending); the first key decides, the next breaks its ties, and rows equal on
-	// every key keep the order they had. Nothing is touched unless every named column exists.
-	void SortByKeys(const std::vector<std::pair<wxString, bool>>& keys);
-
-	// The keys a script wrote: "Column [Asc|Desc], Column [Asc|Desc]". A key with no direction word takes
-	// `defaultAscending`. False (and `badToken` says which key) when a key is empty or is not
-	// `Column` / `Column Asc|Ascending|Desc|Descending` - a misread direction must not become a silent sort.
-	static bool ParseSortSpec(const wxString& spec, bool defaultAscending,
-	                          std::vector<std::pair<wxString, bool>>& keys, wxString& badToken);
 
 	// ⭐ THE TOTAL OF A COLUMN: its numbers added exactly (ibNumber, not a double), an empty cell adding nothing.
 	// A column that is not there raises - a wrong total that looks right is the worst answer a sum can give -
@@ -471,8 +461,8 @@ public:
 	// A fresh table object built from the live one — `Clone` in the ordinary C++ sense, the same
 	// sense a database layer or a drag item uses it in. It no longer collides with anything: the
 	// root's packed-form copy is `ibValue::CloneValue`, which is a different operation and now
-	// carries a different name (see value.h).
-	ibValueModelTable* Clone() const { return new ibValueModelTable(*this); }
+	// carries a different name (see value.h). The same columns and the same rows, nothing shared.
+	ibValuePtr<ibValueModelTable> Clone() const;
 	unsigned int Count() { return GetRowCount(); }
 	void Clear();
 

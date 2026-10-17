@@ -1,7 +1,12 @@
 #include "filterTreeModel.h"
+#include "frontend/win/dlgs/settings/settingsFieldTree.h"   // ibSettingsFieldTree::IsAvailable — which lines are listed
+
+#include <algorithm>   // std::count — how many segments a field's text names (ibFieldText)
 
 #include "backend/system/value/valueType.h"   // ibValueTypeDescription::AdjustValue — typed text lands as its type
 #include "backend/system/value/composition/valueComposerSettings.h"   // the pickers a cell offers
+#include "core/formatString.h"   // ibFormatString::FromTypeDesc — a value written as its field's type writes it
+#include "backend/backend_composition.h"   // ibStoredValue / ibStoreValue — a side's value is kept packed
 
 // ===========================================================================
 //  ibFilterTreeNode — a row is a PATH; resolving it is walking that path
@@ -172,8 +177,11 @@ bool ibFilterTreeModel::HasValue(const ibDataViewItem& item, unsigned col) const
 		return true;
 	if (!node->IsRoot()) {
 		const ibFilterNodeDescription* line = node->Resolve();
-		if (line == nullptr || line->m_kind != ibFilterNodeKind_Group)
-			return true;   // a condition fills every column
+		if (line == nullptr)
+			return true;
+		// A CONDITION fills every column — but «filled» / «not filled» asks the field alone, and has no right side.
+		if (line->m_kind != ibFilterNodeKind_Group)
+			return col != kFilterColRight || ibComparisonTakesValue(line->m_comparison);
 		// A GROUP is a Use box and an operator, and nothing else: no comparison, no
 		// right-hand side, no display mode.
 		return col == kFilterColUse || col == kFilterColLeft;
@@ -183,6 +191,34 @@ bool ibFilterTreeModel::HasValue(const ibDataViewItem& item, unsigned col) const
 	// a rubber-band trap: one unnoticed click and every condition below still reads
 	// as set while nothing filters.
 	return col == kFilterColLeft;
+}
+
+// ⭐⭐ A FIELD READS AS ITS WHOLE PATH, dots included. `Recorder.Ref` is a value reached THROUGH a
+// reference, and a cell that says only `Ref` hides exactly the thing worth seeing — which of the two
+// it is (Max, 2026-09-25: "it must show the full path, so we see plainly that the value is obtained
+// through the dot"). The presentation is the readable spelling, in synonyms, and it is what is shown
+// whenever it names as many segments as the path does; a presentation that lost its prefix somewhere
+// on the way here would say less than the truth, so the PATH answers instead. The path is always
+// whole — it is what the query is built from.
+static wxString ibFieldText(const ibFilterOperandDescription& side)
+{
+	const size_t inPath = std::count(side.m_path.begin(), side.m_path.end(), wxT('.'));
+	const size_t inText = std::count(side.m_presentation.begin(), side.m_presentation.end(), wxT('.'));
+	return (!side.m_presentation.IsEmpty() && inText >= inPath) ? side.m_presentation : side.m_path;
+}
+
+wxString ibFilterValueText(const ibValue& value, const ibFilterOperandDescription& field)
+{
+	ibFormatString format;
+	if (field.IsField() && ibFormatString::FromTypeDesc(field.m_type, format))
+		return format.Apply(value);
+	return value.GetString();
+}
+
+wxString ibFilterSideText(const ibFilterOperandDescription& side, const ibFilterOperandDescription& other,
+	const ibMetaData* metaData)
+{
+	return side.IsField() ? ibFieldText(side) : ibFilterValueText(ibStoredValue(side.m_value, metaData), other);
 }
 
 void ibFilterTreeModel::GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const
@@ -219,19 +255,16 @@ void ibFilterTreeModel::GetValue(wxVariant& variant, const ibDataViewItem& item,
 
 	switch (col) {
 	case kFilterColUse:  variant = line->m_use; break;
-	// EVERY CELL SHOWS ITS SIDE'S OWN TEXT. A field reads as its presentation, a
-	// number as a number, an enumeration member as its caption — one rule, so
-	// `Price > Cost`, `Amount > 100` and the comparison between them all read as
+	// EVERY CELL SHOWS ITS SIDE'S OWN TEXT. A field reads as its whole path (see
+	// ibFieldText), a value as the field across the comparison writes it (see
+	// ibFilterValueText), an enumeration member as its caption — one rule, so
+	// `Price > Cost`, `Amount > 100.00` and the comparison between them all read as
 	// what they are.
 	case kFilterColLeft:
-		variant = line->m_left.IsField()
-			? (line->m_left.m_presentation.IsEmpty() ? line->m_left.m_path : line->m_left.m_presentation)
-			: line->m_left.m_value.GetString();
+		variant = ibFilterSideText(line->m_left, line->m_right, m_fields != nullptr ? m_fields->GetMetaData() : nullptr);
 		break;
 	case kFilterColRight:
-		variant = line->m_right.IsField()
-			? (line->m_right.m_presentation.IsEmpty() ? line->m_right.m_path : line->m_right.m_presentation)
-			: line->m_right.m_value.GetString();
+		variant = ibFilterSideText(line->m_right, line->m_left, m_fields != nullptr ? m_fields->GetMetaData() : nullptr);
 		break;
 	case kFilterColComparison:
 		variant = ibValue::CreateEnumObject<ibValueEnumComparisonKind>(line->m_comparison).GetString();
@@ -291,8 +324,8 @@ bool ibFilterTreeModel::SetValue(const wxVariant& variant, const ibDataViewItem&
 			return false;
 
 		line->m_right.m_path.clear();   // typing a value is choosing a value, not a field
-		line->m_right.m_value = ibValueTypeDescription::AdjustValue(
-			line->m_left.m_type, ibValue(variant.GetString()));
+		ibStoreValue(line->m_right.m_value, ibValueTypeDescription::AdjustValue(
+			line->m_left.m_type, ibValue(variant.GetString())));
 		return true;
 	}
 	// The comparison and the display mode are written by their own editor — the
@@ -303,6 +336,21 @@ bool ibFilterTreeModel::SetValue(const wxVariant& variant, const ibDataViewItem&
 	// dialog opens that editor and writes the side back itself.
 	default: return false;
 	}
+}
+
+bool ibFilterTreeModel::IsListed(const ibFilterNodeDescription& node) const
+{
+	// ⭐ APPLIED, NEVER SHOWN — the whole meaning of `Inaccessible`, and the one place it is asked. The
+	// line stays in the filter and runs; a READER simply does not see it. The designer does, because that
+	// window is where it was written (2026-08-24: before this the mode was authored, serialised and
+	// consulted by nothing at all).
+	if (!m_authoring && node.m_display == ibFilterDisplayMode_Inaccessible)
+		return false;
+	// …AND A CONDITION ON A FIELD THE OPTIONS OF THE BASE TAKE AWAY — the same answer for another reason,
+	// asked of the field tree the pickers come from. No authoring exemption: in the designer the options
+	// take nothing away.
+	return m_fields == nullptr || node.m_kind != ibFilterNodeKind_Condition
+		|| (m_fields->IsAvailable(node.m_left.m_path) && m_fields->IsAvailable(node.m_right.m_path));
 }
 
 unsigned int ibFilterTreeModel::GetFirstFetch(const ibDataViewItem& parent, const ibDataViewItem& /*anchor*/,
@@ -335,11 +383,7 @@ unsigned int ibFilterTreeModel::GetFirstFetch(const ibDataViewItem& parent, cons
 	// across fetches.
 	unsigned int added = 0;
 	for (size_t i = 0; i < children->size(); ++i) {
-		// ⭐ APPLIED, NEVER SHOWN — the whole meaning of `Inaccessible`, and the one place it is
-		// asked. The line stays in the filter and runs; a READER simply does not see it. The
-		// designer does, because that window is where it was written (2026-08-24: before this the
-		// mode was authored, serialised and consulted by nothing at all).
-		if (!m_authoring && (*children)[i].m_display == ibFilterDisplayMode_Inaccessible)
+		if (!IsListed((*children)[i]))
 			continue;
 		ibFilterPath path = parentNode->GetPath();
 		path.push_back(i);

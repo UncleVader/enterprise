@@ -24,10 +24,11 @@
 //
 // The target type is CONSTANT — a section belongs to one owner — so it rides on the column and never
 // on the row. Built once and kept, because a queryable hands out column POINTERS and a temporary
-// would leave every caller holding a dangling one.
+// would leave every caller holding a dangling one. ONCE across threads: the section is metadata, and every
+// session of the base reads through it at the same time.
 const ibBackendQueryColumn* ibTabularQueryable::OwnerRefColumn() const
 {
-	if (!m_ownerRef) {
+	std::call_once(m_ownerRefOnce, [this]() {
 		// A DB-backed section belongs to a reference owner, and names its owner field as the owner names its own
 		// reference — one spelling, the owner's, so a reader asking by the owner's reference finds this column.
 		const ibValueMetaObjectRecordDataRef* owner = m_meta != nullptr ? m_meta->GetParentAsType<ibValueMetaObjectRecordDataRef>() : nullptr;
@@ -45,9 +46,9 @@ const ibBackendQueryColumn* ibTabularQueryable::OwnerRefColumn() const
 		const ibMetaID identity = m_meta != nullptr ? (m_meta->GetMetaID() | 0x20000000) : 0;
 
 		m_ownerRef.reset(new ibBackendColumnRawDB(ibBackendColumnRawDB::Reference(ibOwnerRefField(),
-			owner != nullptr ? reference_to_clsid(owner->GetMetaID()) : 0,
+			owner != nullptr ? reference_to_clsid(owner->GetMetaID(), clsid_metaclass(owner->GetClassType())) : 0,
 			ownerReference != nullptr ? ownerReference->GetName() : wxString(), identity)));
-	}
+	});
 	return m_ownerRef.get();
 }
 
@@ -128,7 +129,16 @@ bool ibValueTabularSectionDataObjectRef::LoadData(const ibGuid& srcGuid, bool cr
 	}
 	catch (...) { return false; }
 
-	m_readAfter = true;
+	// THE ROWS ARE HERE, SO NOTHING IS PENDING ANY MORE.
+	//
+	// 🛑 IT SAID `true`, and that is the flag the caller reads on (reference.cpp, GetPropVal): the read
+	// re-armed the very condition that starts it, so EVERY access to the field read the table again. And
+	// a read begins by CLEARING the model — which detaches every row already handed out, including the
+	// one a `foreach` is standing on. The script kept working only for as long as nobody else touched the
+	// field; a watch expression or a hover on it broke the script it was watching. Measured 2026-09-25:
+	// three re-reads from the debug connection's thread, and the next step died on `line.Item`
+	// ("Object field not readable (Item)", Document.GoodsSale.ManagerModule(37)).
+	m_readAfter = false;
 	return true;
 }
 

@@ -20,7 +20,8 @@
 #include "backend/system/value/valueOLE.h"   // ibValueOLE::ReleaseComObjects in normal OnExit
 #endif
 
-#include "resources/splashLogo.xpm"
+#include "backend/backend_picture.h"
+#include "frontend/artProvider/splash/splashLogo.h"   // one picture for the designer and the application
 
 #if wxVERSION_NUMBER >= 2905 && wxVERSION_NUMBER <= 3100
 #include <wx/xrc/xh_auinotbk.h>
@@ -28,7 +29,7 @@
 #include <wx/xrc/xh_aui.h>
 #endif
 
-#include "backend/diagnostics/leakTracker.h"
+#include "core/diagnostics/leakTracker.h"
 
 IB_LEAK_TRACKER_ARM();
 
@@ -47,7 +48,7 @@ void ibAppEnterprise::OnInitCmdLine(wxCmdLineParser& parser)
 {
 	// Short names are legacy (matched what the /flag-style spawner used);
 	// long names match wenterprise-server so one builder emits flags that
-	// parse identically across enterprise/designer/daemon/wes.
+	// parse identically across enterprise/designer/appserver/wes.
 	parser.AddOption(wxT("file"),   wxT("file"),     "Database file path",      wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("srv"),    wxT("server"),   "Database server address", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("p"),      wxT("dbport"),   "Database server port",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
@@ -56,7 +57,7 @@ void ibAppEnterprise::OnInitCmdLine(wxCmdLineParser& parser)
 	parser.AddOption(wxT("pwd"),    wxT("password"), "Database password",       wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("ib_usr"), wxT("ibuser"),   "IB user",                 wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("ib_pwd"), wxT("ibpwd"),    "IB password",             wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
-	parser.AddOption(wxT("lc"),     wxT("locale"),   "UI locale",               wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("lc"),     wxT("locale"),   "The locale for a base that names none (default: backend.conf's Locale, else the system's)",               wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddSwitch(wxT("debug"),  wxT("debug"),    "Enable debug attach.",    wxCMD_LINE_VAL_NONE);
 
 	return wxApp::OnInitCmdLine(parser);
@@ -101,7 +102,7 @@ int ibAppEnterprise::DoOnRun()
 	// Decide whether this is a file-based launch (Firebird embedded /
 	// SQLite — `--file=…`) or a server launch (`--server=… --db=…`).
 	// Reject the no-arg case explicitly: the previous behaviour fell
-	// through to appDataCreateServer with empty server/port/db, the
+	// through to the PostgreSQL opening with empty server/port/db, the
 	// PostgreSQL driver opened a connection with all-empty credentials
 	// and the resulting ThrowDatabaseException re-entered the
 	// half-initialised session registry. Surfacing the missing-arg case
@@ -118,14 +119,18 @@ int ibAppEnterprise::DoOnRun()
 	// ibBackendException records itself when constructed), so the only thing missing was arriving
 	// at the code that prints it.
 	auto bringUp = [&]() -> bool {
-		if (!m_strFile.IsEmpty()) {
-			return appDataCreateFile(ibRunMode::eRUNTIME_MODE,
-				m_strFile, m_strLocale
-			);
+		ibFileInstanceRequest request;
+		request.m_locale = m_strLocale;
+		if (!m_strFile.IsEmpty())
+			request.m_directory = m_strFile;
+		else {
+			request.m_server   = m_strServer;
+			request.m_port     = m_strPort;
+			request.m_user     = m_strUser;
+			request.m_password = m_strPassword;
+			request.m_database = m_strDatabase;
 		}
-		return appDataCreateServer(ibRunMode::eRUNTIME_MODE,
-			m_strServer, m_strPort, m_strUser, m_strPassword, m_strDatabase, m_strLocale
-		);
+		return ibApplicationInstance::CreateAppDataEnv(request) != nullptr;
 	};
 
 	wxString thrown;   // what escaped, when it was not an ibBackendException (those record themselves)
@@ -134,7 +139,7 @@ int ibAppEnterprise::DoOnRun()
 		try {
 			ret = bringUp();
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			ret = false;   // its words are already in the chain, drained and shown below
 		}
 		catch (const std::exception& e) {
@@ -187,14 +192,14 @@ int ibAppEnterprise::DoOnRun()
 	}
 
 	ibProcessSplashScreen* splashScreenLoader =
-		new ibProcessSplashScreen(wxBitmap(splashLogo_xpm),
+		new ibProcessSplashScreen(ibBackendPicture::GetBitmapFromBase64(s_splashLogo_png),
 			wxSPLASH_CENTRE_ON_SCREEN,
 			-1, nullptr, -1, wxDefaultPosition, wxDefaultSize,
 			wxBORDER_SIMPLE
 		);
 
 	// Image handlers are already up: backend.dll registers them ALL from its picture
-	// auto-loader (picturePredefined.cpp), which runs at DLL load — before this. Calling
+	// auto-loader (backend_picture.cpp), which runs at DLL load — before this. Calling
 	// wxInitAllImageHandlers again only produced a screenful of "Adding duplicate image
 	// handler" in the debug log (wx deletes the duplicate and logs it).
 	wxXmlResource::Get()->InitAllHandlers();
@@ -249,8 +254,7 @@ int ibAppEnterprise::DoOnRun()
 		? _app_start_create_debug_server_flag
 		: _app_start_default_flag;
 
-	// AccessMode was set by appData's ctor based on runMode. Registry
-	// listeners (wired in appData ctor) handle BindSessionToThread,
+	// Registry listeners (wired in appData ctor) handle BindSessionToThread,
 	// LoadMetadata, CreateRoot + CompileRoot + AttachRuntime
 	// through OnFirstConnect / OnAuthenticated.
 	// The holder lives on this stack frame until it is handed to the main
@@ -261,13 +265,13 @@ int ibAppEnterprise::DoOnRun()
 	wxString openError;
 	ibSession::OpenResult openResult = ibSession::OpenResult::Failed;
 	try {
-		holder = appData->CreateSession<ibGUISession>();
+		holder = appData->CreateSession<ibGUISession>(ibSessionKind::Enterprise);
 		if (holder) {
 			openResult = holder->Open(m_strIBUser, m_strIBPassword);
 			if (openResult != ibSession::OpenResult::Authenticated)
 				holder.Reset();
 		}
-	} catch (const ibBackendException& e) {
+	} catch (const ibCoreException& e) {
 		openError = e.GetErrorDescription();
 		holder.Reset();
 		openResult = ibSession::OpenResult::Failed;
@@ -317,16 +321,6 @@ int ibAppEnterprise::OnExit()
 #ifdef __WXMSW__
 	ibValueOLE::ReleaseComObjects();
 #endif
-
-	// Tear every session down through the session manager BEFORE
-	// wxApp::OnExit. registry->Stop() submits Remove@Urgent for each
-	// session in m_own and drains the queue — OnDisconnect listeners
-	// fire while the wx event loop is still alive, so any frame-Destroy
-	// scheduled from there gets dispatched. Without this the event
-	// loop dies first and the Destroy events stay queued. Idempotent —
-	// ~ibApplicationData calls Stop again best-effort.
-	if (auto* registry = ibApplicationData::GetSessionRegistry())
-		registry->Stop();
 
 	bool success_exit = wxApp::OnExit();
 

@@ -5,7 +5,7 @@
 #include "metaObjectMetadataEnum.h"
 
 #include "metaModuleObject.h"
-#include "backend/homePageDescription.h"   // ibHomePageDescription — the start-page workspace
+#include "core/description/homePageDescription.h"   // ibHomePageDescription — the start-page workspace
 
 //*****************************************************************************************
 //*                                  metaData object                                      *
@@ -42,8 +42,11 @@ public:
 			clsid == g_metaRoleCLSID ||
 			clsid == g_metaSectionCLSID ||
 			clsid == g_metaCommonCommandCLSID ||
+			clsid == g_metaCommandGroupCLSID ||
 			clsid == g_metaScheduledJobCLSID ||
+			clsid == g_metaEventHandlerCLSID ||
 			clsid == g_metaSessionParameterCLSID ||
+			clsid == g_metaFunctionalOptionCLSID ||
 			clsid == g_metaCommonAttributeCLSID ||
 			clsid == g_metaPictureCLSID ||
 			clsid == g_metaLanguageCLSID ||
@@ -152,7 +155,7 @@ private:
 				prop->AppendItem(
 					child->GetName(),
 					child->GetMetaID(),
-					child->GetIcon(),
+					child->GetClassType(),
 					child);
 			}
 			return true;

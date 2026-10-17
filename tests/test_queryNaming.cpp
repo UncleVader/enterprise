@@ -19,6 +19,9 @@
 #include "backend/query/queryLowering.h"
 #include "backend/query/queryConstructorModel.h"
 #include "backend/composition/dataComposer.h"
+#include "backend/query/queryableFactory.h"      // ibQueryableSourceDescriptor — a virtual table that consumes its condition
+#include "backend/query/tempTableQueryable.h"    // ibTempTableQueryable — its columns, from a table in memory
+#include "backend/metadataConfiguration.h"       // ibMetaDataConfigurationFile — the open configuration it registers in
 
 namespace {
 
@@ -216,6 +219,126 @@ TEST(QueryDescribeOutput, AColumnWithNoTableToReadItFromIsRefusedWithTheReason)
 }
 
 // ===========================================================================
+//  Describing is not running — a parameter has no value yet
+// ===========================================================================
+
+namespace {
+
+// A table in memory with these columns, untyped — a source's columns and nothing else.
+ibValue TableWith(std::initializer_list<const wxChar*> names)
+{
+	ibValueModelTable* const table = new ibValueModelTable();
+	const ibValue held(table);
+	for (const wxChar* name : names)
+		table->GetColumnCollection()->AddColumn(name, ibTypeDescription(), name);
+	return held;
+}
+
+// A register's balance, reduced to what the describing doors touch: a moment, and a condition the
+// table CONSUMES ITSELF — the argument that evaluated its parameter while being described.
+class ConsumingBalance : public ibQueryableSourceDescriptor
+{
+public:
+	ConsumingBalance()
+		: m_rows(TableWith({ wxT("Item"), wxT("QuantityBalance"), wxT("Warehouse") }))
+		, m_scope(TableWith({ wxT("Warehouse") })) {}
+
+	wxString GetNamespace() const override { return wxT("AccumulationRegister"); }
+	wxString GetName() const override { return wxT("Stock.Balance"); }
+	const ibBackendQueryable* CreateQueryable(ibValue**, long) override { return &m_rows; }
+	const ibBackendQueryable* GetConditionScope() const override { return &m_scope; }
+	void DescribeParameters(std::vector<ibQuerySourceParameter>& out) const override {
+		ibQuerySourceParameter moment;
+		moment.m_name = wxT("Period");
+		out.push_back(moment);
+		ibQuerySourceParameter condition;
+		condition.m_name = wxT("Condition");
+		condition.m_condition = true;
+		condition.m_consumedBySource = true;
+		out.push_back(condition);
+	}
+
+private:
+	ibTempTableQueryable m_rows;
+	ibTempTableQueryable m_scope;
+};
+
+class WindowSales : public ibQueryableSourceDescriptor
+{
+public:
+	WindowSales() : m_rows(TableWith({ wxT("Region"), wxT("Period"), wxT("Amount") })) {}
+
+	wxString GetNamespace() const override { return wxT("Document"); }
+	wxString GetName() const override { return wxT("Sales"); }
+	const ibBackendQueryable* CreateQueryable(ibValue**, long) override { return &m_rows; }
+
+private:
+	ibTempTableQueryable m_rows;
+};
+
+// An OPEN configuration — only an open one has a source factory to register into.
+struct OpenConfiguration : ibMetaDataConfigurationFile
+{
+	LoadGuard m_open{ this };
+};
+
+} // namespace
+
+TEST(QueryDescribing, AnUnsetParameterInAConditionTheTableConsumesIsNotAMistake)
+{
+	// The query constructor would not open this query: "parameter '&Warehouse' is not set". The
+	// parameters of a query being WRITTEN are set by the code that later runs it, never here.
+	ConsumingBalance balance;   // before the configuration: its factory goes first, and never outlives what it holds
+	OpenConfiguration cfg;
+	ASSERT_NE(nullptr, cfg.GetSourceFactory());
+	cfg.RegisterSource(&balance);
+	const ibSourceMetaDataScope scope(&cfg);
+
+	ibQueryParser parser;
+	const ibQueryPackage package = parser.ParsePackage(
+		wxT("SELECT B.Item AS Item, B.QuantityBalance AS Quantity ")
+		wxT("FROM AccumulationRegister.Stock.Balance(&At, Warehouse = &Warehouse) AS B"));
+	EXPECT_NO_THROW(ibQueryLowering::CheckNames(package, {}));
+
+	std::vector<ibQueryLowering::OutputColumn> schema;
+	ASSERT_NO_THROW(ibQueryLowering::DescribeOutput(*package.SingleSelect(), {}, schema));
+	ASSERT_EQ(2u, schema.size());
+	EXPECT_EQ(wxT("Item"), schema[0].m_name);
+	EXPECT_EQ(wxT("Quantity"), schema[1].m_name);
+
+	// …and a NAME is still checked. The parameter is excused because it has no value yet; a column
+	// the table does not have is a mistake the author can fix, and the check must still say so.
+	const ibQueryPackage wrong = parser.ParsePackage(
+		wxT("SELECT B.Item AS Item FROM AccumulationRegister.Stock.Balance(&At, Nowhere = &Warehouse) AS B"));
+	EXPECT_THROW(ibQueryLowering::CheckNames(wrong, {}), ibBackendException);
+}
+
+TEST(QueryDescribing, AConditionAskedForItsValueIsABooleanOutput)
+{
+	// The language reads a condition where a value stands; the run refused it in three places —
+	// the selection, a CASE branch and one side of a comparison. It is a Boolean output now.
+	ConsumingBalance balance;
+	OpenConfiguration cfg;
+	ASSERT_NE(nullptr, cfg.GetSourceFactory());
+	cfg.RegisterSource(&balance);
+	const ibSourceMetaDataScope scope(&cfg);
+
+	ibQueryParser parser;
+	const ibQueryPackage package = parser.ParsePackage(
+		wxT("SELECT B.Item AS Item, B.QuantityBalance > 0 AS InStock, ")
+		wxT("CASE WHEN B.Item IS NULL THEN FALSE ELSE (B.QuantityBalance > 100) END AS Plenty ")
+		wxT("FROM AccumulationRegister.Stock.Balance(&At) AS B WHERE (B.QuantityBalance > 0) = TRUE"));
+	EXPECT_NO_THROW(ibQueryLowering::CheckNames(package, {}));
+
+	std::vector<ibQueryLowering::OutputColumn> schema;
+	ASSERT_NO_THROW(ibQueryLowering::DescribeOutput(*package.SingleSelect(), {}, schema));
+	ASSERT_EQ(3u, schema.size());
+	EXPECT_EQ(wxT("InStock"), schema[1].m_name);
+	EXPECT_TRUE(schema[1].m_type.ContainType(ibValueTypes::TYPE_BOOLEAN)) << "a condition answers with a Boolean";
+	EXPECT_TRUE(schema[2].m_type.ContainType(ibValueTypes::TYPE_BOOLEAN)) << "so does a CASE whose arms are conditions";
+}
+
+// ===========================================================================
 //  A temp table's fields
 // ===========================================================================
 
@@ -289,7 +412,7 @@ TEST(QueryComposerPrune, ASettingWhoseFieldIsGoneIsDropped)
 
 	const ibFilterNodeDescription& kept = composer.GetCurrentFilterDesc().m_nodes[0];
 	EXPECT_EQ(wxT("Code"), kept.m_left.m_path);
-	EXPECT_EQ(wxT("A-1"), kept.m_right.m_value.GetString()) << "the surviving line must keep its bound value";
+	EXPECT_EQ(wxT("A-1"), ibStoredValue(kept.m_right.m_value, nullptr).GetString()) <<"the surviving line must keep its bound value";
 }
 
 TEST(QueryComposerPrune, AWalkIsJudgedByWhatItSTARTSFrom)
@@ -347,6 +470,70 @@ TEST(QueryGrouping, AnUnresolvableQueryIsNotJudged)
 	EXPECT_TRUE(ibQueryLowering::UngroupedProjections(*select, {}).empty());
 }
 
+TEST(QueryGrouping, AWindowAggregateDoesNotTurnTheSelectIntoAGroup)
+{
+	WindowSales sales;
+	OpenConfiguration cfg;
+	ASSERT_NE(nullptr, cfg.GetSourceFactory());
+	cfg.RegisterSource(&sales);
+	const ibSourceMetaDataScope scope(&cfg);
+
+	ibQueryParser parser;
+	const ibQueryPackage package = parser.ParsePackage(
+		wxT("SELECT S.Region, S.Period, SUM(S.Amount) OVER (")
+		wxT("PARTITION BY S.Region ORDER BY S.Period ROWS) AS RunningAmount ")
+		wxT("FROM Document.Sales AS S"));
+
+	EXPECT_NO_THROW(ibQueryLowering::CheckNames(package, {}));
+}
+
+TEST(QueryGrouping, AWindowArgumentStillObeysAnOrdinaryGroupBesideIt)
+{
+	WindowSales sales;
+	OpenConfiguration cfg;
+	ASSERT_NE(nullptr, cfg.GetSourceFactory());
+	cfg.RegisterSource(&sales);
+	const ibSourceMetaDataScope scope(&cfg);
+
+	ibQueryParser parser;
+	const ibQueryPackage package = parser.ParsePackage(
+		wxT("SELECT S.Region, SUM(S.Amount) AS Total, ")
+		wxT("SUM(S.Amount) OVER (PARTITION BY S.Region) AS RegionalAmount ")
+		wxT("FROM Document.Sales AS S GROUP BY S.Region"));
+
+	EXPECT_THROW(ibQueryLowering::CheckNames(package, {}), ibBackendException);
+}
+
+TEST(QueryGrouping, ARunQueryIsRefusedAsTheCheckRefusesIt)
+{
+	// The check refused an incomplete grouping and no road that RUNS a query passed the check: a script's
+	// Execute, the composer, a dynamic list and a report ran it and handed back the ungrouped column EMPTY
+	// (2026-10-01). Describing the output is filled through the same door as running it, and needs no
+	// database — so it answers here for every road, in the check's own sentence.
+	WindowSales sales;
+	OpenConfiguration cfg;
+	ASSERT_NE(nullptr, cfg.GetSourceFactory());
+	cfg.RegisterSource(&sales);
+	const ibSourceMetaDataScope scope(&cfg);
+
+	ibQueryParser parser;
+	const ibQueryPackage incomplete = parser.ParsePackage(
+		wxT("SELECT S.Region, S.Period, SUM(S.Amount) AS Total FROM Document.Sales AS S GROUP BY S.Region"));
+	EXPECT_THROW(ibQueryLowering::CheckNames(incomplete, {}), ibBackendException);
+
+	std::vector<ibQueryLowering::OutputColumn> schema;
+	wxString refusal;
+	try { ibQueryLowering::DescribeOutput(*incomplete.SingleSelect(), {}, schema); }
+	catch (const ibBackendException& error) { refusal = error.GetErrorDescription(); }
+	EXPECT_NE(wxNOT_FOUND, refusal.Find(wxT("neither grouped nor aggregated"))) << refusal.ToStdString();
+	EXPECT_NE(wxNOT_FOUND, refusal.Find(wxT("Period"))) << "the field it names is the one left out";
+
+	// …and the complete grouping runs as before.
+	const ibQueryPackage complete = parser.ParsePackage(
+		wxT("SELECT S.Region, S.Period, SUM(S.Amount) AS Total FROM Document.Sales AS S GROUP BY S.Region, S.Period"));
+	EXPECT_NO_THROW(ibQueryLowering::DescribeOutput(*complete.SingleSelect(), {}, schema));
+}
+
 // ===========================================================================
 //  A table handed in as a parameter
 // ===========================================================================
@@ -371,13 +558,15 @@ TEST(QueryParameterTable, ItIsMARKED_InTheTextAndSurvivesTheRoundTrip)
 	EXPECT_TRUE(again->m_from.m_parameter);
 }
 
-TEST(QueryParameterTable, ItGoesInToATemporaryTableAndOnlyThere)
+TEST(QueryParameterTable, ItIsReadWhereverATableIs)
 {
-	// The discipline, refused at the parse: a value table lives in RAM, so every statement that
-	// names it directly stitches the read in memory AGAIN. Materialised once, it is a table the
-	// engine can promote and join server-side.
-	EXPECT_THROW(Parse(wxT("SELECT Article FROM &GoodsTable")), ibBackendException);
+	// The ampersand says where the rows come from, and nothing else: an ordinary select reads a value table as
+	// readily as a temporary table's statement does — and a bare name is the temporary table, not the parameter.
+	EXPECT_NO_THROW(Parse(wxT("SELECT Article FROM &GoodsTable")));
 	EXPECT_NO_THROW(Parse(wxT("SELECT * INTO Goods FROM &GoodsTable")));
+	EXPECT_TRUE(Parse(wxT("SELECT G.Article FROM Catalog.Products AS P INNER JOIN &GoodsTable AS G ON G.Article = P.Ref"))
+		->m_joins.front().m_source.m_parameter);
+	EXPECT_FALSE(Parse(wxT("SELECT Article FROM Goods"))->m_from.m_parameter);
 }
 
 // ===========================================================================

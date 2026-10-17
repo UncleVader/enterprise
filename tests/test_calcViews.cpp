@@ -167,9 +167,9 @@ struct CalcViewsFix : ::testing::Test {
 	void SetUp() override {
 		if (!m_wxInit.IsOk())
 			GTEST_SKIP() << "wxBase init failed (no wxApp host)";
-		if (!ibApplicationData::CreateAppDataEnv(ibRunMode::eRUNTIME_MODE))
+		if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
 			GTEST_SKIP() << "appData env unavailable headless";
-		ibConnectionPool* pool = ibApplicationData::GetConnectionPool();
+		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool after CreateAppDataEnv";
 		db = std::make_shared<ibDatabaseLayerSQLite>();
@@ -183,8 +183,8 @@ struct CalcViewsFix : ::testing::Test {
 		ready = true;
 	}
 	void TearDown() override {
-		if (ibApplicationData::Get() != nullptr)
-			ibApplicationData::DestroyAppDataEnv();
+		if (ibApplicationInstance::Get() != nullptr)
+			ibApplicationInstance::DestroyAppDataEnv();
 	}
 
 	void Clear() { db->RunQuery(wxT("DELETE FROM Reg")); db->RunQuery(wxT("DELETE FROM Disp")); }
@@ -252,7 +252,7 @@ struct CalcViewsFix : ::testing::Test {
 
 	// The periods registered before `next` — what ComputeRows asks of every table for a moment in the period before
 	// it (ibCalcViewArg).
-	static ibCalcNarrowing Before(const wxDateTime& next) {
+	static ibCalcNarrowing Before(const ibDateTime& next) {
 		return [next](const wxString& alias, bool) {
 			return ibBinOp(ibQueryBinOp::Lt, ibCol(alias, wxT("reg_")), ibConst(ibValue(next)));
 		};
@@ -366,7 +366,7 @@ TEST_F(CalcViewsFix, AMomentReadsThePeriodsUpToIt)
 	Add(reversal);
 	Add(again);
 
-	const wxDateTime julyFirst(1, wxDateTime::Jul, 2026);
+	const ibDateTime julyFirst(2026, 7, 1);
 	const Pieces factThen = Fact(Before(julyFirst));
 	ASSERT_EQ(factThen.size(), 1u) << "July's records are not June's";
 	EXPECT_EQ(factThen.at(IdOf(paid)), (Days{ { june, july - 1 } }));

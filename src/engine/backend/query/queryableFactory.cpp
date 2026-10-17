@@ -4,7 +4,7 @@
 
 #include "queryableFactory.h"
 
-#include "backend/appData.h"             // ibApplicationData::GetQueryableFactory (the global fallback the per-config factory descends to)
+#include "backend/appData.h"             // ibApplicationInstance::GetQueryableFactory (the global fallback the per-config factory descends to)
 #include "backend/query/queryable.h"     // ibBackendQueryable::GetQueryTableId (ResolveById)
 
 //////////////////////////////////////////////////////////////////////
@@ -27,15 +27,20 @@ void ibQueryableFactory::Register(ibQueryableSourceDescriptor* descriptor)
 	const wxString ns = descriptor->GetNamespace();
 	if (ns.empty())                   // unsupported metaclass (no namespace) — not a query source
 		return;
-	m_descriptors[Key(ns, descriptor->GetName())] = descriptor;   // non-owning
+	const wxString key = Key(ns, descriptor->GetName());
+	UnindexById(key);                 // whatever stood under this name before is replaced
+	m_descriptors[key] = descriptor;  // non-owning
+	IndexById(key, descriptor);
 }
 
 void ibQueryableFactory::Unregister(ibQueryableSourceDescriptor* descriptor)
 {
 	if (descriptor == nullptr)
 		return;
-	auto it = m_descriptors.find(Key(descriptor->GetNamespace(), descriptor->GetName()));
+	const wxString key = Key(descriptor->GetNamespace(), descriptor->GetName());
+	auto it = m_descriptors.find(key);
 	if (it != m_descriptors.end() && it->second == descriptor) {   // same pointer only
+		UnindexById(key);
 		m_descriptors.erase(it);
 		descriptor->ReleaseCompanions();   // while what they point into is still alive — see the declaration
 	}
@@ -47,6 +52,33 @@ void ibQueryableFactory::Clear()
 		if (entry.second != nullptr)
 			entry.second->ReleaseCompanions();   // the same reason as in Unregister
 	m_descriptors.clear();   // non-owning: just drops references
+	m_byTableId.clear();
+	m_tableIdOfKey.clear();
+}
+
+// The id is the one the walk reads — the descriptor's own queryable, asked with no arguments.
+void ibQueryableFactory::IndexById(const wxString& key, ibQueryableSourceDescriptor* descriptor)
+{
+	const ibBackendQueryable* q = descriptor->CreateQueryable(nullptr, 0);
+	if (q == nullptr)
+		return;   // no queryable without arguments: the walk would not find it by id either
+	const ibMetaID tableId = q->GetQueryTableId();
+	m_byTableId[tableId][key] = descriptor;
+	m_tableIdOfKey[key] = tableId;
+}
+
+void ibQueryableFactory::UnindexById(const wxString& key)
+{
+	const auto filed = m_tableIdOfKey.find(key);
+	if (filed == m_tableIdOfKey.end())
+		return;
+	const auto bucket = m_byTableId.find(filed->second);
+	if (bucket != m_byTableId.end()) {
+		bucket->second.erase(key);
+		if (bucket->second.empty())
+			m_byTableId.erase(bucket);
+	}
+	m_tableIdOfKey.erase(filed);
 }
 
 bool ibQueryableFactory::HasNamespace(const wxString& ns) const
@@ -80,8 +112,21 @@ std::vector<ibQueryableSourceDescriptor*> ibQueryableFactory::GetDescriptors() c
 	return result;
 }
 
+// ⭐⭐ BY THE INDEX FIRST. This was a walk over every registered source, building each one's queryable to read its
+// id — and a list asks it for every row it draws (the row's state picture), so a paint walked the registry once
+// per visible row (2026-09-22). The index answers what the walk found first (the first key under that id); the
+// answer is checked before it is given — the same question the walk asks, of one descriptor — and an id the index
+// does not hold, or holds for a source whose id has moved since, still gets the walk, exactly as before.
 ibQueryableSourceDescriptor* ibQueryableFactory::ResolveDescriptorById(ibMetaID tableId) const
 {
+	const auto bucket = m_byTableId.find(tableId);
+	if (bucket != m_byTableId.end() && !bucket->second.empty()) {
+		ibQueryableSourceDescriptor* const candidate = bucket->second.begin()->second;
+		const ibBackendQueryable* q = candidate->CreateQueryable(nullptr, 0);
+		if (q != nullptr && q->GetQueryTableId() == tableId)
+			return candidate;
+	}
+
 	for (const std::pair<const wxString, ibQueryableSourceDescriptor*>& kv : m_descriptors) {
 		const ibBackendQueryable* q = kv.second->CreateQueryable(nullptr, 0);
 		if (q != nullptr && q->GetQueryTableId() == tableId)
@@ -105,7 +150,7 @@ const ibBackendQueryable* ibMetaQueryableFactory::Resolve(const wxString& ns, co
 {
 	if (const ibBackendQueryable* q = ibQueryableFactory::Resolve(ns, objectName, paParams, lSizeArray))
 		return q;
-	const ibQueryableFactory* global = ibApplicationData::GetQueryableFactory();
+	const ibQueryableFactory* global = ibApplicationInstance::GetQueryableFactory();
 	return global != nullptr ? global->Resolve(ns, objectName, paParams, lSizeArray) : nullptr;
 }
 
@@ -113,7 +158,7 @@ ibQueryableSourceDescriptor* ibMetaQueryableFactory::FindDescriptor(const wxStri
 {
 	if (ibQueryableSourceDescriptor* own = ibQueryableFactory::FindDescriptor(ns, objectName))
 		return own;
-	const ibQueryableFactory* global = ibApplicationData::GetQueryableFactory();
+	const ibQueryableFactory* global = ibApplicationInstance::GetQueryableFactory();
 	return global != nullptr ? global->FindDescriptor(ns, objectName) : nullptr;
 }
 
@@ -121,7 +166,7 @@ const ibBackendQueryable* ibMetaQueryableFactory::ResolveById(ibMetaID tableId) 
 {
 	if (const ibBackendQueryable* q = ibQueryableFactory::ResolveById(tableId))
 		return q;
-	const ibQueryableFactory* global = ibApplicationData::GetQueryableFactory();
+	const ibQueryableFactory* global = ibApplicationInstance::GetQueryableFactory();
 	return global != nullptr ? global->ResolveById(tableId) : nullptr;
 }
 
@@ -129,7 +174,7 @@ ibQueryableSourceDescriptor* ibMetaQueryableFactory::ResolveDescriptorById(ibMet
 {
 	if (ibQueryableSourceDescriptor* d = ibQueryableFactory::ResolveDescriptorById(tableId))
 		return d;
-	const ibQueryableFactory* global = ibApplicationData::GetQueryableFactory();
+	const ibQueryableFactory* global = ibApplicationInstance::GetQueryableFactory();
 	return global != nullptr ? global->ResolveDescriptorById(tableId) : nullptr;
 }
 

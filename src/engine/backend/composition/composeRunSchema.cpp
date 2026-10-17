@@ -8,7 +8,7 @@
 
 #include "backend/composition/composeEvaluate.h"   // a parameter WORKED OUT where the data is
 
-#include "backend/compositionDescription.h"
+#include "backend/backend_composition.h"
 #include "backend/metadataConfiguration.h"
 #include "backend/composition/dataComposer.h"                 // ibDataDBComposer - the composer this builds
 #include "backend/composition/drivers/tableComposeDriver.h"   // ...and the two readers of its walk
@@ -22,7 +22,7 @@
 #include "backend/system/value/valueType.h"                   // AdjustValue - the declared type wins
 #include "backend/system/value/valueDataComposition.h"        // ibSyncParameters - the text declares its parameters
 #include "backend/backend_exception.h"
-#include "backend/stringUtils.h"                              // CompareString - how this tree compares a NAME
+#include "core/stringUtils.h"                              // CompareString - how this tree compares a NAME
 
 #include <algorithm>
 #include <memory>
@@ -50,7 +50,7 @@ ibDataValue ValueEntry(const ibValue& value)
 	switch (value.GetType()) {
 	case ibValueTypes::TYPE_NUMBER:  out->AddField(wxT("number"), ibDataValue::Number(value.GetNumber())); break;
 	case ibValueTypes::TYPE_BOOLEAN: out->AddField(wxT("bool"),   ibDataValue::Bool(value.GetBoolean())); break;
-	case ibValueTypes::TYPE_DATE:    out->SetValue(wxT("date"),   value.GetDateTime()); break;
+	case ibValueTypes::TYPE_DATE:    out->AddField(wxT("date"),   ibDataValue::Date(value.GetDate())); break;
 	case ibValueTypes::TYPE_NULL:    out->SetValue(wxT("null"),   true); break;
 	default: break;   // a reference, an enum, a composite - the presentation is what there is
 	}
@@ -79,7 +79,7 @@ ibValue ValueFrom(const ibDataValue& given)
 	case ibDataKind::String: return ibValue(given.AsString());
 	case ibDataKind::Number: return ibValue(given.AsNumber());
 	case ibDataKind::Bool:   return ibValue(given.AsBool());
-	case ibDataKind::Date:   return ibValue(wxDateTime(static_cast<wxLongLong>(given.AsDate())));
+	case ibDataKind::Date:   return ibValue(given.AsDate());
 	default: return ibValue();
 	}
 }
@@ -193,7 +193,8 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 	//
 	// `activeMetaData` is still needed, and only for the setting's own VALUES: a filter's right-hand
 	// side may be a reference or an enum member, and those live in a configuration's registry rather
-	// than in the node.
+	// than in the node. The read keeps them packed; the composer restores them against the
+	// configuration it is given below.
 	const ibDataNode* schemaNode = request.FindChild(kComposeSchema);
 	if (schemaNode == nullptr) {
 		refusal = ibComposeText("No schema came with the request. Nothing was composed.");
@@ -201,7 +202,7 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 	}
 
 	ibCompositionDescription description;
-	if (!ibCompositionDescriptionMemory::ReadNode(*schemaNode, description, activeMetaData)) {
+	if (!ibCompositionDescriptionMemory::ReadNode(*schemaNode, description)) {
 		refusal = ibComposeText("The schema that arrived could not be read as a composition.");
 		return false;
 	}
@@ -242,7 +243,7 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 	// to get wrong on this side.
 	if (const ibDataNode* settingsNode = request.FindChild(kComposeSettings)) {
 		ibSettingsDescription settings;
-		if (!ibSettingsDescriptionMemory::ReadNode(*settingsNode, settings, activeMetaData)) {
+		if (!ibSettingsDescriptionMemory::ReadNode(*settingsNode, settings)) {
 			refusal = ibComposeText("The settings that arrived could not be read.");
 			return false;
 		}
@@ -452,18 +453,10 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 	// ⚠ ASKED OF THE COMPOSER, NOT OF THE DESCRIPTION. `GetCurrentStructure` answers with the setting
 	// in force, so the outputs and the settings cannot come from two different places.
 	//
-	// 🛑 THIS IS A SECOND ROAD, on purpose for now: valueDataComposition.cpp does the same six lines
-	// before its own compose. They are obliged to agree and nothing enforces it. Converging them is a
-	// change to the composition value's own setup and is not made from here.
-	{
-		const std::vector<ibOutputDescription>& stored = composer.GetCurrentStructure();
-		if (!stored.empty()) {
-			std::vector<ibDataComposer::Output>& live = composer.Outputs();
-			live.resize(stored.size());
-			for (size_t i = 0; i < stored.size(); ++i)
-				static_cast<ibOutputDescription&>(live[i]) = stored[i];
-		}
-	}
+	// (🗑️ A SECOND ROAD stood here — the same six lines valueDataComposition.cpp ran before its own compose,
+	//  obliged to agree with them and nothing enforcing it. Both now go through the composer's one door, which
+	//  also leaves out what this base does not use.)
+	composer.ApplyAvailableStructure();
 
 	// ⭐⭐ A DRIVER PER OUTPUT, AND THE RIGHT ONE FOR ITS SHAPE. A grouping's columns are the schema's;
 	// a cross-table's are made by its column dimension's VALUES and are not known until they arrive.
@@ -500,14 +493,14 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 	auto     work = [&composer, &composed]() { composed = composer.Run(); };
 
 	std::shared_ptr<ibBackgroundRun> rented;
-	if (ibJobManager* const jobs = ibApplicationData::GetJobManager()) {
+	if (ibJobManager* const jobs = ibApplicationInstance::GetJobManager()) {
 		try {
 			rented = jobs->StartBackground(
 				[work](ibSession*) -> ibValue { work(); return ibValue(); },
 				ibComposeText("reading a report for an assistant"),
 				ibJobTenancy::Tenant);
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			rented.reset();   // nothing to rent - fall through and read here
 		}
 	}
@@ -521,7 +514,7 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 		// period is not set" would reach the caller two different ways depending on whether a session
 		// happened to be free.
 		try                                      { work(); }
-		catch (const ibBackendException& thrown) { failed = thrown.GetErrorDescription(); }
+		catch (const ibCoreException& thrown) { failed = thrown.GetErrorDescription(); }
 	}
 
 	// The pointers do not outlive this call - the drivers are locals, and an output holding a
@@ -556,7 +549,7 @@ bool ibComposeRunSchema::Run(const ibDataNode& request, ibDataNode& result, wxSt
 		// The same render the read used, so it cannot describe a different query. (A report's FILTER is
 		// ANDed into the parsed query as a condition — dataComposer.h, AndWhere — and is not in the text.)
 		try { table->SetValue(wxT("query"), composer.RenderTextFor(outputs[i])); }
-		catch (const ibBackendException&) { /* it rendered for the read; a second refusal says nothing new */ }
+		catch (const ibCoreException&) { /* it rendered for the read; a second refusal says nothing new */ }
 		WriteColumns(*table, *driver);
 
 		if (const ibCrossComposeDriver* cross = dynamic_cast<const ibCrossComposeDriver*>(driver.get())) {

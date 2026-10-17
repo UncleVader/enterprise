@@ -70,9 +70,9 @@ wxString CellRef(int row, int col)
 
 // #RRGGBB -> the ARGB hex Excel wants. Alpha is always FF: our colours have no
 // transparency, and a zero alpha there reads as an invisible fill.
-wxString ArgbOf(const wxColour& colour)
+wxString ArgbOf(const ibColour& colour)
 {
-	return wxString::Format(wxT("FF%02X%02X%02X"), colour.Red(), colour.Green(), colour.Blue());
+	return wxString::Format(wxT("FF%02X%02X%02X"), colour.m_red, colour.m_green, colour.m_blue);
 }
 
 // ⚠ IS THIS TEXT A NUMBER — asked so a number reaches Excel AS a number, which is
@@ -109,11 +109,11 @@ wxString BorderStyleOf(const ibSpreadsheetBorderDescription& border)
 	const bool bold  = border.m_width == 2;
 
 	switch (border.m_style) {
-	case wxPENSTYLE_TRANSPARENT: return wxEmptyString;
-	case wxPENSTYLE_DOT:         return bold || heavy ? wxT("mediumDashDotDot") : wxT("dotted");
-	case wxPENSTYLE_SHORT_DASH:
-	case wxPENSTYLE_LONG_DASH:   return bold || heavy ? wxT("mediumDashed") : wxT("dashed");
-	case wxPENSTYLE_DOT_DASH:    return bold || heavy ? wxT("mediumDashDot") : wxT("dashDot");
+	case ibPenStyle_Transparent: return wxEmptyString;
+	case ibPenStyle_Dot:         return bold || heavy ? wxT("mediumDashDotDot") : wxT("dotted");
+	case ibPenStyle_ShortDash:
+	case ibPenStyle_LongDash:    return bold || heavy ? wxT("mediumDashed") : wxT("dashed");
+	case ibPenStyle_DotDash:     return bold || heavy ? wxT("mediumDashDot") : wxT("dashDot");
 	default: break;
 	}
 	return heavy ? wxT("thick") : (bold ? wxT("medium") : wxT("thin"));
@@ -173,14 +173,14 @@ CellStyle StyleOf(const ibSpreadsheetCellDescription& cell)
 {
 	CellStyle style;
 
-	const wxFont& font = cell.m_font;
+	const ibFont& font = cell.m_font;
 	if (font.IsOk()) {
-		style.m_fontFace   = font.GetFaceName();
-		style.m_fontSize   = font.GetPointSize();
-		style.m_bold       = font.GetWeight() >= wxFONTWEIGHT_BOLD;
-		style.m_italic     = font.GetStyle() == wxFONTSTYLE_ITALIC;
-		style.m_underlined = font.GetUnderlined();
-		style.m_struck     = font.GetStrikethrough();
+		style.m_fontFace   = font.m_faceName;
+		style.m_fontSize   = wxRound(font.m_pointSize);
+		style.m_bold       = font.m_weight >= ibFONTWEIGHT_BOLD;
+		style.m_italic     = font.m_style == ibFONTSTYLE_ITALIC;
+		style.m_underlined = font.m_underlined;
+		style.m_struck     = font.m_strikethrough;
 	}
 
 	if (cell.m_textColour.IsOk())
@@ -291,7 +291,7 @@ wxString Styles(const std::vector<CellStyle>& styles)
 	xml += wxString::Format(wxT("<fonts count=\"%u\">"), static_cast<unsigned>(styles.size() + 1));
 	// 🛑 FONT ZERO IS THE WHOLE SHEET'S DEFAULT, AND IT WAS A CONSTANT THAT CONTRADICTED OURS.
 	// Excel draws every cell with no style of its own in this font, so declaring Calibri 11 while
-	// this platform's own default is EIGHT POINT (s_defaultSpreadsheetFont) made an exported blank
+	// this platform's own default is EIGHT POINT (ibDefaultSpreadsheetFont) made an exported blank
 	// come back three points larger everywhere the layout had not been given an explicit font —
 	// with the row heights and column widths still exactly right, so the text simply no longer fit
 	// them. A blank that reads properly here looked broken the moment it was opened in Excel
@@ -300,11 +300,12 @@ wxString Styles(const std::vector<CellStyle>& styles)
 	//
 	// ⚠ TAKEN FROM THE DEFAULT ITSELF rather than written out again: a number repeated in a second
 	// file is a number that stops agreeing the day the first one changes.
-	const int defaultSize = s_defaultSpreadsheetFont.GetPointSize() > 0
-		? s_defaultSpreadsheetFont.GetPointSize() : 8;
+	const ibFont ordinary = ibDefaultSpreadsheetFont();
+	const int defaultSize = ordinary.m_pointSize > 0
+		? wxRound(ordinary.m_pointSize) : 8;
 
-	const wxString defaultFace = s_defaultSpreadsheetFont.GetFaceName().IsEmpty()
-		? wxString(wxT("Arial")) : s_defaultSpreadsheetFont.GetFaceName();
+	const wxString defaultFace = ordinary.m_faceName.IsEmpty()
+		? wxString(wxT("Arial")) : wxString(ordinary.m_faceName);
 
 	xml += wxString::Format(wxT("<font><sz val=\"%d\"/><name val=\"%s\"/></font>"),
 		defaultSize, XmlText(defaultFace));
@@ -410,7 +411,7 @@ wxString Styles(const std::vector<CellStyle>& styles)
 
 } // namespace
 
-bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescription& sheet) const
+bool ibSheetFormatXlsx::Write(wxOutputStream& output, const ibSpreadsheetDescription& sheet) const
 {
 	// --- the styles the cells actually use, gathered before anything is written --
 	std::map<CellStyle, size_t> styleAt;
@@ -583,7 +584,7 @@ bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescr
 			// The text, not the stored form: a caption written in every language goes out in one,
 			// read the way the grid and the printout read it (a printed document's cells are text
 			// already — a template's are not).
-			const wxString value = ibBackendLocalization::GetTranslateGetRawLocText(cell->GetValue());
+			const wxString value = ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), cell->GetValue());
 			if (value.IsEmpty() && styleIndex == 0)
 				continue;   // nothing to say about this cell at all
 
@@ -602,6 +603,7 @@ bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescr
 		}
 
 		const int height = sheet.GetRowSize(row);
+		const bool ownHeight = sheet.HasRowSize(row);   // a row without one has automatic height
 
 		// 🛑 AN EMPTY ROW CAN STILL HAVE SOMETHING TO SAY, AND IN A PRINTED FORM IT USUALLY DOES.
 		// This skipped every row with no cells in it — and a blank's GAPS are exactly that: a row
@@ -611,13 +613,14 @@ bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescr
 		// vertical rhythm collapsed while every visible line was still correct (2026-09-05).
 		//
 		// A row is now skipped only when it has nothing at all — no cells AND no height of its own.
-		if (cells.IsEmpty() && height == s_defaultRowHeight)
+		if (cells.IsEmpty() && !ownHeight)
 			continue;
 		wxString rowTag = wxString::Format(wxT("<row r=\"%d\""), row + 1);
-		// The height goes across as it stands, against the default declared in `sheetFormatPr` above.
-		// A height of ZERO is how «Hide» is stored here, so it is written as the flag rather than as
-		// a height of nothing.
-		if (height != s_defaultRowHeight && height > 0)
+		// A height of its own goes across as it stands, against the default declared in `sheetFormatPr`
+		// above; a row without one says nothing, and the reader fits it to its text, which is what
+		// automatic height means. A height of ZERO is how «Hide» is stored here, so it is written as the
+		// flag rather than as a height of nothing.
+		if (ownHeight && height > 0)
 			rowTag += wxString::Format(wxT(" ht=\"%d\" customHeight=\"1\""), height);
 		// …AND ITS PLACE IN THE OUTLINE — the depth, whether it is folded away inside a closed group,
 		// and whether it is the summary line that opens one.
@@ -675,11 +678,7 @@ bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescr
 	body += wxT("</worksheet>");
 
 	// --- write the package -------------------------------------------------------
-	wxFileOutputStream file(fileName);
-	if (!file.IsOk())
-		return false;
-
-	wxZipOutputStream zip(file);
+	wxZipOutputStream zip(output);
 	if (!zip.IsOk())
 		return false;
 
@@ -693,7 +692,7 @@ bool ibSheetFormatXlsx::Write(const wxString& fileName, const ibSpreadsheetDescr
 	// ⚠ CLOSED EXPLICITLY, and its answer read: a zip finishes with a central
 	// directory written on Close, so a stream that is merely destructed can leave a
 	// file that exists, has size, and is not a zip.
-	return zip.Close() && file.Close();
+	return zip.Close();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

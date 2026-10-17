@@ -138,7 +138,7 @@ void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const ibNumber&
 	m_pParameterCollection->SetParam(nPosition, dblValue);
 }
 
-void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const wxString& strValue)
+void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const ibString& strValue)
 {
 	m_pParameterCollection->SetParam(nPosition, strValue);
 }
@@ -153,9 +153,9 @@ void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const void* pDa
 	m_pParameterCollection->SetParam(nPosition, pData, nDataLength);
 }
 
-void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const wxDateTime& dateValue)
+void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, const ibDateTimeParts& date)
 {
-	m_pParameterCollection->SetParam(nPosition, dateValue);
+	m_pParameterCollection->SetParam(nPosition, date);
 }
 
 void ibPreparedStatementFirebirdWrapper::SetParam(int nPosition, bool bValue)
@@ -276,13 +276,13 @@ ibDatabaseResultSet* ibPreparedStatementFirebirdWrapper::DoRunQueryWithResults()
 	ibDatabaseResultSetFirebird* pResultSet = new ibDatabaseResultSetFirebird(m_pInterface, m_pDatabase, m_pTransaction, m_pStatement, pOutputSqlda);
 	if (pResultSet->GetErrorCode() != DATABASE_LAYER_OK)
 	{
-		SetErrorCode(pResultSet->GetErrorCode());
+		SetErrorCode(pResultSet->GetErrorCode(), pResultSet->GetErrorKind());
 		SetErrorMessage(pResultSet->GetErrorMessage());
 
 		// Swallow a possible throw from ~ibDatabaseResultSet — the
 		// original isc_dsql_* error must reach the caller via
 		// ThrowDatabaseException; secondary cleanup throw would mask it.
-		try { delete pResultSet; } catch (const ibBackendException&) {}
+		try { delete pResultSet; } catch (const ibCoreException&) {}
 
 		ThrowDatabaseException();
 	}
@@ -305,7 +305,7 @@ ibDatabaseResultSet* ibPreparedStatementFirebirdWrapper::DoRunQueryWithResults()
 		// Swallow on cleanup — isc_dsql_execute2 error above is the
 		// user-visible one (ThrowDatabaseException below); a secondary
 		// throw from the result-set dtor would mask it.
-		try { delete pResultSet; } catch (const ibBackendException&) {}
+		try { delete pResultSet; } catch (const ibCoreException&) {}
 		ThrowDatabaseException();
 		return NULL;
 	}
@@ -338,8 +338,9 @@ void ibPreparedStatementFirebirdWrapper::InterpretErrorCodes()
 	ibJournalInfo(wxT("db.firebird"),wxT("FirebirdPreparesStatementWrapper::InterpretErrorCodes()\n"));
 
 	long nSqlCode = m_pInterface->GetIscSqlcode()(m_Status);
-	// A system error by its status code, as the layer records one (an interrupted statement is isc_cancelled).
-	SetErrorCode(ibDatabaseLayerFirebird::TranslateErrorCode(nSqlCode < -900 ? (int)m_Status[1] : (int)nSqlCode));
+	// The primary gds code, as the layer records one (an interrupted statement is isc_cancelled).
+	const int code = ibDatabaseLayerFirebird::TranslateErrorCode(m_Status);
+	SetErrorCode(code, ibDatabaseLayerFirebird::ClassifyDatabaseError(code));
 	SetErrorMessage(ibDatabaseLayerFirebird::TranslateErrorCodeToString(m_pInterface, nSqlCode, m_Status));
 }
 

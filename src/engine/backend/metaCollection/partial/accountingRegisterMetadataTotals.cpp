@@ -60,7 +60,7 @@
 #include "backend/query/queryAST.h"                                // ibQueryDimUnfold — «in» / «in hierarchy» / «hierarchy only», the language's own three words
 #include "backend/query/queryHierarchy.h"                          // ibQueryHierarchyScope — the operator that resolves those three words into values
 #include "backend/query/queryException.h"                          // ibBackendQueryNameException — a breakdown field the register does not have
-#include "backend/databaseLayer/databaseLayer.h"                   // ibTruncateToPeriod / ibNextPeriodStart — the GRAIN, in RAM terms
+#include "backend/databaseLayer/databaseLayer.h"                   // ibDateTime::BeginOfPeriod / BeginOfNextPeriod (fdatetime.h) — the GRAIN, in RAM terms
 #include "backend/system/value/valueArray.h"                        // ibValueArray — a requested breakdown may be a LIST
 #include "backend/system/value/valueType.h"                         // ibValueTypeDescription::AdjustValue — a column's typed empty
 #include "backend/metaData.h"                                       // ibMetaData whole — AdjustValue(…, metaData) must see it is no ibValue
@@ -509,66 +509,6 @@ ibQueryHierarchyScope ScopeFromAccountCondition(const ibBackendQueryable* source
 	return ibQueryHierarchyScope(source, accountCol, named, unfold);
 }
 
-// ⭐⭐ HOW A LISTING COMES OUT — the order, and how many.
-//
-// Only a listing can be asked this: a fold answers with every group it found, and a group has no
-// line to put before another. What the author writes is field names, one per element of an array or
-// separated by commas in one string, each optionally followed by a direction.
-//
-// ⚠ THE NAME IS RESOLVED AGAINST THE SOURCE, and a name it does not know is an ERROR rather than a
-// sort quietly left out. An ignored ORDER BY is the kind of wrong nobody notices: the rows come back,
-// in some order, and the order they came back in looks like an answer.
-// The listing's order as the columns it names, each with its direction (true = ascending).
-std::vector<std::pair<const ibBackendQueryColumn*, bool>> RecordsOrder(const ibBackendQueryable* source, const ibValue& order)
-{
-	std::vector<std::pair<const ibBackendQueryColumn*, bool>> out;
-	if (source == nullptr || order.IsEmpty())
-		return out;
-
-	// One value or a list of them — the same shape every argument of this register takes.
-	std::vector<wxString> items;
-	for (const ibValue& element : ibQueryHierarchyNamedValues(order)) {
-		wxString text = element.GetString();
-		while (!text.IsEmpty()) {
-			const int comma = text.Find(wxT(','));
-			wxString one = comma == wxNOT_FOUND ? text : text.Left(comma);
-			text = comma == wxNOT_FOUND ? wxString() : text.Mid(comma + 1);
-			one.Trim(true).Trim(false);
-			if (!one.IsEmpty())
-				items.push_back(one);
-		}
-	}
-
-	for (const wxString& item : items) {
-		wxString name = item;
-		bool ascending = true;
-
-		// `<field> DESC` — the direction is a word AFTER the name, which is where every language this
-		// one resembles puts it.
-		const int space = name.Find(wxT(' '));
-		if (space != wxNOT_FOUND) {
-			const wxString direction = name.Mid(space + 1).Trim(true).Trim(false);
-			name = name.Left(space).Trim(true);
-			if (stringUtils::CompareString(direction, wxT("DESC")) || stringUtils::CompareString(direction, wxT("Descending")))
-				ascending = false;
-			else if (!stringUtils::CompareString(direction, wxT("ASC")) && !stringUtils::CompareString(direction, wxT("Ascending")))
-				ibBackendCoreException::Error(_("unknown sort direction '%s' - expected ASC or DESC"), direction);
-		}
-
-		const ibBackendQueryColumn* column = source->ResolveColumnByName(name);
-		if (column == nullptr)
-			ibBackendCoreException::Error(_("cannot order by '%s': this reading has no such field"), name);
-		out.push_back({ column, ascending });
-	}
-	return out;
-}
-
-void OrderRecords(ibDataQueryBuilder& b, const ibBackendQueryable* source, const ibValue& order)
-{
-	for (const auto& item : RecordsOrder(source, order))
-		b.OrderBy(item.first, item.second);
-}
-
 // ⭐⭐ AND THE OTHER HALF OF A CONDITION: A FILTER OVER THE BREAKDOWN.
 //
 // A condition may name a DIMENSION (an ordinary column of the register) or an ACCOUNT DIMENSION — and
@@ -598,8 +538,8 @@ ibQueryPredicatePtr AccountDimensionCondition(const ibValueMetaObjectAccountingR
 		return nullptr;
 
 	ibQueryPredicatePtr folded;
-	for (const std::pair<ibValue, ibValue>& entry : pairs->Entries()) {
-		if (entry.first.GetType() == TYPE_STRING || entry.first.IsEmpty())
+	for (const auto& entry : pairs->Entries()) {
+		if (entry.key.GetType() == TYPE_STRING || entry.key.IsEmpty())
 			continue;   // a dimension by name — not this converter's business
 
 		ibQueryPredicatePtr perKind;
@@ -612,12 +552,12 @@ ibQueryPredicatePtr AccountDimensionCondition(const ibValueMetaObjectAccountingR
 			ibQueryCondition kindLeaf;
 			kindLeaf.m_col   = ColumnOn(source, kindSlot);
 			kindLeaf.m_op    = ibQueryFilterOp::Equal;
-			kindLeaf.m_value = entry.first;
+			kindLeaf.m_value = entry.key;
 
 			ibQueryCondition valueLeaf;
 			valueLeaf.m_col   = ColumnOn(source, slot);
 			valueLeaf.m_op    = ibQueryFilterOp::Equal;
-			valueLeaf.m_value = entry.second;
+			valueLeaf.m_value = entry.value;
 
 			perKind = OrWith(perKind, AndWith(ibQueryPredicate::Leaf(kindLeaf), ibQueryPredicate::Leaf(valueLeaf)));
 		}
@@ -891,23 +831,14 @@ ibQueryPredicatePtr ConditionOnPass(const ibValueMetaObjectAccountingRegister* r
 		const ibBackendQueryColumn* head = walks ? leaf.m_path.front() : leaf.m_col;
 
 		// ⭐ `IN HIERARCHY` HERE IS A SELECTION — the fold by it is the account argument's, which took the plain
-		// account names before this (SplitAccountCondition). So the word is resolved into the subtree it stands
-		// for, read through the column on the movements (or the row a walk ends at), and the leaf is an IN.
-		if (leaf.m_unfold != ibQueryDimUnfold::Elements) {
-			const ibBackendQueryable* owner = reg->GetQueryable();
-			const ibAcctConditionColumn onLines = ConditionColumnOn(reg, owner, shape, creditSide, kindsDr, kindsCr, head);
-			const ibBackendQueryColumn* column = onLines.m_column != nullptr ? onLines.m_column
-				: (!onLines.m_byKind.empty() ? onLines.m_byKind.front().second : nullptr);
-			for (size_t hop = 1; column != nullptr && walks && hop < leaf.m_path.size(); ++hop) {
-				owner  = owner->GetProvider().ResolveReferenceTarget(owner, column);
-				column = owner != nullptr ? owner->ResolveColumnByName(leaf.m_path[hop]->GetName()) : nullptr;
-			}
-			if (column == nullptr)
-				ibRegRefuseConditionColumn(head);
-			leaf.m_values = ibQueryHierarchyScope(owner, column, leaf.m_values, leaf.m_unfold).Accepted();
-			leaf.m_unfold = ibQueryDimUnfold::Elements;
-			leaf.m_op     = ibQueryFilterOp::In;
-		}
+		// account names before this (SplitAccountCondition).
+		//
+		// It goes down AS NAMED, one leaf per slot the kind stands in, and the side that filters the rows answers
+		// it: the database has the server walk the subtree (BuildSubtreeIn — WITH RECURSIVE), in whichever table
+		// each named value belongs to — an analytics slot holds references of many — so a chart or a catalog is
+		// not read whole for every reading.
+		if (leaf.m_unfold != ibQueryDimUnfold::Elements)
+			leaf.m_op = ibQueryFilterOp::In;   // the values as named; the provider walks them, slot by slot
 
 		return over(head, /*nullWhereAbsent*/ false, [&](const ibBackendQueryColumn* column) {
 			ibQueryCondition here = leaf;
@@ -1096,7 +1027,7 @@ ibQueryPredicatePtr ArmCutAtMoment(const ibBackendQueryColumn* recorderCol, cons
 	if (bound.IsEmpty() || bound.m_date.GetType() != TYPE_DATE)
 		return ibRegStoredArm(recorderCol);
 
-	const ibValue floor = ibValue(ibTruncateToPeriod(bound.m_date.GetDateTime(), grain));
+	const ibValue floor = ibValue(bound.m_date.GetDate().BeginOfPeriod(grain));
 
 	const ibQueryPredicatePtr stored = AndWith(ibRegStoredArm(recorderCol),
 		Compare(periodCol, ibQueryFilterOp::Less, floor));
@@ -1119,20 +1050,20 @@ ibQueryPredicatePtr ArmCutOverRange(const ibBackendQueryColumn* recorderCol, con
 	// bound falls INTO holds movements before it as well, so it cannot be taken as a row.
 	ibValue storedFrom, headFrom;
 	if (!begin.IsEmpty() && begin.m_date.GetType() == TYPE_DATE) {
-		const wxDateTime moment = begin.m_date.GetDateTime();
-		const wxDateTime floor  = ibTruncateToPeriod(moment, grain);
+		const ibDateTime moment = begin.m_date.GetDate();
+		const ibDateTime floor  = moment.BeginOfPeriod(grain);
 		headFrom   = begin.m_date;
 		// A bound that names a DOCUMENT reaches inside its grain even on the grain's edge: the postings of
 		// that instant before the document are outside, so the grain cannot be a stored row (ibRegFillArmCut).
-		storedFrom = (floor == moment && !begin.HasRecorder()) ? begin.m_date : ibValue(ibNextPeriodStart(moment, grain));
+		storedFrom = (floor == moment && !begin.HasRecorder()) ? begin.m_date : ibValue(moment.BeginOfNextPeriod(grain));
 	}
 
 	// Where they must stop: the start of the grain the upper bound falls into — that grain's movements
 	// answer the rest.
 	ibValue storedTo, tailFrom;
 	if (!end.IsEmpty() && end.m_date.GetType() == TYPE_DATE) {
-		const wxDateTime moment = end.m_date.GetDateTime();
-		storedTo = ibValue(ibTruncateToPeriod(moment, grain));
+		const ibDateTime moment = end.m_date.GetDate();
+		storedTo = ibValue(moment.BeginOfPeriod(grain));
 		tailFrom = storedTo;
 	}
 
@@ -1975,15 +1906,18 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 	// period and the document, Record = the period, the document and the line within it.
 	const bool atMovementGrain = fold.FromMovements();
 	const bool withPeriod = (shape == ibAcctShape::Records) || fold.HasPeriod() || atMovementGrain;
+	// …and it is the MOMENT a balance's first and last are counted by.
 	if (withPeriod && GetRegisterPeriod() != nullptr)
-		columns.push_back(ibRegAttributeColumn(GetRegisterPeriod()));
+		columns.push_back(ibRegAttributeColumn(GetRegisterPeriod()).PlaysInBalance(ibBalanceRole::Moment, ibSourcePeriodRank(1)));
 
 	// --- the movement's own identity — where a row IS a movement, or a document's worth of them ---
+	// …the recorder and the line are the junior PERIODS after it — what tells two documents of one second, and
+	// two lines of one document, apart in time.
 	if (shape == ibAcctShape::Records || atMovementGrain) {
 		if (GetRegisterRecorder() != nullptr)
-			columns.push_back(ibRegAttributeColumn(GetRegisterRecorder()));
+			columns.push_back(ibRegAttributeColumn(GetRegisterRecorder()).PlaysInBalance(ibBalanceRole::Moment, ibSourcePeriodRank(2)));
 		if ((shape == ibAcctShape::Records || fold.HasLineNumber()) && GetRegisterLineNumber() != nullptr)
-			columns.push_back(ibRegAttributeColumn(GetRegisterLineNumber()));
+			columns.push_back(ibRegAttributeColumn(GetRegisterLineNumber()).PlaysInBalance(ibBalanceRole::Moment, ibSourcePeriodRank(3)));
 		// The side a LINE stands on. A total has none — it reports a debit figure and a credit figure
 		// side by side — so this belongs to the movements listing alone.
 		if (shape == ibAcctShape::Records && !correspondence && GetRegisterRecordType() != nullptr)
@@ -2012,13 +1946,16 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 	// identity. Composed over the attribute's REAL metaID rather than a running ordinal: the same column
 	// then has the same id in every shape and in the condition scope (ScopeFromAccountCondition), whatever
 	// the call's arguments put before it, and two such columns cannot meet on one number.
+	// The account, the analytics and the register's own dimensions are what keep one balance apart from
+	// another — each is published as a DIMENSION of it.
 	if (GetRegisterAccount() != nullptr)
-		columns.push_back(bothSides || !correspondence
+		columns.push_back((bothSides || !correspondence
 			? ibRegAttributeColumn(GetRegisterAccount())
 			: ibRegAttributeColumn(GetRegisterAccount(), PublishedAccountName(this, shape), AccountColumnSynonym(wxEmptyString),
-			                       ibRegDerivedColumnId(GetRegisterAccount()->GetMetaID())));
+			                       ibRegDerivedColumnId(GetRegisterAccount()->GetMetaID())))
+			.PlaysInBalance(ibBalanceRole::Dimension));
 	if (bothSides && GetRegisterAccountCr() != nullptr)
-		columns.push_back(ibRegAttributeColumn(GetRegisterAccountCr()));
+		columns.push_back(ibRegAttributeColumn(GetRegisterAccountCr()).PlaysInBalance(ibBalanceRole::Dimension));
 
 	// ⭐⭐ THE CORRESPONDENT OF A TURNOVER — the account the row's account moved against, published beside
 	// it as the reference publishes it. Synthetic like `Account` above: it is the credit account on the
@@ -2062,14 +1999,15 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 			const ibValueMetaObjectAttributeBase* kindSlot = GetAccountDimensionKindSlot(creditSide, no);
 			if (kinds.empty() && kindSlot != nullptr)
 				columns.push_back(ibTempColumn(name + wxT("Kind"), name + wxT("Kind"),
-				                               kindSlot->GetTypeDesc(), ibRegDerivedColumnId(kindSlot->GetMetaID())));
+				                               kindSlot->GetTypeDesc(), ibRegDerivedColumnId(kindSlot->GetMetaID())).StandsFor(kindSlot));
 
 			// What the slot HOLDS (GetTypeValueDesc), not what it declares: the declaration is the chart's
 			// characteristic, one class no value carries, and a column of this table is a plain column with
 			// no chart to expand it through — typed by the declaration, it could not be opened in a field
 			// picker, offered no value to filter by, and adjusted every counterparty poured into it to
 			// nothing (2026-09-15).
-			columns.push_back(ibTempColumn(name, name, slot->GetTypeValueDesc(), ibRegDerivedColumnId(slot->GetMetaID())));
+			columns.push_back(ibTempColumn(name, name, slot->GetTypeValueDesc(), ibRegDerivedColumnId(slot->GetMetaID())).StandsFor(slot)
+				.PlaysInBalance(ibBalanceRole::Dimension));
 		}
 	};
 	addBreakdown(/*creditSide*/ false, kindsDr, /*corr*/ false);
@@ -2090,11 +2028,11 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 		const ibValueMetaObjectAttributeBase* debit  = bothSidesOnOneRow ? GetFieldSide(/*creditSide*/ false, field) : nullptr;
 		const ibValueMetaObjectAttributeBase* credit = bothSidesOnOneRow ? GetFieldSide(/*creditSide*/ true, field) : nullptr;
 		if (debit == nullptr || credit == nullptr) {
-			columns.push_back(ibRegAttributeColumn(field));
+			columns.push_back(ibRegAttributeColumn(field).PlaysInBalance(ibBalanceRole::Dimension));
 			return;
 		}
-		columns.push_back(ibRegAttributeColumn(debit));
-		columns.push_back(ibRegAttributeColumn(credit));
+		columns.push_back(ibRegAttributeColumn(debit).PlaysInBalance(ibBalanceRole::Dimension));
+		columns.push_back(ibRegAttributeColumn(credit).PlaysInBalance(ibBalanceRole::Dimension));
 	};
 	for (const auto dimension : GetDimensionArrayObject())
 		if (dimension != nullptr)
@@ -2134,7 +2072,8 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 		columns.push_back(ibTempColumn(FigureName(resource, suffix), FigureField(resource, suffix),
 		                               resource->GetTypeDesc(), ibRegDerivedColumnId(resource->GetMetaID(), ++figureNo),
 		                               ibRegColumnCaptionOf(resource->GetSynonym(), ibRegSidedCaption(figure, credit)),
-		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()));
+		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()).StandsFor(resource)
+		                  .PlaysInBalance(ibRegFigureBalanceRole(figure)));   // the figure's word, not the sided spelling
 	};
 
 	// A figure with NO side — one row is a pair of accounts, so there is one number and nothing to
@@ -2143,7 +2082,8 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 		columns.push_back(ibTempColumn(FigureName(resource, figure), FigureField(resource, figure),
 		                               resource->GetTypeDesc(), ibRegDerivedColumnId(resource->GetMetaID(), ++figureNo),
 		                               ibRegColumnCaptionOf(resource->GetSynonym(), ibRegFigureCaption(figure)),
-		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()));
+		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()).StandsFor(resource)
+		                  .PlaysInBalance(ibRegFigureBalanceRole(figure)));
 	};
 
 	// ⭐⭐ BALANCED OR NOT, A FIGURE IS REPORTED — what the flag decides is how many numbers it is.
@@ -3105,7 +3045,7 @@ ibQueryRelPtr ibValueMetaObjectAccountingRegister::BuildDrCrTurnoverRelation(
 			if (column.m_byKind) {
 				if (const ibBackendQueryColumn* out = published->ResolveColumnByName(column.m_alias))
 					for (const ibColumnSlot& slot : DescribeColumnLayout(out))
-						labelOf[slot.m_name] = ibSqlAliasOf(slot.m_name);
+						labelOf[slot.m_name] = ibSqlAliasOf(out->GetPhysicalName()) + ibFieldSuffix(slot.m_role);
 				continue;
 			}
 			if (column.m_kindSlot != nullptr)
@@ -3447,7 +3387,11 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 	// empty one (measured 2026-09-16: fixed assets on 10 read by month from August).
 	const bool everyPeriod = withPeriod && fold.m_kind == ibRegGranularity::Calendar && !fold.FromMovements()
 		&& begin.m_date.GetType() == TYPE_DATE;
-	const wxDateTime firstPeriod = everyPeriod ? ibTruncateToPeriod(begin.m_date.GetDateTime(), fold.m_unit) : wxDateTime();
+	const ibDateTime firstPeriod = everyPeriod ? begin.m_date.GetDate().BeginOfPeriod(fold.m_unit) : ibDateTime();
+	// …and at movement grain (Recorder / Record) at the interval's beginning, as the accumulation register stands
+	// it: no document wrote the row, but a report by period still has to find it somewhere — with no date it
+	// made a month heading of its own with none (2026-09-29, the ROLE battery).
+	const bool atBeginning = withPeriod && fold.FromMovements() && begin.m_date.GetType() == TYPE_DATE;
 	for (const auto& entry : openingByKey) {
 		if (byKey.find(entry.first) != byKey.end())
 			continue;
@@ -3458,6 +3402,11 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 			identity.push_back(ibValue(firstPeriod));
 			if (keyColumns.size() < key.size())
 				key[keyColumns.size()] = ibValue(firstPeriod);
+		}
+		else if (atBeginning) {
+			identity.push_back(begin.m_date);
+			if (keyColumns.size() < key.size())
+				key[keyColumns.size()] = begin.m_date;
 		}
 
 		const size_t before = rows.size();
@@ -3572,8 +3521,8 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 		}
 	}
 
-	if (everyPeriod && firstPeriod.IsValid() && end.m_date.GetType() == TYPE_DATE) {
-		const std::vector<wxDateTime> calendar = ibRegCalendarOf(ibValue(firstPeriod), end.m_date, fold.m_unit, /*maxPeriods*/ 0);
+	if (everyPeriod && end.m_date.GetType() == TYPE_DATE) {
+		const std::vector<ibDateTime> calendar = ibRegCalendarOf(ibValue(firstPeriod), end.m_date, fold.m_unit, /*maxPeriods*/ 0);
 		const size_t slot = keyColumns.size();
 		for (auto& group : byKey) {
 			if (group.second.empty())
@@ -3585,7 +3534,7 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 
 			const size_t templateRow = group.second.front();
 			const bool templateBalanceless = balanceless[templateRow];
-			for (const wxDateTime& period : calendar) {
+			for (const ibDateTime& period : calendar) {
 				const ibValue value(period);
 				if (present.find(value) == present.end()) {
 					ibAcctRow added = rows[templateRow].second;   // the key as it stands on a row that exists
@@ -3607,9 +3556,7 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 	// period's closing), and the order a GROUP BY answers in is the engine's business, not a promise.
 	const size_t periodSlot = withPeriod ? keyColumns.size() : rowColumns.size();
 	const auto periodOf = [&](const ibAcctRow& row) {
-		// static_cast, not a functional cast: wxLongLong_t is `long long` outside MSVC, and a
-		// two-word type name cannot be spelled `T(0)` (docs/portability.md).
-		return periodSlot < row.m_key.size() ? row.m_key[periodSlot].GetDate() : static_cast<wxLongLong_t>(0);
+		return periodSlot < row.m_key.size() ? row.m_key[periodSlot].GetDate() : ibDateTime();
 	};
 
 	ibAcctRowList ordered;
@@ -3619,8 +3566,20 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeBalanceAndTurnover(
 	orderedBalanceless.reserve(rows.size());
 	for (auto& group : byKey) {
 		if (withPeriod)
-			std::stable_sort(group.second.begin(), group.second.end(),
-				[&](size_t a, size_t b) { return periodOf(rows[a].second) < periodOf(rows[b].second); });
+			std::stable_sort(group.second.begin(), group.second.end(), [&](size_t a, size_t b) {
+				if (periodOf(rows[a].second) != periodOf(rows[b].second))
+					return periodOf(rows[a].second) < periodOf(rows[b].second);
+				// …and at movement grain within one second by the recorder, then the line (the slots after the
+				// period): the order a TOTALS fold counts moments in (ibMomentBefore), so the row it calls a key's
+				// first is the row the roll reached first (2026-09-29).
+				const std::vector<ibValue>& ka = rows[a].second.m_key;
+				const std::vector<ibValue>& kb = rows[b].second.m_key;
+				const ibValueEqual same;
+				for (size_t i = periodSlot + 1; i < ka.size() && i < kb.size(); ++i)
+					if (!same(ka[i], kb[i]))
+						return ka[i] < kb[i];
+				return false;
+			});
 		for (const size_t member : group.second) {
 			ordered.push_back(std::move(rows[member]));
 			orderedBalanceless.push_back(balanceless[member]);
@@ -3968,8 +3927,7 @@ void ibValueMetaObjectAccountingRegister::ReportFiguresAsKept(ibQueryRamTable& t
 ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeRecords(
 	const ibRegBound& begin, const ibRegBound& end,
 	const std::vector<ibValue>& kindsDr, const std::vector<ibValue>& kindsCr,
-	const ibQueryPredicatePtr& filter, const ibValue& condition,
-	const ibValue& order, long top) const
+	const ibQueryPredicatePtr& filter, const ibValue& condition) const
 {
 	ibQueryRamTable retTable;
 	// A row here IS a movement line, so it carries the period, the document and the line within it.
@@ -4030,13 +3988,6 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeRecords(
 	for (const auto resource : GetResourceArrayObject())
 		carry(resource);
 
-	// HOW THEY COME OUT, and how many — the two arguments only a listing can be asked. Both are part
-	// of the QUESTION rather than of paging: `Top` here means "the first N lines of this order", which
-	// is why it rides the query instead of being a page the caller turns.
-	OrderRecords(b, movements, order);
-	if (top > 0)
-		b.Top(top);
-
 	ibDataQueryResult sel = b.Execute(ibReadPageRequest{});
 	while (sel.Next()) {
 		const long row = retTable.AppendRow();
@@ -4065,8 +4016,7 @@ ibQueryRamTable ibValueMetaObjectAccountingRegister::ComputeRecords(
 ibQueryRelPtr ibValueMetaObjectAccountingRegister::BuildRecordsRelation(
 	const ibRegBound& begin, const ibRegBound& end,
 	const std::vector<ibValue>& kindsDr, const std::vector<ibValue>& kindsCr,
-	const ibQueryPredicatePtr& filter, const ibValue& condition,
-	const ibValue& order, long top) const
+	const ibQueryPredicatePtr& filter, const ibValue& condition) const
 {
 	const ibBackendQueryable* movements = GetQueryable();
 	if (movements == nullptr)
@@ -4083,14 +4033,6 @@ ibQueryRelPtr ibValueMetaObjectAccountingRegister::BuildRecordsRelation(
 			IsCorrespondence() ? AccountDimensionCondition(this, movements, /*creditSide*/ true, condition)
 			                   : ibQueryPredicatePtr()))
 		b.Where(slots);
-
-	// ⚠ THE ORDER AND THE COUNT RIDE HERE TOO, and that is the difference between them and PAGING.
-	// The page was left off this relation deliberately (a LIMIT of the composer's is the composer's);
-	// `Top` is not that — it is part of what was ASKED, "the first N of this order", and a relation
-	// that dropped it would answer a different question than the same call answers through rows.
-	OrderRecords(b, movements, order);
-	if (top > 0)
-		b.Top(top);
 
 	const ibQueryRelPtr lines = b.BuildRelation();
 	ibRegFold recordFold;
@@ -4145,13 +4087,7 @@ ibQueryRelPtr ibValueMetaObjectAccountingRegister::BuildRecordsRelation(
 		}
 	}
 
-	ibQueryRelPtr rel = ibProject(ibSubquery(lines, a), std::move(projection));
-	// …and in the order asked for: the order of a derived table is not a promise its reader keeps.
-	std::vector<ibQuerySortKey> keys;
-	for (const auto& item : RecordsOrder(movements, order))
-		for (const wxString& field : ColumnFieldNames(item.first))
-			keys.push_back({ ibCol(a, field), item.second ? ibQuerySortDir::Asc : ibQuerySortDir::Desc });
-	return keys.empty() ? rel : ibSort(rel, std::move(keys));
+	return ibProject(ibSubquery(lines, a), std::move(projection));
 }
 
 // ============================================================================
@@ -4776,7 +4712,7 @@ ibQueryRelPtr PeriodisedOnServer(const ibValueMetaObjectAccountingRegister* reg,
 	const ibValueMetaObjectChartOfAccounts* chart   = reg->GetChartOfAccounts();
 	if (period == nullptr || account == nullptr || chart == nullptr || chart->GetQueryable() == nullptr)
 		return nullptr;
-	const std::vector<wxDateTime> periods = ibRegCalendarOf(begin.m_date, end.m_date, fold.m_unit);
+	const std::vector<ibDateTime> periods = ibRegCalendarOf(begin.m_date, end.m_date, fold.m_unit);
 	if (periods.empty())
 		return nullptr;
 
@@ -5024,7 +4960,7 @@ ibQueryRelPtr ibAcctTurnoverQueryable::GetSourceRelation(const wxString& alias) 
 		r.m_grain      = m_fold.IsCalendar() ? ibMaterializeGrain::Calendar : ibMaterializeGrain::StoredPeriod;
 		r.m_periodUnit = m_fold.m_unit;
 		r.m_fromGrain  = (r.m_from.GetType() == TYPE_DATE && m_fold.IsCalendar())
-			? ibValue(ibTruncateToPeriod(r.m_from.GetDateTime(), m_fold.m_unit))
+			? ibValue(r.m_from.GetDate().BeginOfPeriod(m_fold.m_unit))
 			: r.m_from;
 	}
 
@@ -5161,7 +5097,7 @@ bool AnyTurnoverOnlyKind(const ibValueMetaObjectChartOfAccounts* chart)
 		ibDataQueryResult sel = b.Execute(page);
 		return sel.Next();
 	}
-	catch (const ibBackendException&) {
+	catch (const ibCoreException&) {
 		return true;   // unknown reads as "there is one" — the half that tests every row and loses nothing
 	}
 }
@@ -5470,7 +5406,7 @@ ibQueryRelPtr ibAcctBalanceAndTurnoverQueryable::GetSourceRelation(const wxStrin
 		r.m_grain      = m_fold.IsCalendar() ? ibMaterializeGrain::Calendar : ibMaterializeGrain::StoredPeriod;
 		r.m_periodUnit = m_fold.m_unit;
 		r.m_fromGrain  = (r.m_from.GetType() == TYPE_DATE && m_fold.IsCalendar())
-			? ibValue(ibTruncateToPeriod(r.m_from.GetDateTime(), m_fold.m_unit))
+			? ibValue(r.m_from.GetDate().BeginOfPeriod(m_fold.m_unit))
 			: r.m_from;
 	}
 
@@ -5632,13 +5568,13 @@ ibQueryRelPtr ibAcctRecordsQueryable::GetSourceRelation(const wxString& alias) c
 	// the provider does it; the road a dot-walk takes does not — it joins the target tables onto what comes
 	// back and qualifies by the alias, so `R.Account.Code` rendered `FROM AccountingRegister1408 LEFT JOIN …
 	// ON (AccountingRegister1408_T_4.fld1414_RRRef = …)` and Firebird refused the alias (-206, 2026-09-16).
-	const ibQueryRelPtr rel = m_reg->BuildRecordsRelation(m_begin, m_end, m_kindsDr, m_kindsCr, m_filter, m_condition, m_order, m_top);
+	const ibQueryRelPtr rel = m_reg->BuildRecordsRelation(m_begin, m_end, m_kindsDr, m_kindsCr, m_filter, m_condition);
 	return rel != nullptr ? ibSubquery(rel, alias) : nullptr;
 }
 
 ibQueryRamTable ibAcctRecordsQueryable::ComputeRows(const std::vector<ibQueryCondition>& /*extra*/) const
 {
-	return m_reg->ComputeRecords(m_begin, m_end, m_kindsDr, m_kindsCr, m_filter, m_condition, m_order, m_top);
+	return m_reg->ComputeRecords(m_begin, m_end, m_kindsDr, m_kindsCr, m_filter, m_condition);
 }
 
 // ============================================================================
@@ -5831,15 +5767,6 @@ ibAcctCallArgs ibAcctParseCall(const ibValueMetaObjectAccountingRegister* reg, i
 	// the call, but the owner's rule made its two words one answer (2026-09-16): every period of the
 	// interval where a balance stands or something moved is a row, whichever is named. So it is not read,
 	// and nothing downstream carries a flag that changes nothing.
-	call.m_order = ibRegArg(paParams, lSizeArray, layout.m_order);
-
-	const ibValue top = ibRegArg(paParams, lSizeArray, layout.m_top);
-	if (!top.IsEmpty()) {
-		// A count that is not a number, or is negative, is not a smaller answer — it is a question
-		// nobody asked. Zero and absent mean the same thing: all of them.
-		const long asked = static_cast<long>(top.GetInteger());
-		call.m_top = asked > 0 ? asked : 0;
-	}
 	return call;
 }
 
@@ -5985,8 +5912,7 @@ const ibBackendQueryable* ibAcctSourceDescriptor::CreateQueryable(ibValue** paPa
 			call.m_kindsDr, call.m_kindsCr, call.m_filter, call.m_fold, call.m_condition);
 	case ibAcctShape::Records:
 		return MakeCompanionFor<ibAcctRecordsQueryable>(consumed, paParams, lSizeArray, m_reg,
-			call.m_begin, call.m_end, call.m_kindsDr, call.m_kindsCr, call.m_filter, call.m_condition,
-			call.m_order, call.m_top);
+			call.m_begin, call.m_end, call.m_kindsDr, call.m_kindsCr, call.m_filter, call.m_condition);
 	}
 	return nullptr;
 }
@@ -6135,21 +6061,6 @@ void ibAcctSourceDescriptor::DescribeParameters(std::vector<ibQuerySourceParamet
 
 	if (layout.m_condition >= 0 && symmetricSides)
 		ibAppendRegisterConditionParameter(out);
-
-	// A LISTING answers with lines, so it is the one reading that can be asked for an order and a
-	// count. A fold has no line to order and answers with every group it found.
-	// ⚠ ORDER IS NOT A PREDICATE — it is a list of fields with directions, so it is an ordinary
-	// expression slot. Declaring it as a condition would put the wrong editor in front of the author
-	// and, worse, would let the lowering route it into the WHERE.
-	if (layout.m_order >= 0)
-		push(wxT("Order"), ibTypeDescription(),
-			_("How the LINES are ordered - a list of fields with directions, not a condition. Only a "
-			  "listing takes one: a fold has no line to order and answers with every group it "
-			  "found."));
-	if (layout.m_top >= 0)
-		push(wxT("Top"), ibTypeDescription(),
-			_("How many lines at most, taken AFTER the order - so it means the first N of that "
-			  "order, not an arbitrary N of the whole."));
 }
 
 // A READING IS FILTERED BY ITS DIMENSIONS AND ITS BREAKDOWN, never by a resource. A resource is what

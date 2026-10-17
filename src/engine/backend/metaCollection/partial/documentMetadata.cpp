@@ -4,7 +4,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "document.h"
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/system/value/valueDynamicList.h"   // ibValueDynamicList — the document list migrates onto the universal dynamic list
 #include "backend/metaData.h"
 #include "backend/moduleManager/moduleManager.h"
@@ -27,11 +27,14 @@ ibValueMetaObjectDocument::ibValueMetaObjectDocument() : ibValueMetaObjectRecord
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"),      ibContentHelper::eProcedureHelper, { wxT("Cancel") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnDelete"),     ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("Filling"),      ibContentHelper::eProcedureHelper, { wxT("Source"), wxT("StandartProcessing") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnCopy"),       ibContentHelper::eProcedureHelper, { wxT("Source") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("Filling"),      ibContentHelper::eProcedureHelper, { wxT("FillingData"), wxT("StandardProcessing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnCopy"),       ibContentHelper::eProcedureHelper, { wxT("CopiedObject") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("Posting"),      ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("PostingMode") });
 	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("UndoPosting"),  ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("SetNewNumber"), ibContentHelper::eProcedureHelper, { wxT("Prefix"), wxT("StandartProcessing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("SetNewNumber"), ibContentHelper::eProcedureHelper, { wxT("Prefix"), wxT("StandardProcessing") });
+	
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("ChoiceDataGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("ChoiceData"), wxT("Parameters"), wxT("StandardProcessing") });
 
 }
 
@@ -59,38 +62,38 @@ ibValueMetaObjectFormBase* ibValueMetaObjectDocument::GetDefaultFormByID(const i
 
 #include "documentManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectDocument::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectDocument::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectDocument(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectDocument(this));
 }
 
 #include "backend/appData.h"
 #include "backend/metaCollection/partial/declaredPresentation.h"   // how a reference reads in the designer
 
-ibValueRecordDataObjectRef* ibValueMetaObjectDocument::CreateObjectRefValue(const ibGuid& objGuid) const
+ibValuePtr<ibValueRecordDataObjectRef> ibValueMetaObjectDocument::CreateObjectRefValue(const ibGuid& objGuid) const
 {
 	ibValueRecordDataObjectDocument* pDataRef = nullptr;
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (!cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef))
-			return new ibValueRecordDataObjectDocument(this, objGuid);
+			pDataRef = new ibValueRecordDataObjectDocument(this, objGuid);
 	}
 	else {
 		pDataRef = new ibValueRecordDataObjectDocument(this, objGuid);
 	}
 
-	return pDataRef;
+	return ibValuePtr<ibValueRecordDataObjectRef>(pDataRef);
 }
 
-ibSourceDataObject* ibValueMetaObjectDocument::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectDocument::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm())
+	switch (form_id)
 	{
-	case eFormObject: return CreateObjectValue(); break;
+	case eFormObject: return ibSourcePtr<ibSourceDataObject>(CreateObjectValue()); break;
 	case eFormList:
-		return ibCreateList(GetQueryable(), GetDocumentNumber()->GetQueryColumn());   // migrated onto the universal dynamic list
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetDocumentNumber()->GetQueryColumn()));   // migrated onto the universal dynamic list
 		break;
 	case eFormSelect:
-		return ibCreateList(GetQueryable(), GetDocumentNumber()->GetQueryColumn(), ibDynamicListView_Choice);   // select front-driven — choice mode
+		return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetDocumentNumber()->GetQueryColumn(), ibDynamicListView_Choice));   // select front-driven — choice mode
 		break;
 	}
 
@@ -98,33 +101,30 @@ ibSourceDataObject* ibValueMetaObjectDocument::CreateSourceObject(const ibValueM
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectDocument::GetObjectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectDocument::GetObjectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectDocument::eFormObject,
-		ownerControl, CreateObjectValue(),
-		formGuid
+		ownerControl, CreateObjectValue()
 	);
 }
 
-ibBackendValueForm* ibValueMetaObjectDocument::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectDocument::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectDocument::eFormList,
-		ownerControl, ibCreateList(GetQueryable(), GetDocumentNumber()->GetQueryColumn()),   // migrated onto the universal dynamic list
-		formGuid
+		ownerControl, ibCreateList(request.m_create, GetQueryable(), GetDocumentNumber()->GetQueryColumn())   // migrated onto the universal dynamic list
 	);
 }
 
-ibBackendValueForm* ibValueMetaObjectDocument::GetSelectForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectDocument::GetSelectForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
 	return ibValueMetaObjectGenericData::CreateAndBuildForm(
-		strFormName,
+		request,
 		ibValueMetaObjectDocument::eFormSelect,
-		ownerControl, ibCreateList(GetQueryable(), GetDocumentNumber()->GetQueryColumn(), ibDynamicListView_Choice),   // select front-driven — choice mode
-		formGuid
+		ownerControl, CreateSourceObject(request.m_create, eFormSelect)   // select front-driven — choice mode
 	);
 }
 #pragma endregion
@@ -272,7 +272,7 @@ bool ibValueMetaObjectDocument::OnAfterRunMetaObject(int flags)
 	if (auto* cc = m_metaData->GetCompileCache()) {
 
 		if (ibValueMetaObjectRecordDataRecorderRef::OnAfterRunMetaObject(flags)) {
-			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateObjectValue(); });
+			return cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateObjectValue(); });
 		}
 
 		return false;

@@ -9,6 +9,11 @@
 #include "backend/propertyManager/property/propertyString.h"   // ibPropertyTString — the translatable one
 #include "backend/propertyManager/property/variant/variantTranslate.h"   // …and the cell it holds them in
 #include "backend/propertyManager/property/propertyType.h"     // ibPropertyType — the one with a verb of its own
+#include "backend/propertyManager/property/propertyPicture.h"  // ibPropertyPicture — a picture reads in its own shape
+#include "core/description/pictureDescription.h"                // ibPictureDescriptionMemory — that shape
+#include "backend/propertyManager/property/propertyChoiceLink.h"         // a choice reads in its own shape too
+#include "backend/propertyManager/property/variant/variantChoiceLink.h"  // …named as the inspector names it
+#include "backend/propertyManager/property/variant/variantMetaDesc.h"    // a set of objects, placed whole
 #include "backend/propertyManager/propertyObject.h"            // the whole property list, walked below
 
 #include "backend/backend_localization.h"                      // a caption is an array by language
@@ -19,7 +24,7 @@
 #include <wx/regex.h>     // …unless it is written as a pattern, which is also a way to ask
 #include <wx/log.h>       // a query that does not compile is not the person's error to read
 
-#include "backend/stringUtils.h"   // names compare case-insensitively here, as everywhere else
+#include "core/stringUtils.h"   // names compare case-insensitively here, as everywhere else
 
 #include <memory>
 #include <set>      // one link per id — the same object named twice is one fact
@@ -973,8 +978,35 @@ void ibMcpSayCaption(const ibPropertyTString* caption, ibDataNode& into)
 
 	ibDataNode& byLanguage = into.Child(wxT("value"));
 
-	for (const ibBackendLocalizationEntry& cell : caption->GetValueAsTranslate().GetTranslations())
+	for (const ibLocalizationEntry& cell : caption->GetValueAsTranslate().GetTranslations())
 		byLanguage.SetValue(cell.m_code, cell.m_data);
+}
+
+// ⭐ NAMED BY THE INSPECTOR'S OWN WORDS — ibChoiceHolderFieldName for a neighbour, ibChoiceTargetFieldName
+// for a field of what is chosen, `<gone>` where the inspector says `<gone>` — so MCP and the designer's line
+// cannot spell one field two ways. A field deleted from the configuration does not reach here: the choice has
+// dropped it already (variantChoiceLink.cpp).
+void ibMcpSayChoiceLink(const ibPropertyObject* field, const ibChoiceTypeLinkDescription& linkDesc, ibDataNode& into)
+{
+	into.SetValue(wxT("link"), linkDesc.IsOk() ? ibChoiceHolderFieldName(field, linkDesc.m_source.GetLeaf()) : wxString());
+
+	const ibMetaData* metaData = field != nullptr ? field->GetMetaData() : nullptr;
+	into.SetValue(wxT("governed_type"), linkDesc.m_governedType != 0 && metaData != nullptr
+		? metaData->GetNameObjectFromID(linkDesc.m_governedType) : wxString());
+}
+
+void ibMcpSayChoiceParameters(const ibPropertyObject* field, const ibChoiceParametersDescription& paramsDesc,
+	ibDataNode& into)
+{
+	for (const ibChoiceParameterRowDescription& row : paramsDesc.m_rows) {
+		auto cell = std::make_shared<ibDataNode>();
+		cell->SetValue(wxT("from"), ibChoiceHolderFieldName(field, row.m_source.GetLeaf()));
+		cell->SetValue(wxT("on_change"),
+			wxString(row.m_onChange == ibChoiceParameterOnChange::Keep ? wxT("keep") : wxT("clear")));
+
+		const wxString parameter = ibChoiceTargetFieldName(field, row.m_parameter);
+		into.AddField(!parameter.IsEmpty() ? parameter : ibMcpText("<gone>"), ibDataValue::Child(cell));
+	}
 }
 
 void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
@@ -1154,13 +1186,70 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 			// a metaobject answers it, so there is nothing here to recognise first. A reference
 			// type's name is resolved against it.
 			ibDataValue described;
-			if (ibTypeDescriptionMemory::WriteNode(described, typed->GetValueAsTypeDesc(),
-					object->GetMetaData()))
+			if (ibTypeDescriptionMemory::WriteNode(described, typed->GetValueAsTypeDesc()))
 				entry->AddField(wxT("value"), described);
 			else
 				// ⚠ AND A TYPE THAT CANNOT SAY ITSELF SAYS THAT, rather than coming back as an
 				// empty one - which is what "no type" looks like, and is a different fact.
 				entry->SetValue(wxT("value"), wxString(ibMcpText("<the type could not be read>")));
+		}
+		else if (const ibPropertyPicture* picture = dynamic_cast<const ibPropertyPicture*>(property)) {
+
+			// 🛑 THE SAME TRAP AS THE TYPE ABOVE, ONE BRANCH DOWN. A picture is a Child too, so it fell into
+			// "a structure is named" - and a picture description has no Name either, so every picture, set or
+			// not, read back as {"name": ""}. The Print group's printer, placed by picture_set a moment
+			// before, read as nothing (measured 2026-09-22): a caller checking its work is told to do it again.
+			//
+			// ⭐ SAID IN THE PICTURE'S OWN SHAPE — ibPictureDescriptionMemory, the pair the property itself reads
+			// and writes with — so what is read here is what `value` takes back, like a type is. And the shape is
+			// EXPLAINED beside it, the one fact a caller cannot see in it: what each Type holds, and that an image
+			// of its own travels as its PNG bytes in base64.
+			entry->SetValue(wxT("kind"), wxString(wxT("picture")));
+
+			ibDataValue described;
+			if (ibPictureDescriptionMemory::WriteNode(described, picture->GetValueAsPictureDesc())) {
+				ibMcpPictureIdAsText(described);   // the id crosses this door as digits — see the header
+				entry->AddField(wxT("value"), described);
+			}
+			entry->SetValue(wxT("shape"), ibMcpText(
+				"Send it back in this shape through `value`. Type 1: one of the engine's pictures, `ClassId` as "
+				"picture_list gives it - its DIGITS, as a string, because sixty-four bits do not survive a JSON "
+				"number; a number is read too, and a rounded one is refused rather than drawn blank. "
+				"Type 2: one the configuration declares, by its `Guid`. Type 3: an image of "
+				"its own - `Image` {Name, Buffer, Width, Height}, where Buffer is the PNG file's bytes in base64 "
+				"written \"base64:<...>\", and Width and Height are its size in pixels (0 x 0 is the empty picture). "
+				"To work in SVG instead: picture_to_svg says any picture as SVG, picture_from_svg draws SVG into "
+				"this shape."));
+		}
+		else if (const ibPropertyExternalPicture* image = dynamic_cast<const ibPropertyExternalPicture*>(property)) {
+
+			// 🛑 AND THE SAME TRAP ONCE MORE, for the image a configuration's Picture object holds. Its node writes
+			// Name as a FIELD, and the branch below looks for a name among the PROPERTIES - so the picture read as
+			// {"name": ""} before it was set and after (measured 2026-09-22: an image placed through `value`, then
+			// metadata_get). The configuration's own pictures could be made and never seen.
+			entry->SetValue(wxT("kind"), wxString(wxT("image")));
+
+			ibDataValue described;
+			if (ibExternalPictureDescriptionMemory::WriteNode(described, image->GetValueAsPictureDesc()))
+				entry->AddField(wxT("value"), described);
+			entry->SetValue(wxT("shape"), ibMcpText(
+				"Send it back in this shape through `value`: {Name, Buffer, Width, Height}, where Buffer is the PNG "
+				"file's bytes in base64 written \"base64:<...>\" and Width and Height are its size in pixels. To work "
+				"in SVG: picture_to_svg says it as SVG, and picture_from_svg draws SVG - the `Image` of its answer is "
+				"what goes here."));
+		}
+		else if (const ibPropertyChoiceParameters* rows = dynamic_cast<const ibPropertyChoiceParameters*>(property)) {
+
+			// 🛑 THE SAME TRAP A FOURTH TIME: the parameters are a Child, have no Name, and read back as
+			// {"name": ""} — set through metadata_set_choice, unseen through here, and a row naming a deleted
+			// field looked exactly like no row (2026-09-24). Said in the shape the setter takes. (The link by
+			// type does not come here: it answers GetValueList, and reads above as the neighbours it may name.)
+			entry->SetValue(wxT("kind"), wxString(wxT("choice")));
+			ibMcpSayChoiceParameters(object, rows->GetValueAsParametersDesc(), entry->Child(wxT("value")));
+			entry->SetValue(wxT("shape"), ibMcpText(
+				"Set through metadata_set_choice {id, parameters}, in this shape - the rows given replace the "
+				"table. A row whose field was deleted is dropped by itself; `<gone>` is a field this one can no "
+				"longer name, and leaving it out of the rows sent removes it."));
 		}
 		else {
 			const ibDataValue value = property->GetNodeValue();
@@ -1294,6 +1383,49 @@ wxString ibMcpTool::GetDetail(const ibDataNode& params) const
 	return out;
 }
 
+// ⚠ ANY VALUE COMES HERE, NOT ONLY A SHAPE — the setter answers every property it wrote through these two. A
+// scalar is no picture and is left as it is; AsChild on one raises (`wrong value kind (expected 6, got 2)`), and
+// it did, after the write had succeeded: a number, a Boolean or a plain string was set and then refused in
+// the answer (#100, 2026-10-01).
+void ibMcpPictureIdAsText(ibDataValue& shape)
+{
+	if (shape.Kind() != ibDataKind::Child)
+		return;
+	const std::shared_ptr<ibDataNode>& node = shape.AsChild();
+	if (!node)
+		return;
+
+	const ibDataValue* id = node->FindField(wxT("ClassId"));
+	if (id == nullptr || id->Kind() != ibDataKind::Number)
+		return;
+
+	node->SetField(wxT("ClassId"), ibDataValue::String(
+		wxString::Format(wxT("%llu"), (unsigned long long)id->AsUInt())));
+}
+
+void ibMcpPictureIdAsNumber(ibDataValue& shape)
+{
+	if (shape.Kind() != ibDataKind::Child)
+		return;
+	const std::shared_ptr<ibDataNode>& node = shape.AsChild();
+	if (!node)
+		return;
+
+	const ibDataValue* id = node->FindField(wxT("ClassId"));
+	if (id == nullptr || id->Kind() != ibDataKind::String)
+		return;
+
+	// Parsed into wx's own type first: ToULongLong writes through an `unsigned long long*` and u64 is
+	// uint64_t — the same WIDTH but a different TYPE on LP64, so its address does not fit the
+	// parameter (MSVC takes it, GCC refuses; valueSerialization.cpp says the same in ibReadNodeType).
+	// And the field is replaced only when the text really was a number: writing 0 over an unparseable
+	// id would hand on a picture id that names nothing, in the shape of one that does.
+	unsigned long long parsed = 0;
+	if (!id->AsString().ToULongLong(&parsed))
+		return;
+	node->SetField(wxT("ClassId"), ibDataValue::UInt(static_cast<u64>(parsed)));
+}
+
 wxString ibMcpFencedExcerpt(const wxString& text, const wxString& language, size_t maxLines)
 {
 	if (text.IsEmpty())
@@ -1411,33 +1543,8 @@ bool ibMcpApplyByHand(ibProperty* property, const wxVariant& newValue, wxString&
 	return ibPropertyGate::SetValue(property->GetPropertyObject(), property, newValue, &refusal);
 }
 
-namespace {
-
-// (The event twin lived here too and is gone the same way: ibPropertyGate::SetEvent. It had no
-// caller left in this file — writing a handler goes through the same door as writing a value.)
-
-// ⚠ THE CLOSING HALF ALONE, for the one road that cannot ask first. A value arriving as a NODE is
-// not a wxVariant until the property has taken it, so there is nothing to put before the owner as
-// "this is what is coming" — the veto genuinely cannot be offered here. What CAN be honoured is
-// the telling, and it is, from the same place as everywhere else.
-//
-// Said out loud rather than quietly skipped: a caller writing a composite value gets the side
-// effects and not the refusal, and that is a real difference from writing a scalar.
-} // namespace
-
-void ibMcpNotifyChanged(ibProperty* property, const wxVariant& oldValue)
-{
-	if (property == nullptr)
-		return;
-
-	ibPropertyObject* owner = property->GetPropertyObject();
-
-	if (owner == nullptr)
-		return;
-
-	owner->OnPropertyChanged(property, oldValue, property->GetValue());
-	owner->OnChildChanged();
-}
+// (The event twin lived here too and is gone the same way: ibPropertyGate::SetEvent; and the closing half alone, for a
+// value arriving as a node, is the gate's too — ibPropertyGate::SetValue takes the node.)
 
 namespace {
 
@@ -1483,7 +1590,7 @@ bool ibMcpLanguageDeclared(const ibMetaData* owner, const wxString& code, wxStri
 bool ibMcpCaptionInEveryLanguage(const ibMetaData* owner, const wxString& text, const wxString& what,
 	wxString& refusal)
 {
-	if (text.IsEmpty() || ibBackendLocalization::IsLocalizationString(text))
+	if (text.IsEmpty() || ibLocalization::IsLocalizationString(text))
 		return true;   // nothing to write, or it already carries its languages
 	wxString declared;
 	ibMcpLanguageDeclared(owner, wxEmptyString, declared);   // asked only for the list
@@ -1527,18 +1634,16 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 	// ⚠ A MAP MEANS THE CELLS IT NAMES, AND ONLY THOSE. A language the map leaves out keeps what it
 	// had — the same promise the single-cell road makes, so the two agree instead of one of them
 	// being the safe one.
-	if (const ibDataNode* byLanguage = params.FindChild(ibMcpValueArgument().Name())) {
+	//
+	// 🛑 AND ONLY A CAPTION IS READ AS ONE. Any other property sent a structure goes on to the road below that
+	// places a SHAPE — a picture in its own form (Type / ClassId / Guid / Image), sent back as it was read. This
+	// used to refuse every one of them as "not a caption", which closed that road to every composite property
+	// there is: a picture could be read here and not written back (found 2026-09-22 giving the Print group its
+	// printer; the way round built for it that day was the wrong fix, and this is the right one).
+	const ibPropertyTString* asCaption = dynamic_cast<const ibPropertyTString*>(property);
+	if (const ibDataNode* byLanguage = asCaption != nullptr ? params.FindChild(ibMcpValueArgument().Name()) : nullptr) {
 
-		const ibPropertyTString* caption = dynamic_cast<const ibPropertyTString*>(property);
-
-		if (caption == nullptr) {
-			refusal = wxString::Format(
-				ibMcpText("'%s' is not a caption, so it takes a value rather than a set of "
-				  "languages."), name);
-			return false;
-		}
-
-		ibTranslateString edited = caption->GetValueAsTranslate();
+		ibTranslateString edited = asCaption->GetValueAsTranslate();
 		int written = 0;
 
 		for (const auto& cell : byLanguage->Fields()) {
@@ -1570,7 +1675,7 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 			return false;
 
 		result.SetValue(wxT("property"), name);
-		ibMcpSayCaption(caption, result);
+		ibMcpSayCaption(asCaption, result);
 		return true;
 	}
 
@@ -1591,7 +1696,7 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 		// string — that is what the class is for, declared once where the property is created — so
 		// the question goes to the property, not to the text it happens to be holding.
 		//
-		// 🛑 IT ASKED THE VALUE FOR A WHILE (ibBackendLocalization::IsLocalizationString), and that
+		// 🛑 IT ASKED THE VALUE FOR A WHILE (ibLocalization::IsLocalizationString), and that
 		// is a heuristic wearing a check's clothes: an EMPTY caption carries no cells yet, so it
 		// does not look like one, and the first translation of a fresh object could not be written
 		// at all. A property that has never been filled in is exactly when this is used.
@@ -1661,7 +1766,22 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 	if (const ibPropertyChoiceMode mode = property->GetValueList(choices);
 		mode != ibPropertyChoiceMode::None) {
 
-		const wxString word = ibMcpValueArgument().Text(params);
+		// ⭐ THE NUMBER IS THE STEADY WAY TO NAME A CHOICE. Words are two vocabularies and a
+		// translation away from each other; the id is what the property actually stores and what
+		// the front compares against (advpropList's ValueToString does exactly this). A caller that
+		// read the list back can point at an entry by its id and be right whatever it is called.
+		const ibDataValue* asked = params.FindField(ibMcpValueArgument().Name());
+		const bool byNumber = asked != nullptr && asked->Kind() == ibDataKind::Number;
+		const long askedId = byNumber ? (long)asked->AsNumber().ToInt() : 0;
+
+		// …and the WORD only when a word came. Read as text unconditionally, a number was refused
+		// here as `ibDataValue: wrong value kind (expected 4, got 2)` before the id was ever looked
+		// at — so the steady way above was promised and could not be taken (measured 2026-09-22,
+		// setting a command's Group by the id metadata_get had just listed). An ARRAY was refused the
+		// same way (`expected 4, got 7`) before the set below was reached: promised in form_set's
+		// description, and never once taken (measured 2026-09-28, putting a column under an option).
+		const bool bySet = asked != nullptr && asked->Kind() == ibDataKind::Array;
+		const wxString word = byNumber || bySet ? wxString() : ibMcpValueArgument().Text(params);
 
 		// TWO VOCABULARIES FOR ONE VALUE — the inspector reads "Within second",
 		// the language writes `WithinSecond`, and type_members answers with the
@@ -1674,13 +1794,69 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 			return l.IsSameAs(r, false);
 		};
 
-		// ⭐ THE NUMBER IS THE STEADY WAY TO NAME A CHOICE. Words are two vocabularies and a
-		// translation away from each other; the id is what the property actually stores and what
-		// the front compares against (advpropList's ValueToString does exactly this). A caller that
-		// read the list back can point at an entry by its id and be right whatever it is called.
-		const ibDataValue* asked = params.FindField(ibMcpValueArgument().Name());
-		const bool byNumber = asked != nullptr && asked->Kind() == ibDataKind::Number;
-		const long askedId = byNumber ? (long)asked->AsNumber().ToInt() : 0;
+		// ⭐ A SET IS SENT AS A SET. A property that holds several (`select: multiple`) takes them as an
+		// array — every member at once, each by id or by name, and an empty array clears it. One word
+		// keeps meaning "this one alone", as it always did; joining one to what is there is metadata_bind.
+		//
+		// ⚠ CARRIED IN A CHOICE'S OWN VARIANT — built while listing, owned by nobody — and never in the
+		// one the property holds: editing that edits the old value and the new one at once
+		// (mcpToolBind.cpp says how that lost the second end of a binding).
+		if (mode == ibPropertyChoiceMode::Mult && bySet) {
+
+			if (choices.GetCount() == 0) {
+				refusal = wxString::Format(ibMcpText("'%s' is chosen from the configuration, and there is "
+					"nothing of that kind in it yet."), name);
+				return false;
+			}
+
+			ibMetaDescription set;
+
+			for (const ibDataValue& member : asked->AsArray()) {
+
+				const bool memberByNumber = member.Kind() == ibDataKind::Number;
+				if (!memberByNumber && member.Kind() != ibDataKind::String) {
+					refusal = wxString::Format(ibMcpText("'%s' takes its members by name or by id."), name);
+					return false;
+				}
+
+				const long memberId = memberByNumber ? (long)member.AsNumber().ToInt() : 0;
+				const wxString memberWord = memberByNumber ? wxString() : member.AsString();
+
+				unsigned int index = 0;
+				for (; index < choices.GetCount(); ++index) {
+					if (memberByNumber ? choices.GetId(index) == memberId
+						: same(choices.GetName(index), memberWord) || same(choices.GetLabel(index), memberWord))
+						break;
+				}
+
+				if (index == choices.GetCount()) {
+					refusal = wxString::Format(ibMcpText("'%s' has no choice '%s'."), name,
+						memberByNumber ? wxString::Format(wxT("%li"), memberId) : memberWord);
+					return false;
+				}
+
+				const ibMetaID chosen = (ibMetaID)choices.GetId(index);
+				if (!set.ContainMetaType(chosen))
+					set.AppendMetaType(chosen);
+			}
+
+			wxVariant placing = choices.GetValue(0);
+			ibVariantDataMetaDesc* carried = property->find_cell_variant<ibVariantDataMetaDesc>(placing);
+			if (carried == nullptr) {
+				refusal = wxString::Format(ibMcpText("'%s' holds several values, but not as a set of "
+					"configuration objects; send one at a time."), name);
+				return false;
+			}
+
+			carried->GetMetaDesc() = set;
+
+			if (!ibMcpApplyByHand(property, placing, refusal))
+				return false;
+
+			result.SetValue(wxT("property"), name);
+			result.SetValue(wxT("value"), property->GetValue().MakeString());
+			return true;
+		}
 
 		for (unsigned int index = 0; index < choices.GetCount(); ++index) {
 
@@ -1726,8 +1902,12 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 	ibDataValue value;
 	if (const ibDataValue* scalar = params.FindField(ibMcpValueArgument().Name()))
 		value = *scalar;
-	else if (const ibDataNode* composite = params.FindChild(ibMcpValueArgument().Name()))
+	else if (const ibDataNode* composite = params.FindChild(ibMcpValueArgument().Name())) {
 		value = ibDataValue::Child(std::make_shared<ibDataNode>(*composite));
+		// …and a picture's id comes back as the digits this door sent out — turned into a number here,
+		// because the property stores one (mcpTool.h, ibMcpPictureIdAsText).
+		ibMcpPictureIdAsNumber(value);
+	}
 
 	// 🛑⭐⭐ A CAPTION IN ONE LANGUAGE, WHERE THE CONFIGURATION DECLARES SEVERAL, IS REFUSED — every
 	// session meets this door, which is the only way every session knows the rule (Max, 2026-09-10:
@@ -1739,16 +1919,14 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 	    && !ibMcpCaptionInEveryLanguage(owner, value.AsString(), wxString::Format(wxT("'%s'"), name), refusal))
 		return false;
 
-	// Held before the write so the closing half can report what it replaced — the same two facts
-	// the other roads carry, taken the only way this one allows.
-	const wxVariant before = property->GetValue();
-
 	// ⭐ THE PROPERTY JUDGES, AND THE REFUSAL CARRIES THE SHAPE. Nothing here decides whether a
-	// value is legal — SetNodeValue is the property comparing what it was handed against what it
-	// holds, which is the only place that knows. But "would not take that value" on its own leaves
-	// a caller guessing at the difference, and the answer was in reach the whole time: the property
-	// can be asked what it holds NOW, and its kind is the shape a value has to arrive in.
-	if (!property->SetNodeValue(value)) {
+	// value is legal — the gate hands the node to the property, the only place that knows, and puts
+	// what it read before its owner (ibPropertyGate::SetValue, the node's door — the designer's
+	// inspector comes by it too). But "would not take that value" on its own leaves a caller guessing
+	// at the difference, and the answer was in reach the whole time: the property can be asked what
+	// it holds NOW, and its kind is the shape a value has to arrive in.
+	wxString refused;
+	if (!ibPropertyGate::SetValue(nullptr, property, value, &refused)) {
 
 		// ⭐⭐ WHERE THERE IS A VERB FOR IT, THE REFUSAL NAMES THE VERB. "It holds a structure - send
 		// one of that shape" is true and leaves the caller to assemble a type description by hand
@@ -1795,13 +1973,11 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 		// …and only the OTHER road needs to know what shape it holds.
 		const ibDataValue held = property->GetNodeValue();
 
-		refusal = wxString::Format(
-			ibMcpText("'%s' would not take that value. It holds a %s - send one of that shape, or read "
-			  "metadata_properties for what it has now."), name, KindOf(held));
+		refusal = refused + wxT(' ') + wxString::Format(
+			ibMcpText("It holds a %s - send one of that shape, or read metadata_properties for what it "
+			  "has now."), KindOf(held));
 		return false;
 	}
-
-	ibMcpNotifyChanged(property, before);
 
 	// ANSWERED WITH WHAT IT NOW HOLDS, read back through the property rather than
 	// echoed from the request: what was asked for and what was taken are different
@@ -1811,9 +1987,15 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 	// answering with it hands the caller the format they were spared everywhere else.
 	result.SetValue(wxT("property"), name);
 
-	if (const ibPropertyTString* caption = dynamic_cast<const ibPropertyTString*>(property))
+	if (const ibPropertyTString* caption = dynamic_cast<const ibPropertyTString*>(property)) {
 		ibMcpSayCaption(caption, result);
-	else
-		result.AddField(wxT("value"), property->GetNodeValue());
+	}
+	else {
+		// …and a picture's id leaves as digits HERE TOO. Answered as a number, the value a caller had
+		// just sent as text came back in the one shape they cannot send back (2026-09-22).
+		ibDataValue held = property->GetNodeValue();
+		ibMcpPictureIdAsText(held);
+		result.AddField(wxT("value"), held);
+	}
 	return true;
 }

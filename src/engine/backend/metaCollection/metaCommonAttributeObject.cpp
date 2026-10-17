@@ -2,7 +2,7 @@
 
 #include "backend/metaData.h"
 #include "backend/metadataConfiguration.h"   // activeMetaData
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 
 //***********************************************************************
 //*                     The declaration, under Common                   *
@@ -210,6 +210,21 @@ ibTypeDescription& ibValueMetaObjectCommonAttributeColumn::GetTypeDesc() const
 	if (ibValueMetaObjectCommonAttribute* const src = GetSource())
 		return src->GetTypeDesc();
 	return s_emptyTypeDesc;
+}
+
+// …and what a value may be, the declaration's as well.
+ibTypeDescription& ibValueMetaObjectCommonAttributeColumn::GetTypeValueDesc() const
+{
+	if (ibValueMetaObjectCommonAttribute* const src = GetSource())
+		return src->GetTypeValueDesc();
+	return s_emptyTypeDesc;
+}
+
+const ibTranslateString& ibValueMetaObjectCommonAttributeColumn::GetFormat() const
+{
+	if (const ibValueMetaObjectCommonAttribute* const src = GetSource())
+		return src->GetFormat();
+	return ibValueMetaObjectAttributeBase::GetFormat();
 }
 
 bool ibValueMetaObjectCommonAttributeColumn::OnDeleteMetaObject()

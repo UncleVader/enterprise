@@ -14,21 +14,21 @@
 #include "dataComposerInternal.h"
 
 #include "backend/query/queryParser.h"        // ibQueryParser — text -> AST
-#include "backend/diagnostics/journal.h"      // ibJournal — what each output was read as, and the shared read
 #include "backend/query/queryable.h"          // ibBackendQueryable / ibBackendQueryColumn
 #include "backend/query/queryableFactory.h"   // the source factory — the column dictionary
 #include "backend/query/dataQueryBuilder.h"   // ibDataQueryResult / ibSelectKind
 #include "backend/query/querySelector.h"      // ibSelector — the TOTALS pre-order walk
-#include "backend/appData.h"                  // ibApplicationData::GetQueryableFactory
+#include "backend/appData.h"                  // ibApplicationInstance::GetQueryableFactory
 #include "backend/metaData.h"                 // ibMetaData::GetSourceFactory
 #include "backend/backend_exception.h"        // ibBackendCoreException
 #include "backend/query/queryReadState.h"     // ibQueryReadState — one build, one state of the data
 #include "backend/query/queryRender.h"        // ibQueryColumnFromPath
-#include "backend/query/queryKeywords.h"      // ibQueryKeywordText
+#include "core/query/queryKeywords.h"         // ibQueryKeywordText
 #include "backend/query/queryLexer.h"         // ibQueryLexer::IsIdentifier
 #include "backend/session/session.h"          // ibSession::RunState — the walk hears a cancel
 #include "backend/backend_localization.h"     // a column title written in several languages, read in the reader's
 
+#include <algorithm>   // std::find_if — which rule field the read does not carry
 #include <deque>   // the walk's descents and closing buffers, one per depth
 
 ibDataQueryResult ibDataDBComposer::Execute(std::vector<ibQueryLowering::OutputColumn>& schema, bool& hasTotals)
@@ -97,7 +97,7 @@ ibDataQueryResult ibDataDBComposer::Execute(std::vector<ibQueryLowering::OutputC
 			wholeResult && WantsDetails(Root()), LayoutFor(Root()));
 	}
 
-	wxString signature;
+	ibPageSignature signature;
 	if (BuildPageSignature(page, signature)) {
 		if (!m_pageCache)
 			m_pageCache = ibDataQueryBuilder::NewPageCache();
@@ -142,64 +142,27 @@ static bool OutputWrites(const ibDataComposer::Output& output, ibSelectorNodeKin
 // its filter description, and the composer's Filter() writes the COMPOSITION-wide one — so no line
 // ever landed there and this function could only ever answer yes. A level's filter was editable,
 // saved, and did nothing.
-static bool ibLevelNodeShows(const ibFilterNodeDescription& node,
-	const std::vector<ibQueryLowering::OutputColumn>& schema, const std::vector<ibValue>& row)
-{
-	if (!node.m_use)
-		return true;   // switched off reads as if it were not written
-
-	if (node.m_kind == ibFilterNodeKind_Group) {
-		// AND is "every child agrees", OR is "some child does" — and an empty group narrows nothing,
-		// which is why the OR case starts from `false` only when it has something to ask.
-		if (node.m_children.empty())
-			return true;
-		const bool isOr = (node.m_groupKind == ibFilterGroupKind_Or);
-		for (const ibFilterNodeDescription& child : node.m_children) {
-			const bool shows = ibLevelNodeShows(child, schema, row);
-			if (isOr && shows)   return true;
-			if (!isOr && !shows) return false;
-		}
-		return !isOr;
-	}
-
-	// A CONDITION NAMES AN OUTPUT COLUMN — the same names a person picked from. A name this result
-	// does not carry cannot hide anything: it says nothing about the rows in hand, and hiding on it
-	// would be hiding for a reason nobody can see.
-	if (!node.m_left.IsField())
-		return true;
-	size_t at = schema.size();
-	for (size_t i = 0; i < schema.size(); ++i) {
-		if (schema[i].m_name.IsSameAs(node.m_left.m_path, false)
-		    || schema[i].m_alias.IsSameAs(node.m_left.m_path, false)) {
-			at = i;
-			break;
-		}
-	}
-	if (at >= schema.size() || at >= row.size())
-		return true;
-
-	// The right-hand side is a VALUE here. A field-to-field comparison is the query's business —
-	// both sides are columns and the server already answered it.
-	if (node.m_right.IsField())
-		return true;
-	return ibCompositionCompare(row[at], node.m_comparison, node.m_right.m_value);
-}
-
+//
+// ⭐ AND IT IS READ BY THE ONE ENGINE (ibCompositionFilterHolds, compositionCondition.cpp) — the conditional
+// appearance asks the same question of the same row, and a table in memory filters by it (2026-09-30). It had a
+// reading of its own here, which ANDed the root whatever its kind and let a switched-off line inside an OR group
+// answer "yes" for the whole group.
 bool ibDataDBComposer::LevelShows(const Output& output, int depth, ibSelectorNodeKind kind,
 	const std::vector<ibQueryLowering::OutputColumn>& schema, const std::vector<ibValue>& row) const
 {
 	// Depth 0 is the grand total and belongs to no level; past the last level of either axis there
 	// is nothing left to hide by.
 	const GroupNode* found = LevelAt(output, depth, kind);
-	if (found == nullptr)
-		return true;
+	if (found == nullptr || !found->m_settings.m_filter.IsOk())
+		return true;   // …and a level that hides on nothing asks nothing of the row
 
-	const GroupNode& level = *found;
-	for (const ibFilterNodeDescription& node : level.m_settings.m_filter.m_nodes)
-		if (!ibLevelNodeShows(node, schema, row))
-			return false;
-	return true;
+	// A condition this row cannot answer does not hide it: hiding for a reason nobody can see is worse.
+	return ibCompositionFilterHolds(found->m_settings.m_filter, m_metaData, ibComposerRowValueOf(schema, row),
+		SubtreeOf(), /*whenUnknown*/ true);
 }
+
+// (…and the row's conditional appearance — ConditionalAppearanceFor, made ready once per output — is the RAM
+//  composer's question too, so it is answered beside the evaluator, in compositionCondition.cpp.)
 
 // ⭐⭐ THE ORDER ONE LEVEL'S HEADINGS COME IN — and it is read the same way its filter is, off the
 // level a person set it on.
@@ -365,6 +328,11 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 	info.m_kind   = output.Kind();   // read off its fields — a column grouping is what makes it a cross-table
 	info.m_schema = schema;
 	info.m_name   = output.m_name;
+	// …and how many outputs this run draws: the ones Run reads (a driver, and something declared).
+	info.m_outputCount = std::max<size_t>(1, static_cast<size_t>(std::count_if(m_outputs.begin(), m_outputs.end(),
+		[this](const Output& other) { return other.m_driver != nullptr && Declares(other); })));
+	// …and the palette it is painted in — its own theme, else the setting's (ThemeFor).
+	info.m_theme = &ThemeFor(output, nullptr);
 	// WHERE THE ROWS' DIMENSIONS END — the same count the clause writer wrote them by, asked the
 	// same way, so the two can never disagree about which heading belongs where.
 	//
@@ -391,6 +359,7 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 	// the resources and the levels by name.
 	info.m_titles.assign(schema.size(), wxString());
 	info.m_paths.assign(schema.size(), wxString());
+	info.m_appearances.assign(schema.size(), ibAppearanceDescription());
 	{
 		size_t measure = 0;
 		std::map<int, size_t> filledInLevel;   // level -> how many of its fields are already titled
@@ -426,7 +395,7 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 				info.m_titles[i] = ibTitleFromName(schema[i].m_name);
 			// …AND A TITLE WRITTEN IN SEVERAL LANGUAGES IS READ IN THE READER'S, as a synonym is — and
 			// one written plainly is itself (the reading says so; it is no longer this caller's rule).
-			info.m_titles[i] = ibBackendLocalization::GetTranslateGetRawLocText(info.m_titles[i]);
+			info.m_titles[i] = ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), info.m_titles[i]);
 			// ⭐⭐ …AND THE PATH FALLS BACK THE SAME WAY, which is the half that was missing. Over a
 			// PARSED QUERY a field's path IS its name — that is the identity the picker writes into a
 			// grouping line and the one `GetConstructorFields` hands a window — so a column whose
@@ -445,6 +414,10 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 			if (info.m_paths[i].IsEmpty()
 				&& schema[i].m_role != ibQueryLowering::ibColumnRole::Measure)
 				info.m_paths[i] = schema[i].m_name;
+			// …AND HOW IT IS SHOWN — the appearance of the field it is a reading of, a figure's field too
+			// (a SUM of Amount is written as Amount is). No field, no appearance.
+			if (!info.m_paths[i].IsEmpty())
+				info.m_appearances[i] = AppearanceForPath(info.m_paths[i]);
 		}
 	}
 	// ⭐⭐ WHICH COLUMNS ARE SHOWN AT ALL — the union of what the output and every node under it shows.
@@ -461,7 +434,9 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 			bool shows = false;
 			for (const wxString& name : shown)
 				if (ibComposerColumnAnswersTo(schema[i], name)) { shows = true; break; }
-			info.m_shown[i] = shows;
+			// …and a column of something this base does not use is not shown, whoever chose it — the
+			// columns a star was materialised into included (OutputColumn::m_available).
+			info.m_shown[i] = shows && schema[i].m_available;
 		}
 	}
 	// ⭐ …AND THEY STAND IN THE ORDER THEY WERE CHOSEN. The query publishes its measures before its details —
@@ -483,27 +458,34 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 		for (size_t i = 0; i < schema.size(); ++i)
 			if (!placed[i]) order.push_back(i);
 
+		// 🛑 EVERYTHING WORKED OUT PER COLUMN MOVES WITH IT — the appearance too. Left in the query's order, the
+		// formats went to whichever column stood there afterwards: a report's expense in money, its closing
+		// quantity in its type's format and its value in none (Max, 2026-09-29: "did you set that on purpose?").
 		std::vector<ibQueryLowering::OutputColumn> columns;
 		std::vector<wxString> titles, paths;
+		std::vector<ibAppearanceDescription> appearances;
 		std::vector<bool> shown;
 		for (const size_t i : order) {
 			columns.push_back(schema[i]);
 			titles.push_back(info.m_titles[i]);
 			paths.push_back(info.m_paths[i]);
+			appearances.push_back(info.m_appearances[i]);
 			shown.push_back(info.m_shown[i]);
 		}
 		schema = columns;
 		info.m_schema = std::move(columns);
 		info.m_titles = std::move(titles);
 		info.m_paths = std::move(paths);
+		info.m_appearances = std::move(appearances);
 		info.m_shown = std::move(shown);
 	}
 
 	info.m_detailsAxis = DetailAxisOf(output);
-	info.m_rowLevels = GetCurrentGroupDesc().IsOk()
+	const ibGroupDescription readerGroup = GetAvailableGroupDesc();   // the render's answer — see there
+	info.m_rowLevels = readerGroup.IsOk()
 		? [&] {
 			size_t named = 0;
-			for (const ibGroupLineDescription& line : GetCurrentGroupDesc().m_lines)
+			for (const ibGroupLineDescription& line : readerGroup.m_lines)
 				if (!line.m_path.IsEmpty())
 					++named;
 			return named;
@@ -518,11 +500,32 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 
 
 	std::vector<ibValue> row(schema.size());
+	// ⭐ A ROW'S CONDITIONAL APPEARANCE — its rules made ready ONCE for the output (ConditionalAppearanceFor), and
+	// worked out per line only where some storey declares a rule: a report with none pays nothing per row. One buffer
+	// for the two flat roads, whose lines are handed over one at a time.
+	const ConditionalAppearance appearance = ConditionalAppearanceFor(output);
+	const bool hasConditionalAppearance = !appearance.IsEmpty();
+	ibCompositionLineAttr flatAttr;
+	// ⚠ …AND A FIELD A RULE NAMES THAT THIS READ DOES NOT CARRY, said by name once per output: its rule cannot hold,
+	// and on screen that reads exactly like a condition that is false.
+	if (hasConditionalAppearance) {
+		wxString unread;
+		for (const wxString& path : ibComposerRuleFieldsOf(output, GetCurrentConditionalAppearanceDesc())) {
+			const auto carried = std::find_if(schema.begin(), schema.end(),
+				[&path](const ibQueryLowering::OutputColumn& oc) { return ibComposerColumnAnswersTo(oc, path); });
+			if (carried == schema.end())
+				unread += (unread.IsEmpty() ? wxString() : wxString(wxT(", "))) + path;
+		}
+		if (!unread.IsEmpty())
+			ibJournalWarning(wxT("composer"), wxT("output '%s': conditional appearance cannot read %s - its rules do not hold"),
+				output.m_name, unread);
+	}
 	if (serverGrouped) {
 		// Server-paged GROUPS (one grouping level, keyset-paged by the DB) — already grouped, so emit each as a
 		// level-1 DRILLABLE group node WITHOUT the ByGroups fold (which folds a flat detail snapshot). The row
 		// reads exactly like the flat cursor. (⚠ a reference-spread group value needs m_objectPrefix in the
 		// schema — a follow-up; a scalar dim reads straight. docs: group-level paging)
+		const ibCompositionTheme& headTheme = ThemeFor(output, LevelAt(output, 1));   // the one grouping's palette
 		while (result.Next()) {
 			hearCancel();
 			for (size_t i = 0; i < schema.size(); ++i) {
@@ -539,6 +542,9 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 			ibCompositionLine head;
 			head.m_level = 1;
 			head.m_hasChildren = true;
+			head.m_theme = &headTheme;
+			if (hasConditionalAppearance && appearance.AttrFor(LevelAt(output, 1), schema, row, flatAttr))
+				head.m_attr = &flatAttr;
 			driver.OnGroupBegin(head, row);
 		}
 	}
@@ -557,6 +563,7 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 		//
 		// Being ENTERABLE is decided where the source is known — the model reads the hierarchy KIND
 		// off the queryable (IsItemHierarchy) and the folder flag off the row, and ORs this in.
+		const ibCompositionTheme& detailTheme = ThemeFor(output, DetailLevelOf(output));   // the records' palette
 		while (result.Next()) {
 			hearCancel();
 			for (size_t i = 0; i < schema.size(); ++i) {
@@ -572,6 +579,9 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 			// it got from the depth.
 			ibCompositionLine flat;
 			flat.m_kind = ibSelectorNodeKind::Detail;
+			flat.m_theme = &detailTheme;
+			if (hasConditionalAppearance && appearance.AttrFor(DetailLevelOf(output), schema, row, flatAttr))
+				flat.m_attr = &flatAttr;
 			driver.OnRow(flat, row);
 		}
 	}
@@ -642,6 +652,14 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 				closingAt.emplace_back();
 			return closingAt[depth];
 		};
+		// …and ONE CONDITIONAL APPEARANCE PER DEPTH, for the reason the closing buffer has one: a heading's closing
+		// line is handed over after its descent, and a deeper line must not have overwritten it in the meantime.
+		std::deque<ibCompositionLineAttr> attrAt;
+		const auto attrFor = [&attrAt](size_t depth) -> ibCompositionLineAttr& {
+			while (attrAt.size() <= depth)
+				attrAt.emplace_back();
+			return attrAt[depth];
+		};
 		std::function<void(ibSelector&, const std::vector<wxString>&, size_t)> walk =
 			[&](ibSelector& level, const std::vector<wxString>& shownAbove, size_t depth) {
 			// What a node shows depends on nothing but the level it stands on and what stood above it,
@@ -651,6 +669,7 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 			const GroupNode* shownFor   = nullptr;
 			bool             shownKnown = false;
 			std::vector<wxString> shownHere;
+			const ibCompositionTheme* themeHere = nullptr;   // …and its palette, asked with it
 			while (level.Next()) {
 				hearCancel();
 				for (size_t i = 0; i < schema.size(); ++i) {
@@ -680,8 +699,16 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 				const GroupNode* here = LevelAt(output, level.Level(), level.Kind());
 				if (!shownKnown || here != shownFor) {
 					shownHere  = here != nullptr ? ibComposerSelectedUnder(shownAbove, *here) : shownAbove;
+					themeHere  = &ThemeFor(output, here);
 					shownFor   = here;
 					shownKnown = true;
+				}
+				line.m_theme = themeHere;
+				// …AND ITS CONDITIONAL APPEARANCE, asked of this row.
+				if (hasConditionalAppearance) {
+					ibCompositionLineAttr& attr = attrFor(depth);
+					if (appearance.AttrFor(here, schema, row, attr))
+						line.m_attr = &attr;
 				}
 
 				// …AND EVERYTHING IT DOES NOT SHOW IS BLANKED, not removed. The COLUMNS belong to the
@@ -799,6 +826,9 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 				if (!level.HasNodesUnder()) {
 					line.m_hasChildren      = level.HasChildren();
 					line.m_showsWhatIsUnder = false;
+					// …a period nothing moved in, among them: still a heading of a rung the output reads below.
+					line.m_levelReadsDeeper = level.Level() < rowLevels
+						|| OutputWrites(output, ibSelectorNodeKind::Detail);
 					if (level.Level() > rowLevels)
 						driver.OnColumn(line, row);
 					else {
@@ -851,6 +881,8 @@ bool ibDataDBComposer::RunOutputPass(const Output& output, ibCompositionDriver& 
 				// answer this walk already has.
 				line.m_hasChildren      = level.HasChildren();
 				line.m_showsWhatIsUnder = showsWhatIsUnder;
+				line.m_levelReadsDeeper = level.Level() < rowLevels
+					|| OutputWrites(output, ibSelectorNodeKind::Detail);
 				if (level.Level() > rowLevels)
 					driver.OnColumn(line, row);
 				else

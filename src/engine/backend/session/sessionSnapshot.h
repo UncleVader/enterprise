@@ -12,14 +12,12 @@
 
 #include "backend/backend.h"
 #include "backend/backend_core.h"
-#include "backend/guid.h"
 #include "backend/appData.h"   // ibRunMode (plain enum, can't forward-declare cleanly)
 
 #include <unordered_map>
 #include <vector>
 #include <string>
 
-#include <wx/datetime.h>
 #include <wx/string.h>
 
 // Forward-declared so the header stays independent of session.h —
@@ -32,7 +30,7 @@ class BACKEND_API ibSessionSnapshot {
 
 	struct Entry {
 
-		Entry(ibRunMode runMode, int kind, const wxDateTime& startedDateTime,
+		Entry(ibRunMode runMode, int kind, const ibDateTime& startedDateTime,
 			const wxString& strUserName, const wxString& strComputerName, const wxString& strSession)
 			: m_runMode(runMode), m_kind(kind), m_startedDate(startedDateTime),
 			  m_strUserName(strUserName), m_strComputerName(strComputerName), m_strSession(strSession)
@@ -44,10 +42,13 @@ class BACKEND_API ibSessionSnapshot {
 		// header stays independent of session.h (snapshot is read by
 		// frontend code that doesn't otherwise need the registry types).
 		int        m_kind;
-		wxDateTime m_startedDate;
+		ibDateTime m_startedDate;
 		wxString   m_strUserName;
 		wxString   m_strComputerName;
 		wxString   m_strSession;
+		// sys_session.currentActivity. Empty when the column is absent. A dropped thin client
+		// says "detached until HH:MM:SS" for the resume window.
+		wxString   m_activity;
 		// Process-wide exclusive (monopoly) flag — true when this row
 		// holds it. Filled in by JobRefreshSnapshot from sys_session.exclusive.
 		bool       m_exclusive = false;
@@ -57,7 +58,7 @@ public:
 
 	ibSessionSnapshot() : m_sessionArrayHash(wxNewUniqueGuid) {}
 
-	void AppendSession(ibRunMode runMode, int kind, const wxDateTime& startedTime,
+	void AppendSession(ibRunMode runMode, int kind, const ibDateTime& startedTime,
 		const wxString& strUserName, const wxString& strComputerName, const wxString& strSession) {
 		m_listSession.emplace_back(runMode, kind, startedTime, strUserName, strComputerName, strSession);
 	}
@@ -69,6 +70,8 @@ public:
 	wxString GetSession     (unsigned int idx) const;
 	wxString GetStartedDate (unsigned int idx) const;
 	wxString GetApplication (unsigned int idx) const;
+	// sys_session.currentActivity, or empty. A detached thin client reads "detached until …".
+	wxString GetActivity    (unsigned int idx) const;
 
 	void ClearSession() {
 		m_sessionArrayHash = wxNewUniqueGuid;
@@ -77,10 +80,11 @@ public:
 
 	ibRunMode GetSessionApplication(unsigned int idx) const;
 	int       GetSessionKind       (unsigned int idx) const;
-	// Short "Server" / "Client" label derived from (runMode, kind):
-	//   Web runtime + kind=WebClient (100) → "Client"
-	//   Web runtime + kind=WebServer (5) or legacy 0 → "Server"
-	//   Any desktop runtime → "Client"
+	// Short label derived from the kind:
+	//   Service / WebServer → "Server"
+	//   ThinClient / ThinDesigner → "Thin client"
+	//   a job → "Job"
+	//   anything else, legacy 0 included → "Client"
 	// Used by designer's Active Users dialog.
 	wxString  GetSessionKindDescr  (unsigned int idx) const;
 	unsigned int GetSessionCount() const { return static_cast<unsigned int>(m_listSession.size()); }
@@ -93,6 +97,7 @@ public:
 	// pattern as kinds, tolerant of pre-migration schemas where the
 	// column doesn't exist yet.
 	void SetExclusiveFromMap(const std::unordered_map<wxString, bool>& exclusiveBySession);
+	void SetActivityFromMap (const std::unordered_map<wxString, wxString>& activityBySession);
 
 	// Per-row exclusive flag accessor — returns the holder session (the
 	// only one with m_exclusive==true), if any. Used by ProcessAdd's

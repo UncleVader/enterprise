@@ -1,7 +1,7 @@
 #include "propertyCommandSource.h"
 #include "backend/propertyManager/property/variant/variantCommandSource.h"   // ibVariantDataCommandSource (holds the hop path)
 #include "backend/backend_command.h"          // ibBackendCommandReceiver — the factory the variant casts to (+ dtor anchor)
-#include "backend/serialize/dataBuilder.h"   // ibDataValue — node value (Binary blob of the hop path)
+#include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary blob of the hop path)
 
 // The command-source factory interface's vtable anchor — see backend_command.h (one exported vtable + typeinfo in
 // backend.dll so the variant's cross-DLL dynamic_cast to it resolves the frontend button / bar item).
@@ -9,7 +9,7 @@ ibBackendCommandReceiver::~ibBackendCommandReceiver() {}
 
 ////////////////////////////////////////////////////////////////////////
 
-wxVariantData* ibPropertyCommandSource::CreateVariantData(const ibPropertyObject* property, const ibCommandDescription& desc, const wxString& display) const
+wxVariantData* ibPropertyCommandSource::CreateVariantData(const ibPropertyObject* property, const ibCommandDescription& desc, const wxString& display)
 {
 	// The owning button / bar item IS-A command-source factory (WalkCommand validates the binding) — the variant keeps
 	// it and checks existence SERVER-SIDE (runtime too), exactly as ibVariantDataSource keeps its source factory.

@@ -5,6 +5,7 @@
 
 #include "procUnit.h"
 #include "procUnitLambda.h"    // ibValueIterator / ibValueFunction / AsFunction / AsIterator
+#include "core/fiber/fiber.h"          // StackLow — the depth count is not the only way the stack runs out
 
 #include "debugger/debugServer.h"
 #include "system/systemManager.h"
@@ -12,6 +13,8 @@
 
 
 #include <algorithm>
+#include <exception>   // std::exception_ptr — a refusal is rethrown after the catch, not inside it
+#include <optional>    // std::optional — whether the core refused, apart from what it said
 #include <utility>   // std::forward — the variadic Raise below
 
 // Operand resolution for the bytecode interpreter. Three slot kinds:
@@ -169,6 +172,26 @@ IB_NOINLINE void Raise(int code, const ibValue& value)
 	ibBackendCoreException::Error(code, value.GetString());
 }
 
+// The same entry for a message that has NO code: the template itself is the argument. Written as
+// `Error(_("…"), …)` in a case, its translation and its formatted arguments sat in Execute's own frame —
+// MSVC gives every temporary of the function a slot of its own whatever case it is in, so these held 1.6 KB
+// of a 5.6 KB frame, paid on every script call (the /FAs listing, 2026-09-28). The call site now carries
+// only the literal's address.
+//
+// ⚠ TRANSLATED HERE, WHEN IT IS SAID — which is why these are not codes. The code table
+// (gs_listErrorString) is filled by `_()` when the module loads, before any catalog, so a message moved
+// there would reach a translated screen in English. The literal is marked with wxTRANSLATE, which the
+// catalog sweep reads as it reads `_` (localization.md; fileKind.cpp does the same).
+template <class... Args>
+IB_NOINLINE void RaiseText(const char* text, Args&&... args)
+{
+	ibBackendCoreException::Error(wxGetTranslation(wxTRANS_INPUT_STR(text)), std::forward<Args>(args)...);   // what `_()` expands to
+}
+
+// …and at the call site in one word: `RuntimeError("…", args)` is RaiseText with its literal marked for the
+// catalog. The sweep reads it by name (--keyword=RuntimeError, localization.md), as it reads `_`.
+#define RuntimeError(text, ...) RaiseText(wxTRANSLATE(text), ##__VA_ARGS__)
+
 
 IB_FORCEINLINE ibValue& ResolveWrite(int slot, int idx,
 							  ibValue** pRefLocVars,
@@ -195,7 +218,7 @@ IB_FORCEINLINE const ibValue& ResolveRead(int slot, int idx,
 
 } // namespace
 
-#define curCode	m_pByteCode->m_listCode[lCodeLine]
+#define curCode	codeBase[lCodeLine]   // codeBase: the running tape's instructions, taken once per function
 
 #define index1	curCode.m_param1.m_numIndex
 #define index2	curCode.m_param2.m_numIndex
@@ -401,6 +424,8 @@ void ibProcUnit::BorrowScopeFrom(ibProcUnit* donor)
 //
 // A profile of a thin pipeline lambda put GetPUState + Current at 9.13% of the
 // run, against 14.83% for the interpreter itself. See docs/private/runtime-perf.md §1i.
+// (Since 2026-09-28 a bound thread answers Current() from its own copy — ~2 ns, no
+// lock — so that is what these lines measured, not what a lookup costs now.)
 //
 // Passing it in is also the more CORRECT shape: entering and leaving a call
 // through two independently-resolved states would be a bug, not a feature.
@@ -421,6 +446,82 @@ inline bool EndByteCode(ibProcUnitState* st)
 //Stack reset
 inline void ResetByteCode() { auto* st = ibSession::GetPUState(); while (EndByteCode(st)); }
 
+// The runaway-recursion refusal, OUT OF LINE. It formats the whole stack, and built inside the guard
+// below it gave every script call a 384-byte frame, seven saved registers and a stack-cookie check (the
+// disassembly, 2026-09-28) — for a message a correct script never reaches. Same shape as the raise
+// helpers above. Two reasons share it, each through its own name below.
+IB_NOINLINE void RaiseWithCallStack(ibProcUnitState* state, const wxString& reason)
+{
+	// ⚠ THE REPEAT IS THE WHOLE POINT, SO IT IS COUNTED AND NOT REPRINTED. A runaway is
+	// recursion, so the frame that ran away is BY DEFINITION on the stack hundreds of
+	// times — and printing each one buries the two lines that say anything: where it
+	// started, and what is going round. Measured 2026-09-04: the message came back as two
+	// hundred identical lines, tens of kilobytes of them, and a person had to scroll past
+	// all of it to learn nothing it had not said in the first two.
+	//
+	//     ConfigurationModule (#line 4)
+	//     CommonModule.CachedProbe (#line 9) x 197
+	//
+	// Consecutive identical frames only: a cycle through several functions still shows
+	// every one of them, because there the repetition IS the shape worth reading.
+	ibString strError;
+	ibString previous;
+	long repeats = 0;
+
+	// Closes the run of identical frames that has just ended — writes the frame once, and
+	// how many times it stood there when that is more than once.
+	const auto flush = [&strError, &previous, &repeats]() {
+		if (previous.IsEmpty())
+			return;
+		strError += wxT("\n") + previous;
+		if (repeats > 1)
+			strError += ibString::Format(wxT(" x %ld"), repeats);
+	};
+
+	for (unsigned int i = 0; i < state->GetCountRunContext(); i++) {
+		const ibRunContext* stackContext = state->GetRunContext(i);
+		wxASSERT(stackContext);
+		const ibByteCode* stackByteCode = stackContext->GetByteCode();
+		wxASSERT(stackByteCode);
+
+		// Same rule as the diagnostic's stack walk: a position outside its own bytecode prints as
+		// line 0 — the message about a runaway must not itself read past the array.
+		const long curLine = stackContext->m_lCurLine;
+		const ibString frame = ibString::Format(wxT("%s (#line %d)"),
+			stackByteCode->m_strModuleName,
+			(curLine >= 0 && (size_t)curLine < stackByteCode->m_listCode.size())
+				? (int)stackByteCode->m_listCode[curLine].m_numLine + 1 : 0
+		);
+
+		if (frame == previous) {
+			repeats++;
+			continue;
+		}
+
+		flush();
+		previous = frame;
+		repeats = 1;
+	}
+	flush();
+
+	// ⚠ THE STACK IS DATA. Concatenating it onto the literal made the WHOLE thing the format
+	// argument, and a frame carries names the author wrote — a per cent sign in one of them
+	// is a conversion specifier `FormatV` then reads a missing argument for. Same shape as
+	// the compile-error site in backend_exception.cpp; passed as an argument here too.
+	ibBackendCoreException::Error(wxT("%s"), reason + strError);
+}
+
+// The count a script sees (MAX_REC_COUNT).
+IB_NOINLINE void RaiseRecursionLimit(ibProcUnitState* state)
+{
+	RaiseWithCallStack(state, _("Number of recursive calls exceeded the maximum allowed value!\nCall stack :"));
+}
+
+// The native stack ran out before the count did (ibFiber::StackLow).
+IB_NOINLINE void RaiseStackLimit(ibProcUnitState* state)
+{
+	RaiseWithCallStack(state, _("The native stack is too low to continue this call.\nCall stack :"));
+}
 
 struct ibProcStackGuard {
 
@@ -437,63 +538,13 @@ struct ibProcStackGuard {
 		// through a bound session (ibSessionScope / ibSessionThreadBinding).
 		m_state = state;
 		wxASSERT(state != nullptr);
-		if (state->m_recCount > MAX_REC_COUNT) { //critical error
-
-			// ⚠ THE REPEAT IS THE WHOLE POINT, SO IT IS COUNTED AND NOT REPRINTED. A runaway is
-			// recursion, so the frame that ran away is BY DEFINITION on the stack hundreds of
-			// times — and printing each one buries the two lines that say anything: where it
-			// started, and what is going round. Measured 2026-09-04: the message came back as two
-			// hundred identical lines, tens of kilobytes of them, and a person had to scroll past
-			// all of it to learn nothing it had not said in the first two.
-			//
-			//     ConfigurationModule (#line 4)
-			//     CommonModule.CachedProbe (#line 9) x 197
-			//
-			// Consecutive identical frames only: a cycle through several functions still shows
-			// every one of them, because there the repetition IS the shape worth reading.
-			wxString strError;
-			wxString previous;
-			long repeats = 0;
-
-			// Closes the run of identical frames that has just ended — writes the frame once, and
-			// how many times it stood there when that is more than once.
-			const auto flush = [&strError, &previous, &repeats]() {
-				if (previous.IsEmpty())
-					return;
-				strError += wxT("\n") + previous;
-				if (repeats > 1)
-					strError += wxString::Format(wxT(" x %ld"), repeats);
-			};
-
-			for (unsigned int i = 0; i < state->GetCountRunContext(); i++) {
-				const ibRunContext* stackContext = state->GetRunContext(i);
-				wxASSERT(stackContext);
-				const ibByteCode* stackByteCode = stackContext->GetByteCode();
-				wxASSERT(stackByteCode);
-
-				const wxString frame = wxString::Format(wxT("%s (#line %d)"),
-					stackByteCode->m_strModuleName,
-					stackByteCode->m_listCode[stackContext->m_lCurLine].m_numLine + 1
-				);
-
-				if (frame == previous) {
-					repeats++;
-					continue;
-				}
-
-				flush();
-				previous = frame;
-				repeats = 1;
-			}
-			flush();
-
-			// ⚠ THE STACK IS DATA. Concatenating it onto the literal made the WHOLE thing the format
-			// argument, and a frame carries names the author wrote — a per cent sign in one of them
-			// is a conversion specifier `FormatV` then reads a missing argument for. Same shape as
-			// the compile-error site in backend_exception.cpp; passed as an argument here too.
-			ibBackendCoreException::Error(wxT("%s"),
-				_("Number of recursive calls exceeded the maximum allowed value!\nCall stack :") + strError);
-		}
+		// The count is the limit a script sees (MAX_REC_COUNT). The stack
+		// probe lives in Execute, ahead of this frame: a check here runs
+		// only after the prologue has committed it, which is the overflow
+		// on a reserve this frame does not fit. On kStackReserve the count
+		// is reached first, and it raises from a frame that fit.
+		if (state->m_recCount > MAX_REC_COUNT)
+			RaiseRecursionLimit(state);
 		state->m_recCount++;
 		m_currentContext = runContext;
 
@@ -565,6 +616,14 @@ private:
 // without storing anything — the destination keeps the reference it already had,
 // which is exactly right. Two pointer compares inside a branch that was already
 // there, rather than a guard object on the hottest path in the interpreter.
+//
+// 🛑 AND THE RELEASE IS A Reset, NOT A BARE DecrRef. The destination used to keep its tag and its
+// pointer after the release, and every operation below that clears the destination again - the
+// string branch (MakeStringValue, SetString) - released the SAME reference a second time. A temporary
+// slot that held an array or a lambda and then received `"text" + n` took the object's count below
+// what its holders really held, and it was freed while a variable still pointed at it: the three
+// corpus scripts ASan stopped on (test_closure_iterator, test_closure_linq, test_linq_chain_extended,
+// develop at 7de8aec2). Reset releases and clears in one step, so a second clear finds nothing.
 #define CHECK_READONLY(Operation)\
 if(cValue1.m_bReadOnly)\
 {\
@@ -575,7 +634,7 @@ if(cValue1.m_bReadOnly)\
 }\
 if(cValue1.m_typeClass==ibValueTypes::TYPE_REFFER\
  && &cValue1!=&cValue2 && &cValue1!=&cValue3)\
- cValue1.m_pRef->DecrRef();\
+ cValue1.Reset();\
 
 // The same for a comparison, which also hands on whether it stands in a filter (IS_THREE_VALUED_NULL).
 #define CHECK_READONLY_COMPARE(Operation)\
@@ -588,21 +647,16 @@ if(cValue1.m_bReadOnly)\
 }\
 if(cValue1.m_typeClass==ibValueTypes::TYPE_REFFER\
  && &cValue1!=&cValue2 && &cValue1!=&cValue3)\
- cValue1.m_pRef->DecrRef();\
+ cValue1.Reset();\
 
 // Append a value's text onto `out`.
 //
-// A STRING NEEDS NOTHING PASSED IN, because it is already holding the buffer:
-// `m_pStr` is a pointer to a live ibString. That is the whole reason
-// `GetString(ibString&)` takes a scratch — not for the string, which never
-// touches it, but for a value that has no text yet and must build some. Handing
-// every caller a buffer to carry, on a path where it is used by the rare operand
-// and not the common one, is the cost being removed here: the rare one now builds
-// its text straight into the destination instead of into a scratch that is then
-// copied out of.
+// A STRING IS APPENDED FROM WHERE IT LIES: `m_sData` is the text itself, and
+// appending it to an empty `out` merely shares it. Only a value that has no text yet (number, date,
+// object) builds one, through GetString().
 //
 // A reference to a string IS a string, so the chain is followed rather than
-// coerced — the same hop `GetString(ibString&)` makes for the same reason.
+// coerced — the same hop GetString() makes for the same reason.
 inline void AddStringValue(ibString& out, const ibValue& value)
 {
 	const ibValue* held = &value;
@@ -610,41 +664,28 @@ inline void AddStringValue(ibString& out, const ibValue& value)
 		held = held->m_pRef;
 
 	if (held->m_typeClass == ibValueTypes::TYPE_STRING) {
-		if (held->m_pStr != nullptr) out += *held->m_pStr;   // null = the empty string
+		out += held->m_sData;
 	}
 	else {
-		out += ibString(held->GetString());                  // number / date / object: build it
+		out += held->GetString();                            // number / date / object: build it
 	}
 }
 
-// Make `dest` a string holding a LIVE, EMPTY buffer, to be filled in place.
+// Make `dest` a string holding `text` — taken over whole, a handle and no characters copied.
 //
-// The destination is going to own an ibString whatever happens — SetString() makes
-// one on the heap and moves the caller's local into it — so it is made HERE and
-// written through directly: one object instead of two, nothing to move out of, and
-// no way for an lvalue ibString to slide into SetString(const wxString&) through
-// ibString's implicit conversion and pay for a wxString on the way in.
-//
-// The buffer dest ALREADY holds is reused rather than freed and remade, so a loop
-// assigning into the same slot allocates once instead of once per iteration.
-//
-// 🛑 The caller must have established that dest is neither an operand — clearing it
-// would wipe text that is about to be read — nor read-only, which SetString handles
-// by redirecting the write into the referenced value.
-static inline ibString& MakeStringValue(ibValue& dest)
+// 🛑 The caller must have established that dest is not read-only, which SetString handles by
+// redirecting the write into the referenced value. `text` is finished before dest is touched, so
+// dest may well be one of the operands it was built from.
+static inline void MakeStringValue(ibValue& dest, ibString&& text)
 {
-	if (dest.m_typeClass == ibValueTypes::TYPE_STRING && dest.m_pStr != nullptr) {
-		dest.m_pStr->Clear();          // keep the allocation, drop the text
-		return *dest.m_pStr;
+	if (dest.m_typeClass != ibValueTypes::TYPE_STRING) {
+		if (dest.m_typeClass != ibValueTypes::TYPE_EMPTY) dest.Reset();   // an empty value's word is zero already
+		dest.m_typeClass = ibValueTypes::TYPE_STRING;
 	}
-
-	dest.Reset();
-	dest.m_typeClass = ibValueTypes::TYPE_STRING;
-	dest.m_pStr = new ibString();
-	return *dest.m_pStr;
+	dest.m_sData = std::move(text);
 }
 
-// …and the number twin: `dest` made a number, its figure written through the reference.
+// …and the number twin: `dest` made a number holding `number`.
 //
 // 🛑 THE TYPED NUMBER OPERATIONS WROTE THE FIGURE AND NEVER THE TYPE. A variable declared `Number y` starts
 // as an empty value — the declaration checks what arrives, it does not change it (OPER_SET_TYPE) — so
@@ -652,14 +693,71 @@ static inline ibString& MakeStringValue(ibValue& dest)
 // Undefined; a typed parameter did the same the moment it was computed with (measured 2026-09-17: `F(Number x)
 // { return x + 1; }` returned Undefined, `F(x)` returned 8). The string operations always made their result a
 // string (MakeStringValue); these now make theirs a number.
-static inline ibNumber& MakeNumberValue(ibValue& dest)
+static inline void MakeNumberValue(ibValue& dest, const ibNumber& number)
 {
 	if (dest.m_typeClass != ibValueTypes::TYPE_NUMBER) {
-		dest.Reset();
+		if (dest.m_typeClass != ibValueTypes::TYPE_EMPTY) dest.Reset();   // an empty value's word is zero already
 		dest.m_typeClass = ibValueTypes::TYPE_NUMBER;
 	}
-	return dest.m_fData;
+	dest.m_fData = number;
 }
+
+// …and the date one. 🛑 A RESULT IS NEVER STAMPED OVER WHAT THE DESTINATION HELD: a string's text and
+// a heap-tier number share the union with the date and the number, so the old value is Reset() —
+// its text let go — before the new kind is written. Stamping the tag and writing the field (as the
+// arithmetic below used to) leaked the text, and a number written over a boolean read its byte as a
+// heap pointer.
+static inline void MakeDateValue(ibValue& dest, const ibDateTime& date)
+{
+	if (dest.m_typeClass != ibValueTypes::TYPE_DATE) {
+		if (dest.m_typeClass != ibValueTypes::TYPE_EMPTY) dest.Reset();   // an empty value's word is zero already
+		dest.m_typeClass = ibValueTypes::TYPE_DATE;
+	}
+	dest.m_dData = date;
+}
+
+// A date operand, read off the field where the tag says the field holds one — the arithmetic's hot
+// path — and through GetDate where it does not (a reference to a date, whose field is a pointer).
+static inline ibDateTime DateOperand(const ibValue& operand)
+{
+	return operand.m_typeClass == ibValueTypes::TYPE_DATE ? operand.m_dData : operand.GetDate();
+}
+
+// What a right-hand operand moves a date by: its distance from the empty date - a number is that many
+// seconds (GetDate reads it so), a date its own count.
+static inline long long DateShift(const ibValue& operand)
+{
+	return DateOperand(operand) - ibDateTime();
+}
+
+static inline void MakeBooleanValue(ibValue& dest, bool flag)
+{
+	if (dest.m_typeClass != ibValueTypes::TYPE_BOOLEAN) {
+		if (dest.m_typeClass != ibValueTypes::TYPE_EMPTY) dest.Reset();   // an empty value's word is zero already
+		dest.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
+	}
+	dest.m_bData = flag;
+}
+
+// ⭐ TWO NUMBERS ARE TAKEN WHERE THEY LIE — the commonest case of every arithmetic and comparison
+// helper below, read straight off the fields: no GetType dispatch, no virtual GetNumber() copies. The
+// result is made before the destination is touched (it may be an operand), and a number is never
+// NULL, so the three-valued question of a comparison does not arise. `make` says what the result is:
+// MakeNumberValue for arithmetic, MakeBooleanValue for a comparison.
+#define NUMBERS_IN_PLACE(make, op)                                                                     \
+	if (cValue2.m_typeClass == ibValueTypes::TYPE_NUMBER && cValue3.m_typeClass == ibValueTypes::TYPE_NUMBER) { \
+		make(cValue1, cValue2.m_fData op cValue3.m_fData);                                                  \
+		return;                                                                                            \
+	}
+
+// …and the same for a division, which asks its divisor first.
+#define NUMBERS_IN_PLACE_DIVISOR(op)                                                                   \
+	if (cValue2.m_typeClass == ibValueTypes::TYPE_NUMBER && cValue3.m_typeClass == ibValueTypes::TYPE_NUMBER) { \
+		if (cValue3.m_fData.IsZero())                                                                      \
+			Raise(ERROR_DIVIDE_BY_ZERO);                                                                   \
+		MakeNumberValue(cValue1, cValue2.m_fData op cValue3.m_fData);                                      \
+		return;                                                                                            \
+	}
 
 //Functions for quickly working with the ibValue type
 inline void AddValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3)
@@ -669,7 +767,7 @@ inline void AddValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	// The string branch goes through SetString(), which Reset()s cValue1 on
 	// its CURRENT type and frees the correct union member. Pre-stamping
 	// TYPE_STRING (the old code) made Reset() treat a stale NON-string union
-	// value (m_pStr aliases m_pRef) as an ibString* and delete it -> AV.
+	// value (the string aliases m_pRef) as a string and free it -> AV.
 	// It only bit when the result slot already held a non-string value (a
 	// reused temp inside a loop), so a single `s = s + "x"` was fine but the
 	// same line in a While loop access-violated.
@@ -677,27 +775,20 @@ inline void AddValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	// tag written onto it first is a tag the read then believes: `x = 1 + x` with
 	// a string `x` would stamp TYPE_NUMBER and GetNumber() would hand back the
 	// stale union bytes instead of converting the string.
+	NUMBERS_IN_PLACE(MakeNumberValue, +);
 	const ibValueTypes resultType = cValue2.GetType();
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber numResult = cValue2.GetNumber() + cValue3.GetNumber();
-		cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-		cValue1.m_fData = numResult;
+		MakeNumberValue(cValue1, numResult);
 	}
 	else if (resultType == ibValueTypes::TYPE_DATE) {
 		if (cValue3.m_typeClass == ibValueTypes::TYPE_DATE) { //date + date -> number
-			// static_cast: wxLongLong_t is `long long`, while ibNumber's 64-bit ctor takes
-			// int64_t — same width, different type on LP64 (there int64_t is `long`). MSVC
-			// spells both __int64 and picks it; GCC finds every ctor equally far away and
-			// calls the conversion ambiguous. Naming the target type settles it everywhere.
-			const ibNumber numResult = cValue2.GetDate() + cValue3.GetDate();
-			cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-			cValue1.m_fData = numResult;
+			const ibNumber numResult = ibNumber(DateShift(cValue2) + DateShift(cValue3));
+			MakeNumberValue(cValue1, numResult);
 		}
 		else {
-			// On the calendar, not the clock — see ibValue::ShiftDate.
-			const wxLongLong_t dateResult = ibValue::ShiftDate(cValue2.m_dData, cValue3.GetDate());
-			cValue1.m_typeClass = ibValueTypes::TYPE_DATE;
-			cValue1.m_dData = dateResult;
+			// On the wall, where every day is 86 400 seconds (fdatetime.h).
+			MakeDateValue(cValue1, DateOperand(cValue2).AddMilliseconds(DateShift(cValue3)));
 		}
 	}
 	else {
@@ -705,32 +796,21 @@ inline void AddValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 		// the LHS slot, so cValue1 (dest) and cValue2 (left) resolve to the SAME
 		// ibValue. Append onto s in place instead of building `s + expr` into a
 		// fresh string and copying it back — turns accumulate-in-a-loop from
-		// O(n^2) into O(n). Fast path only when the slot holds a LIVE (non-null)
-		// string buffer we own: a reused / moved-out slot can read TYPE_STRING
-		// with m_pStr == null (see note above), which SetString() rebuilds safely
-		// (GetString() is null-safe, so `"" + expr` is the correct result).
+		// O(n^2) into O(n). A text the slot shares with another value is made its
+		// own on the first append (copy on write), and appended in place after that.
 		if (&cValue1 == &cValue2 && &cValue1 != &cValue3 &&
-			cValue1.m_typeClass == ibValueTypes::TYPE_STRING && cValue1.m_pStr) {
-			AddStringValue(*cValue1.m_pStr, cValue3);
-		}
-		else if (&cValue1 != &cValue2 && &cValue1 != &cValue3) {
-			// THE DESTINATION'S OWN BUFFER IS THE ONLY BUFFER. It is going to hold an
-			// ibString either way, so it is opened here and both operands append
-			// straight into it — no local to build and move out of, and the buffer
-			// survives from one execution of this instruction to the next.
-			ibString& out = MakeStringValue(cValue1);
-			AddStringValue(out, cValue2);
-			AddStringValue(out, cValue3);
+			cValue1.m_typeClass == ibValueTypes::TYPE_STRING) {
+			AddStringValue(cValue1.m_sData, cValue3);
 		}
 		else {
-			// The destination IS one of the operands and is not the in-place case
-			// above, so its buffer cannot be opened — clearing it would wipe text
-			// still to be read. Build beside it and hand the buffer over: the result
-			// is complete before SetString()'s Reset() runs.
+			// Built beside the destination and handed over whole: the result is complete
+			// before the destination is touched, so it may well be one of the operands. The
+			// first operand is shared rather than copied (appending to nothing takes the
+			// text), and the second makes it a text of its own.
 			ibString result;
 			AddStringValue(result, cValue2);
 			AddStringValue(result, cValue3);
-			cValue1.SetString(std::move(result));
+			MakeStringValue(cValue1, std::move(result));
 		}
 	}
 }
@@ -740,11 +820,11 @@ inline void SubValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	CHECK_READONLY(SubValue);
 	// The type is read into a LOCAL and the tag written only once the result
 	// exists — the destination may be one of the operands (see AddValue).
+	NUMBERS_IN_PLACE(MakeNumberValue, -);
 	const ibValueTypes resultType = cValue2.GetType();
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber numResult = cValue2.GetNumber() - cValue3.GetNumber();
-		cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-		cValue1.m_fData = numResult;
+		MakeNumberValue(cValue1, numResult);
 	}
 	else if (resultType == ibValueTypes::TYPE_DATE) {
 		if (cValue3.m_typeClass == ibValueTypes::TYPE_DATE) { //date - date -> seconds
@@ -753,15 +833,12 @@ inline void SubValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 			// in seconds for `(d + 86400) - d` to be 86400. It came back in milliseconds, a thousand times
 			// the span: a day count written the ordinary way, `(to - from) / 86400 + 1`, gave 13001 for a
 			// two-week vacation (the payroll demo, 2026-09-10).
-			// …and counted on the calendar, where every day is 86400 seconds (ibValue::DateSpan).
-			const ibNumber numResult = ibNumber((long long)ibValue::DateSpan(cValue2.GetDate(), cValue3.GetDate())) / ibNumber(1000LL);
-			cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-			cValue1.m_fData = numResult;
+			// …and counted on the wall, where every day is 86400 seconds (fdatetime.h).
+			const ibNumber numResult = ibNumber(DateOperand(cValue2) - DateOperand(cValue3)) / ibNumber(1000LL);
+			MakeNumberValue(cValue1, numResult);
 		}
 		else {
-			const wxLongLong_t dateResult = ibValue::ShiftDate(cValue2.m_dData, -cValue3.GetDate());
-			cValue1.m_typeClass = ibValueTypes::TYPE_DATE;
-			cValue1.m_dData = dateResult;
+			MakeDateValue(cValue1, DateOperand(cValue2).AddMilliseconds(-DateShift(cValue3)));
 		}
 	}
 	else {
@@ -772,22 +849,20 @@ inline void SubValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 inline void MultValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3)
 {
 	CHECK_READONLY(MultValue);
+	NUMBERS_IN_PLACE(MakeNumberValue, *);
 	const ibValueTypes resultType = cValue2.GetType();
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber numResult = cValue2.GetNumber() * cValue3.GetNumber();
-		cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-		cValue1.m_fData = numResult;
+		MakeNumberValue(cValue1, numResult);
 	}
 	else if (resultType == ibValueTypes::TYPE_DATE) {
+		// Over the counts, as it always was: a product of dates means nothing on the calendar.
 		if (cValue3.m_typeClass == ibValueTypes::TYPE_DATE) { //date * date -> number
-			const ibNumber numResult = cValue2.GetDate() * cValue3.GetDate();
-			cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-			cValue1.m_fData = numResult;
+			const ibNumber numResult = ibNumber(DateShift(cValue2)) * ibNumber(DateShift(cValue3));
+			MakeNumberValue(cValue1, numResult);
 		}
 		else {
-			const wxLongLong_t dateResult = cValue2.m_dData * cValue3.GetDate();
-			cValue1.m_typeClass = ibValueTypes::TYPE_DATE;
-			cValue1.m_dData = dateResult;
+			MakeDateValue(cValue1, ibDateTime(DateShift(cValue2) * DateShift(cValue3)));
 		}
 	}
 	else {
@@ -801,14 +876,14 @@ inline void DivValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	// The divisor is read BEFORE the tag is written, which is also what keeps the
 	// zero guard honest: with the tag stamped first, `x = y / x` on a string `x`
 	// read a stale number, IsZero() was false, and the division went through.
+	NUMBERS_IN_PLACE_DIVISOR(/);
 	const ibValueTypes resultType = cValue2.GetType();
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber flNumber3 = cValue3.GetNumber();
 		if (flNumber3.IsZero())
 			Raise(ERROR_DIVIDE_BY_ZERO);
 		const ibNumber numResult = cValue2.GetNumber() / flNumber3;
-		cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-		cValue1.m_fData = numResult;
+		MakeNumberValue(cValue1, numResult);
 	}
 	else {
 		ibBackendCoreException::Error(_("Division operation cannot be applied for this type (%s)"), cValue2.GetClassName());
@@ -818,14 +893,14 @@ inline void DivValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 inline void ModValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3)
 {
 	CHECK_READONLY(ModValue);
+	NUMBERS_IN_PLACE_DIVISOR(%);
 	const ibValueTypes resultType = cValue2.GetType();
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber num3 = cValue3.GetNumber();
 		if (num3.IsZero())
 			Raise(ERROR_DIVIDE_BY_ZERO);
 		const ibNumber num2 = cValue2.GetNumber();
-		cValue1.m_typeClass = ibValueTypes::TYPE_NUMBER;
-		cValue1.m_fData = num2 % num3;
+		MakeNumberValue(cValue1, num2 % num3);
 	}
 	else {
 		ibBackendCoreException::Error(_("Modulo operation cannot be applied for this type (%s)"), cValue2.GetClassName());
@@ -834,6 +909,19 @@ inline void ModValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 
 // Definition of the LINQ-filter three-valued NULL flag (declared in procUnitLambda.h).
 thread_local bool ts_threeValuedNullCompare = false;
+
+namespace {
+
+struct ibRegisterThreeValuedLocal {
+	ibRegisterThreeValuedLocal()
+	{
+		ibFiberLocals::RegisterTrivial<bool>(
+			[](void* dst) { *static_cast<bool*>(dst) = ts_threeValuedNullCompare; },
+			[](const void* src) { ts_threeValuedNullCompare = *static_cast<const bool*>(src); });
+	}
+} s_registerThreeValuedLocal;
+
+} // namespace
 
 
 // SQL three-valued NULL: in a filter, a comparison with a NULL operand yields UNKNOWN
@@ -845,7 +933,10 @@ inline bool CompareYieldsUnknown(ibValue& out, const ibValue& a, const ibValue& 
 {
 	if (!threeValued) return false;
 	if (!IsNullOperand(a) && !IsNullOperand(b)) return false;
-	out.m_typeClass = ibValueTypes::TYPE_NULL;
+	if (out.m_typeClass != ibValueTypes::TYPE_NULL) {
+		if (out.m_typeClass != ibValueTypes::TYPE_EMPTY) out.Reset();   // a string's text or a heap-tier number is let go
+		out.m_typeClass = ibValueTypes::TYPE_NULL;
+	}
 	return true;
 }
 
@@ -853,55 +944,55 @@ inline bool CompareYieldsUnknown(ibValue& out, const ibValue& a, const ibValue& 
 inline void CompareValueGT(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueGT);
+	NUMBERS_IN_PLACE(MakeBooleanValue, >);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueGT(cValue3) > 0;   // three-way int -> boolean '>'
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 inline void CompareValueGE(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueGE);
+	NUMBERS_IN_PLACE(MakeBooleanValue, >=);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueGE(cValue3);
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 inline void CompareValueLS(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueLS);
+	NUMBERS_IN_PLACE(MakeBooleanValue, <);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueLS(cValue3) < 0;   // three-way int -> boolean '<'
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 inline void CompareValueLE(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueLE);
+	NUMBERS_IN_PLACE(MakeBooleanValue, <=);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueLE(cValue3);
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 inline void CompareValueEQ(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueEQ);
+	NUMBERS_IN_PLACE(MakeBooleanValue, ==);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueEQ(cValue3);
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 inline void CompareValueNE(ibValue& cValue1, const ibValue& cValue2, const ibValue& cValue3, const bool threeValued)
 {
 	CHECK_READONLY_COMPARE(CompareValueNE);
+	NUMBERS_IN_PLACE(MakeBooleanValue, !=);
 	if (CompareYieldsUnknown(cValue1, cValue2, cValue3, threeValued)) return;
 	const bool bResult = cValue2.CompareValueNE(cValue3);
-	cValue1.m_typeClass = ibValueTypes::TYPE_BOOLEAN;
-	cValue1.m_bData = bResult;
+	MakeBooleanValue(cValue1, bResult);
 }
 
 // CopyValue / MoveValue / IsEmptyValue / IsHasValue / SetTypeBoolean /
@@ -913,7 +1004,7 @@ inline void CompareValueNE(ibValue& cValue1, const ibValue& cValue2, const ibVal
 // six formatted-message blocks inside the interpreting loop. The message choice
 // is a property of the failure, not of the opcode, so it belongs in one
 // out-of-line place — see the raise-helper note above.
-IB_NOINLINE void RaiseMemberNotFound(const ibValue& variable, const wxString& name)
+IB_NOINLINE void RaiseMemberNotFound(const ibValue& variable, const ibString& name)
 {
 	// A GLOBAL FUNCTION asked of a value is the commonest shape of this failure and the
 	// one a plain "no such member" explains worst. `x.ValueIsFilled()` reads like a method
@@ -986,7 +1077,20 @@ inline ibValue GetValue(const ibValue& cValue1)
 //						Construction/Destruction                    //
 //////////////////////////////////////////////////////////////////////
 
-void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
+// Out of line, and kept small. ExecuteBody's prologue commits that whole
+// frame before any of its checks run; on MSVC that commit is _chkstk, and
+// the page past the reserve becomes a stack overflow the check never
+// reaches. Asking here, the refusal still has kStackSlack under it.
+// A native overflow is not turned into a script error from here: that
+// catch skipped the frame guards, and the dump is the record of it.
+IB_NOINLINE void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
+{
+	if (ibFiber::StackLow())
+		RaiseStackLimit(ibSession::PUStateOf(ibSession::Current()));
+	ExecuteBody(pContext, pvarRetValue, bDelta);
+}
+
+IB_NOINLINE void ibProcUnit::ExecuteBody(ibRunContext* pContext, ibValue* pvarRetValue, bool bDelta)
 {
 	struct ibTryLabel {
 
@@ -998,9 +1102,9 @@ void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDe
 
 #ifdef DEBUG
 	if (pContext == nullptr) {
-		ibBackendCoreException::Error(_("No execution context defined!"));
+		RuntimeError("No execution context defined!");
 		if (m_pByteCode == nullptr)
-			ibBackendCoreException::Error(_("No execution code set!"));
+			RuntimeError("No execution code set!");
 	}
 #endif
 
@@ -1024,6 +1128,11 @@ void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDe
 	// inside the loop. Local snapshot keeps each Execute invocation
 	// pinned to the bc it started with.
 	const ibByteCode* m_pByteCode = this->m_pByteCode;
+	// …and its instructions by a plain pointer, taken once: `curCode` — which every operand macro
+	// reads, several times per instruction — indexes this, not the vector. No reload of the vector
+	// through the bytecode after every call, and in Debug no checked `operator[]` per operand. The
+	// tape does not change while it runs (only the compiler appends to it).
+	const ibByteUnit* const codeBase = m_pByteCode->m_listCode.data();
 
 	long lCodeLine = pContext->m_lStart;
 	// Loop walks to the bytecode tail; explicit termination is on
@@ -1058,7 +1167,45 @@ void ibProcUnit::Execute(ibRunContext* pContext, ibValue* pvarRetValue, bool bDe
 	constexpr unsigned kCancelPoll = 1024;   // power of two -> mask test, not modulo
 	unsigned opTick = 0;
 
+	// A FAILURE MET IN THIS MODULE'S RUN — taken by its innermost Try (true: the run goes on at `lCodeLine`), or its place
+	// kept for the modules above and the failure said. The same exception is rethrown after this catch has
+	// returned: a throw inside the handler is another frame on MSVC, and a chain of them overflows the slack.
+	std::exception_ptr propagate;
+	// Present when the core refused. Its text may be empty, so the text is not the sign.
+	std::optional<wxString> coreRefusal;
+	const auto catchError = [&](const ibBackendException& err) -> bool {
+
+		const long trySize = tryList.size() - 1;
+		if (trySize >= 0) {
+
+			if (auto* puState = ibSession::GetPUState())
+				puState->m_errorPlace.Reset(); //Error is handled in this module - erase the error location
+
+			const long tryCodeLine = tryList[trySize].m_lEndLine;
+			tryList.resize(trySize);
+			lCodeLine = tryCodeLine;
+			return true;
+		}
+
+		//there is no handler in this module - save the error location for the following modules
+		//But we don't throw an error right away, because we don't know if there are any handlers further
+		if (auto* puState = ibSession::GetPUState()) {
+			if (puState->m_errorPlace.m_byteCode == nullptr && m_pByteCode != puState->m_errorPlace.m_skipByteCode) { //the Error system function throws an exception only for child modules
+
+				//previously saved the original error location (i.e. the error didn't occur in this module)
+				puState->m_errorPlace.m_byteCode = m_pByteCode;
+				puState->m_errorPlace.m_errorLine = lCodeLine;
+			}
+		}
+
+		// Said here. Thrown after the catch, from this frame, not from the handler.
+		ibBackendException::ProcessError(err, m_pByteCode->m_listCode[lCodeLine]);
+		return false;
+	};
+
 start_label:
+	propagate = nullptr;
+	coreRefusal.reset();
 
 	// 🛑 NO SCRATCH BUFFERS LIVE HERE, and the attempt that put four of them here is
 	// worth recording rather than repeating.
@@ -1077,10 +1224,9 @@ start_label:
 	// amortising over a long loop is a tax on every short one (Max, 2026-09-09).
 	//
 	// The only place a saving was real is where wxString leaves the path
-	// ENTIRELY — the string opcodes below, which carry `ibString` end to end. Their
-	// scratches are locals in the case, and cost nothing: `GetString(scratch)`
-	// hands back the LIVE buffer for a string value and never touches the scratch,
-	// so an empty one never allocates.
+	// ENTIRELY — the string opcodes below, which carry `ibString` end to end.
+	// GetString() now hands a string value's text out SHARED (one more owner, no
+	// characters copied), so there is no buffer left to hoist at all.
 	try { //slower by 2-3% for each nested module
 		while (lCodeLine < lFinish) {
 
@@ -1106,26 +1252,92 @@ start_label:
 			}
 
 			//enter in debugger
-			if (debugServer != nullptr && !evalMode)
-				debugServer->EnterDebugger(pContext, curCode, lPrevLine);
+			//
+			// "Is anyone debugging?" is asked HERE, inline — it is EnterDebugger's own first line. A debug
+			// server exists whenever a configuration is loaded (metadataConfiguration.cpp), attached or
+			// not, so every instruction of every run made an out-of-line call only to hear "no" (2026-09-28).
+			if (ibDebuggerServer* const dbg = debugServer; dbg != nullptr && !evalMode && dbg->IsDebugging())
+				dbg->EnterDebugger(pContext, curCode, lPrevLine);
 
 			switch (curCode.m_numOper)
 			{
+			// ⭐⭐ A TYPED OPERAND PICKS A DIFFERENT OPCODE, AND EVERY ONE IT CAN PICK IS ANSWERED HERE.
+			// The compiler adds a tier to the instruction when it knows a type at compile time --
+			// TYPE_DELTA1 number, 2 string, 3 date, 4 boolean (CorrectTypeDef / CheckTypeDef,
+			// compileCode.cpp): on a subscript's index, on an If's condition, on a LET, and on a binary
+			// operator whose LEFT side is a declared typed variable. A tier exists to skip the dispatch
+			// where reading the payload straight off is the whole operation; where there is no such
+			// shortcut the instruction still has to DO the thing.
+			//
+			// It did not. This switch has no default, so an opcode nobody wrote a case for falls
+			// through and the instruction simply does not run: no value written, no error raised. Four
+			// tiers times the opcodes a type can reach leaves gaps, and they were ordinary code -
+			// MEASURED with scripts, not read off this file:
+			//
+			//   Procedure P(String a, String b)   `if (a = b)` never took the branch, for any pair.
+			//   Procedure P(Boolean t, Boolean f) `if (t And Not f)` never took it either.
+			//   A container read by a boolean key answered Undefined, and `c[True] = v` wrote nothing.
+			//
+			// The tiers that have no shortcut are ANSWERED BY THE GENERAL BODY, which is what they
+			// would have run untyped: comparing two strings, AND / OR of anything, arithmetic on a kind
+			// that has none (a boolean minus a boolean raises here, as it always should have). The two
+			// subscript tiers below join the same bodies for the same reason - the typed array cases
+			// that DO exist are byte-for-byte the untyped one, so there was never a shortcut to pick.
+			//
+			// The rule this keeps: a tier the compiler can write, this switch can run.
+			//
+			// Two opcodes are still outside it, untiered and with no case at all - OPER_CHECK_ARRAY
+			// (compileCode.cpp ~2955, the check under a second subscript) and OPER_SET_ARRAY_SIZE
+			// (~1075, the dimensions a declaration names). They fall through the same way and are
+			// left for a change of their own: what they should DO is a question, not a label.
 			case OPER_CONST: CopyValue(variable1, m_pByteCode->m_listConst[index2]); break;
 			case OPER_CONSTN: SetTypeNumber(variable1, index2); break;
+			// ⭐ AND WHAT THE DATE AND BOOLEAN TIERS DID WITH A VALUE was write its field and leave the
+			// tag alone, exactly as the comparisons did: `Date dst; dst = src;` came out EMPTY, and so
+			// did a boolean one (measured). The date arithmetic was wrong a second way - two dates
+			// subtracted to raw MILLISECONDS in a date-shaped slot, where the general body answers
+			// seconds as a Number, which is the answer a script is written against (SubValue says so
+			// where it divides by 1000). Neither tier had a shortcut worth keeping, so both are gone
+			// and the general bodies answer for them: a copy that copies, arithmetic that means what
+			// it means elsewhere, and a kind that has no arithmetic raising rather than staying quiet.
+			case OPER_ADD + TYPE_DELTA3:
+			case OPER_ADD + TYPE_DELTA4:
 			case OPER_ADD: AddValue(variable1, cvariable2, cvariable3); break;
-			case OPER_SUB: SubValue(variable1, cvariable2, cvariable3); break;
-			case OPER_DIV: DivValue(variable1, cvariable2, cvariable3); break;
-			case OPER_MOD: ModValue(variable1, cvariable2, cvariable3); break;
-			case OPER_MULT: MultValue(variable1, cvariable2, cvariable3); break;
+			case OPER_SUB + TYPE_DELTA3:
+			case OPER_SUB:
+			case OPER_SUB + TYPE_DELTA2:
+			case OPER_SUB + TYPE_DELTA4: SubValue(variable1, cvariable2, cvariable3); break;
+			case OPER_DIV + TYPE_DELTA3:
+			case OPER_DIV:
+			case OPER_DIV + TYPE_DELTA2:
+			case OPER_DIV + TYPE_DELTA4: DivValue(variable1, cvariable2, cvariable3); break;
+			case OPER_MOD + TYPE_DELTA3:
+			case OPER_MOD:
+			case OPER_MOD + TYPE_DELTA2:
+			case OPER_MOD + TYPE_DELTA4: ModValue(variable1, cvariable2, cvariable3); break;
+			case OPER_MULT + TYPE_DELTA3:
+			case OPER_MULT:
+			case OPER_MULT + TYPE_DELTA2:
+			case OPER_MULT + TYPE_DELTA4: MultValue(variable1, cvariable2, cvariable3); break;
+			case OPER_LET + TYPE_DELTA3:
+			case OPER_LET + TYPE_DELTA4:
 			case OPER_LET: CopyValue(variable1, cvariable2); break;
+			case OPER_INVERT + TYPE_DELTA3:
+			case OPER_INVERT + TYPE_DELTA4:
 			case OPER_INVERT: SetTypeNumber(variable1, -cvariable2.GetNumber()); break;
 			case OPER_NOT:
+			case OPER_NOT + TYPE_DELTA1:
+			case OPER_NOT + TYPE_DELTA2:
+			case OPER_NOT + TYPE_DELTA3:
 				// Kleene NOT(UNKNOWN)=UNKNOWN in a LINQ filter (IS_THREE_VALUED_NULL); else two-valued.
 				if (IS_THREE_VALUED_NULL(curCode) && IsNullOperand(cvariable2)) variable1.m_typeClass = ibValueTypes::TYPE_NULL;   // UNKNOWN == SQL NULL (IsNullOperand keys on TYPE_NULL)
 				else SetTypeBoolean(variable1, IsEmptyValue(cvariable2));
 				break;
 			case OPER_AND:
+			case OPER_AND + TYPE_DELTA1:
+			case OPER_AND + TYPE_DELTA2:
+			case OPER_AND + TYPE_DELTA3:
+			case OPER_AND + TYPE_DELTA4:
 				if (IS_THREE_VALUED_NULL(curCode)) {           // FALSE dominates; else UNKNOWN if any; else TRUE
 					const bool aF = !IsHasValue(cvariable2) && !IsNullOperand(cvariable2);
 					const bool bF = !IsHasValue(cvariable3) && !IsNullOperand(cvariable3);
@@ -1137,6 +1349,10 @@ start_label:
 				else SetTypeBoolean(variable1, false);
 				break;
 			case OPER_OR:
+			case OPER_OR + TYPE_DELTA1:
+			case OPER_OR + TYPE_DELTA2:
+			case OPER_OR + TYPE_DELTA3:
+			case OPER_OR + TYPE_DELTA4:
 				if (IS_THREE_VALUED_NULL(curCode)) {           // TRUE dominates; else UNKNOWN if any; else FALSE
 					if (IsHasValue(cvariable2) || IsHasValue(cvariable3)) SetTypeBoolean(variable1, true);
 					else if (IsNullOperand(cvariable2) || IsNullOperand(cvariable3)) variable1.m_typeClass = ibValueTypes::TYPE_NULL;   // UNKNOWN == SQL NULL (IsNullOperand keys on TYPE_NULL)
@@ -1145,19 +1361,34 @@ start_label:
 				else if (IsHasValue(cvariable2) || IsHasValue(cvariable3)) SetTypeBoolean(variable1, true);
 				else SetTypeBoolean(variable1, false);
 				break;
-			case OPER_EQ: CompareValueEQ(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_NE: CompareValueNE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_GT: CompareValueGT(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_LS: CompareValueLS(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_GE: CompareValueGE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_LE: CompareValueLE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
-			case OPER_IF:
-				if (IsEmptyValue(cvariable1))
+			case OPER_EQ:
+			case OPER_EQ + TYPE_DELTA2: CompareValueEQ(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_NE:
+			case OPER_NE + TYPE_DELTA2: CompareValueNE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_GT:
+			case OPER_GT + TYPE_DELTA2: CompareValueGT(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_LS:
+			case OPER_LS + TYPE_DELTA2: CompareValueLS(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_GE:
+			case OPER_GE + TYPE_DELTA2: CompareValueGE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_LE:
+			case OPER_LE + TYPE_DELTA2: CompareValueLE(variable1, cvariable2, cvariable3, IS_THREE_VALUED_NULL(curCode)); break;
+			case OPER_IF: {
+				// A boolean condition — what a comparison leaves — is read where it lies; anything else
+				// asks its own emptiness.
+				//
+				// An `and` marks its test (m_param4 = LINQ_THREE_VALUED_NULL) so a SQL NULL left
+				// side does not skip the right one. UNKNOWN does not decide the conjunction.
+				const ibValue& condition = cvariable1;
+				if (curCode.m_param4.m_numIndex == LINQ_THREE_VALUED_NULL && IsNullOperand(condition))
+					break;
+				if (condition.m_typeClass == ibValueTypes::TYPE_BOOLEAN ? !condition.m_bData : IsEmptyValue(condition))
 					lCodeLine = index2 - 1;
 				break;
+			}
 			case OPER_FOR:
 				if (cvariable1.m_typeClass != ibValueTypes::TYPE_NUMBER)
-					ibBackendCoreException::Error(_("Only variables with type can be used to organize the loop \"number\""));
+					RuntimeError("Only variables with type can be used to organize the loop \"number\"");
 				// PAST THE BOUND, not equal to it — and the difference is two defects.
 				//
 				// `==` meant the body ran for [from, to) while the language reference
@@ -1176,8 +1407,13 @@ start_label:
 				//
 				// One comparison answers both, because "have we gone past the end" is
 				// the question the loop was always asking.
-				if (cvariable1.m_fData > cvariable2.m_fData)
-					lCodeLine = index3 - 1;
+				{
+					// The bound is read as a number whatever it holds: a number's own field, anything
+					// else through GetNumber — its word may be a string's text or a boolean's byte.
+					const ibValue& bound = cvariable2;
+					if (cvariable1.m_fData > (bound.m_typeClass == ibValueTypes::TYPE_NUMBER ? bound.m_fData : bound.GetNumber()))
+						lCodeLine = index3 - 1;
+				}
 				break;
 			case OPER_FOREACH:
 			{
@@ -1201,9 +1437,8 @@ start_label:
 					// (`Documents.Orders`) is the one people reach for in `from o in …`, and it holds no
 					// rows — the rows of the database are walked through `Data.Documents.Orders`.
 					if (!newIterator)
-						ibBackendCoreException::Error(
-							_("A value of type '%s' cannot be walked - it has no rows to go through. The rows of the database "
-							  "are walked through Data (Data.Catalogs.Goods, Data.Documents.Orders), not through a manager."),
+						RuntimeError("A value of type '%s' cannot be walked - it has no rows to go through. The rows of the database "
+						             "are walked through Data (Data.Catalogs.Goods, Data.Documents.Orders), not through a manager.",
 							variable2.GetClassName());
 					CopyValue(variable3, ibValue(new ibValueIterator(std::move(newIterator))));
 				}
@@ -1230,13 +1465,6 @@ start_label:
 				}
 				lCodeLine = index2 - 1;
 			} break;
-			case OPER_ITER:
-			{
-				if (IsHasValue(cvariable2))
-					CopyValue(variable1, cvariable3);
-				else
-					CopyValue(variable1, cvariable4);
-			}  break;
 			case OPER_NEW:
 			{
 				ibValue* pRetValue = &variable1;
@@ -1294,7 +1522,9 @@ start_label:
 			case OPER_SET_A:
 			case OPER_SET_SCOPE://writable member of a scope binding — identical parent+prop write
 			{//setting attribute
-				const wxString& strPropName = m_pByteCode->m_listConst[index2].GetString();
+				// A member's name lies in the constant pool as a STRING value (the compiler writes it so),
+				// and its text is read where it lies — no copy, nothing converted on the way to FindProp.
+				const ibString& strPropName = m_pByteCode->m_listConst[index2].m_sData;
 				const long lPropNum = variable1.FindProp(strPropName);
 				if (lPropNum < 0) CheckAndError(variable1, strPropName);
 				if (!variable1.IsPropWritable(lPropNum)) Raise(ERROR_PROP_NOT_WRITABLE, strPropName);
@@ -1304,7 +1534,7 @@ start_label:
 			case OPER_GET_SCOPE://bare member of a scope binding — identical parent+prop resolve
 			{
 				ibValue* pRetValue = &variable1;
-				const wxString& strPropName = m_pByteCode->m_listConst[index3].GetString();
+				const ibString& strPropName = m_pByteCode->m_listConst[index3].m_sData;
 				const long lPropNum = variable2.FindProp(strPropName);
 				if (lPropNum < 0) CheckAndError(variable2, strPropName);
 				if (!variable2.IsPropReadable(lPropNum)) Raise(ERROR_PROP_NOT_READABLE, strPropName);
@@ -1348,7 +1578,7 @@ start_label:
 				ibValue* pRetValue = &variable1;
 				ibValue* pVariable2 = &variable2;
 
-				const wxString& funcName = m_pByteCode->m_listConst[index3].GetString();
+				const ibString& funcName = m_pByteCode->m_listConst[index3].m_sData;
 				// Resolve method number on every call. Bytecode is a const
 				// template at runtime — no opcode-level cache patching.
 				// (The previous "cache" path stored resolved method # /
@@ -1473,7 +1703,12 @@ start_label:
 				}
 
 				if (pVariable2->HasRetVal(lMethodNum)) {
-					pVariable2->CallAsFunc(lMethodNum, *pRetValue, cRunContext.m_pRefLocVars, realParamCount);
+					// ⭐ A METHOD THAT ANSWERED NOTHING ANSWERS UNDEFINED — never the previous call's value. This slot is
+					// the one calls write their answers into; a method that returned false without writing it left
+					// whatever the call before had put there, and the script read that as THIS call's answer
+					// (SpreadsheetDocument.Area past a table's end repeated its last figure, 2026-09-28).
+					if (!pVariable2->CallAsFunc(lMethodNum, *pRetValue, cRunContext.m_pRefLocVars, realParamCount))
+						*pRetValue = ibValue();
 				}
 				else {
 					// `x = SomeProcedure()` — caught by LOOKING AT THE NEXT OPCODE:
@@ -1537,12 +1772,14 @@ start_label:
 				break;
 
 			// p2 = the row (SKIP when this instruction carries only a further key), p3 = the key
-			// (SKIP when the query does not order), p4 = which key it is. See ibLinqKeep.
+			// (SKIP when the query does not order), p4 = which key it is (index) and its way (array,
+			// 1 = descending). See ibLinqKeep.
 			case OPER_LINQ_KEEP:
 				ibLinqKeep(variable1,
 					array2 == DEF_VAR_SKIP ? nullptr : &cvariable2,
 					array3 == DEF_VAR_SKIP ? nullptr : &cvariable3,
-					(long)curCode.m_param4.m_numIndex);
+					(long)curCode.m_param4.m_numIndex,
+					curCode.m_param4.m_numArray != 0);
 				break;
 
 			case OPER_LINQ_BUCKET:
@@ -1561,14 +1798,13 @@ start_label:
 
 			// The projection. The names are read from the const pool only while the shape is being
 			// made — once per query; the field stores that follow carry positions, not names.
-			// ⚠ THE NAMES ARE READ PER ROW EVEN THOUGH THE SHAPE IS BUILT ONCE — `ibLinqRow`
-			// splits them for the FIRST row only, but the argument is evaluated on every one.
-			// Reading them through the native buffer instead does NOT help: the callee takes
-			// a wxString, so one is built either way (measured 2026-09-09 — it read WORSE).
-			// The saving is in `ibLinqRow` taking the const-pool value itself, not here.
+			// THE NAMES ARE HANDED OVER PER ROW EVEN THOUGH THE SHAPE IS BUILT ONCE — `ibLinqRow`
+			// splits them for the FIRST row only. So they are lent where they lie (m_sData): the
+			// callee takes the engine's own string, and nothing is built per row. (With a wxString
+			// parameter one was built on every row either way — measured 2026-09-09.)
 			case OPER_LINQ_ROW:
 				ibLinqRow(variable1, variable2,
-					m_pByteCode->m_listConst[index3].GetString(), (long)array3);
+					m_pByteCode->m_listConst[index3].m_sData, (long)array3);
 				break;
 
 			case OPER_LINQ_FIELD:
@@ -1688,14 +1924,15 @@ start_label:
 				break;
 			}
 			case OPER_CALL_CLOSURE:
-			{ //function call — heap-frame variant. Target has
+			{ //function call — capture-frame variant. Target has
 				// m_needsHeapFrame=true (some inner lambda captures
-				// a local from it). Allocate frame via make_shared so
-				// escaping lambdas can hold a shared_ptr at OPER_LFUNC
-				// materialise time, keeping the frame alive past return.
-				// Operand layout identical to OPER_CALL.
+				// a local from it), so the callee's frame is one that
+				// can be TAKEN at OPER_LFUNC materialise time and kept
+				// past the return. Operand layout identical to OPER_CALL.
 				const long lModuleNumber = array2;
-				std::shared_ptr<ibRunContext> heapCtx = std::make_shared<ibRunContext>(index3);
+				// A captured frame counts its own holders; this hold is the call, and it ends
+				// where the call does — including an exception on the way out.
+				ibRunCallFrame heapCtx(new ibRunCaptureContext(index3));
 				heapCtx->m_lStart = index2;
 				heapCtx->m_lParamCount = array3;
 				heapCtx->m_parentRunContext = pContext;
@@ -1718,14 +1955,22 @@ start_label:
 						}
 					}
 				}
-				m_ppArrayCode[lModuleNumber]->Execute(heapCtx.get(), pRetValue, false);
+				m_ppArrayCode[lModuleNumber]->Execute(heapCtx.Get(), pRetValue, false);
 				break;
 			}
 			case OPER_SET_ARRAY:
+			case OPER_SET_ARRAY + TYPE_DELTA1:
+			case OPER_SET_ARRAY + TYPE_DELTA2:
+			case OPER_SET_ARRAY + TYPE_DELTA3:
+			case OPER_SET_ARRAY + TYPE_DELTA4:
 				if (!SetArrayValue(variable1, cvariable2, GetValue(cvariable3)))
 					Raise(ERROR_ARRAY_SET, cvariable3);
 				break; //setting the array value
 			case OPER_GET_ARRAY:
+			case OPER_GET_ARRAY + TYPE_DELTA1:
+			case OPER_GET_ARRAY + TYPE_DELTA2:
+			case OPER_GET_ARRAY + TYPE_DELTA3:
+			case OPER_GET_ARRAY + TYPE_DELTA4:
 				if (!GetArrayValue(variable1, variable2, cvariable3))
 					Raise(ERROR_ARRAY_GET, cvariable3);
 				break; //getting the array value
@@ -1733,7 +1978,11 @@ start_label:
 			{
 				const long tryCodeLine = index1;
 				const long trySize = tryList.size() - 1;
-				if (trySize >= 0) {
+				// A forward call jumps to the real call at the end of the module and
+				// jumps back. The outbound jump is marked (param2 != 0) so it does not
+				// drop the try it is standing in: the call still runs inside the handler.
+				// ENDTRY and a goto the program wrote still leave the handler.
+				if (trySize >= 0 && !(curCode.m_numOper == OPER_GOTO && index2 != 0)) {
 					if (tryCodeLine >= tryList[trySize].m_lEndLine ||
 						tryCodeLine <= tryList[trySize].m_lStartLine) {
 						tryList.resize(trySize);//exit from try..catch scope
@@ -1755,11 +2004,11 @@ start_label:
 			//
 			// Read like every other operand in this switch — through ResolveRead, which knows the
 			// difference between a frame slot and a constant because the operand says which it is.
-			case OPER_RAISE_T: ibBackendCoreException::Error(cvariable1.GetString()); break;
+			case OPER_RAISE_T: ibBackendCoreException::Error(wxT("%s"), cvariable1.GetString()); break;   // the script's text is DATA, not a format
 			case OPER_RET:
 				if (index1 != DEF_VAR_NORET) {
 					if (pvarRetValue == nullptr)
-						ibBackendCoreException::Error(_("Cannot set return value in procedure!"));
+						RuntimeError("Cannot set return value in procedure!");
 					CopyValue(*pvarRetValue, cvariable1);
 				}
 			case OPER_ENDFUNC:
@@ -1804,7 +2053,20 @@ start_label:
 				// is the natural "ibRunContext updated as commands run"
 				// model that the AOT-friendly self-describing tape design
 				// requires (see project_bytecode_tape_design memory).
-				pContext->m_currentFunction = m_pByteCode->FindFunctionByEntry(lCodeLine);
+				//
+				// BY THE INDEX THE COMPILER STAMPED (m_param4 — EmitFunctionBody), not by walking the
+				// module's functions for this entry line: that walk ran on every call, 176 bytes a step,
+				// and a function declared after a hundred others paid +31 ns for it (RuntimeBench.CallCost,
+				// 2026-09-28). Taken only when it names THIS entry; a tape without it — written before the
+				// stamp, or a list rearranged since — walks as before, and can never land on another function.
+				{
+					const std::vector<ibByteCode::ibByteFunction>& functions = m_pByteCode->m_listFunc;
+					const long entryIndex = (long)index4;
+					pContext->m_currentFunction =
+						entryIndex >= 0 && entryIndex < (long)functions.size() && (long)functions[entryIndex] == lCodeLine
+							? &functions[entryIndex]
+							: m_pByteCode->FindFunctionByEntry(lCodeLine);
+				}
 
 				// `Cached` — DECIDED HERE, and here only.
 				//
@@ -1851,6 +2113,18 @@ start_label:
 					pContext->m_cachedEntry = lCodeLine;
 					pContext->m_cachedKey = probe;
 				}
+
+				// THE DECLARATORS ARE STEPPED OVER, NOT RUN. Every parameter and local is an
+				// OPER_FUNC_PARAM / OPER_FUNC_LOCAL right after this opcode — the debugger and the
+				// AOT writer read them off the tape — and their case below is an empty `break`. Run,
+				// each one cost a full turn of the loop (the line store, the cancel tick, the debugger
+				// check, the dispatch): ~6 ns per parameter and per local, on every call
+				// (RuntimeBench.CallCost, 2026-09-28). The debugger loses nothing: it never stops on a
+				// declarator (IsSteppableOpcode, debugServer.cpp).
+				while (lCodeLine + 1 < lFinish
+					&& (codeBase[lCodeLine + 1].m_numOper == OPER_FUNC_PARAM
+						|| codeBase[lCodeLine + 1].m_numOper == OPER_FUNC_LOCAL))
+					lCodeLine++;
 			}
 			break;
 			case OPER_LFUNC: {
@@ -1886,7 +2160,7 @@ start_label:
 				    endIp >= (long)m_pByteCode->m_listCode.size() ||
 				    funcIdx < 0 || funcIdx >= (long)m_pByteCode->m_listFunc.size())
 				{
-					ibBackendCoreException::Error(_("Cannot create function value (invalid lambda operands)"));
+					RuntimeError("Cannot create function value (invalid lambda operands)");
 				}
 				ibValueFunction* newFn = new ibValueFunction(m_pByteCode, funcIdx);
 				// Cache m_needsHeapFrame from the bytecode fn once at
@@ -1898,24 +2172,22 @@ start_label:
 					if (bfnLfunc) newFn->m_needsHeapFrame = bfnLfunc->m_needsHeapFrame;
 				}
 				// Closure capture (Phase B) — walk the call-stack chain
-				// via m_parentRunContext; each heap-promoted ancestor
-				// (weak_from_this().lock() returns non-null) gets its
-				// shared_ptr copied into the new lambda's
-				// m_capturedFrames. Stack-allocated frames return an
-				// expired weak_ptr and are skipped — they couldn't be
-				// captured anyway (frame dies on return; no inner
-				// lambda flagged the enclosing fn at compile time so
-				// no heap promotion happened at OPER_CALL).
+				// via m_parentRunContext; every ancestor of the CAPTURED
+				// kind becomes a link of the chain the lambda keeps, each
+				// link holding the next. An ordinary frame is skipped: it
+				// could not be captured anyway (it dies on return; no
+				// inner lambda flagged the enclosing fn at compile time,
+				// so OPER_CALL built no capture frame for it).
 				//
-				// Order: index 0 = direct enclosing frame (the
-				// materialising lambda's caller), index 1 = next outer,
-				// .... Matches the depth math from Phase A's GetVariable
+				// Order: the nearest link is the direct enclosing frame
+				// (the materialising lambda's caller), its outer is the
+				// next one out. Matches the depth math from Phase A's GetVariable
 				// (numParent - numContext counting): emit depth = 1
-				// reads m_capturedFrames[0], depth = 2 reads [1], etc.
+				// reads CapturedAt(0), depth = 2 reads CapturedAt(1), etc.
 				for (ibRunContext* p = pContext; p != nullptr; p = p->m_parentRunContext) {
 
 					// ⭐⭐ THE MODULE BODY'S FRAME IS TAKEN SEPARATELY, and it has to be: it is
-					// Retained rather than heap-promoted, so the lock() below never sees it, and a
+					// Retained rather than captured, so the question below answers no for it, and a
 					// lambda was left unable to read the module's own variables — see
 					// ibValueFunction::m_moduleFrame for the measurement. The FIRST one found wins:
 					// walking further would reach a parent module, whose variables this lambda
@@ -1926,9 +2198,11 @@ start_label:
 						continue;
 					}
 
-					std::shared_ptr<ibRunContext> sp = p->weak_from_this().lock();
-					if (sp)
-						newFn->m_capturedFrames.push_back(std::move(sp));
+					// Ask the frame what KIND it is — an ordinary one ends with its call and cannot
+					// be captured. Recorded in the order walked, which IS the depth order the
+					// compiler emitted: this lambda's own view of the chain, taken now.
+					if (ibRunCaptureContext* captured = AsCaptureContext(p))
+						newFn->m_capturedFrames.emplace_back(captured);
 				}
 				CopyValue(variable1, ibValue(newFn));
 				// Skip past the body — body opcodes are inert at
@@ -1958,7 +2232,7 @@ start_label:
 				ibValueFunction* fn = AsFunction(cvariable4);
 				const ibByteCode::ibByteFunction* bfn = fn ? fn->GetFunction() : nullptr;
 				if (bfn == nullptr)
-					ibBackendCoreException::Error(_("Cannot call: value is not a callable function"));
+					RuntimeError("Cannot call: value is not a callable function");
 
 				const ibByteCode* pLocalByteCode = fn->GetParentBc();
 				const long lambdaParamCount = (long)bfn->m_listParam.size();
@@ -1968,11 +2242,9 @@ start_label:
 				// Arg-count validation — too many is a hard error;
 				// too few is OK iff missing tail has defaults (checked
 				// in phase 2 below).
-				if (callerArgCount > lambdaParamCount) {
-					ibBackendCoreException::Error(
-						_("Too many arguments to function value: passed %ld, expected at most %ld"),
+				if (callerArgCount > lambdaParamCount)
+					RuntimeError("Too many arguments to function value: passed %ld, expected at most %ld",
 						callerArgCount, lambdaParamCount);
-				}
 
 				// Heap-promote the lambda's frame when its body captures
 				// from yet-deeper enclosing fns. Read the flag directly
@@ -1980,15 +2252,15 @@ start_label:
 				// materialise; one indirection, no detour through
 				// m_parentBc->m_listFunc[funcIdx].
 				const bool useHeapFrame = fn->m_needsHeapFrame;
-				std::shared_ptr<ibRunContext> heapCtx;
+				ibRunCallFrame heapCtx;
 				// Declared with the slot stack but no width — SetLocalCount below
-				// leases through the pool it was given. The heap-promoted branch
+				// leases through the pool it was given. The captured branch
 				// takes none: that frame is the one that outlives the call.
 				ibRunContext  stackCtx(wxNOT_FOUND, ibRunLifetime::PerCall);
 				ibRunContext* pNewCtx = nullptr;
 				if (useHeapFrame) {
-					heapCtx = std::make_shared<ibRunContext>(lambdaVarCount);
-					pNewCtx = heapCtx.get();
+					heapCtx.Reset(new ibRunCaptureContext(lambdaVarCount));
+					pNewCtx = heapCtx.Get();
 				} else {
 					stackCtx.SetLocalCount(lambdaVarCount);
 					pNewCtx = &stackCtx;
@@ -2002,14 +2274,15 @@ start_label:
 				// For OPER_LFUNC chain-walks inside this lambda body to
 				// reach the lambda's LEXICAL outer scope (not its dynamic
 				// caller), wire m_parentRunContext to the first captured
-				// frame. The captured chain (fn->m_capturedFrames) holds
-				// shared_ptrs to the enclosing fn frames at materialise
-				// time — that's the closure's defining scope. Empty chain
+				// frame. The lambda holds the enclosing frame it was
+				// written in and that one holds the next outwards — the
+				// closure's defining scope. No capture at all
 				// (top-level lambda with no captures) falls back to the
 				// dynamic caller so debugger / stack-walk still sees
 				// something sensible.
-				pNewCtx->m_parentRunContext = !fn->m_capturedFrames.empty()
-					? fn->m_capturedFrames[0].get()
+				ibRunContext* const lexicalOuter = fn->GetCaptured();
+				pNewCtx->m_parentRunContext = lexicalOuter != nullptr
+					? lexicalOuter
 					: (fn->m_moduleFrame != nullptr ? fn->m_moduleFrame : pContext);
 				ibValue* pRetValue = &variable1;
 
@@ -2039,9 +2312,7 @@ start_label:
 						}
 					}
 					else {
-						ibBackendCoreException::Error(
-							_("Lambda call: malformed argument tape (expected OPER_SET/SETCONST at param %ld)"),
-							i);
+						RuntimeError("Lambda call: malformed argument tape (expected OPER_SET/SETCONST at param %ld)", i);
 					}
 				}
 
@@ -2049,19 +2320,13 @@ start_label:
 				// defaults on the lambda's m_listParam (same structure
 				// named-function calls read from at PushCallFunction).
 				for (long i = callerArgCount; i < lambdaParamCount; i++) {
-					if (i >= (long)bfn->m_listParam.size()) {
-						ibBackendCoreException::Error(
-							_("Lambda call: m_listParam shorter than paramCount at param %ld"), i);
-					}
+					if (i >= (long)bfn->m_listParam.size())
+						RuntimeError("Lambda call: m_listParam shorter than paramCount at param %ld", i);
 					const ibParamRunUnit& puDef = bfn->m_listParam[i].m_defaultValue;
-					if (puDef.m_numArray == DEF_VAR_SKIP) {
-						const wxString& nm = (i < (long)bfn->m_listParam.size())
-							? bfn->m_listParam[i].m_strName
-							: wxString::Format(wxT("p%ld"), i);
-						ibBackendCoreException::Error(
-							_("Missing required argument '%s' to function value"),
-							nm);
-					}
+					// The parameter's own name: the line above has already refused an index past the list.
+					if (puDef.m_numArray == DEF_VAR_SKIP)
+						RuntimeError("Missing required argument '%s' to function value",
+							bfn->m_listParam[i].m_strName);
 					CopyValue(pNewCtx->m_pLocVars[i], pLocalByteCode->m_listConst[puDef.m_numIndex]);
 				}
 
@@ -2109,39 +2374,38 @@ start_label:
 				// question, so a family that grows later needs no edit in the
 				// interpreter. This used to be a chain of special cases; it is one call.
 				const ibCtorAbstractType* typeCtor = ibValue::GetAvailableCtor(array2);
-				if (typeCtor == nullptr || !typeCtor->AllowValue(variable1.GetClassType())) {
-					ibBackendCoreException::Error(
-						_("Type mismatch: a value of type '%s' does not fit the declared type '%s'"),
+				if (typeCtor == nullptr || !typeCtor->AllowValue(variable1.GetClassType()))
+					RuntimeError("Type mismatch: a value of type '%s' does not fit the declared type '%s'",
 						variable1.GetClassName(), ibValue::GetNameObjectFromID(array2));
-				}
 				break;
 			}
 				//Operators for working with typed data
 				//NUMBER
 			// The figure is computed first and then stored: the destination may be one of the operands, and
 			// making it a number (MakeNumberValue) resets a value that did not say so yet.
-			case OPER_ADD + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData + cvariable3.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_SUB + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData - cvariable3.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_DIV + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData / cvariable3.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_MOD + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData.Round() % cvariable3.m_fData.Round(); MakeNumberValue(variable1) = r; break; }
-			case OPER_MULT + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData * cvariable3.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_LET + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_NOT + TYPE_DELTA1: variable1.m_fData = cvariable2.m_fData.IsZero(); break;
-			case OPER_INVERT + TYPE_DELTA1: { const ibNumber r = -cvariable2.m_fData; MakeNumberValue(variable1) = r; break; }
-			case OPER_EQ + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData == cvariable3.m_fData); break;
-			case OPER_NE + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData != cvariable3.m_fData); break;
-			case OPER_GT + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData > cvariable3.m_fData); break;
-			case OPER_LS + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData < cvariable3.m_fData); break;
-			case OPER_GE + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData >= cvariable3.m_fData); break;
-			case OPER_LE + TYPE_DELTA1: variable1.m_fData = (cvariable2.m_fData <= cvariable3.m_fData); break;
-			case OPER_SET_ARRAY + TYPE_DELTA1:
-				if (!SetArrayValue(variable1, cvariable2, GetValue(cvariable3)))
-					Raise(ERROR_ARRAY_SET, cvariable3);
-				break;//set array value
-			case OPER_GET_ARRAY + TYPE_DELTA1:
-				if (!GetArrayValue(variable1, variable2, cvariable3))
-					Raise(ERROR_ARRAY_GET, cvariable3);
-				break; //getting the array value
+			case OPER_ADD + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData + cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_SUB + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData - cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_DIV + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData / cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_MOD + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData.Round() % cvariable3.m_fData.Round(); MakeNumberValue(variable1, r); break; }
+			case OPER_MULT + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData * cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_LET + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_INVERT + TYPE_DELTA1: { const ibNumber r = -cvariable2.m_fData; MakeNumberValue(variable1, r); break; }
+			// ⭐ A COMPARISON ANSWERS A VALUE, not a payload - the rule the boolean NOT below already
+			// follows, and the same reason it gives: "a declared type is a GATE (it permits a write, it
+			// does not convert), so nothing types the slot beforehand". These wrote the raw field and
+			// left the tag alone - variable1.m_fData = (a == b), for a result the compiler calls Boolean
+			// - which reads back only where the consumer reaches for that same field. An If does, so
+			// `if (a = b)` was right; anything that TAKES the value does not, and `var same = (a = b);`
+			// came out EMPTY for two typed Numbers (measured with a script, not read off this file).
+			// SetTypeBoolean writes both halves. It is the door NOT, AND and OR use; the general
+			// comparisons write the same two fields inline (CompareValueEQ and its family), so what
+			// this changes is the tier, not the answer.
+			case OPER_EQ + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData == cvariable3.m_fData)); break;
+			case OPER_NE + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData != cvariable3.m_fData)); break;
+			case OPER_GT + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData > cvariable3.m_fData)); break;
+			case OPER_LS + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData < cvariable3.m_fData)); break;
+			case OPER_GE + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData >= cvariable3.m_fData)); break;
+			case OPER_LE + TYPE_DELTA1: SetTypeBoolean(variable1, (cvariable2.m_fData <= cvariable3.m_fData)); break;
 			case OPER_IF + TYPE_DELTA1: if (cvariable1.m_fData.IsZero()) lCodeLine = index2 - 1; break;
 				//STRING
 			// ⭐⭐ NATIVE END TO END — the one string site where wxString leaves the path
@@ -2151,8 +2415,8 @@ start_label:
 			// native. `ibString` has its own `operator+` and `SetString(ibString&&)` STEALS
 			// the buffer. Verified in the /FAsc listing: not one `__imp_wxString` left here.
 			//
-			// AND NO SCRATCH IS PASSED IN, because a string value is already holding the
-			// buffer — `m_pStr` IS the pointer. The destination is holding one too, so it
+			// AND NO SCRATCH IS PASSED IN, because a string value is already holding its
+			// text — `m_sData`. The destination is holding one too, so it
 			// is opened and written through directly: no local built to be moved out of,
 			// and no lvalue ibString that could slide into SetString(const wxString&) via
 			// the implicit conversion. An operand with no text yet builds it straight into
@@ -2167,19 +2431,15 @@ start_label:
 				const ibValue& left = cvariable2;
 				const ibValue& right = cvariable3;
 				if (&dest == &left && &dest != &right &&
-					dest.m_typeClass == ibValueTypes::TYPE_STRING && dest.m_pStr != nullptr) {
-					AddStringValue(*dest.m_pStr, right);          // fused `s = s + expr`, in place
-				}
-				else if (&dest != &left && &dest != &right && !dest.m_bReadOnly) {
-					ibString& out = MakeStringValue(dest);
-					AddStringValue(out, left);
-					AddStringValue(out, right);
+					dest.m_typeClass == ibValueTypes::TYPE_STRING) {
+					AddStringValue(dest.m_sData, right);          // fused `s = s + expr`, in place
 				}
 				else {
-					ibString result;                              // dest aliases an operand, or is read-only
+					ibString result;                              // complete before dest — maybe an operand — is touched
 					AddStringValue(result, left);
 					AddStringValue(result, right);
-					dest.SetString(std::move(result));
+					if (!dest.m_bReadOnly) MakeStringValue(dest, std::move(result));
+					else dest.SetString(std::move(result));       // read-only: SetString redirects the write
 				}
 				break;
 			}
@@ -2187,28 +2447,14 @@ start_label:
 				ibValue& dest = variable1;
 				const ibValue& src = cvariable2;
 				if (&dest == &src) break;                         // `a = a` — nothing to do
-				if (!dest.m_bReadOnly) {
-					AddStringValue(MakeStringValue(dest), src);
-				}
-				else {
-					ibString text;                                // read-only: SetString redirects the write
-					AddStringValue(text, src);
-					dest.SetString(std::move(text));
-				}
+				ibString text;
+				AddStringValue(text, src);                        // a string shares its text; anything else builds one
+				if (!dest.m_bReadOnly) MakeStringValue(dest, std::move(text));
+				else dest.SetString(std::move(text));             // read-only: SetString redirects the write
 				break;
 			}
-			case OPER_SET_ARRAY + TYPE_DELTA2:
-				if (!SetArrayValue(variable1, cvariable2, GetValue(cvariable3)))
-					Raise(ERROR_ARRAY_SET, cvariable3);
-				break; //set array value
-			case OPER_GET_ARRAY + TYPE_DELTA2:
-				if (!GetArrayValue(variable1, variable2, cvariable3))
-					Raise(ERROR_ARRAY_GET, cvariable3);
-				break; //getting the array value
 			case OPER_IF + TYPE_DELTA2: if (cvariable1.IsEmpty()) lCodeLine = index2 - 1; break;
 				//DATE
-			case OPER_ADD + TYPE_DELTA3: variable1.m_dData = cvariable2.m_dData + cvariable3.m_dData; break;
-			case OPER_SUB + TYPE_DELTA3: variable1.m_dData = cvariable2.m_dData - cvariable3.m_dData; break;
 			// ⚠ A DATE IS 64 BITS, AND BOTH SIDES OF THESE TWO WERE NARROWED TO 32.
 			//
 			// `m_dData` is milliseconds since year 1 — about 6.4e13 for any modern date, so `(int)` kept
@@ -2219,36 +2465,14 @@ start_label:
 			// exists to prevent it.
 			//
 			// Both operands are the same field now, and the guard tests what is actually divided by.
-			case OPER_DIV + TYPE_DELTA3:
-				if (cvariable3.m_dData == 0) { Raise(ERROR_DIVIDE_BY_ZERO); }
-				variable1.m_dData = cvariable2.m_dData / cvariable3.m_dData;
-				break;
-			case OPER_MOD + TYPE_DELTA3:
-				if (cvariable3.m_dData == 0) { Raise(ERROR_DIVIDE_BY_ZERO); }
-				variable1.m_dData = cvariable2.m_dData % cvariable3.m_dData;
-				break;
-			case OPER_MULT + TYPE_DELTA3: variable1.m_dData = cvariable2.m_dData * cvariable3.m_dData; break;
-			case OPER_LET + TYPE_DELTA3: variable1.m_dData = cvariable2.m_dData; break;
-			case OPER_NOT + TYPE_DELTA3: variable1.m_dData = ~cvariable2.m_dData; break;
-			case OPER_INVERT + TYPE_DELTA3: variable1.m_dData = -cvariable2.m_dData; break;
-			case OPER_EQ + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData == cvariable3.m_dData); break;
-			case OPER_NE + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData != cvariable3.m_dData); break;
-			case OPER_GT + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData > cvariable3.m_dData); break;
-			case OPER_LS + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData < cvariable3.m_dData); break;
-			case OPER_GE + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData >= cvariable3.m_dData); break;
-			case OPER_LE + TYPE_DELTA3: variable1.m_dData = (cvariable2.m_dData <= cvariable3.m_dData); break;
-			case OPER_SET_ARRAY + TYPE_DELTA3:
-				if (!SetArrayValue(variable1, cvariable2, GetValue(cvariable3)))
-					Raise(ERROR_ARRAY_SET, cvariable3);
-				break; //setting the array value
-			case OPER_GET_ARRAY + TYPE_DELTA3:
-				if (!GetArrayValue(variable1, variable2, cvariable3))
-					Raise(ERROR_ARRAY_GET, cvariable3);
-				break; //getting the array value
-			case OPER_IF + TYPE_DELTA3: if (!cvariable1.m_dData) lCodeLine = index2 - 1; break;
+			case OPER_EQ + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData == cvariable3.m_dData)); break;
+			case OPER_NE + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData != cvariable3.m_dData)); break;
+			case OPER_GT + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData > cvariable3.m_dData)); break;
+			case OPER_LS + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData < cvariable3.m_dData)); break;
+			case OPER_GE + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData >= cvariable3.m_dData)); break;
+			case OPER_LE + TYPE_DELTA3: SetTypeBoolean(variable1, (cvariable2.m_dData <= cvariable3.m_dData)); break;
+			case OPER_IF + TYPE_DELTA3: if (cvariable1.m_dData.IsEmpty()) lCodeLine = index2 - 1; break;
 				//BOOLEAN
-			case OPER_ADD + TYPE_DELTA4: variable1.m_bData = cvariable2.m_bData + cvariable3.m_bData; break;
-			case OPER_LET + TYPE_DELTA4: variable1.m_bData = cvariable2.m_bData; break;
 			case OPER_NOT + TYPE_DELTA4:
 				// Boolean-tier NOT — the typed path a `Not (comparison)` lambda hits. Kleene
 				// NOT(UNKNOWN)=UNKNOWN under the LINQ three-valued flag (the comparison left an
@@ -2264,14 +2488,19 @@ start_label:
 				if (IS_THREE_VALUED_NULL(curCode) && IsNullOperand(cvariable2)) variable1.m_typeClass = ibValueTypes::TYPE_NULL;   // UNKNOWN == SQL NULL (IsNullOperand keys on TYPE_NULL)
 				else SetTypeBoolean(variable1, !cvariable2.m_bData);
 				break;
-			case OPER_INVERT + TYPE_DELTA4: variable1.m_bData = !cvariable2.m_bData; break;
-			case OPER_EQ + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData == cvariable3.m_bData); break;
-			case OPER_NE + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData != cvariable3.m_bData); break;
-			case OPER_GT + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData > cvariable3.m_bData); break;
-			case OPER_LS + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData < cvariable3.m_bData); break;
-			case OPER_GE + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData >= cvariable3.m_bData); break;
-			case OPER_LE + TYPE_DELTA4: variable1.m_bData = (cvariable2.m_bData <= cvariable3.m_bData); break;
-			case OPER_IF + TYPE_DELTA4: if (!cvariable1.m_bData) lCodeLine = index2 - 1; break;
+			case OPER_EQ + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData == cvariable3.m_bData)); break;
+			case OPER_NE + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData != cvariable3.m_bData)); break;
+			case OPER_GT + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData > cvariable3.m_bData)); break;
+			case OPER_LS + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData < cvariable3.m_bData)); break;
+			case OPER_GE + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData >= cvariable3.m_bData)); break;
+			case OPER_LE + TYPE_DELTA4: SetTypeBoolean(variable1, (cvariable2.m_bData <= cvariable3.m_bData)); break;
+			case OPER_IF + TYPE_DELTA4:
+				// Same mark as the untyped test: a boolean-tier comparison can still be SQL NULL,
+				// and that must not skip the right operand of `and`.
+				if (curCode.m_param4.m_numIndex == LINQ_THREE_VALUED_NULL && IsNullOperand(cvariable1))
+					break;
+				if (!cvariable1.m_bData) lCodeLine = index2 - 1;
+				break;
 			}
 			lCodeLine++;
 		}
@@ -2305,33 +2534,30 @@ start_label:
 
 	}
 	catch (const ibBackendException& err) {
-
-		const long trySize = tryList.size() - 1;
-		if (trySize >= 0) {
-
-			if (auto* puState = ibSession::GetPUState())
-				puState->m_errorPlace.Reset(); //Error is handled in this module - erase the error location
-
-			const long tryCodeLine = tryList[trySize].m_lEndLine;
-			tryList.resize(trySize);
-			lCodeLine = tryCodeLine;
+		if (catchError(err))
 			goto start_label;
-		}
-
-		//there is no handler in this module - save the error location for the following modules
-		//But we don't throw an error right away, because we don't know if there are any handlers further
-		if (auto* puState = ibSession::GetPUState()) {
-			if (puState->m_errorPlace.m_byteCode == nullptr && m_pByteCode != puState->m_errorPlace.m_skipByteCode) { //the Error system function throws an exception only for child modules
-
-				//previously saved the original error location (i.e. the error didn't occur in this module)
-				puState->m_errorPlace.m_byteCode = m_pByteCode;
-				puState->m_errorPlace.m_errorLine = lCodeLine;
-			}
-		}
-
-		//show and throw error message (ProcessError rethrows via `throw;`)
-		ibBackendException::ProcessError(err, m_pByteCode->m_listCode[lCodeLine]);
+		propagate = std::current_exception();
 	}
+	// …AND A REFUSAL OF THE CORE BELOW — a read that could not go on — is the module's failure like any other: met as the
+	// engine's own (ibBackendCoreException), so a Try takes it and the error is placed where it happened.
+	// The conversion is thrown after this handler returns. Throwing it here would be a second frame
+	// above the one that already failed.
+	catch (const ibCoreException& core) {
+		coreRefusal = core.GetErrorDescription();
+	}
+
+	if (coreRefusal) {
+		try {
+			ibBackendCoreException::Error(wxT("%s"), *coreRefusal);
+		}
+		catch (const ibBackendException& err) {
+			if (catchError(err))
+				goto start_label;
+			propagate = std::current_exception();
+		}
+	}
+	if (propagate)
+		std::rethrow_exception(propagate);
 
 	// ⭐ THE CANCEL GOES UP, TO WHOEVER CALLED. This frame has run out - of the loops the block above walked it
 	// out of, or of its code - and while the cancel stands it throws on: the frame that called this one hears
@@ -2520,7 +2746,7 @@ void ibProcUnit::Execute(const ibByteCode& cByteCode, ibByteBinder& br, ibValue*
 //bExportOnly=0-search for any functions in the current module + exported ones in parent modules
 //bExportOnly=1-search for exported functions in the current and parent modules
 //bExportOnly=2-search for exported functions in the current module only
-long ibProcUnit::FindMethod(const wxString& strMethodName, bool bError, int bExportOnly) const
+long ibProcUnit::FindMethod(const ibString& strMethodName, bool bError, int bExportOnly) const
 {
 	if (m_pByteCode == nullptr ||
 		!m_pByteCode->m_bCompile) {
@@ -2548,7 +2774,7 @@ long ibProcUnit::FindMethod(const wxString& strMethodName, bool bError, int bExp
 	return wxNOT_FOUND;
 }
 
-long ibProcUnit::FindFunction(const wxString& strMethodName, bool bError, int bExportOnly) const
+long ibProcUnit::FindFunction(const ibString& strMethodName, bool bError, int bExportOnly) const
 {
 	if (m_pByteCode == nullptr ||
 		!m_pByteCode->m_bCompile) {
@@ -2576,7 +2802,7 @@ long ibProcUnit::FindFunction(const wxString& strMethodName, bool bError, int bE
 	return wxNOT_FOUND;
 }
 
-long ibProcUnit::FindProcedure(const wxString& strMethodName, bool bError, int bExportOnly) const
+long ibProcUnit::FindProcedure(const ibString& strMethodName, bool bError, int bExportOnly) const
 {
 	if (m_pByteCode == nullptr ||
 		!m_pByteCode->m_bCompile) {
@@ -2606,7 +2832,7 @@ long ibProcUnit::FindProcedure(const wxString& strMethodName, bool bError, int b
 
 //Calling a procedure by name
 //The call is made only in the current module
-bool ibProcUnit::CallAsProc(const wxString& funcName, ibValue** ppParams, const long lSizeArray)
+bool ibProcUnit::CallAsProc(const ibString& funcName, ibValue** ppParams, const long lSizeArray)
 {
 	if (m_pByteCode != nullptr) {
 		const long lCodeLine = m_pByteCode->FindMethod(funcName);
@@ -2620,7 +2846,7 @@ bool ibProcUnit::CallAsProc(const wxString& funcName, ibValue** ppParams, const 
 
 //Calling a function by name
 //The call is made only in the current module
-bool ibProcUnit::CallAsFunc(const wxString& funcName, ibValue& pvarRetValue, ibValue** ppParams, const long lSizeArray)
+bool ibProcUnit::CallAsFunc(const ibString& funcName, ibValue& pvarRetValue, ibValue** ppParams, const long lSizeArray)
 {
 	if (m_pByteCode != nullptr) {
 		const long lCodeLine = m_pByteCode->FindMethod(funcName);
@@ -2654,6 +2880,7 @@ void ibProcUnit::CallAsProc(const long lCodeLine, ibValue** ppParams, const long
 	// this one lives exactly as long as the Execute below it. No session (a sandbox
 	// run with none bound) means no stack to lease from, and the frame falls back to
 	// the heap on its own.
+	const ibByteUnit* const codeBase = m_pByteCode->m_listCode.data();   // what `curCode` reads (index3 / array3)
 	ibRunContext cRunContext(index3, ibRunLifetime::PerCall);// number of local variables
 
 	cRunContext.m_lParamCount = array3;//number of formal parameters
@@ -2685,6 +2912,7 @@ void ibProcUnit::CallAsFunc(const long lCodeLine, ibValue& pvarRetValue, ibValue
 		return;
 	}
 
+	const ibByteUnit* const codeBase = m_pByteCode->m_listCode.data();   // what `curCode` reads (index3 / array3)
 	ibRunContext cRunContext(index3, ibRunLifetime::PerCall);// number of local variables
 
 	cRunContext.m_lParamCount = array3;//number of formal parameters
@@ -2700,7 +2928,7 @@ void ibProcUnit::CallAsFunc(const long lCodeLine, ibValue& pvarRetValue, ibValue
 	Execute(&cRunContext, &pvarRetValue, false);
 }
 
-long ibProcUnit::FindProp(const wxString& strPropName) const
+long ibProcUnit::FindProp(const ibString& strPropName) const
 {
 	// Module-level exports are user-declared frame vars with kind=Export.
 	// Skip Local (private), External / Context (ambient bindings — not
@@ -2709,7 +2937,7 @@ long ibProcUnit::FindProp(const wxString& strPropName) const
 	auto iterator = std::find_if(m_pByteCode->m_listVar.begin(), m_pByteCode->m_listVar.end(),
 		[&strPropName](const auto& v) {
 			if (!v.IsExport()) return false;
-			return stringUtils::CompareString(strPropName, v.m_strRealName);
+			return strPropName.IsSameAs(v.m_strRealName, false);   // wx names against the engine's own, buffer to buffer
 		});
 	if (iterator != m_pByteCode->m_listVar.end())
 		return (long)*iterator;
@@ -2722,7 +2950,7 @@ bool ibProcUnit::SetPropVal(const long lPropNum, const ibValue& varPropVal)//set
 	return true;
 }
 
-bool ibProcUnit::SetPropVal(const wxString& strPropName, const ibValue& varPropVal)//setting attribute
+bool ibProcUnit::SetPropVal(const ibString& strPropName, const ibValue& varPropVal)//setting attribute
 {
 	long lPropNum = FindProp(strPropName);
 	if (lPropNum != wxNOT_FOUND) {
@@ -2751,7 +2979,7 @@ bool ibProcUnit::GetPropVal(const long lPropNum, ibValue& pvarPropVal) //attribu
 	return true;
 }
 
-bool ibProcUnit::GetPropVal(const wxString& strPropName, ibValue& pvarPropVal) //setting attribute
+bool ibProcUnit::GetPropVal(const ibString& strPropName, ibValue& pvarPropVal) //setting attribute
 {
 	const long lPropNum = FindProp(strPropName);
 	if (lPropNum != wxNOT_FOUND) {
@@ -2806,7 +3034,7 @@ private:
 	const ibByteCode::ibByteFunction* m_evalHostFunction;
 };
 
-bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunContext, ibValue& pvarRetValue,
+bool ibProcUnit::Evaluate(const ibString& strExpression, ibRunContext* pRunContext, ibValue& pvarRetValue,
 	bool compileBlock, ibEvalMode evalMode)
 {
 	if (pRunContext == nullptr) {
@@ -2827,8 +3055,8 @@ bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunConte
 	// row + silent `false` return. Watch handler in the designer prints
 	// the result via ibValue::ToString; a string-typed ibValue with
 	// "<error: msg>" reads naturally.
-	auto reportFailure = [&pvarRetValue](const wxString& msg) {
-		pvarRetValue = ibValue(wxString(wxT("<error: ")) + msg + wxT(">"));
+	auto reportFailure = [&pvarRetValue](const ibString& msg) {
+		pvarRetValue = ibValue(ibString(wxT("<error: ")) + msg + wxT(">"));
 	};
 
 	// A SANDBOX IS NOT AN EXPRESSION, so it is neither looked up here nor kept below: the text is a
@@ -2874,12 +3102,12 @@ bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunConte
 			if (reusable)
 				pRunContext->m_listEval.emplace_back(stringUtils::MakeUpper(strExpression), runEvaluate);
 		}
-		catch (const ibBackendException& e) {
+		catch (const ibCoreException& e) {
 			reportFailure(e.GetErrorDescription());
 			return false;
 		}
 		catch (const std::exception& e) {
-			reportFailure(wxString::FromUTF8(e.what()));
+			reportFailure(ibString::FromUTF8(e.what()));
 			return false;
 		}
 	}
@@ -2897,10 +3125,10 @@ bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunConte
 	// directly — no +1 shift in pppArrayList[depth + (bDelta?1:0)].
 	// ⭐⭐ AN EVAL BLOCK RUNS IN A HEAP FRAME, so a lambda made inside it can CAPTURE it.
 	//
-	// Capture is decided by one runtime question (procContext.h): a frame is capturable iff
-	// `weak_from_this().lock()` returns something — which is true of frames built by make_shared and
-	// false of every frame that is a MEMBER, as `m_cCurContext` is. A lambda materialised in an eval
-	// block therefore captured NOTHING, and the depths the compiler had emitted no longer pointed
+	// Capture is decided by the KIND a frame carries (procContext.h): only ibRunCaptureContext is
+	// capturable, which no frame that is a MEMBER can be, as `m_cCurContext` is one. A lambda
+	// materialised in an eval block therefore captured NOTHING, and the depths the compiler had
+	// emitted no longer pointed
 	// where it meant: depth 1 was supposed to reach the block's own frame and instead landed on the
 	// host's, one layer further out.
 	//
@@ -2918,22 +3146,22 @@ bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunConte
 	// ⚠ `m_ppArrayContext[0]` still points at the member frame and that is correct: depth 0 is read
 	// straight from `m_pRefLocVars` (procUnitLambda.h), so slot 0 of the list is unused in normal
 	// execution — the note there says so, and this relies on it rather than restating it.
-	std::shared_ptr<ibRunContext> spBlockFrame;
+	ibRunCallFrame spBlockFrame;
 	ibRunContext* pEvalFrame = &runEvaluate->m_cCurContext;
 	if (compileBlock) {
 		const ibByteCode* evalBc = runEvaluate->GetByteCode();
-		spBlockFrame = std::make_shared<ibRunContext>(
-			evalBc != nullptr ? (int)evalBc->m_lVarCount : (int)runEvaluate->m_cCurContext.GetLocalCount());
+		spBlockFrame.Reset(new ibRunCaptureContext(
+			evalBc != nullptr ? (int)evalBc->m_lVarCount : (int)runEvaluate->m_cCurContext.GetLocalCount()));
 		spBlockFrame->m_procUnit         = runEvaluate.get();
 		spBlockFrame->m_parentRunContext = pRunContext;   // the host frame, for the capture walk
 		spBlockFrame->m_lStart           = runEvaluate->m_cCurContext.m_lStart;
-		pEvalFrame = spBlockFrame.get();
+		pEvalFrame = spBlockFrame.Get();
 	}
 
 	try {
 		runEvaluate->Execute(pEvalFrame, &pvarRetValue, /*bDelta=*/false);
 	}
-	catch (const ibBackendException& e) {
+	catch (const ibCoreException& e) {
 		// Carry the message into the watch result. Previous behaviour
 		// (bare `return false`) made the panel show a blank row for
 		// any runtime failure — user couldn't tell apart a deliberately-
@@ -2942,7 +3170,7 @@ bool ibProcUnit::Evaluate(const wxString& strExpression, ibRunContext* pRunConte
 		return false;
 	}
 	catch (const std::exception& e) {
-		reportFailure(wxString::FromUTF8(e.what()));
+		reportFailure(ibString::FromUTF8(e.what()));
 		return false;
 	}
 

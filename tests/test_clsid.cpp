@@ -3,14 +3,15 @@
 //
 // ibClassID = [63:56] kind (1 byte) | [55:0] body (56 bits), see clsid.h.
 //   * static types: body = ib_clsid_hash(name) & 56-bit, kind = the registrar family.
-//   * dynamic metaobject values: body = the metaID itself (constructive), kind = the metatype.
+//   * dynamic metaobject values: body = metaclass (55:32) | metaID (31:0), constructive; kind = the metatype.
+//     With no metaclass given (these tests), the body is the metaID itself.
 // string_to_clsid is GONE — every callsite uses a per-kind generator (value_to_clsid, …).
 // =============================================================================
 
 #include <gtest/gtest.h>
 #include <set>
 #include "backend/backend_core.h"
-#include "backend/clsid.h"
+#include "core/clsid.h"
 
 // --- the underlying FNV-1a hash is still deterministic (it is the body source) ---
 TEST(ClsidTest, HashIsDeterministic) {

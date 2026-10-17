@@ -64,7 +64,8 @@ ibValueStructure* BuildKindNamespace(ibMetaData* metaData, const ibClassID& clsi
 			holder != nullptr ? holder->GetQueryable() : nullptr;
 		if (queryable == nullptr)
 			continue;   // the kind member exists but this object vends no source
-		names->Insert(object->GetName(),
+		// A name repeated while the configuration is edited is put, not inserted (globalContextManager.cpp).
+		names->SetAt(object->GetName(),
 			new ibValueQueryable(queryable, kindName + wxT(".") + object->GetName()));
 	}
 	return names;
@@ -119,7 +120,7 @@ bool ibValueModuleManager::ibValueDataUnit::CallAsFunc(const long lMethodNum, ib
 		// The wrapper copies the table reference (the held ibValue keeps it alive);
 		// the Queryable OWNS the wrapper and shares it across chain links.
 		pvarRetValue = new ibValueQueryable(
-			std::make_shared<ibTempTableQueryable>(*paParams[0]), wxT("From"));
+			std::make_shared<ibTempTableQueryable>(*paParams[0], m_metaData), wxT("From"));
 		return true;
 	}
 	}

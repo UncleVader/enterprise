@@ -67,7 +67,7 @@ enum class ibQueryExprKind
 	BinOp,    // m_binOp applied to m_lhs / m_rhs
 	Func,     // m_name ( m_args... )
 	Case,     // CASE WHEN m_cases[i].first THEN m_cases[i].second ... [ELSE m_else] END
-	In,       // m_lhs [NOT m_negated] IN ( m_args... )
+	In,       // m_lhs [NOT m_negated] IN ( m_args... ) — or IN ( m_subquery ) when a subquery is set
 	IsNull,   // m_lhs IS [NOT m_negated] NULL
 	Not,      // NOT m_lhs
 	Cast,     // CAST( m_lhs AS <m_castType, spelled per-DBMS via the dialect TYPE-MAP> ) — pin an expr's type
@@ -175,7 +175,15 @@ struct ibQueryExpr
 
 	// Exists: the correlated subquery. A shared_ptr to the (fwd-declared) relation tree — the subquery
 	// references the OUTER write row's columns, so it renders as a self-contained `EXISTS ( SELECT … )`.
+	// In: the set it tests against, when it is a query rather than a list — `x IN ( SELECT … )`.
 	std::shared_ptr<ibQueryRel> m_subquery;
+
+	// ⭐ A NAMED QUERY THIS EXPRESSION READS, declared ahead of the whole statement (`WITH …`). An engine
+	// may not nest WITH inside a subquery (Firebird does not), so the one who writes the condition cannot
+	// place the declaration where it is used: it hands it along, and the renderer gathers every such
+	// declaration into the statement's WITH before the select is written. A recursive one (a walk down a
+	// parent chain — «in hierarchy») is the case that asked for it.
+	std::shared_ptr<struct ibQueryCte> m_with;
 
 	ibQuerySpan m_span;
 
@@ -632,6 +640,16 @@ inline ibQueryExprPtr ibExists(ibQueryRelPtr subquery, bool negated = false)
 	return e;
 }
 
+// lhs [NOT] IN ( <subquery> ) — the subquery selects ONE column. Uncorrelated: it is a set, not a test per row.
+inline ibQueryExprPtr ibInQuery(ibQueryExprPtr lhs, ibQueryRelPtr subquery, bool negated = false)
+{
+	auto e = std::make_shared<ibQueryExpr>(ibQueryExprKind::In);
+	e->m_lhs      = std::move(lhs);
+	e->m_subquery = std::move(subquery);
+	e->m_negated  = negated;
+	return e;
+}
+
 // ⭐ ONE NAMED QUERY, WRITTEN ONCE AND READ BY NAME — a common table expression.
 //
 // It exists for the thing a package already says: a statement NAMES its result (`ONTO`) and later
@@ -645,6 +663,10 @@ struct ibQueryCte
 {
 	wxString      m_name;
 	ibQueryRelPtr m_query;
+	// RECURSIVE: the query reads its own name — a UNION whose second member joins back to it, the way a
+	// parent chain is walked down. Said with `WITH RECURSIVE`, which only a dialect that walks trees has
+	// (ibSqlFeatures::m_recursiveCte).
+	bool          m_recursive = false;
 };
 
 struct ibQueryIR
@@ -719,6 +741,8 @@ struct ibDdlStatement
 	wxString              m_indexName;
 	std::vector<wxString> m_indexColumns;   // CreateIndex: the indexed columns
 	bool                  m_unique = false; // CreateIndex: UNIQUE
+	bool                  m_descending = false; // CreateIndex / DropIndex: the twin a backward read walks
+	                                            // (ibDialectDictionary::m_descendingIndexWord)
 
 	bool m_ifExists    = false;   // DropTable
 	bool m_ifNotExists = false;   // CreateTable
@@ -851,15 +875,16 @@ inline ibDdlStatement ibAlterTable(const wxString& table, std::vector<ibAlterCla
 	return s;
 }
 
-// CREATE [UNIQUE] INDEX <name> ON <table> (<columns>).
+// CREATE [UNIQUE] [DESCENDING] INDEX <name> ON <table> (<columns>).
 inline ibDdlStatement ibCreateIndex(const wxString& table, const wxString& indexName,
-                                    std::vector<wxString> columns, bool unique = false)
+                                    std::vector<wxString> columns, bool unique = false, bool descending = false)
 {
 	ibDdlStatement s(ibDdlKind::CreateIndex);
 	s.m_table        = table;
 	s.m_indexName    = indexName;
 	s.m_indexColumns = std::move(columns);
 	s.m_unique       = unique;
+	s.m_descending   = descending;
 	return s;
 }
 
@@ -876,13 +901,14 @@ inline ibDdlStatement ibDropIndex(const wxString& indexName, const wxString& tab
 // The same DROP INDEX carrying the index's COLUMNS and uniqueness — for the compensation ledger,
 // which re-creates it if the second phase fails. The renderer spells only the name.
 inline ibDdlStatement ibDropIndex(const wxString& indexName, const wxString& table,
-                                  std::vector<wxString> columns, bool unique)
+                                  std::vector<wxString> columns, bool unique, bool descending = false)
 {
 	ibDdlStatement s(ibDdlKind::DropIndex);
 	s.m_indexName    = indexName;
 	s.m_table        = table;
 	s.m_indexColumns = std::move(columns);
 	s.m_unique       = unique;
+	s.m_descending   = descending;
 	return s;
 }
 
@@ -1077,7 +1103,8 @@ private:
 	static wxString BinOpText(ibQueryBinOp op);
 	static wxString JoinTypeText(ibQueryJoinType type);
 
-	wxString RenderColumn(const ibDdlColumn& col);      // "<name> <sqltype> [PRIMARY KEY|NOT NULL]"
+	// inlinePrimaryKey false: a composite key is a table constraint, so the column is only NOT NULL.
+	wxString RenderColumn(const ibDdlColumn& col, bool inlinePrimaryKey = true);
 	wxString MapType(const ibColumnType& type) const;   // canonical type -> dialect SQL type (thin wrapper over ibMapColumnType)
 
 	ibDialectDictionary m_dialect;             // BY VALUE — a renderer built from a dialect TEMPORARY
@@ -1120,6 +1147,11 @@ BACKEND_API bool ibCanPushWindow(const ibDatabaseLayer* layer);
 // joined here. (FB 2.1+, PG, SQLite 3.8.3+ yes; the ANSI baseline — ODBC — no.) Asked before
 // choosing the shape, unlike the renderer, which refuses once a WITH has already been built.
 BACKEND_API bool ibCanUseCte(const ibDatabaseLayer* layer);
+
+// WITH RECURSIVE — can this driver walk a parent chain itself? It is what keeps «in hierarchy» inside the
+// SQL: without it the subtree has to be read here and sent back as a list. (FB 2.1+, PG, SQLite 3.8.3+
+// yes; ODBC no.)
+BACKEND_API bool ibCanWalkTree(const ibDatabaseLayer* layer);
 
 // (No `ibCanUseTempTables` here, and the reason is worth keeping: the per-driver temp facts'
 //  PRESENCE already IS that capability, and the one caller — the temp-table manager — needs the
@@ -1208,11 +1240,11 @@ public:
 	// (the "same shape as L1, minus the dialect"). The provider's value-assembly reads the
 	// physical _N/_S/_RRRef columns through THESE, so it never touches the raw L1 result set — which
 	// is no longer reachable at all (see below). Delegate to the borrowed driver cursor.
-	wxString    GetResultString(const wxString& name);
+	ibString    GetResultString(const wxString& name);   // the engine's own text (fstring.h); NULL is empty
 	int         GetResultInt(const wxString& name);
 	long long   GetResultLong(const wxString& name);
 	bool        GetResultBool(const wxString& name);
-	wxDateTime  GetResultDate(const wxString& name);
+	ibDateTime  GetResultDate(const wxString& name);   // the reading (fdatetime.h); NULL is the empty date
 	double      GetResultDouble(const wxString& name);
 	ibNumber    GetResultNumber(const wxString& name);
 	void*       GetResultBlob(const wxString& name, wxMemoryBuffer& buffer);
@@ -1225,9 +1257,10 @@ public:
 	// and an aggregate are one field and nothing else, so an empty fold (`MIN(x)` over a group that
 	// matched nothing) comes back as SQL NULL with no way to say so.
 	//
-	// 🛑 Asked as a date, that NULL is an INVALID wxDateTime, and assigning one into an ibValue trips
-	// its assertion and stops the program — which is how a self-join's `MIN(Period)`, the moment it
-	// began folding on the server, came back as a debug alert instead of a blank cell (2026-09-06).
+	// 🛑 Asked as a date, that NULL is the empty date - indistinguishable from a date nobody filled in -
+	// and before the date was the engine's own it was an INVALID wxDateTime that tripped an assertion and
+	// stopped the program: a self-join's `MIN(Period)`, the moment it began folding on the server, came
+	// back as a debug alert instead of a blank cell (2026-09-06).
 	// The RAM fold answers the same case with a real NULL (ibAggAcc::Result); this is what lets the
 	// server road say it too, instead of guessing from a value that has no way to be absent.
 	bool        IsResultNull(const wxString& name);
@@ -1238,11 +1271,11 @@ public:
 	int         FieldIndex(FieldSlots& slots, const wxString& base, unsigned slot, const wxString& suffix);
 
 	// …and the typed reads of a field found that way, answering exactly what the named reads answer.
-	wxString    GetResultString(int field);
+	ibString    GetResultString(int field);
 	int         GetResultInt(int field);
 	long long   GetResultLong(int field);
 	bool        GetResultBool(int field);
-	wxDateTime  GetResultDate(int field);
+	ibDateTime  GetResultDate(int field);
 	ibNumber    GetResultNumber(int field);
 	void*       GetResultBlob(int field, wxMemoryBuffer& buffer);
 	bool        IsResultNull(int field);
@@ -1433,8 +1466,7 @@ public:
 	                 ibDatabaseConnectionHolder* holder = nullptr);
 	~ibQueryStatement() override = default;
 
-	// Keep the base's non-pure overloads visible alongside our overrides.
-	using ibPreparedStatement::SetParamDate;
+	// Keep the base's non-pure overload visible alongside our overrides.
 	using ibPreparedStatement::SetParamBlob;
 
 	// --- ibPreparedStatement: bind -> capture as an L2-1 value node ----------
@@ -1442,10 +1474,10 @@ public:
 	void SetParamInt(int nPosition, int nValue) override;
 	void SetParamDouble(int nPosition, double dblValue) override;
 	void SetParamNumber(int nPosition, const ibNumber& numValue) override;
-	void SetParamString(int nPosition, const wxString& strValue) override;
+	void SetParamString(int nPosition, const ibString& strValue) override;
 	void SetParamNull(int nPosition) override;
 	void SetParamBlob(int nPosition, const void* pData, long nDataLength) override;
-	void SetParamDate(int nPosition, const wxDateTime& dateValue) override;
+	void SetParamDate(int nPosition, const ibDateTime& dateValue) override;
 	void SetParamBool(int nPosition, bool bValue) override;
 	int  GetParameterCount() override { return static_cast<int>(m_columns.size()); }
 
@@ -1519,18 +1551,17 @@ public:
 	ibBatchInsert(const wxString& table, std::vector<wxString> columns, ibDatabaseConnectionHolder* holder = nullptr);
 	~ibBatchInsert() override;
 
-	// Keep the base's non-pure overloads visible alongside our overrides.
-	using ibQueryStatement::SetParamDate;
+	// Keep the base's non-pure overload visible alongside our overrides.
 	using ibQueryStatement::SetParamBlob;
 
 	// --- the row being bound: into the prepared INSERT, or captured as the template's values ---------
 	void SetParamInt(int nPosition, int nValue) override;
 	void SetParamDouble(int nPosition, double dblValue) override;
 	void SetParamNumber(int nPosition, const ibNumber& numValue) override;
-	void SetParamString(int nPosition, const wxString& strValue) override;
+	void SetParamString(int nPosition, const ibString& strValue) override;
 	void SetParamNull(int nPosition) override;
 	void SetParamBlob(int nPosition, const void* pData, long nDataLength) override;
-	void SetParamDate(int nPosition, const wxDateTime& dateValue) override;
+	void SetParamDate(int nPosition, const ibDateTime& dateValue) override;
 	void SetParamBool(int nPosition, bool bValue) override;
 
 	// The row is bound: it runs, or is held for the next statement. Answers the rows this call wrote — 0 while

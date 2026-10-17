@@ -7,7 +7,6 @@
 #include "backend/utils/md5.hpp"
 #include "backend/appData.h"
 #include "backend/logger/logger.h"
-#include "backend/diagnostics/journal.h"   // ibJournal — the apply writes WHAT changed, not only that it did
 #include "backend/backend_exception.h"
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -18,7 +17,7 @@
 // this-less callers (static scaffold methods, the apply dialog) reach it without a metadata handle.
 ibRestructureInfo& ibMetaDataConfigurationBase::GetRestructureInfo()
 {
-	return ibApplicationData::GetActiveMetaData()->m_restructureInfo;
+	return ibApplicationInstance::GetActiveMetaData()->m_restructureInfo;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -85,7 +84,7 @@ bool ibMetaDataConfiguration::LoadDatabase(int flags)
 
 		m_configNew = false;
 
-		m_metaGuid = result.GetResultString(wxT("file_guid"));
+		m_metaGuid = ibGuid(result.GetResultString(wxT("file_guid")));
 		m_md5Hash = ibMD5::ComputeMd5(wxBase64Encode(binaryData.GetData(), binaryData.GetDataLen()));
 	}
 
@@ -96,7 +95,7 @@ bool ibMetaDataConfiguration::LoadDatabase(int flags)
 //*                                          ConfigSaveMetadata                                    *
 //**************************************************************************************************
 
-#include "metaCollection/partial/constant.h"
+#include "metaCollection/metaStoredValueObject.h"   // the shared sys_const table every stored value lives in
 #include "backend/query/schemaSnapshot.h"   // ibSchemaSnapshot — the Storage builds it (ContributeTables) and hands it to the builder
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -141,7 +140,7 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 	// transaction + the auto-acquired exclusive mode — the next apply then bails
 	// silently at the "transaction already active" guard ("metadata returned
 	// false", no text). Roll back + release here and rethrow so any caller
-	// (designer / codeRunner / daemon) still reports the error and the DB stays clean.
+	// (designer / codeRunner / appserver) still reports the error and the DB stays clean.
 	try {
 
 	//remove old tables (if need)
@@ -162,7 +161,7 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 
 			GetRestructureInfo().AppendInfo(_("Create new database"));
 
-			if (!ibValueMetaObjectConstant::DeleteConstantSQLTable()) {
+			if (!ibValueMetaObjectStoredValue::DeleteConstantSQLTable()) {
 #if _USE_SAVE_METADATA_IN_TRANSACTION == 1
 				db_query->RollBack(); return false;
 #else
@@ -178,7 +177,7 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 #endif
 			}
 
-			if (!ibValueMetaObjectConstant::CreateConstantSQLTable()) {
+			if (!ibValueMetaObjectStoredValue::CreateConstantSQLTable()) {
 #if _USE_SAVE_METADATA_IN_TRANSACTION == 1
 				db_query->RollBack(); return false;
 #else
@@ -285,7 +284,7 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 		if (ibLog != nullptr && ibLog->IsEnabled(ibLogLevel::Audit)) {
 			wxString reason;
 			try { throw; }
-			catch (const ibBackendException& err) { reason = err.GetErrorDescription(); }
+			catch (const ibCoreException& err) { reason = err.GetErrorDescription(); }
 			catch (const std::exception& err)     { reason = wxString::FromUTF8(err.what()); }
 			catch (...)                           { reason = _("unknown exception"); }
 			ibLog->Audit(wxT("metadata"), wxT("apply_failed"),
@@ -445,16 +444,14 @@ bool ibMetaDataConfigurationStorage::OnAfterSaveDatabase(bool roolback, int flag
 			}
 		} txGuard;
 #endif
-		if (!m_configMetadata->LoadDatabase(onlyLoadFlag)) {
-#if _USE_SAVE_METADATA_IN_TRANSACTION == 1
-			db_query->RollBack();
-			txGuard.m_done = true;
-#else
-			return false;
-#endif
-		}
-
-		if (!m_configNew && !m_configMetadata->RunDatabase()) {
+		// ⭐ THE DATABASE'S COPY IS READ INTO A NEW ONE, never re-read in place: the one before may be the base's
+		// active configuration by now, with sessions working in it, and nothing is changed under them — it goes with
+		// its last holder (metadata-hot-reload.md § 8). Run as the mirror it is (loadConfigFlag), as RunDatabase
+		// runs it.
+		const std::shared_ptr<ibMetaDataConfiguration> published = MakeShared<ibMetaDataConfiguration>(m_owner);
+		const bool read = published->LoadDatabase(onlyLoadFlag)
+			&& (m_configNew || published->RunDatabase(loadConfigFlag));
+		if (!read) {
 #if _USE_SAVE_METADATA_IN_TRANSACTION == 1
 			db_query->RollBack();
 			txGuard.m_done = true;
@@ -468,6 +465,13 @@ bool ibMetaDataConfigurationStorage::OnAfterSaveDatabase(bool roolback, int flag
 			db_query->Commit();
 		txGuard.m_done = true;
 #endif
+		if (read) {
+			m_configMetadata = published;
+			// …and the sessions to come get it: what the database publishes now is the base's active configuration —
+			// this very copy, read once. The sessions working in the one before keep it.
+			if (m_applicationInstance != nullptr && published->IsConfigOpen())
+				m_applicationInstance->ReplaceActiveMetaData(published);
+		}
 		Modify(false);
 
 		// One-time flag: the very first apply on a fresh DB runs the "create new database" path (DROP +

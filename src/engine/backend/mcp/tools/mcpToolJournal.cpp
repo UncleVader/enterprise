@@ -36,19 +36,18 @@
 #include "backend/mcp/mcpTool.h"
 
 #include "backend/appData.h"
-#include "backend/diagnostics/journal.h"
 #include "backend/compiler/value.h"      // ibValue - the payload journal_write carries
 #include "backend/system/value/valueMap.h"   // ibValueStructure - what a sent object becomes
 #include "backend/logger/logger.h"
 #include "backend/logger/loggerReader.h"
 #include "backend/metadataConfiguration.h"   // activeMetaData - the door that knows configuration types
-#include "backend/serialize/dataBuilder.h"   // ibDataNode + ibBinaryProvider - the details payload
+#include "core/programFolder.h"          // the journal lives in the diagnostic folder
+#include "core/serialize/dataBuilder.h"   // ibDataNode + ibBinaryProvider - the details payload
 
 #include <wx/datetime.h>
 #include <wx/dir.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
-#include <wx/stdpaths.h>
 #include <wx/tokenzr.h>
 
 #include <algorithm>
@@ -111,7 +110,7 @@ int LevelFromWord(const wxString& word)
 // binary writes no file at all, which is a different answer from "nothing matched" and is reported
 // as one.
 
-const ibArg& ArgTraceApp() { static const ibArg a(wxT("app"), ibArg::Kind::Text, ibMcpText("Only this application's run: designer, enterprise, daemon, codeRunner. Leave it out to read every application at once - that is usually what is wanted, because the run being debugged is a different process from this one.")); return a; }
+const ibArg& ArgTraceApp() { static const ibArg a(wxT("app"), ibArg::Kind::Text, ibMcpText("Only this application's run: designer, enterprise, appserver, codeRunner. Leave it out to read every application at once - that is usually what is wanted, because the run being debugged is a different process from this one.")); return a; }
 const ibArg& ArgTraceSource() { static const ibArg a(wxT("source"), ibArg::Kind::Text, ibMcpText("Only this subsystem, matched by PREFIX: query catches query.sql, query.road, query.compose and query.stitch; db.firebird is the driver, exception is a raise with its site.")); return a; }
 const ibArg& ArgTraceLevel() { static const ibArg a(wxT("level"), ibArg::Kind::Text, ibMcpText("Lowest severity to report: info, warning, error. The engine's journal has no audit level - that one belongs to journal_read.")); return a; }
 
@@ -150,8 +149,9 @@ wxString TraceDirectory()
 	if (!own.IsEmpty())
 		return wxFileName(own).GetPath();
 
-	return wxFileName(wxStandardPaths::Get().GetExecutablePath()).GetPath()
-		+ wxFILE_SEP_PATH + wxT("journal");
+	// The journal's own rule (journal.cpp): beside the dumps, in the diagnostic folder - which, for a
+	// program inside a macOS bundle, is ~/Library/Logs/OES and not the folder that holds the .app.
+	return ibDiagnosticFolder() + wxFILE_SEP_PATH + wxT("journal");
 }
 
 // `<app>_<yyyymmddThhmmss>_<pid>.log` — the app is the head, the start time is the middle.
@@ -569,6 +569,10 @@ public:
 			"It reads FILES, so it answers for the run being debugged as well as for this one - "
 			"every row says which application wrote it. Ask it after running something and getting "
 			"an answer you did not expect: the statement that produced it is in here verbatim.\n\n"
+			"The parameters' VALUES are left out - they are data - unless the application was started "
+			"with the environment variable OES_TRACE_SQL_PARAMS=1; then each statement carries them "
+			"too, a reference key in hex. Ask for that when the text looks right and the answer does "
+			"not: a constant the engine bound can be what is wrong.\n\n"
 			"Debug builds only - a Release binary writes no journal, and says so rather than "
 			"reporting an empty one.");
 	}

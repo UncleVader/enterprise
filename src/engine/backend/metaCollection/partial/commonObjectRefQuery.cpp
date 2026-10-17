@@ -85,7 +85,7 @@ bool ibValueRecordDataObjectRef::TryAcquireFormLock(ibLockMode mode)
 	// Default options — wait at driver's normal lock-timeout. Throws
 	// ibBackendLockException::LockConflict if another session holds an
 	// incompatible lock; caller propagates as form-open failure.
-	auto* lm = ibApplicationData::GetLockManager();
+	auto* lm = ibApplicationInstance::GetLockManager();
 	if (lm == nullptr)
 		ibBackendCoreException::Error(_("Lock manager not initialised"));
 	m_formLockHandle = lm->Acquire({
@@ -129,7 +129,7 @@ bool ibValueRecordDataObjectRef::LockAndCheckDataVersion(bool bump)
 		ibDataQueryResult sel = q.Execute(page);
 
 		const bool rowFound = sel.Next();
-		const wxString dbVer = rowFound ? sel.GetValue(dvAttr->GetQueryColumn()).GetString() : wxString();
+		const wxString dbVer = rowFound ? sel.GetValue(dvAttr->GetQueryColumn()).GetString() : ibString();
 
 		// Row disappeared between our load and write — somebody else
 		// committed a DELETE. Treat as a version conflict for UX
@@ -161,7 +161,7 @@ bool ibValueRecordDataObjectRef::LockAndCheckDataVersion(bool bump)
 	// consistent because the first Write's commit syncs the marker before
 	// the second Write's check runs.
 	//
-	// Into the slot, past Modify — the write's own stamp, as Posted is (ApplyPostedAttributeOnWrite): the
+	// Into the slot, past Modify — the write's own stamp, as Posted is (SetPosted): the
 	// object's flag says whether anybody CHANGED it, and SaveData asks exactly that before writing its lines.
 	if (bump) {
 		const wxString newStamp = ibDataVersion::NewStamp();
@@ -237,11 +237,22 @@ bool ibValueRecordDataObjectRef::BeginDeleteScope(ibConnectionScope& scope)
 	return true;
 }
 
-void ibValueRecordDataObjectRef::CommitWriteScope(ibConnectionScope& scope,
+// A write that never became durable leaves the object as it found it - see ibWriteScope (commonObject.h).
+ibValueRecordDataObjectRef::ibWriteScope::~ibWriteScope()
+{
+	if (m_committed)
+		return;
+	m_object.m_newObject = m_wasNew;          // not in the database after all: the next write INSERTs
+	if (!m_hadNumber)
+		m_object.ResetUniqueIdentifier();     // a number this write gave it: its sequence step was rolled back
+}
+
+void ibValueRecordDataObjectRef::CommitWriteScope(ibConnectionScope& scope, ibWriteScope& objectScope,
                                                    ibBackendValueForm* valueForm,
                                                    bool newObject)
 {
 	scope.SafeCommitTransaction();
+	objectScope.Commit();   // the row is durable: whatever follows, the object stays as written
 
 	// The row is durable — NOW advance the in-memory version marker to the
 	// stamp we just committed (LockAndCheckDataVersion wrote it into the
@@ -428,8 +439,9 @@ bool ibValueRecordDataObjectRef::DeleteData()
 	// Only the OWN hierarchy is cleared — the parent column of this very table. References to this
 	// object from ELSEWHERE are a different question (referential integrity), and answering it here
 	// would be answering it in the dark.
+	// A flat list has no parent column to clear (FillArrayObjectByPredefinedAttribute).
 	ibValueMetaObjectRecordDataHierarchyMutableRef* hierarchy = nullptr;
-	if (m_metaObject->ConvertToValue(hierarchy) && hierarchy != nullptr) {
+	if (m_metaObject->ConvertToValue(hierarchy) && hierarchy != nullptr && hierarchy->HasParentLink()) {
 		if (const ibValueMetaObjectAttributePredefined* parent = hierarchy->GetDataParent()) {
 			ibDataQueryBuilder()
 				.From(m_metaObject->GetQueryable())
@@ -486,11 +498,15 @@ bool ibValueRecordDataObjectHierarchyRef::ReadData()
 	if (ibValueRecordDataObjectRef::ReadData()) {
 		const ibValueMetaObjectRecordDataHierarchyMutableRef* metaFolder = GetMetaObject();
 		wxASSERT(metaFolder);
-		ibValue isFolder; ibValueRecordDataObjectHierarchyRef::GetValueByMetaID(*metaFolder->GetDataIsFolder(), isFolder);
+		// Without folders there is no IsFolder to read (FillArrayObjectByPredefinedAttribute), and every record is an item.
+		ibValue isFolder;
+		if (metaFolder->HasFolders())
+			ibValueRecordDataObjectHierarchyRef::GetValueByMetaID(*metaFolder->GetDataIsFolder(), isFolder);
 		if (isFolder.GetBoolean())
 			m_objMode = ibObjectMode::OBJECT_FOLDER;
 		else
 			m_objMode = ibObjectMode::OBJECT_ITEM;
+		m_sourceExplorer.Clear();   // a folder is described otherwise than an item — built anew on the next read
 		return true;
 	}
 	return false;
@@ -501,11 +517,14 @@ bool ibValueRecordDataObjectHierarchyRef::ReadData(const ibGuid& srcGuid)
 	if (ibValueRecordDataObjectRef::ReadData(srcGuid)) {
 		const ibValueMetaObjectRecordDataHierarchyMutableRef* metaFolder = GetMetaObject();
 		wxASSERT(metaFolder);
-		ibValue isFolder; ibValueRecordDataObjectHierarchyRef::GetValueByMetaID(*metaFolder->GetDataIsFolder(), isFolder);
+		ibValue isFolder;   // …the same question as above
+		if (metaFolder->HasFolders())
+			ibValueRecordDataObjectHierarchyRef::GetValueByMetaID(*metaFolder->GetDataIsFolder(), isFolder);
 		if (isFolder.GetBoolean())
 			m_objMode = ibObjectMode::OBJECT_FOLDER;
 		else
 			m_objMode = ibObjectMode::OBJECT_ITEM;
+		m_sourceExplorer.Clear();   // …and so described anew
 		return true;
 	}
 	return false;
@@ -670,7 +689,7 @@ ibValue ibValueRecordDataObjectRef::GenerateNextIdentifier(ibValueMetaObjectAttr
 				gotCode = true;
 			}
 		}
-		catch (const ibBackendException&) {
+		catch (const ibCoreException&) {
 			// PK conflict from a racing session's bootstrap — the constraint violation now
 			// arrives as an exception (L1 signals failure by throwing), so it is caught here
 			// rather than read off a return code. Fall through to the retry.

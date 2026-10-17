@@ -195,7 +195,7 @@ Foreach item In items Do Message(item.Name) EndDo
 ### 4.4 Designer = compile-only; runtime fetches data
 
 Generated metadata is loaded by the **Designer** to compile and
-validate. Runtime (Enterprise / Web / Daemon) is where data flows
+validate. Runtime (Enterprise / Web / the application server) is where data flows
 happen. When generating control logic, remember:
 
 - A form opened in Designer's **form editor** must not assume data
@@ -418,7 +418,7 @@ value per side in a correspondence register: `<Field>Dr` / `<Field>Cr` (`Currenc
 | `Turnovers` | Begin, End, Periodicity, AccountCondition, AccountDimensions, Condition, CorrAccountCondition, CorrAccountDimensions | as `Balance` (the two `Corr…` arguments exist in correspondence only and filter; there is no corresponding-account column yet) |
 | `BalanceAndTurnovers` | Begin, End, Periodicity, FillMethod, AccountCondition, AccountDimensions, Condition | as `Balance` |
 | `DrCrTurnovers` (correspondence only) | Begin, End, Periodicity, AccountConditionDr, AccountDimensionsDr, AccountConditionCr, AccountDimensionsCr, Condition | `AccountDr` / `AccountCr`, `AccountDimensionDr<i>` / `…Cr<i>`, `CurrencyDr` / `CurrencyCr` — the row is a pair |
-| `RecordsWithAccountDimensions` | Begin, End, Condition, Order, Top | as the line |
+| `RecordsWithAccountDimensions` | Begin, End, Condition | as the line — order and cap the lines in the query around it (`ORDER BY` / `TOP`, or `orderby … take` in LINQ), not in arguments |
 
 Figures are `<Resource>` + the figure word: `AmountTurnoverDr`, `AmountBalance` (one signed number),
 `AmountBalanceDr` / `…Cr` (folded by the account's type), `AmountOpeningBalanceDr`,
@@ -440,6 +440,41 @@ FROM AccountingRegister.Ledger.DrCrTurnovers(&Begin, &End, , AccountDr IN (&Debi
 
 `AccountDr` inside a `Balance` call is refused even in a correspondence register. A figure the row's
 account keeps no accounting for (a quantity on a money-only account) reads EMPTY, not zero.
+
+### 5.3 Opening and closing balances by period — `ROLE`
+
+A month's opening is its FIRST day's, its closing its LAST day's — never the days added up. The engine does
+this when it knows what each field is in a balance, and a register's `BalanceAndTurnovers` (accumulation
+and accounting) says it for its own fields: read it with `TOTALS SUM(…OpeningBalance), SUM(…ClosingBalance)
+BY <keys>, Period PERIODS(MONTH)` and write nothing else. Over a source that says nothing (a value table, a
+temp table, a `UNION`), mark the fields in the SELECT:
+
+```sql
+SELECT U.Day ROLE PERIOD AS Day, U.Store ROLE DIMENSION AS Store,
+       U.Start ROLE OPENING AS Start, U.Finish ROLE CLOSING AS Finish
+FROM (… UNION ALL …) AS U
+TOTALS SUM(Start), SUM(Finish) BY Store
+```
+
+`ROLE PERIOD [n] | DIMENSION | OPENING | CLOSING | NONE`, optional like `AS`; `n` orders several period
+fields (numbered first, then the source's order). Over a value table, read (or mark) the fields that divide the
+balance, or two balances fold into one; a register's table and a nested query carry their own keys. **In a
+report (composition) do not write `ROLE` into its query** — the composer drops it; set the role on the field
+(`report_field {path, role}`). Help: `q.Role`; design: query-language-arc § 37.
+
+Read by `Recorder` / `Record`, every row is ONE document's record — the periodicity said at the top is the
+grouping. In a report that means two groupings (the key, `Period` by `periods: Month`) and a DETAIL level
+(`report_level` with no field), with the recorder, warehouse or line number SELECTED onto it — not a grouping
+by the recorder.
+
+Computed fields may read through a reference and across a join — `T.Qty * T.Item.Price`,
+`SUM(B.Qty * G.Price)` over `LEFT JOIN Catalog.Goods AS G`, a `WHERE` or `ORDER BY` over such an expression: the
+engine reads the rows one level down first (query-language-arc, rule 3). No nested query is needed for it.
+
+A sort by a reference is its kind's order — an account by its code, a catalog by what it is presented by, a
+document by its moment (date, then reference), the reference settling ties — in `ORDER BY`, in a report's
+groupings and in a hierarchy alike. Sort by the reference itself; do not write `Account.Code` to have accounts
+in order (query-language-arc § 38).
 
 ---
 

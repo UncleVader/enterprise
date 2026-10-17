@@ -1,5 +1,5 @@
 #include "htmlBox.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode (control -> node)
+#include "core/serialize/dataBuilder.h"   // ibDataNode (control -> node)
 
 //***********************************************************************************
 //*                           IMPLEMENT_DYNAMIC_CLASS                               *
@@ -13,7 +13,7 @@
 ibValueHTMLBox::ibValueHTMLBox() : ibValueWindow()
 {
 	m_members.Bind(this, &ibValueHTMLBox::FillControlMembers);
-	m_propertyMinSize->SetValue(wxSize(250, 150));
+	m_propertyMinSize->SetValue(ibSize(250, 150));
 }
 
 wxObject* ibValueHTMLBox::Create(wxWindow* wxparent, ibVisualHost* visualHost)

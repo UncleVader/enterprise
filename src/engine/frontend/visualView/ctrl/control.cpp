@@ -6,7 +6,7 @@
 #include "control.h"
 #include "typeControl.h"   // ibTypeControlFactory + ibBackendTypeConfigFactory::GetDefaultTypeByFilter (AutoBindNewSource)
 #include "form.h"
-#include "backend/appData.h"                 // ibApplicationData::GetActiveMetaData — GetMetaData fallback (common form / metadata-free source)
+#include "backend/appData.h"                 // ibApplicationInstance::GetActiveMetaData — GetMetaData fallback (common form / metadata-free source)
 #include "backend/metadataConfiguration.h"   // ibMetaDataConfigurationBase : ibMetaData — the GetActiveMetaData() base cast
 
 
@@ -25,6 +25,14 @@ ibValueControl::~ibValueControl()
 }
 
 #include "backend/metaData.h"
+
+// The element's own options, and everything it stands inside: a group, a page or a plain sizer the options
+// switch off takes what it holds with it — the way a field of an unavailable object is unavailable too.
+bool ibValueControl::IsAvailable() const
+{
+	const ibValueFrame* parent = GetParent();
+	return m_propertyFunctionalOptions->IsAvailable() && (parent == nullptr || parent->IsAvailable());
+}
 
 void ibValueControl::SetOwnerForm(ibValueForm* ownerForm)
 {
@@ -87,7 +95,7 @@ void ibValueControl::AutoBindNewSource(ibTypeControlFactory* factory)
 	// (ibBackendTypeConfigFactory::GetDefaultTypeByFilter) — the SAME mapping
 	// ibVariantDataAttribute::DoSetDefaultMetaType uses, so a control's auto-attribute and a variant's
 	// default never diverge.
-	if (factory == nullptr || m_formOwner == nullptr || !IsSourceMissing())
+	if (factory == nullptr || m_formOwner == nullptr || !IsUnbound())
 		return;
 	const ibTypeDescription& declared = factory->GetTypeDesc();
 	ibTypeDescription typeDesc;
@@ -97,4 +105,18 @@ void ibValueControl::AutoBindNewSource(ibTypeControlFactory* factory)
 	const ibMetaID id = m_formOwner->AddAutoAttribute(GetControlName(), typeDesc);
 	if (id != wxNOT_FOUND)
 		factory->SetDefaultSourceType(id);   // one-hop bind, over the mutable GetSourceDesc (twin of SetDefaultMetaType over GetTypeDesc)
+}
+
+#include "core/serialize/dataBuilder.h"                 // ibDataNode — the options list saved with the element
+
+bool ibValueControl::ReadData(const ibDataNode& node)
+{
+	m_propertyFunctionalOptions->SetNodeValue(node.GetProperty(m_propertyFunctionalOptions->GetName()));
+	return ibValueFrame::ReadData(node);
+}
+
+bool ibValueControl::WriteData(ibDataNode& node) const
+{
+	node.SetProperty(m_propertyFunctionalOptions->GetName(), m_propertyFunctionalOptions->GetNodeValue());
+	return ibValueFrame::WriteData(node);
 }

@@ -9,9 +9,8 @@
 #include "backend/srcDataObject.h"                    // …and the source behind it, which names its metaobject
 
 #include "backend/appData.h"
-#include "backend/diagnostics/journal.h"
 #include "backend/metaCollection/metaFormObject.h"   // the form's metaobject — its guid IS the address
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "backend/settings/settingsComposer.h"   // ibUserSettingsKey — whose settings, said once
 #include "backend/settings/settingsStorage.h"
 
@@ -97,7 +96,7 @@ void EachControl(ibValueFrame* control, const std::function<void(ibValueFrame*)>
 
 void ibRestoreFormSettings(ibValueForm* form)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	ibSettingsKey key;
 	if (storage == nullptr || !SettingsKey(form, key))
 		return;
@@ -145,7 +144,7 @@ void ibRestoreFormSettings(ibValueForm* form)
 				property->PasteNodeValue(stored.GetProperty(name));
 				applied++;
 			}
-			catch (const ibBackendException& err) {
+			catch (const ibCoreException& err) {
 				ibJournalWarning(wxT("ui.form"), wxT("saved form setting: '%s' not restored (%s)"),
 					name, err.GetErrorDescription());
 			}
@@ -174,7 +173,7 @@ void ibRestoreFormSettings(ibValueForm* form)
 
 ibFormSettingsResult ibSaveFormSettings(const ibValueForm* form)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr)
 		return ibFormSettingsResult::NoStorage;
 
@@ -229,7 +228,7 @@ ibFormSettingsResult ibSaveFormSettings(const ibValueForm* form)
 
 ibFormSettingsResult ibResetFormSettings(const ibValueForm* form)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	if (storage == nullptr)
 		return ibFormSettingsResult::NoStorage;
 
@@ -242,7 +241,7 @@ ibFormSettingsResult ibResetFormSettings(const ibValueForm* form)
 
 bool ibHasFormSettings(const ibValueForm* form)
 {
-	ibSettingsStorage* storage = ibApplicationData::GetSettingsStorage();
+	ibSettingsStorage* storage = ibApplicationInstance::GetSettingsStorage();
 	ibSettingsKey key;
 	if (storage == nullptr || !SettingsKey(form, key))
 		return false;

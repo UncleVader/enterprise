@@ -14,20 +14,22 @@
 #include "backend/system/value/valueMap.h"   // ibValueStructure — the sugar ibRegFilterPredicate converts
 #include "backend/system/value/valueTable.h" // ibValueModelTable — the table a reading hands a script
 #include "backend/query/dataQueryBuilder.h"  // ibDataQueryResult — the selection those rows come off
+#include "backend/query/querySelector.h"     // ibSelector::Snapshot — …as the fast table they go in through
 #include "backend/query/tempTableQueryable.h" // ibTempColumn / ibDbTempTableQueryable — a derived surface IS one
 #include "backend/query/schemaSnapshot.h"     // ibSchemaTable / ibSchemaMaterialize — the totals bundle's own vocabulary
 #include "backend/query/queryColumn.h"        // ibBackendQueryColumn::SyntheticId — a derived column's number
-#include "backend/query/queryHierarchy.h"     // ibQueryHierarchyScope — IN HIERARCHY in a reading's condition, resolved
+#include "backend/query/queryHierarchy.h"     // «IN HIERARCHY» — the words a reading's condition carries down (ibQueryDimUnfold)
 
 // ⚠ NAMED, NOT INHERITED — MSVC hands these over transitively and GCC / Clang do not.
 #include <algorithm>   // std::find — the running grid names each figure once
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include "backend/system/value/valuePointInTime.h"   // ibValuePointInTime — a boundary that names a document
 #include "backend/system/value/valueBoundary.h"       // ibValueBoundary — the position AND which side of it
-#include "backend/stringUtils.h"             // CompareString — the one case-insensitive name comparison
+#include "core/stringUtils.h"             // CompareString — the one case-insensitive name comparison
 #include "backend/query/queryableFactory.h"  // ibQuerySourceParameter — what a virtual table DECLARES it takes
 #include "backend/session/session.h"         // ses_query — the session's channel; ibRequireOpenBase asks it
 
@@ -69,7 +71,7 @@ inline ibRegBound ibReadRegisterBound(const ibValue& given)
 
 	ibValuePointInTime* moment = nullptr;
 	if (given.ConvertToValue(moment) && moment != nullptr) {
-		if (moment->m_date.IsValid())
+		if (!moment->IsEmpty())
 			bound.m_date = ibValue(moment->m_date);
 		bound.m_recorder = moment->m_reference;
 		return bound;
@@ -290,6 +292,16 @@ inline wxString ibRegFigureCaption(const wxString& figure)
 	return figure;   // a figure nobody captioned reads as its own name rather than as nothing
 }
 
+// ⭐ …AND WHAT THE FIGURE IS IN A BALANCE — its two edges, beside the words, for the same reason the
+// caption is here: a figure added to the list is known everywhere it appears. A gross balance is an edge
+// too; a movement, and the balance a register reports at one moment, are ordinary values.
+inline ibBalanceRole ibRegFigureBalanceRole(const wxString& figure)
+{
+	if (figure == ibRegFigure::OpeningBalance || figure == ibRegFigure::OpeningGrossBalance) return ibBalanceRole::Opening;
+	if (figure == ibRegFigure::ClosingBalance || figure == ibRegFigure::ClosingGrossBalance) return ibBalanceRole::Closing;
+	return ibBalanceRole::None;
+}
+
 // The side, said to a PERSON — the caption twin of ibRegSide, and the one place the two words are
 // spelled. A FIELD held per side is captioned with it too ("Currency Dr"), so it stands on its own
 // rather than inside the figure's caption below.
@@ -426,16 +438,16 @@ inline void ibRegFillArmCut(TSpec& read, const TReg* reg,
 	// rehearsal ledger, 107 where 100 stood — 09:59:59 read 100). An INCLUDED upper edge and an EXCLUDED
 	// lower edge are therefore partial grains too; an excluded upper edge and an included lower one take
 	// that grain wholly out or wholly in, and stay with the stored rows.
-	const auto reachesInside = [&](const ibRegBound& b, bool upperEnd, wxDateTime& moment) {
+	const auto reachesInside = [&](const ibRegBound& b, bool upperEnd, ibDateTime& moment) {
 		if (b.m_date.GetType() != TYPE_DATE)
 			return false;
-		moment = b.m_date.GetDateTime();
-		if (b.HasRecorder() || ibTruncateToPeriod(moment, grain) != moment)
+		moment = b.m_date.GetDate();
+		if (b.HasRecorder() || moment.BeginOfPeriod(grain) != moment)
 			return true;
 		return upperEnd ? !b.m_excluding : b.m_excluding;
 	};
 
-	wxDateTime upperMoment, lowerMoment;
+	ibDateTime upperMoment, lowerMoment;
 	const bool cutUpper = reachesInside(upper, /*upperEnd*/ true, upperMoment);
 	const bool cutLower = reachesInside(lower, /*upperEnd*/ false, lowerMoment);
 
@@ -445,15 +457,15 @@ inline void ibRegFillArmCut(TSpec& read, const TReg* reg,
 	// The stored arm ends where the upper boundary's grain begins. With no upper boundary at all it
 	// still ends somewhere — at the LOWER boundary's grain — because the only reason the arm is cut at
 	// all is that one end of the interval is partial.
-	read.m_floor = ibValue(ibTruncateToPeriod(cutUpper ? upperMoment : lowerMoment, grain));
+	read.m_floor = ibValue((cutUpper ? upperMoment : lowerMoment).BeginOfPeriod(grain));
 	if (cutUpper && upper.HasRecorder())
 		read.m_boundaryTail = ibRegRecorderTuple(reg, slots, upper.m_recorder);
 
 	// The stored arm begins at the first WHOLE grain at or after the lower boundary: the grain the
 	// boundary falls INTO holds movements before it as well, so it cannot be taken as a row.
 	if (cutLower) {
-		read.m_headSplit = ibValue(ibNextPeriodStart(lowerMoment, grain));
-		read.m_headGrain = ibValue(ibTruncateToPeriod(lowerMoment, grain));
+		read.m_headSplit = ibValue(lowerMoment.BeginOfNextPeriod(grain));
+		read.m_headGrain = ibValue(lowerMoment.BeginOfPeriod(grain));
 		if (lower.HasRecorder())
 			read.m_boundaryHead = ibRegRecorderTuple(reg, slots, lower.m_recorder);
 	}
@@ -476,19 +488,19 @@ inline void ibRegFillArmCut(TSpec& read, const TReg* reg,
 // registers, the chart around it take their share. A daily balance over nine months (273 periods) refused on a
 // base with a thousand movements (2026-09-17), where the RAM road answers the same rows.
 inline constexpr size_t ibRegMaxServerCalendar = 200;
-inline std::vector<wxDateTime> ibRegCalendarOf(const ibValue& from, const ibValue& to, ibTotalsPeriod unit,
+inline std::vector<ibDateTime> ibRegCalendarOf(const ibValue& from, const ibValue& to, ibTotalsPeriod unit,
                                                size_t maxPeriods = ibRegMaxServerCalendar)
 {
-	std::vector<wxDateTime> periods;
+	std::vector<ibDateTime> periods;
 	if (from.GetType() != TYPE_DATE || to.GetType() != TYPE_DATE)
 		return periods;
-	const wxDateTime last = to.GetDateTime();
-	for (wxDateTime period = ibTruncateToPeriod(from.GetDateTime(), unit); period.IsValid() && !period.IsLaterThan(last);) {
+	const ibDateTime last = to.GetDate();
+	for (ibDateTime period = from.GetDate().BeginOfPeriod(unit); period <= last;) {
 		periods.push_back(period);
 		if (maxPeriods != 0 && periods.size() > maxPeriods)
 			return {};
-		const wxDateTime next = ibNextPeriodStart(period, unit);
-		if (!next.IsValid() || !next.IsLaterThan(period))
+		const ibDateTime next = period.BeginOfNextPeriod(unit);
+		if (next <= period)
 			break;   // a unit that does not advance would loop forever
 		period = next;
 	}
@@ -498,10 +510,10 @@ inline std::vector<wxDateTime> ibRegCalendarOf(const ibValue& from, const ibValu
 // The calendar as a RELATION — one row per period under `periodField`, laid one under the other; a one-row
 // select needs no table (the dialect supplies its own, RDB$DATABASE on Firebird). Joined to every key of a
 // reading, it is the grid a running balance walks.
-inline ibQueryRelPtr ibRegCalendarRelation(const std::vector<wxDateTime>& periods, const wxString& periodField)
+inline ibQueryRelPtr ibRegCalendarRelation(const std::vector<ibDateTime>& periods, const wxString& periodField)
 {
 	ibQueryRelPtr calendar;
-	for (const wxDateTime& start : periods) {
+	for (const ibDateTime& start : periods) {
 		const ibQueryRelPtr row = ibProject(nullptr, { { ibCast(ibConst(ibValue(start)), ibTypeDate()), periodField } });
 		calendar = calendar ? ibUnionAll(calendar, row) : row;
 	}
@@ -550,7 +562,7 @@ struct ibRegRunningFigure {
 // 🛑 The key set is the opening read and not a DISTINCT over a union of both reads: rendered on Firebird, that
 // DISTINCT merged into the union's first arm and the statement failed at BLR level (measured 2026-09-16).
 inline ibQueryRelPtr ibRegRunningGrid(const ibQueryRelPtr& openRead, const ibQueryRelPtr& turnRead,
-                                      const std::vector<wxDateTime>& periods, const wxString& periodField,
+                                      const std::vector<ibDateTime>& periods, const wxString& periodField,
                                       const std::vector<wxString>& keyNames, const std::vector<wxString>& passThrough,
                                       const std::vector<ibRegRunningFigure>& running, const wxString& alias)
 {
@@ -820,10 +832,10 @@ inline void ibRegWhereKeyValue(ibDataQueryBuilder& q, const TRegister* reg,
 {
 	const ibTotalsPeriod unit = reg->GetPeriodicityUnit();
 	if (unit != ibTotalsPeriod::Second && reg->IsRegisterPeriod(object->GetMetaID())
-		&& value.GetType() == TYPE_DATE && value.GetDateTime().IsValid()) {
-		const wxDateTime start = ibTruncateToPeriod(value.GetDateTime(), unit);
+		&& value.GetType() == TYPE_DATE) {
+		const ibDateTime start = value.GetDate().BeginOfPeriod(unit);
 		q.WhereCompare(object->GetQueryColumn(), ibQueryFilterOp::GreaterEqual, ibValue(start));
-		q.WhereCompare(object->GetQueryColumn(), ibQueryFilterOp::Less, ibValue(ibNextPeriodStart(start, unit)));
+		q.WhereCompare(object->GetQueryColumn(), ibQueryFilterOp::Less, ibValue(start.BeginOfNextPeriod(unit)));
 	}
 	else
 		q.Where(object->GetQueryColumn(), ibQueryFilterOp::Equal, value);
@@ -1070,20 +1082,14 @@ inline ibQueryPredicatePtr ibRegConditionOn(const ibBackendQueryable* source, co
 		const bool walks = !leaf.m_path.empty();
 		const ibBackendQueryColumn* column = find(walks ? leaf.m_path.front() : leaf.m_col);
 
-		// `IN HIERARCHY` is resolved into the subtree it stands for, read through the column the walk ends at —
-		// nothing below the lowering folds by the word, and a provider must never see it.
+		// `IN HIERARCHY` goes down AS NAMED — a walked field too, which rides as the EXISTS below and reaches the
+		// provider on the table it ends at — and the side that filters the rows answers it: the database has the
+		// server walk the subtree (BuildSubtreeIn — WITH RECURSIVE), rows in memory get it read where they are
+		// filtered (queryProvider SubtreeResolved). Not decided here: the reading does not own that question.
 		if (leaf.m_unfold != ibQueryDimUnfold::Elements) {
-			const ibBackendQueryable* owner = source;
-			const ibBackendQueryColumn* lhs = column;
-			for (size_t hop = 1; lhs != nullptr && walks && hop < leaf.m_path.size(); ++hop) {
-				owner = owner->GetProvider().ResolveReferenceTarget(owner, lhs);
-				lhs   = owner != nullptr ? owner->ResolveColumnByName(leaf.m_path[hop]->GetName()) : nullptr;
-			}
-			if (lhs == nullptr)
+			if (column == nullptr)
 				ibRegRefuseConditionColumn(leaf.m_col);
-			leaf.m_values = ibQueryHierarchyScope(owner, lhs, leaf.m_values, leaf.m_unfold).Accepted();
-			leaf.m_unfold = ibQueryDimUnfold::Elements;
-			leaf.m_op     = ibQueryFilterOp::In;
+			leaf.m_op = ibQueryFilterOp::In;   // the values as named; the provider walks them
 		}
 
 		if (walks) {
@@ -1396,6 +1402,25 @@ public:
 	                                 const wxString& table, const ibMetaData* metaData,
 	                                 const std::function<void(std::vector<ibTempColumn>&)>& build) const
 	{
+		// ⭐ ONE REGISTER, EVERY SESSION OF THE BASE. The register is metadata, read by all the sessions of a
+		// base at once, so the cache is asked from as many threads; unguarded, two first queries corrupt the
+		// map. Looked up under the lock, BUILT outside it — a build reads the register's attributes and may
+		// take a while, and nobody else should wait for that — and offered back under it: if another thread
+		// built the same shape meanwhile, its surface stays and ours is dropped.
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			const auto cached = m_sources.find(key);
+			if (cached != m_sources.end() && cached->second.m_builtFrom == builtFrom)
+				return cached->second.m_surface.get();
+		}
+
+		std::vector<ibTempColumn> columns;
+		// Each builder numbers its columns over the metaIDs they are of (ibRegDerivedColumnId) — no counter
+		// is handed in, because none is needed.
+		build(columns);
+		auto surface = std::make_unique<ibDbTempTableQueryable>(table, std::move(columns), metaData);
+
+		std::lock_guard<std::mutex> lock(m_mutex);
 		const auto cached = m_sources.find(key);
 		if (cached != m_sources.end()) {
 			if (cached->second.m_builtFrom == builtFrom)
@@ -1406,13 +1431,6 @@ public:
 			m_retired.push_back(std::move(cached->second.m_surface));
 			m_sources.erase(cached);
 		}
-
-		std::vector<ibTempColumn> columns;
-		// Each builder numbers its columns over the metaIDs they are of (ibRegDerivedColumnId) — no counter
-		// is handed in, because none is needed.
-		build(columns);
-
-		auto surface = std::make_unique<ibDbTempTableQueryable>(table, std::move(columns), metaData);
 		const ibBackendQueryable* raw = surface.get();
 		m_sources.emplace(key, Entry{ std::move(surface), builtFrom });
 		return raw;
@@ -1429,6 +1447,7 @@ private:
 	// register being logically modified.
 	mutable std::map<wxString, Entry>                            m_sources;
 	mutable std::vector<std::unique_ptr<ibDbTempTableQueryable>> m_retired;
+	mutable std::mutex                                           m_mutex;   // both of the above
 };
 
 // ⭐⭐ AN ATTRIBUTE PUBLISHED AS ITSELF, on a derived surface — its own name, its own storage field,
@@ -1484,10 +1503,10 @@ inline ibTempColumn ibRegAttributeColumn(const ibValueMetaObjectAttributeBase* a
 	return spreads
 		? ibTempColumn(name, attribute->GetPhysicalName(),
 		               stored, id, synonym,
-		               ibBackendQueryColumn::Kind::Composite, attribute->GetColumnIcon())
+		               ibBackendQueryColumn::Kind::Composite, attribute->GetColumnIcon()).StandsFor(attribute)
 		: ibTempColumn(name, ibRegValueField(attribute),
 		               stored, id, synonym,
-		               ibBackendQueryColumn::Kind::Computed, attribute->GetColumnIcon());
+		               ibBackendQueryColumn::Kind::Computed, attribute->GetColumnIcon()).StandsFor(attribute);
 }
 
 // ============================================================================
@@ -1537,15 +1556,17 @@ inline bool ibRegSplitIntoKey(ibSchemaTable& t, const ibValueMetaObjectRegisterT
 // and the day one forgot, an inactive entry would show up in exactly one report.
 //
 // ⚠ IT IS AN EXPRESSION, AND IT HAS TO BE A BOOLEAN ONE. A "boolean" attribute is stored as a
-// SMALLINT, so `WHERE NEW.fld…_B` is a field where a condition is required — Firebird answers
-// "invalid usage of boolean expression" and the whole CREATE TRIGGER fails, taking the restructuring
-// that emitted it down with it. The cost is asymmetric: nothing READS wrong, the APPLY does not
-// finish. This was written twice and one copy shipped without the ` <> 0`.
+// SMALLINT on Firebird and SQLite, and as a real BOOLEAN on PostgreSQL. A bare `WHERE NEW.fld…_B`
+// is a field where a condition is required — Firebird answers "invalid usage of boolean expression"
+// and the whole CREATE TRIGGER fails. `<> 0` is that condition for a SMALLINT, and PostgreSQL
+// refuses it: boolean <> integer. CAST to INTEGER is the same test on every engine (a BOOLEAN
+// becomes 1 or 0, a SMALLINT stays a number). The cost is asymmetric: nothing READS wrong, the
+// APPLY does not finish.
 inline void ibRegGuardInForce(ibSchemaMaterialize& m, const ibValueMetaObjectAttributeBase* active)
 {
 	if (active == nullptr)
 		return;
-	m.Guard(wxT("{row}.") + ibRegValueField(active) + wxT(" <> 0"),
+	m.Guard(wxT("CAST({row}.") + ibRegValueField(active) + wxT(" AS INTEGER) <> 0"),
 		ibQueryPredicate::Leaf(ibQueryCondition{ active->GetQueryColumn(), ibQueryFilterOp::Equal, ibValue(true) }));
 }
 
@@ -1599,38 +1620,14 @@ inline void ibRegSelfSourceFromDeclaration(ibSchemaTable& t, const ibMetaData* m
 //
 // So the shape says what it publishes — names, types, ORDER and now captions — and this copies it.
 // Nothing here knows what a figure is called, which is the point.
+//
+// The rows are read by the column, not by its name: GetColumn reads one scalar field under the read's own
+// alias, and a dimension is a reference of three. Every value used to come back empty.
 inline ibValue ibRegSelectionToTable(ibDataQueryResult& selection, const ibBackendQueryable* shape)
 {
-	ibValueModelTable* table = new ibValueModelTable();
-	// 🛑 Held while its rows are made, as every table built for a script is: nobody else holds it
-	// yet, and anything that took and let go of a hold meanwhile would delete it. See
-	// valueQueryable.cpp, M::ToTable.
-	const ibValue keep(table);
-	ibValueModelTable::ibValueModelColumnCollection* cols = table->GetColumnCollection();
-	wxASSERT(cols);
-
-	std::vector<const ibBackendQueryColumn*> columns;
 	if (shape != nullptr)
-		columns = shape->GetColumns();
-
-	// Each table column's id, beside the source column it is made from.
-	std::vector<std::pair<const ibBackendQueryColumn*, ibMetaID>> filled;
-	for (const ibBackendQueryColumn* col : columns)
-		if (col != nullptr)
-			if (const auto* added = cols->AddColumn(col->GetName(), col->GetTypeDesc(), col->GetSynonym()))
-				filled.emplace_back(col, added->GetColumnID());
-
-	std::vector<std::pair<ibMetaID, ibValue>> row;
-	while (selection.Next()) {
-		// By the column, not by its name: GetColumn reads one scalar field under the read's own
-		// alias, and a dimension is a reference of three. Every value used to come back empty.
-		row.clear();
-		for (const auto& one : filled)
-			row.emplace_back(one.second, selection.GetValue(one.first));
-		table->AppendRow(row);
-	}
-
-	return table;
+		selection.SetMaterialiseColumns(shape->GetColumns());
+	return selection.Select().Snapshot().ToValueTable();
 }
 
 #endif // __REGISTER_QUERY_LOWERING_H__

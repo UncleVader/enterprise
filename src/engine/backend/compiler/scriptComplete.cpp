@@ -10,8 +10,7 @@
 #include "backend/moduleInfo.h"                  // ibRuntimeModuleDataObject::GetCompileModule
 #include "backend/moduleManager/moduleManager.h" // ibValueModuleManager — the context a snippet parents to
 #include "backend/session/session.h"             // ibSession::EditModuleManagerFor
-#include "backend/diagnostics/journal.h"         // where the refusals are read out when nothing resolved
-#include "backend/typeDescription.h"             // ibTypeDescription - a type, possibly several
+#include "core/description/typeDescription.h"             // ibTypeDescription - a type, possibly several
 #include "backend/objCtor.h"                     // ibCtorMetaValueType - one door: the metaobject AND the maker
 #include "backend/metaCollection/metaObjectComposite.h"   // where fields live: catalog, document, register, tabular section
 #include "backend/compiler/blockSyntaxLINQ.h"    // ibLinqClausesAfter - which query word may follow which
@@ -523,10 +522,11 @@ private:
 			if (ctor == nullptr)
 				continue;
 
-			// The wrapper IS the owner: ibValue(ibValue*) takes a reference on what it is handed,
-			// and the branch is constructed IN the vector so nothing is ever copied out of a local.
-			if (ibValue* const created = ctor->CreateObject()) {
-				out.emplace_back(created, ibNameOrigin::Member);   // the metadata declared this field
+			// Born owned, and the wrapper takes a reference of its own on what it is handed; the
+			// branch is constructed IN the vector so nothing is ever copied out of a local.
+			const ibValue created = ctor->CreateObject();
+			if (created.IsReference()) {
+				out.emplace_back(created.GetRef(), ibNameOrigin::Member);   // the metadata declared this field
 				any = true;
 			}
 		}
@@ -787,11 +787,11 @@ private:
 			// 🛑 IT IS THE EXPORTED RULE (`ibLinqNamedColumns`, procUnit.h) and not a second copy of
 			// it here. Two readings of "does it have columns" would eventually disagree, and the one
 			// that drifts is this one — it would go on describing an Array as a table.
-			std::vector<wxString> named;
+			std::vector<ibString> named;
 			if (haveRow && ibLinqNamedColumns(row, named)) {
 				ibValueModelTable* const table = new ibValueModelTable();
 				if (auto* const columns = table->GetColumnCollection())
-					for (const wxString& name : named)
+					for (const ibString& name : named)
 						columns->AddColumn(name, ibTypeDescription(), name);
 				out = table;
 			}
@@ -1512,7 +1512,7 @@ public:
 		// module nobody compiled carries an empty bytecode, so there is nothing to stand beside.
 		if (ibCompileModule* host = HostModuleOf(moduleObject)) {
 			try { host->Compile(); }
-			catch (const ibBackendException&) {
+			catch (const ibCoreException&) {
 				// A configuration whose own modules do not compile is not this walk's complaint to
 				// make — it was asked about the CARET. It answers with whatever did resolve.
 			}
@@ -1576,7 +1576,7 @@ public:
 	// The tokens this compile read, for the one question that is about the GRAMMAR of a position
 	// rather than about a value: which clause the caret is being typed into. Nothing is re-lexed —
 	// the stream is the one the compile just used.
-	const std::vector<ibLexem>& Lexems() const { return m_compiler.GetLexems(); }
+	const ibTranslateCode& TranslateCode() const { return m_compiler.m_translateCode; }
 
 	// ⭐ THE SAME TAPE, NOT SLICED. The question above wants the instructions, which the base type
 	// carries; the LINQ tree lives only on the compiler's own full form (byteCode.h), and a reader
@@ -1695,7 +1695,7 @@ wxString SignatureOf(const ibByteCode::ibByteFunction& fn, const ibCompileChain&
 		// AMBIGUOUS — green here, a build failure on macOS and Linux (portability.md §1.10). The tree
 		// writes it this way in every other place; this one was the exception, and CI said so.
 		return numMethod != wxNOT_FOUND
-			? value.GetMethodHelper(numMethod) : wxString(wxEmptyString);
+			? value.GetMethodHelper(numMethod) : ibString();
 	}
 
 	wxString signature = fn.m_strRealName + wxT("(");
@@ -1906,6 +1906,18 @@ bool ibNamesAtCaret(const wxString& text, unsigned int caret,
 	// `cat` compiles as a name this text declares, and the dropdown listed `cat` above `Catalogs`
 	// (measured 2026-09-07). A name is not a candidate for its own completion.
 	const auto writtenBelowCaret = [&](const ibByteCode::ibByteCodeVarInfo& var) {
+
+		// 🛑 ONLY A NAME THE TEXT WRITES HAS A PLACE IN IT. `ThisObject`, the object's attributes, a
+		// global bound from outside — kind Context / ContextProp / External — are handed to the module,
+		// visible from its first line to its last, and dating one by the tape asked a question with no
+		// answer: the scan below counts ANY operand of frame 0 as a touch of that cell, an instruction
+		// at the very start of the tape touches cell 0, and whichever binding sat in cell 0 was judged
+		// "written at the caret" and dropped. That was `ThisObject` in every module with no export of
+		// its own — a catalog's, a report's, an external data processor's once its borrowed `Metadata`
+		// and `Data` exports were gone — while a document kept it only because `RegisterRecords` took
+		// cell 0 (measured 2026-09-21).
+		if (var.IsContext() || var.IsContextProp() || var.IsExternal())
+			return false;
 
 		const auto at = declaredAt.find((wxLongLong_t)var.m_slotIndex);
 		if (at != declaredAt.end())
@@ -2212,7 +2224,9 @@ bool ibNamesAtCaret(const wxString& text, unsigned int caret,
 			// the whole of what this needs, and it is read off the compile's own token stream.
 			const int spoken = [&]() -> int {
 				int last = -1;
-				for (const ibLexem& lex : compiled.Lexems()) {
+				const ibTranslateCode& translateCode = compiled.TranslateCode();
+				for (size_t i = 0; i < translateCode.GetLexCount(); ++i) {
+					const ibLexem& lex = translateCode.GetLexAt(i);
 					if (lex.m_numString >= at)
 						break;
 					if (lex.m_lexType != KEYWORD)
@@ -2319,7 +2333,7 @@ std::vector<ibQueryOutline> ibOutlineScriptQueries(const wxString& text, const w
 		if (ibValueModuleManager* manager = ibSession::EditModuleManagerFor(metaData)) {
 			if (ibCompileModule* host = manager->GetCompileModule()) {
 				try { host->Compile(); }
-				catch (const ibBackendException&) { /* the snippet's own context, best effort */ }
+				catch (const ibCoreException&) { /* the snippet's own context, best effort */ }
 				compiler.SetParent(host);
 				for (const ibCompileModule* up = host; up != nullptr; up = up->GetParent())
 					chain.push_back(up);
@@ -2332,7 +2346,7 @@ std::vector<ibQueryOutline> ibOutlineScriptQueries(const wxString& text, const w
 	// like — and this door is called from the MCP server's thread, where taking the caller down to
 	// report a malformed text is the wrong trade. Whatever WAS read is still the answer.
 	try { compiler.Compile(text); }
-	catch (const ibBackendException&) {}
+	catch (const ibCoreException&) {}
 	catch (...) {}
 
 	for (const ibLinqQuery& query : compiler.m_cByteCode.m_listLinq) {
@@ -2343,7 +2357,8 @@ std::vector<ibQueryOutline> ibOutlineScriptQueries(const wxString& text, const w
 		outline.m_groups           = query.m_grouped;
 		outline.m_groupInto        = query.m_groupIntoName;
 		outline.m_orders           = query.m_hasOrderBy;
-		outline.m_orderDescending  = query.m_orderByDescending;
+		for (const ibLinqOrderKey& key : query.m_orderByKeys)
+			outline.m_orderKeysDescending.push_back(key.m_descending);
 
 		// The query as it was written — see ibQueryOutline::m_text. Bounds-checked because a
 		// tolerant compile may have stopped mid-query, and then there is no closing position yet.

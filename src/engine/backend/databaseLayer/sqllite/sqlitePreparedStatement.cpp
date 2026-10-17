@@ -71,7 +71,7 @@ void ibPreparedStatementSQLite::SetParamInt(int nPosition, int nValue)
 		int nReturn = sqlite3_bind_int(m_Statements[nIndex], nPosition, nValue);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
@@ -89,7 +89,7 @@ void ibPreparedStatementSQLite::SetParamDouble(int nPosition, double dblValue)
 		int nReturn = sqlite3_bind_double(m_Statements[nIndex], nPosition, dblValue);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
@@ -128,14 +128,14 @@ void ibPreparedStatementSQLite::SetParamNumber(int nPosition, const ibNumber &db
 			: sqlite3_bind_double(m_Statements[nIndex], nPosition, approximate);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
 	}
 }
 
-void ibPreparedStatementSQLite::SetParamString(int nPosition, const wxString& strValue)
+void ibPreparedStatementSQLite::SetParamString(int nPosition, const ibString& strValue)
 {
 	ResetErrorCodes();
 
@@ -147,7 +147,7 @@ void ibPreparedStatementSQLite::SetParamString(int nPosition, const wxString& st
 		int nReturn = sqlite3_bind_text(m_Statements[nIndex], nPosition, valueBuffer, -1, SQLITE_TRANSIENT);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
@@ -165,7 +165,7 @@ void ibPreparedStatementSQLite::SetParamNull(int nPosition)
 		int nReturn = sqlite3_bind_null(m_Statements[nIndex], nPosition);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
@@ -180,49 +180,39 @@ void ibPreparedStatementSQLite::SetParamBlob(int nPosition, const void* pData, l
 	if (nIndex > -1)
 	{
 		sqlite3_reset(m_Statements[nIndex]);
-		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_STATIC);
+		// TRANSIENT copies the bytes at bind time. STATIC kept the caller's pointer, and the
+		// plan that owned them (a query expression's blob) was destroyed while the result set
+		// was still stepping — a heap use-after-free in sqlite3BlobCompare.
+		int nReturn = sqlite3_bind_blob(m_Statements[nIndex], nPosition, (const void*)pData, nDataLength, SQLITE_TRANSIENT);
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
 	}
 }
 
-void ibPreparedStatementSQLite::SetParamDate(int nPosition, const wxDateTime& dateValue)
+void ibPreparedStatementSQLite::SetParamDate(int nPosition, const ibDateTime& dateValue)
 {
 	ResetErrorCodes();
 
-	if (dateValue.IsValid())
+	// SQLite keeps a date as text, and the text is the reading's parts spelled the ISO way (fdatetime.h) -
+	// what ibDateTime::FromString reads back, and what the reference `strftime` forms in the dialect expect.
+	int nIndex = FindStatementAndAdjustPositionIndex(&nPosition);
+	if (nIndex > -1)
 	{
-		int nIndex = FindStatementAndAdjustPositionIndex(&nPosition);
-		if (nIndex > -1)
+		sqlite3_reset(m_Statements[nIndex]);
+		ibDateTimeParts p;
+		dateValue.ToParts(p);
+		wxCharBuffer valueBuffer = ConvertToUnicodeStream(wxString::Format(wxT("%04d-%02u-%02u %02u:%02u:%02u"),
+			p.m_year, p.m_month, p.m_day, p.m_hour, p.m_minute, p.m_second));
+		int nReturn = sqlite3_bind_text(m_Statements[nIndex], nPosition, valueBuffer, -1, SQLITE_TRANSIENT);
+		if (nReturn != SQLITE_OK)
 		{
-			sqlite3_reset(m_Statements[nIndex]);
-			wxCharBuffer valueBuffer = ConvertToUnicodeStream(dateValue.Format(wxT("%Y-%m-%d %H:%M:%S")));
-			int nReturn = sqlite3_bind_text(m_Statements[nIndex], nPosition, valueBuffer, -1, SQLITE_TRANSIENT);
-			if (nReturn != SQLITE_OK)
-			{
-				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
-				SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
-				ThrowDatabaseException();
-			}
-		}
-	}
-	else
-	{
-		int nIndex = FindStatementAndAdjustPositionIndex(&nPosition);
-		if (nIndex > -1)
-		{
-			sqlite3_reset(m_Statements[nIndex]);
-			int nReturn = sqlite3_bind_null(m_Statements[nIndex], nPosition);
-			if (nReturn != SQLITE_OK)
-			{
-				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
-				SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
-				ThrowDatabaseException();
-			}
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
+			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
+			ThrowDatabaseException();
 		}
 	}
 }
@@ -238,7 +228,7 @@ void ibPreparedStatementSQLite::SetParamBool(int nPosition, bool bValue)
 		int nReturn = sqlite3_bind_int(m_Statements[nIndex], nPosition, (bValue ? 1 : 0));
 		if (nReturn != SQLITE_OK)
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 		}
@@ -275,7 +265,7 @@ int ibPreparedStatementSQLite::RunQuery()
 
 		if ((nReturn != SQLITE_ROW) && (nReturn != SQLITE_DONE))
 		{
-			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+			SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 			SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 			ThrowDatabaseException();
 			return DATABASE_LAYER_QUERY_RESULT_ERROR;
@@ -302,7 +292,7 @@ ibDatabaseResultSet* ibPreparedStatementSQLite::RunQueryWithResults()
 			if ((nReturn != SQLITE_ROW) && (nReturn != SQLITE_DONE))
 			{
 				ibJournalError(wxT("db.sqlite"),wxT("Error with RunQueryWithResults\n"));
-				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn));
+				SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ibDatabaseLayerSQLite::ClassifyDatabaseError(nReturn));
 				SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg(m_pDatabase)));
 				ThrowDatabaseException();
 				return nullptr;
@@ -341,4 +331,3 @@ int ibPreparedStatementSQLite::FindStatementAndAdjustPositionIndex(int* pPositio
 	}
 	return -1;
 }
-

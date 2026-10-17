@@ -42,7 +42,7 @@ ibFrontendMainFrameEnterprise::~ibFrontendMainFrameEnterprise()
 #include "backend/appData.h"
 #include "backend/session/sessionRegistry.h"
 
-void ibFrontendMainFrameEnterprise::BackendError(const wxString& strFileName, const wxString& strDocPath, const long currLine, const wxString& strErrorMessage) const
+void ibFrontendMainFrameEnterprise::BackendError(const wxString& strFileName, const wxString& strDocPath, const long currLine, const wxString& strErrorMessage)
 {
 	//open error dialog
 	std::shared_ptr<ibDialogError> errDlg(new ibDialogError(mainFrame, wxID_ANY));
@@ -75,7 +75,7 @@ void ibFrontendMainFrameEnterprise::BackendError(const wxString& strFileName, co
 	// its own window without asking. The app then ends through wx's
 	// normal teardown, and each window's holder release removes its row.
 	if (retCode == 3) {
-		if (auto* reg = ibApplicationData::GetSessionRegistry())
+		if (auto* reg = ibApplicationInstance::GetSessionRegistry())
 			reg->CloseAll(true);
 	}
 }

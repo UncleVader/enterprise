@@ -1,11 +1,13 @@
 #include "backend_picture.h"
 
+#include <map>
+#include <mutex>
+
 #include <wx/base64.h>
+#include <wx/filename.h>
 #include <wx/mstream.h>
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static std::vector<ibBackendPictureEntry> s_arrayPicture;
+#include "core/pictureRegistry.h"   // the registry — each picture kept as the server keeps it
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -23,7 +25,9 @@ bool RegisterBackendPicture(const wxString name, const ibPictureID& id, const ch
 bool RegisterBackendPicture(const wxString name, const ibPictureID& id, const wxString& base64)
 {
 	if (!ibBackendPicture::IsRegisterPicture(id)) {
-		ibBackendPicture::RegisterPicture(name, id, ibBackendPicture::GetImageFromBase64(base64));
+		// The string is a MASTER, drawn larger than it is shown (tools/pictures/render.js); a registered picture is
+		// handed out as it is kept, and every reader of one shows it at 16 - so it is kept at 16, scaled down once here.
+		ibBackendPicture::RegisterPicture(name, id, ibBackendPicture::GetImageFromBase64(base64, wxSize(16, 16)));
 		return true;
 	}
 
@@ -40,6 +44,52 @@ bool RegisterBackendPicture(const wxString name, const ibPictureID& id, const wx
 
 	wxASSERT_MSG(false, "Picture is register");
 	return false;
+}
+
+// THE ENGINE'S OWN PICTURES are the core's, registered as it loads (core/picturePredefined.cpp); here only the image
+// handlers that read them.
+class ibBackendPictureAutoLoader {
+public:
+
+	ibBackendPictureAutoLoader() {
+
+		// Init handlers
+		wxInitAllImageHandlers();
+	}
+
+	~ibBackendPictureAutoLoader()
+	{
+		// WHAT THIS OBJECT CREATED, IT LETS GO OF. `wxInitAllImageHandlers` puts one handler per
+		// format on wx's own list, and in an application wxApp takes them down at exit - but a test
+		// binary has no wxApp, so they stayed, and LeakSanitizer reported them on every process
+		// exit (2026-09-22). The empty body was not "nothing to do": it was the half of a pair
+		// that nobody had needed to write while the only host cleaned up after us.
+		wxImage::CleanUpHandlers();
+	}
+};
+
+ibBackendPictureAutoLoader m_autoLoader;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool ibBackendPictureDescriptionMemory::ReadNode(const ibDataValue& value, ibPictureDescription& pictureDesc)
+{
+	// READ WHOLE, THEN TAKEN — a refusal below leaves the description it was reading into as it was.
+	ibPictureDescription read;
+	if (!ibPictureDescriptionMemory::ReadNode(value, read))
+		return false;
+
+	// 🛑 A PICTURE THE ENGINE HAS, ASKED OF THE PICTURE FACTORY — 0 is the empty picture and is one.
+	// Any other id nobody registered was taken without a word and drew nothing (measured 2026-09-22: a
+	// rounded Print id, sent back through `value`). On loading it refuses only what could not be drawn
+	// here anyway: the pictures register when the DLLs load, before any configuration is read, and a
+	// process without the front's controls (the daemon) never writes a configuration back.
+	if (read.m_type == ibPictureType::eFromBackend && read.m_class_identifier != 0
+		&& !ibBackendPicture::IsRegisterPicture(read.m_class_identifier))
+		return false;
+
+	pictureDesc = read;
+	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -131,13 +181,42 @@ wxBitmap ibBackendPicture::CreatePicture(const ibPictureDescription& pictureDesc
 	return wxNullBitmap;
 }
 
+ibPicture ibBackendPicture::GetServerPicture(const ibPictureDescription& pictureDesc, const ibMetaData* metaData)
+{
+	if (pictureDesc.IsEmptyPicture())
+		return ibPicture();
+
+	// A backend picture is the process's: made at its first asking at the size it is shown (a registered one is a
+	// master), under the lock, and only read after that.
+	if (pictureDesc.m_type == ibPictureType::eFromBackend) {
+		static std::mutex s_madeMutex;
+		static std::map<ibPictureID, ibPicture> s_made;
+		const std::lock_guard<std::mutex> lock(s_madeMutex);
+		const auto found = s_made.find(pictureDesc.m_class_identifier);
+		if (found != s_made.end())
+			return found->second;
+		const wxBitmap bitmap = GetPicture(pictureDesc.m_class_identifier);
+		if (bitmap.IsOk() || metaData == nullptr)
+			return s_made.emplace(pictureDesc.m_class_identifier,
+				bitmap.IsOk() ? FromImage(bitmap.ConvertToImage()) : ibPicture()).first->second;
+		// …a type of the configuration's own (a catalog's reference) — its class's icon, as the configuration's
+		// constructor of it gives it: made anew, the configuration's only.
+		const ibCtorAbstractType* const ctor = metaData->GetAvailableCtor(pictureDesc.m_class_identifier);
+		const wxIcon icon = ctor != nullptr ? ctor->GetClassIcon() : wxNullIcon;
+		return icon.IsOk() ? FromImage(wxBitmap(icon).ConvertToImage()) : ibPicture();
+	}
+
+	// A configuration's picture and a file's are made from the bytes they keep — anew, shared with nobody.
+	const wxBitmap bitmap = CreatePicture(pictureDesc, metaData);
+	return bitmap.IsOk() ? FromImage(bitmap.ConvertToImage()) : ibPicture();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #pragma region __picture_factory_h__
 bool ibBackendPicture::IsRegisterPicture(const ibPictureID& id)
 {
-	auto iterator = std::find_if(s_arrayPicture.begin(), s_arrayPicture.end(),
-		[id](const auto entry) { return entry.m_id == id; });
-
-	if (iterator != s_arrayPicture.end())
+	if (ibPictureRegistry::IsRegisterPicture(id))
 		return true;
 
 	const ibCtorAbstractType* so = ibValue::GetAvailableCtor(id);
@@ -149,20 +228,14 @@ bool ibBackendPicture::IsRegisterPicture(const ibPictureID& id)
 
 void ibBackendPicture::RegisterPicture(const wxString name, const ibPictureID& id, const wxBitmap& bitmap)
 {
-	ibBackendPictureEntry entry;
-	entry.m_name = name;
-	entry.m_id = id;
-	entry.m_data = bitmap;
-	s_arrayPicture.push_back(entry);
+	ibPictureRegistry::RegisterPicture(name, id, FromImage(bitmap.ConvertToImage()));
 }
 
 wxBitmap ibBackendPicture::GetPicture(const ibPictureID& id)
 {
-	auto iterator = std::find_if(s_arrayPicture.begin(), s_arrayPicture.end(),
-		[id](const auto entry) { return entry.m_id == id; });
-
-	if (iterator != s_arrayPicture.end())
-		return iterator->m_data;
+	const ibPicture registered = ibPictureRegistry::GetPicture(id);
+	if (registered.IsOk())
+		return GetBitmapFromBase64(registered.GetData(), wxSize(16, 16));
 
 	const ibCtorAbstractType* so = ibValue::GetAvailableCtor(id);
 	if (so != nullptr)
@@ -173,14 +246,9 @@ wxBitmap ibBackendPicture::GetPicture(const ibPictureID& id)
 
 wxIcon ibBackendPicture::GetPictureAsIcon(const ibPictureID& id)
 {
-	auto iterator = std::find_if(s_arrayPicture.begin(), s_arrayPicture.end(),
-		[id](const auto entry) { return entry.m_id == id; });
-
-	if (iterator != s_arrayPicture.end()) {	
-		wxIcon icon; 
-		icon.CopyFromBitmap(iterator->m_data);
-		return icon;
-	}
+	const ibPicture registered = ibPictureRegistry::GetPicture(id);
+	if (registered.IsOk())
+		return GetIconFromBase64(registered.GetData(), wxSize(16, 16));
 
 	const ibCtorAbstractType* so = ibValue::GetAvailableCtor(id);
 	if (so != nullptr)
@@ -191,7 +259,9 @@ wxIcon ibBackendPicture::GetPictureAsIcon(const ibPictureID& id)
 
 std::vector<ibBackendPictureEntry> ibBackendPicture::GetArrayPicture()
 {
-	std::vector<ibBackendPictureEntry> arrayPicture = { s_arrayPicture };
+	std::vector<ibBackendPictureEntry> arrayPicture;
+	for (const ibPictureEntry& registered : ibPictureRegistry::GetArrayPicture())
+		arrayPicture.push_back({ registered.m_name, GetBitmapFromBase64(registered.m_picture.GetData(), wxSize(16, 16)), registered.m_id });
 
 	for (auto so : ibValue::GetListCtorsByType(ibCtorObjectType::ibCtorObjectType_object_metadata)) {
 		const wxIcon backend_icon = so->GetClassIcon();
@@ -246,6 +316,24 @@ wxIcon ibBackendPicture::GetIconFromBase64(const wxString& src, const wxSize& si
 {
 	wxIcon icon;
 	icon.CopyFromBitmap(GetBitmapFromBase64(src, size));
+	return icon;
+}
+
+ibPicture ibBackendPicture::FromImage(const wxImage& image)
+{
+	return image.IsOk() ? ibPicture(CreateBase64Image(image)) : ibPicture();
+}
+
+wxBitmap ibBackendPicture::ToBitmap(const ibPicture& picture)
+{
+	return picture.IsOk() ? wxBitmap(GetImageFromBase64(picture.GetData())) : wxNullBitmap;
+}
+
+wxIcon ibBackendPicture::ToIcon(const ibPicture& picture)
+{
+	wxIcon icon;
+	if (picture.IsOk())
+		icon.CopyFromBitmap(ToBitmap(picture));
 	return icon;
 }
 #pragma endregion 

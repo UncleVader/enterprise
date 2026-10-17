@@ -2,7 +2,7 @@
 #define _METAMODULE_OBJECT_H__
 
 #include "metaObject.h"
-#include "backend/serialize/dataBuilder.h"   // ibDataNode — holder serializes its metaobject's node
+#include "core/serialize/dataBuilder.h"   // ibDataNode — holder serializes its metaobject's node
 
 enum ibContentHelper {
 	eProcedureHelper = 1,
@@ -170,6 +170,10 @@ public:
 		std::advance(it, idx);
 		return it->second.m_args;
 	}
+
+	// Forget them all — for an owner whose procedures follow a choice made later: an event handler
+	// offers the procedure of the event it is set to, and only that one.
+	void ClearDefaultProcedures() { m_contentHelper.clear(); }
 
 	virtual bool IsGlobalModule() const { return false; }
 

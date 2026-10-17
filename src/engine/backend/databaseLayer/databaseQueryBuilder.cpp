@@ -8,6 +8,7 @@
 #include "backend/databaseLayer/databaseResultSet.h"
 #include "backend/databaseLayer/resultSetMetaData.h"
 #include "backend/session/session.h"   // ibQueryResult hears its reader's cancel (ibSession::RunState)
+#include "core/diagnostics/debugTrace.h"  // ibDebugTraceEnabled — the parameters' values, only when asked for
 
 // --------------------------------------------------------------------------
 // Parameter binding: ibValue -> ibPreparedStatement::SetParam* by type.
@@ -19,7 +20,7 @@ static void ibBindParam(ibPreparedStatement* stmt, int pos, const ibValue& v)
 	switch (v.GetType()) {
 	case TYPE_BOOLEAN: stmt->SetParamBool(pos, v.GetBoolean());   break;
 	case TYPE_NUMBER:  stmt->SetParamNumber(pos, v.GetNumber());  break;
-	case TYPE_DATE:    stmt->SetParamDate(pos, v.GetDateTime());  break;
+	case TYPE_DATE:    stmt->SetParamDate(pos, v.GetDate());      break;
 	case TYPE_STRING:  stmt->SetParamString(pos, v.GetString());  break;
 	case TYPE_NULL:
 	case TYPE_EMPTY:
@@ -41,6 +42,40 @@ static ibQueryParam ibParamOfConst(const ibQueryExpr& expr)
 		p.m_value = expr.m_const;
 	}
 	return p;
+}
+
+// What the journal says about a statement's parameters: their COUNT — a bind list is data (a password, a
+// person's name), and a journal a developer mails back must not carry it.
+//
+// ⭐ …UNLESS THE PROCESS WAS STARTED ASKING FOR THEM (OES_TRACE_SQL_PARAMS, utils/debugTrace.h). A statement
+// whose answer is wrong is often wrong in a CONSTANT the engine wrote into it, not in its text: a ledger
+// balance split one item into two rows because the key's normalising CASE bound an untyped empty where the
+// column's typed one belonged, and the journal showed the CASE with `?` in every place that mattered
+// (2026-09-26). Each value as it would bind: a blob in hex, an empty as NULL, a caller's value by index.
+// (maybe_unused: a Release build compiles the journal out, and this with it.)
+[[maybe_unused]] static wxString ibJournalOfParams(const std::vector<ibQueryParam>& params)
+{
+	static const bool s_traceValues = ibDebugTraceEnabled("OES_TRACE_SQL_PARAMS");
+	wxString text = wxString::Format(wxT("[%u params"), static_cast<unsigned>(params.size()));
+	if (s_traceValues) {
+		for (size_t i = 0; i < params.size(); ++i) {
+			const ibQueryParam& p = params[i];
+			text << (i == 0 ? wxT(": ") : wxT("; ")) << (i + 1) << wxT("=");
+			if (p.m_external)
+				text << wxT("&") << p.m_externalIndex;
+			else if (p.m_isBlob) {
+				text << wxT("0x");
+				const unsigned char* bytes = static_cast<const unsigned char*>(p.m_blob.GetData());
+				for (size_t b = 0; b < p.m_blob.GetDataLen(); ++b)
+					text << wxString::Format(wxT("%02x"), bytes[b]);
+			}
+			else if (p.m_value.GetType() == TYPE_EMPTY || p.m_value.GetType() == TYPE_NULL)
+				text << wxT("NULL");
+			else
+				text << p.m_value.GetString().Left(64);
+		}
+	}
+	return text + wxT("]");
 }
 
 // Bind a whole render plan in placeholder order (1-based). Inline Const values
@@ -739,22 +774,22 @@ int ibQueryResult::FieldIndex(FieldSlots& slots, const wxString& base, unsigned 
 // Each read answers what its NAMED twin answers — with no cursor (0) the ibQueryResult defaults, for an
 // absent field (-1) the driver-base defaults (databaseResultSet.cpp) — so the two roads cannot be told
 // apart by what comes back.
-wxString   ibQueryResult::GetResultString(int field)                   { return m_rs == nullptr || field == 0 ? wxString()  : field < 0 ? wxString()        : m_rs->GetResultString(field); }
+ibString   ibQueryResult::GetResultString(int field)                   { return m_rs == nullptr || field == 0 ? ibString()  : field < 0 ? ibString()        : m_rs->GetResultString(field); }
 int        ibQueryResult::GetResultInt(int field)                      { return m_rs == nullptr || field == 0 ? 0           : field < 0 ? -1                : m_rs->GetResultInt(field); }
 long long  ibQueryResult::GetResultLong(int field)                     { return m_rs == nullptr || field == 0 ? 0           : field < 0 ? -1                : m_rs->GetResultLong(field); }
 bool       ibQueryResult::GetResultBool(int field)                     { return m_rs == nullptr || field == 0 ? false       : field < 0 ? false             : m_rs->GetResultBool(field); }
-wxDateTime ibQueryResult::GetResultDate(int field)                     { return m_rs == nullptr || field == 0 ? wxDateTime(): field < 0 ? wxDefaultDateTime : m_rs->GetResultDate(field); }
+ibDateTime ibQueryResult::GetResultDate(int field)                     { return m_rs == nullptr || field <= 0 ? ibDateTime() : m_rs->GetResultDate(field); }
 ibNumber   ibQueryResult::GetResultNumber(int field)                   { return m_rs == nullptr || field == 0 ? ibNumber()  : field < 0 ? ibNumber(-1)      : m_rs->GetResultNumber(field); }
 void*      ibQueryResult::GetResultBlob(int field, wxMemoryBuffer& b)  { return m_rs == nullptr || field <= 0 ? nullptr : m_rs->GetResultBlob(field, b); }
 bool       ibQueryResult::IsResultNull(int field)                      { return m_rs == nullptr || field <= 0 || m_rs->IsFieldNull(field); }
 
 // Typed field reads by name — delegate to the borrowed driver cursor (the dialect-normalised
 // physical field). The provider's value-assembly reads through these, never the raw L1 cursor.
-wxString   ibQueryResult::GetResultString(const wxString& name)                  { return m_rs != nullptr ? m_rs->GetResultString(name)        : wxString(); }
+ibString   ibQueryResult::GetResultString(const wxString& name)                  { return m_rs != nullptr ? m_rs->GetResultString(name)        : ibString(); }
 int        ibQueryResult::GetResultInt(const wxString& name)                     { return m_rs != nullptr ? m_rs->GetResultInt(name)           : 0; }
 long long  ibQueryResult::GetResultLong(const wxString& name)                    { return m_rs != nullptr ? m_rs->GetResultLong(name)          : 0; }
 bool       ibQueryResult::GetResultBool(const wxString& name)                    { return m_rs != nullptr ? m_rs->GetResultBool(name)          : false; }
-wxDateTime ibQueryResult::GetResultDate(const wxString& name)                    { return m_rs != nullptr ? m_rs->GetResultDate(name)          : wxDateTime(); }
+ibDateTime ibQueryResult::GetResultDate(const wxString& name)                    { return m_rs != nullptr ? m_rs->GetResultDate(name)          : ibDateTime(); }
 double     ibQueryResult::GetResultDouble(const wxString& name)                  { return m_rs != nullptr ? m_rs->GetResultDouble(name)        : 0.0; }
 ibNumber   ibQueryResult::GetResultNumber(const wxString& name)                  { return m_rs != nullptr ? m_rs->GetResultNumber(name)        : ibNumber(); }
 void*      ibQueryResult::GetResultBlob(const wxString& name, wxMemoryBuffer& b) { return m_rs != nullptr ? m_rs->GetResultBlob(name, b)       : nullptr; }
@@ -764,16 +799,77 @@ bool       ibQueryResult::IsResultNull(const wxString& name)                    
 // ==========================================================================
 // ibQueryRenderer (merged from queryRenderer.cpp)
 // ==========================================================================
+// Every named query an EXPRESSION hands along (ibQueryExpr::m_with), in the order they are met — gathered into
+// the statement's WITH before the select is written (Render). A walk over the whole tree, operands and
+// subqueries included: a declaration left behind here would leave its name read and never declared. One name
+// is declared once — two conditions that need the same walk share it.
+static void CollectDeclared(const ibQueryRel* rel, std::vector<ibQueryCte>& out);
+
+static void CollectDeclared(const ibQueryExprPtr& expr, std::vector<ibQueryCte>& out)
+{
+	if (!expr)
+		return;
+	if (expr->m_with && expr->m_with->m_query
+	    && std::none_of(out.begin(), out.end(), [&expr](const ibQueryCte& c) { return c.m_name == expr->m_with->m_name; })) {
+		CollectDeclared(expr->m_with->m_query.get(), out);   // what it reads, first
+		out.push_back(*expr->m_with);
+	}
+	CollectDeclared(expr->m_lhs, out);
+	CollectDeclared(expr->m_rhs, out);
+	for (const ibQueryExprPtr& arg : expr->m_args)
+		CollectDeclared(arg, out);
+	for (const auto& branch : expr->m_cases) {
+		CollectDeclared(branch.first, out);
+		CollectDeclared(branch.second, out);
+	}
+	CollectDeclared(expr->m_else, out);
+	if (expr->m_over) {
+		for (const ibQueryExprPtr& key : expr->m_over->m_partitionBy)
+			CollectDeclared(key, out);
+		for (const ibQuerySortKey& key : expr->m_over->m_orderBy)
+			CollectDeclared(key.m_expr, out);
+	}
+	CollectDeclared(expr->m_subquery.get(), out);
+}
+
+static void CollectDeclared(const ibQueryRel* rel, std::vector<ibQueryCte>& out)
+{
+	if (rel == nullptr)
+		return;
+	CollectDeclared(rel->m_predicate, out);
+	for (const ibQueryProjItem& item : rel->m_projection)
+		CollectDeclared(item.m_expr, out);
+	for (const ibQuerySortKey& key : rel->m_sortKeys)
+		CollectDeclared(key.m_expr, out);
+	CollectDeclared(rel->m_joinPredicate, out);
+	for (const ibQueryExprPtr& key : rel->m_groupKeys)
+		CollectDeclared(key, out);
+	CollectDeclared(rel->m_having, out);
+	CollectDeclared(rel->m_input.get(), out);
+	CollectDeclared(rel->m_right.get(), out);
+}
+
 ibRenderedQuery ibQueryRenderer::Render(const ibQueryIR& ir)
 {
 	m_out = ibRenderedQuery{};
 	m_paramPos = 0;
 
+	// ⭐ THE STATEMENT'S OWN NAMED QUERIES, AND THEN THOSE ITS CONDITIONS HANDED ALONG (ibQueryExpr::m_with) —
+	// declared together, ahead of the select, because an engine may not nest a WITH where it is used.
+	std::vector<ibQueryCte> declared(ir.m_with.begin(), ir.m_with.end());
+	CollectDeclared(ir.m_root.get(), declared);
+	for (const ibQueryCte& cte : ir.m_with)
+		CollectDeclared(cte.m_query.get(), declared);
+	const bool recursive = std::any_of(declared.begin(), declared.end(), [](const ibQueryCte& c) { return c.m_recursive; });
+	if (recursive && !m_dialect.m_features.m_recursiveCte)
+		ibBackendQueryException::Throw(ibBackendQueryException::Kind::UnsupportedNode,
+			_("This database cannot walk a hierarchy itself (WITH RECURSIVE): the subtree has to be read and passed as a list"));
+
 	// ⭐ THE NAMED QUERIES FIRST — `WITH a AS (…), b AS (…) SELECT …`. They render BEFORE the main
 	// select so their bind parameters land in placeholder order, which is the order the driver binds
 	// them in: a CTE written after the select would have its values bound to the select's markers.
 	wxString with;
-	for (const ibQueryCte& cte : ir.m_with) {
+	for (const ibQueryCte& cte : declared) {
 		if (cte.m_name.IsEmpty() || !cte.m_query)
 			continue;
 		// REFUSED, NOT INLINED. An engine without `WITH` needs the subquery FORM, and that is a
@@ -785,6 +881,10 @@ ibRenderedQuery ibQueryRenderer::Render(const ibQueryIR& ir)
 		with += with.IsEmpty() ? wxT("WITH ") : wxT(", ");
 		with += QuoteIdent(cte.m_name) + wxT(" AS (") + RenderSelect(cte.m_query.get()) + wxT(")");
 	}
+	// ONE `RECURSIVE` FOR THE WHOLE LIST — said once, before the first name, and the ordinary named queries
+	// stand beside the recursive ones.
+	if (recursive)
+		with = wxT("WITH RECURSIVE ") + with.Mid(5);   // "WITH " -> "WITH RECURSIVE "
 	if (!with.IsEmpty())
 		with += wxT(" ");
 
@@ -802,11 +902,9 @@ ibRenderedQuery ibQueryRenderer::Render(const ibQueryIR& ir)
 	// The Firebird layer has always written its own; that one is about EXECUTION, this one about what
 	// the engine composed, and the pair is how a wrong answer is told apart from a wrong statement.
 	//
-	// The parameter COUNT rather than the values: a bind list is data (a password, a person's name),
-	// and a journal that a developer mails back must not carry it. The count is what a reader checks
-	// against the placeholders.
-	ibJournalInfo(wxT("query.sql"), wxT("%s   [%u params]"),
-	              m_out.m_sql, static_cast<unsigned>(m_out.m_params.size()));
+	// The parameter COUNT rather than the values, unless asked (ibJournalOfParams). The count is what a
+	// reader checks against the placeholders.
+	ibJournalInfo(wxT("query.sql"), wxT("%s   %s"), m_out.m_sql, ibJournalOfParams(m_out.m_params));
 	return m_out;
 }
 
@@ -1029,6 +1127,9 @@ wxString ibQueryRenderer::RenderExpr(const ibQueryExprPtr& expr)
 	}
 
 	case ibQueryExprKind::Func: {
+		// COUNT with no argument is COUNT(*). COUNT() is not SQL.
+		if (expr->m_args.empty() && expr->m_name.IsSameAs(wxT("COUNT"), false) && !expr->m_distinct)
+			return wxT("COUNT(*)");
 		wxString s = expr->m_name + wxT("(");
 		if (expr->m_distinct)
 			s += wxT("DISTINCT ");   // COUNT(DISTINCT col) — one spelling, every dialect
@@ -1062,6 +1163,12 @@ wxString ibQueryRenderer::RenderExpr(const ibQueryExprPtr& expr)
 	}
 
 	case ibQueryExprKind::In: {
+		// A SET THAT IS A QUERY — `x IN ( SELECT … )`: its select renders here, its binds in placeholder order.
+		if (expr->m_subquery) {
+			const wxString lhs = RenderExpr(expr->m_lhs);
+			return wxT("(") + lhs + (expr->m_negated ? wxT(" NOT IN (") : wxT(" IN ("))
+				+ RenderSelect(expr->m_subquery.get()) + wxT("))");
+		}
 		// Empty list = constant predicate; lhs not evaluated (so no stray bind).
 		if (expr->m_args.empty())
 			return expr->m_negated ? wxT("(1 = 1)") : wxT("(1 = 0)");
@@ -1321,9 +1428,26 @@ wxString ibQueryRenderer::RenderDDL(const ibDdlStatement& ddl)
 		             : wxT("CREATE TABLE ");
 		if (ddl.m_ifNotExists) sql += wxT("IF NOT EXISTS ");
 		sql += QuoteIdent(ddl.m_table) + wxT(" (");
+		// Two columns both marked PRIMARY KEY are one key, not two. A column-level PRIMARY KEY
+		// on each is illegal; the key is named once, after the columns.
+		int primaryKeys = 0;
+		for (const ibDdlColumn& col : ddl.m_columns)
+			if (col.m_primaryKey) ++primaryKeys;
+		const bool compositeKey = primaryKeys > 1;
 		for (size_t i = 0; i < ddl.m_columns.size(); ++i) {
 			if (i) sql += wxT(", ");
-			sql += RenderColumn(ddl.m_columns[i]);
+			sql += RenderColumn(ddl.m_columns[i], !compositeKey);
+		}
+		if (compositeKey) {
+			sql += wxT(", PRIMARY KEY (");
+			bool firstKey = true;
+			for (const ibDdlColumn& col : ddl.m_columns) {
+				if (!col.m_primaryKey) continue;
+				if (!firstKey) sql += wxT(", ");
+				sql += QuoteIdent(col.m_name);
+				firstKey = false;
+			}
+			sql += wxT(")");
 		}
 		sql += wxT(")");
 		if (ddl.m_temporary && !ddl.m_createSuffix.empty())
@@ -1373,8 +1497,14 @@ wxString ibQueryRenderer::RenderDDL(const ibDdlStatement& ddl)
 		return sql;
 	}
 	case ibDdlKind::CreateIndex: {
-		wxString sql = ddl.m_unique ? wxT("CREATE UNIQUE INDEX ") : wxT("CREATE INDEX ");
-		sql += QuoteIdent(ddl.m_indexName) + wxT(" ON ") + QuoteIdent(ddl.m_table) + wxT(" (");
+		// A descending twin exists only where the engine needs one (m_descendingIndexWord): elsewhere it renders
+		// empty, and its DROP below does the same, so it is never made and never missed.
+		if (ddl.m_descending && m_dialect.m_descendingIndexWord.empty())
+			return wxString();
+		wxString sql = ddl.m_unique ? wxT("CREATE UNIQUE ") : wxT("CREATE ");
+		if (ddl.m_descending)
+			sql += m_dialect.m_descendingIndexWord + wxT(" ");
+		sql += wxT("INDEX ") + QuoteIdent(ddl.m_indexName) + wxT(" ON ") + QuoteIdent(ddl.m_table) + wxT(" (");
 		for (size_t i = 0; i < ddl.m_indexColumns.size(); ++i) {
 			if (i) sql += wxT(", ");
 			sql += QuoteIdent(ddl.m_indexColumns[i]);
@@ -1383,6 +1513,8 @@ wxString ibQueryRenderer::RenderDDL(const ibDdlStatement& ddl)
 		return sql;
 	}
 	case ibDdlKind::DropIndex: {
+		if (ddl.m_descending && m_dialect.m_descendingIndexWord.empty())
+			return wxString();   // the twin this engine never made
 		wxString sql = wxT("DROP INDEX ") + QuoteIdent(ddl.m_indexName);
 		if (m_dialect.m_dropIndexNeedsTable && !ddl.m_table.empty())
 			sql += wxT(" ON ") + QuoteIdent(ddl.m_table);
@@ -1399,12 +1531,12 @@ wxString ibQueryRenderer::RenderDDL(const ibDdlStatement& ddl)
 	return wxString();
 }
 
-wxString ibQueryRenderer::RenderColumn(const ibDdlColumn& col)
+wxString ibQueryRenderer::RenderColumn(const ibDdlColumn& col, bool inlinePrimaryKey)
 {
 	wxString s = QuoteIdent(col.m_name) + wxT(" ") + MapType(col.m_type);
 	if (!col.m_default.empty()) s += wxT(" DEFAULT ") + col.m_default;   // before NOT NULL (e.g. "INTEGER DEFAULT 0 NOT NULL")
-	if (col.m_primaryKey)   s += wxT(" PRIMARY KEY");   // implies NOT NULL
-	else if (col.m_notNull) s += wxT(" NOT NULL");
+	if (inlinePrimaryKey && col.m_primaryKey) s += wxT(" PRIMARY KEY");   // implies NOT NULL
+	else if (col.m_notNull || col.m_primaryKey) s += wxT(" NOT NULL");
 	return s;
 }
 
@@ -1714,9 +1846,9 @@ ibRenderedQuery ibQueryRenderer::RenderDML(const ibDmlStatement& dml)
 	}
 
 	m_out.m_sql = sql;
-	// The WRITE side, said the same way as the read (above): one line per statement, values left out.
-	ibJournalInfo(wxT("query.sql"), wxT("%s   [%u params]"),
-	              m_out.m_sql, static_cast<unsigned>(m_out.m_params.size()));
+	// The WRITE side, said the same way as the read (above): one line per statement, values left out
+	// unless asked.
+	ibJournalInfo(wxT("query.sql"), wxT("%s   %s"), m_out.m_sql, ibJournalOfParams(m_out.m_params));
 	return m_out;
 }
 
@@ -1740,10 +1872,10 @@ void ibQueryStatement::Put(int position, ibQueryExprPtr expr)
 void ibQueryStatement::SetParamInt(int p, int v)                  { Put(p, ibConst(ibValue(ibNumber(v)))); }
 void ibQueryStatement::SetParamDouble(int p, double v)            { Put(p, ibConst(ibValue(v))); }
 void ibQueryStatement::SetParamNumber(int p, const ibNumber& v)   { Put(p, ibConst(ibValue(v))); }
-void ibQueryStatement::SetParamString(int p, const wxString& v)   { Put(p, ibConst(ibValue(v))); }
+void ibQueryStatement::SetParamString(int p, const ibString& v)   { Put(p, ibConst(ibValue(ibString(v)))); }   // one more owner of the text
 void ibQueryStatement::SetParamNull(int p)                        { Put(p, ibConst(ibValue())); }
 void ibQueryStatement::SetParamBlob(int p, const void* d, long n) { Put(p, ibConstBlob(d, static_cast<size_t>(n))); }
-void ibQueryStatement::SetParamDate(int p, const wxDateTime& v)   { Put(p, ibConst(ibValue(v))); }
+void ibQueryStatement::SetParamDate(int p, const ibDateTime& v)   { Put(p, ibConst(ibValue(v))); }
 void ibQueryStatement::SetParamBool(int p, bool v)                { Put(p, ibConst(ibValue(v))); }
 
 // The one bind that is not a constant: `col = col + <delta>`, evaluated by the DB. The column name
@@ -1888,7 +2020,7 @@ void ibBatchInsert::SetParamNumber(int p, const ibNumber& v)
 	if (m_prepared) { Bound(p); (*m_prepared)->SetParamNumber(p, v); }
 	else            ibQueryStatement::SetParamNumber(p, v);
 }
-void ibBatchInsert::SetParamString(int p, const wxString& v)
+void ibBatchInsert::SetParamString(int p, const ibString& v)
 {
 	if (m_prepared) { Bound(p); (*m_prepared)->SetParamString(p, v); }
 	else            ibQueryStatement::SetParamString(p, v);
@@ -1898,7 +2030,7 @@ void ibBatchInsert::SetParamNull(int p)
 	if (m_prepared) { Bound(p); (*m_prepared)->SetParamNull(p); }
 	else            ibQueryStatement::SetParamNull(p);
 }
-void ibBatchInsert::SetParamDate(int p, const wxDateTime& v)
+void ibBatchInsert::SetParamDate(int p, const ibDateTime& v)
 {
 	if (m_prepared) { Bound(p); (*m_prepared)->SetParamDate(p, v); }
 	else            ibQueryStatement::SetParamDate(p, v);
@@ -1996,6 +2128,11 @@ bool ibCanPushWindow(const ibDatabaseLayer* layer)
 bool ibCanUseCte(const ibDatabaseLayer* layer)
 {
 	return layer != nullptr && layer->GetDialect().m_features.m_cte;
+}
+
+bool ibCanWalkTree(const ibDatabaseLayer* layer)
+{
+	return layer != nullptr && layer->GetDialect().m_features.m_recursiveCte;
 }
 
 int ibExecuteDdl(ibDatabaseLayer* layer, const ibDdlStatement& ddl)

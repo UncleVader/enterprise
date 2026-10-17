@@ -19,7 +19,8 @@
 // suite. Locally (a real desktop session) it runs for real.
 // =============================================================================
 
-#pragma once
+#ifndef __FRONTEND_FIX_H__
+#define __FRONTEND_FIX_H__
 
 #include <gtest/gtest.h>
 
@@ -30,7 +31,7 @@
 #include <wx/debug.h>   // wxSetAssertHandler
 #include <wx/log.h>     // wxLogStderr — the default wxLogGui is a MODAL flush
 
-#include "backend/diagnostics/journal.h"   // ibTechJournal — the suite gets one too
+#include "core/diagnostics/journal.h"   // ibTechJournal — the suite gets one too
 
 #ifdef _WIN32
 #include <crtdbg.h>
@@ -122,9 +123,9 @@ struct FrontendRuntimeFix : ::testing::Test {
 	void SetUp() override {
 		if (ibWxGuiEnvironment::s_instance == nullptr || !ibWxGuiEnvironment::s_instance->IsOk())
 			GTEST_SKIP() << "GUI wxApp unavailable (no display / headless)";
-		if (!ibApplicationData::CreateAppDataEnv(ibRunMode::eRUNTIME_MODE))
+		if (!ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE))
 			GTEST_SKIP() << "appData env unavailable headless";
-		ibConnectionPool* pool = ibApplicationData::GetConnectionPool();
+		ibConnectionPool* pool = ibApplicationInstance::GetConnectionPool();
 		if (pool == nullptr)
 			GTEST_SKIP() << "no connection pool after CreateAppDataEnv";
 		db = std::make_shared<ibDatabaseLayerSQLite>();
@@ -134,7 +135,9 @@ struct FrontendRuntimeFix : ::testing::Test {
 		ready = true;
 	}
 	void TearDown() override {
-		if (ibApplicationData::Get() != nullptr)
-			ibApplicationData::DestroyAppDataEnv();
+		if (ibApplicationInstance::Get() != nullptr)
+			ibApplicationInstance::DestroyAppDataEnv();
 	}
 };
+
+#endif

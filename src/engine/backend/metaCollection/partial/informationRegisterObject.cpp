@@ -1,6 +1,7 @@
 #include "informationRegister.h"
 
 #include "backend/appData.h"
+#include "backend/metaData.h"   // GetFactoryCountChanges — the version an explorer is built at
 #include "backend/session/session.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/system/systemManager.h"
@@ -14,9 +15,9 @@
 // A period as the register keeps it — truncated to its periodicity; anything but a date as it is.
 static ibValue TruncateToPeriod(const ibValue& period, ibTotalsPeriod unit)
 {
-	if (period.GetType() != TYPE_DATE || !period.GetDateTime().IsValid())
+	if (period.GetType() != TYPE_DATE)
 		return period;
-	return ibValue(ibTruncateToPeriod(period.GetDateTime(), unit));
+	return ibValue(period.GetDate().BeginOfPeriod(unit));
 }
 
 // …and the manager's own line, before anything asks by its key: a write, a read, a delete all name the month a
@@ -56,10 +57,10 @@ bool ibValueRecordSetObjectInformationRegister::SaveData(bool replace, bool clea
 
 const ibSourceExplorer* ibValueRecordManagerObjectInformationRegister::GetSourceExplorer() const
 {
-	m_sourceExplorer.Reset(
+	if (!m_sourceExplorer.Reset(m_metaObject->GetMetaData()->GetFactoryCountChanges(),
 		wxT("Ref"), _("Ref"), m_metaObject->GetMetaID(), GetClassType(),
-		false, false
-	);
+		false, false))
+		return &m_sourceExplorer;   // built at this version of the metadata already — read as it is
 
 	ibValueMetaObjectInformationRegister* metaRef = nullptr;
 
@@ -85,7 +86,7 @@ const ibSourceExplorer* ibValueRecordManagerObjectInformationRegister::GetSource
 }
 
 #pragma region _form_builder_h_
-void ibValueRecordManagerObjectInformationRegister::ShowFormValue(const wxString& strFormName, ibBackendControlFrame* ownerControl)
+void ibValueRecordManagerObjectInformationRegister::ShowFormValue(const ibFormRequest& request, ibBackendControlFrame* ownerControl)
 {
 	ibBackendValueForm* const foundedForm = GetForm();
 
@@ -95,36 +96,39 @@ void ibValueRecordManagerObjectInformationRegister::ShowFormValue(const wxString
 	}
 
 	//if form is not initialized then generate  
-	ibBackendValueForm* const valueForm =
-		GetFormValue(strFormName, ownerControl);
+	const ibFormPtr<ibBackendValueForm> valueForm =
+		GetFormValue(request, ownerControl);
 
-	if (valueForm != nullptr) {
+	if (valueForm) {
 		valueForm->Modify(m_recordSet->IsModified());
 		valueForm->ShowForm();
 	}
 }
 
-ibBackendValueForm* ibValueRecordManagerObjectInformationRegister::GetFormValue(const wxString& strFormName, ibBackendControlFrame* ownerControl)
+ibFormPtr<ibBackendValueForm> ibValueRecordManagerObjectInformationRegister::GetFormValue(const ibFormRequest& request, ibBackendControlFrame* ownerControl)
 {
 	ibBackendValueForm* const foundedForm = GetForm();
 
 	if (foundedForm == nullptr) {
 
-		ibBackendValueForm* createdForm = m_metaObject->CreateAndBuildForm(
-			strFormName,
+		// A record's window is keyed by the record: one window per record.
+		ibFormRequest recordRequest = request;
+		recordRequest.m_formGuid = m_objGuid;
+
+		const ibFormPtr<ibBackendValueForm> createdForm = m_metaObject->CreateAndBuildForm(
+			recordRequest,
 			ibValueMetaObjectInformationRegister::eFormRecord,
 			ownerControl,
-			this,
-			m_objGuid
+			this
 		);
 
-		if (createdForm != nullptr)
+		if (createdForm)
 			createdForm->CloseOnOwnerClose(false);
 
 		return createdForm;
 	}
 
-	return foundedForm;
+	return ibFormPtr<ibBackendValueForm>(foundedForm);   // the open one — its window holds it
 }
 #pragma endregion
 
@@ -393,9 +397,12 @@ bool ibValueRecordManagerObjectInformationRegister::CallAsFunc(const long lMetho
 		pvarRetValue = CopyRegister();
 		return true;
 	case recordManager::enWriteRecordManager:
+		// ⚠ `Write()` IS `Write(False)`: a record is added, and a key already taken is refused in words — the same
+		// answer the form gives (informationRegisterAction.cpp). Replacing another record is said out loud, as
+		// `Write(True)` (Max, 2026-09-24: "the manager must complain too, when you try to make the record new").
 		pvarRetValue = WriteRegister(
 			lSizeArray > 0 ?
-			paParams[0]->GetBoolean() : true
+			paParams[0]->GetBoolean() : false
 		);
 		return true;
 	case recordManager::enDeleteRecordManager:
@@ -414,7 +421,7 @@ bool ibValueRecordManagerObjectInformationRegister::CallAsFunc(const long lMetho
 		return true;
 	case recordManager::enGetFormRecord:
 		pvarRetValue = GetFormValue(
-			lSizeArray > 0 ? paParams[0]->GetString() : wxString(wxEmptyString),
+			lSizeArray > 0 ? ibFormRequest(paParams[0]->GetString()) : ibFormRequest(),
 			lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr
 		);
 		return true;

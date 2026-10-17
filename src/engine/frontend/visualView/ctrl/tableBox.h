@@ -9,7 +9,7 @@
 
 #include "frontend/visualView/ctrl/window.h"
 #include "frontend/visualView/ctrl/typeControl.h"
-#include "backend/sourceDescription.h"   // ibSourceDescription (full [head, field] binding path)
+#include "core/description/sourceDescription.h"   // ibSourceDescription (full [head, field] binding path)
 
 #ifndef OES_USE_WEB
 // Desktop pulls in the full wxDataView-based viewer. Web build keeps
@@ -118,7 +118,10 @@ class ibValueModelTableBox : public ibValueWindowComposite,
 	// Unbound (no source picked) -> the whole composite (chrome + inner) is not rendered
 	// (ibValueWindowComposite::UpdateWithLayers gate). Ask the PROPERTY (IsEmptyProperty), NOT
 	// GetSourceDesc — the latter walks the source and can be broken; the property flag is cheap and safe.
-	virtual bool IsSourceMissing() const override { return m_propertySource->IsEmptyProperty(); }
+	virtual bool IsUnbound() const override { return m_propertySource->IsEmptyProperty(); }
+	// On a field or a TABULAR SECTION this base does not use -> not available, and not rendered by the same
+	// gate. Body in tableBox.cpp — a section is no column.
+	virtual bool IsAvailable() const override;
 	virtual ibSelectorDataType GetFilterDataType() const { return ibSelectorDataType::ibSelectorDataType_table; }
 	virtual ibSourceDataType GetFilterSourceDataType() const { return ibSourceDataType::ibSourceDataType_table; }
 
@@ -624,10 +627,17 @@ public:
 	void SetVisibleColumn(bool visible = true) const { m_propertyVisible->SetValue(visible); }
 	bool GetVisibleColumn() const { return m_propertyVisible->GetValueAsBoolean(); }
 
+	// A column on a field this base does not use is not available — asked of the column's field (ibPropertySource).
+	// An empty binding is not a reason here: a column may stand on the model rather than a source (OnUpdated).
+	virtual bool IsAvailable() const override { return m_propertySource->IsAvailable() && ibValueControl::IsAvailable(); }
+
 	void SetWidthColumn(int width) const { m_propertyWidth->SetValue(width); }
 	int GetWidthColumn() const { return m_propertyWidth->GetValueAsUInteger(); }
 
 	///////////////////////////////////////////////////////////////////////
+
+	const ibTranslateString& GetFormat() const { return m_propertyFormat->GetValueAsFormatString(); }
+
 
 	// The tablebox this column belongs to. NOT simply the parent any more: a column
 	// may sit inside a column GROUP (and groups nest), so the table is looked for UP
@@ -704,6 +714,9 @@ public:
 	virtual bool SetControlValue(const ibValue& varControlVal = ibValue());
 	virtual bool GetControlValue(ibValue& pvarControlVal) const;
 
+	// A column stands on the ROW being edited: its neighbours are the other cells of that row.
+	virtual ibChoiceHolder GetChoiceHolder() const override;
+
 	//choice processing
 	virtual void ChoiceProcessing(ibValue& vSelected);
 
@@ -728,6 +741,8 @@ private:
 	ibPropertyBoolean* m_propertyPasswordMode = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryInfo, wxT("PasswordMode"), _("Password mode"), _("Whether the cell editor hides what is typed behind placeholder characters, for secrets such as passwords. Off by default."), false);
 	ibPropertyBoolean* m_propertyMultilineMode = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryInfo, wxT("MultilineMode"), _("Multiline mode"), _("Whether the cell editor accepts several lines of text (Enter starts a new line). Off by default: Enter finishes the edit."), false);
 	ibPropertyBoolean* m_propertyTexteditMode = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryInfo, wxT("TexteditMode"), _("Textedit mode"), _("Whether the value can be typed into the cell. Off: it can only be picked with the Select button or cleared. On by default; a read-only column never takes typing."), true);
+	ibPropertyFormat* m_propertyFormat = ibPropertyObject::CreateProperty<ibPropertyFormat>(m_categoryInfo, wxT("Format"), _("Format"),
+		_("How the column shows its cells, written per language: digits after the point, separators, a date pattern. Empty: the bound attribute's format, and without one a number shows as many digits after the point as its type keeps."), wxT(""));
 
 	ibPropertyTString* m_propertyFooterText = ibPropertyObject::CreateProperty<ibPropertyTString>(m_categoryInfo, wxT("FooterText"), _("Footer text"),
 		_("The text in this column's footer cell, shown when the table's footer is on - a label or a total set from code. Can be written per language."), wxT(""));
@@ -773,11 +788,11 @@ private:
 
 	ibPropertyCategory* m_propertyEvent = ibPropertyObject::CreatePropertyCategory(wxT("Event"), _("Event"));
 	ibEventControl* m_eventOnChange = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("OnChange"), _("Change"), wxArrayString{ wxT("Control") });
-	ibEventControl* m_eventStartChoice = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("StartChoice"), _("Start choice"), wxArrayString{ wxT("Control"), wxT("StandartProcessing") });
-	ibEventControl* m_eventStartListChoice = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("StartListChoice"), _("Start list choice"), wxArrayString{ wxT("Control"), wxT("StandartProcessing") });
-	ibEventControl* m_eventClearing = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("Clearing"), _("Clearing"), wxArrayString{ wxT("Control"), wxT("StandartProcessing") });
-	ibEventControl* m_eventOpening = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("Opening"), _("Opening"), wxArrayString{ wxT("Control"), wxT("StandartProcessing") });
-	ibEventControl* m_eventChoiceProcessing = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("ChoiceProcessing"), _("Choice processing"), wxArrayString{ wxT("Control"), wxT("ValueSelected"), wxT("StandartProcessing") });
+	ibEventControl* m_eventStartChoice = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("StartChoice"), _("Start choice"), wxArrayString{ wxT("Control"), wxT("StandardProcessing") });
+	ibEventControl* m_eventStartListChoice = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("StartListChoice"), _("Start list choice"), wxArrayString{ wxT("Control"), wxT("StandardProcessing") });
+	ibEventControl* m_eventClearing = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("Clearing"), _("Clearing"), wxArrayString{ wxT("Control"), wxT("StandardProcessing") });
+	ibEventControl* m_eventOpening = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("Opening"), _("Opening"), wxArrayString{ wxT("Control"), wxT("StandardProcessing") });
+	ibEventControl* m_eventChoiceProcessing = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("ChoiceProcessing"), _("Choice processing"), wxArrayString{ wxT("Control"), wxT("ValueSelected"), wxT("StandardProcessing") });
 
 	friend class ibDataViewValueRenderer;
 };

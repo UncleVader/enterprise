@@ -10,7 +10,7 @@
 #include <set>         // the fields laid out with the posting block, asked once per attribute
 #include "backend/metaCollection/dimension/metaDimensionObject.h"   // IsBalanceDimension — does this field split
 #include "backend/metaCollection/resource/metaResourceObject.h"     // IsBalanceResource  — the same question of a figure
-#include "backend/serialize/dataBuilder.h"
+#include "core/serialize/dataBuilder.h"
 #include "chartOfAccounts.h"
 #include "chartOfCharacteristicTypes.h"   // the CONTOUR — a slot's value type is the chart's own composition
 #include "backend/system/value/valueDynamicList.h"   // ibValueDynamicList — the standard list migrates onto the universal dynamic list
@@ -21,10 +21,15 @@
 
 ibValueMetaObjectAccountingRegister::ibValueMetaObjectAccountingRegister() : ibValueMetaObjectRegisterData()
 {
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
-	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnWrite"), ibContentHelper::eProcedureHelper, { wxT("Cancel"), wxT("Replacing") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("BeforeDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	(*m_propertyObjectModule)->SetDefaultProcedure(wxT("OnDelete"), ibContentHelper::eProcedureHelper, { wxT("Cancel") });
+	
+	(*m_propertyManagerModule)->SetDefaultProcedure(wxT("FormGetProcessing"), ibContentHelper::eProcedureHelper, { wxT("Form"), wxT("Cancel") });
+
 	// The two totals tables are declared with their initialiser on the class itself — see
-	// accountingRegister.h. Nothing to do here.
+	// accountingRegister.h; nothing about them is done here.
 }
 
 ibValueMetaObjectAccountingRegister::~ibValueMetaObjectAccountingRegister()
@@ -39,10 +44,10 @@ ibValueMetaObjectFormBase* ibValueMetaObjectAccountingRegister::GetDefaultFormBy
 }
 
 #pragma region _form_builder_h_
-ibBackendValueForm* ibValueMetaObjectAccountingRegister::GetListForm(const wxString& strFormName, ibBackendControlFrame* ownerControl, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectAccountingRegister::GetListForm(const ibFormRequest& request, ibBackendControlFrame* ownerControl) const
 {
-	return ibValueMetaObjectGenericData::CreateAndBuildForm(strFormName, eFormList, ownerControl,
-		ibCreateList(GetQueryable(), GetRegisterPeriod()->GetQueryColumn()), formGuid);   // migrated onto the universal dynamic list
+	return ibValueMetaObjectGenericData::CreateAndBuildForm(request, eFormList, ownerControl,
+		ibCreateList(request.m_create, GetQueryable(), GetRegisterPeriod()->GetQueryColumn()));   // migrated onto the universal dynamic list
 }
 #pragma endregion
 
@@ -356,7 +361,7 @@ bool ibValueMetaObjectAccountingRegister::OnSaveMetaObject(int flags)
 	//
 	// It lives on the schema declaration instead (accountingRegisterMetadataSchema.cpp): every rule
 	// runs BEFORE the first statement, states its reason into the ledger, and greys the Apply button —
-	// the same road the analytics ceiling and the hierarchy rules already take.
+	// the same road the analytics ceiling already takes.
 	//
 	// ⭐ WHAT *IS* CHECKED HERE IS THE ABSENCE, AND IT IS REPORTED, NOT THROWN. "Two charts" is a
 	// question about a schema that can still be computed; "no chart at all" is not — the account
@@ -903,7 +908,7 @@ bool ibValueMetaObjectAccountingRegister::OnAfterRunMetaObject(int flags)
 
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		if (ibValueMetaObjectRegisterData::OnAfterRunMetaObject(flags)) {
-			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue* { return CreateRecordSetObjectValue(); })) return false;
+			if (!cc->AddCompileModule(m_propertyObjectModule->GetMetaObject(), [this]() -> ibValue { return CreateRecordSetObjectValue(); })) return false;
 			return true;
 		}
 	}
@@ -966,26 +971,26 @@ void ibValueMetaObjectAccountingRegister::OnRemoveMetaForm(ibValueMetaObjectForm
 
 #include "accountingRegisterManager.h"
 
-ibValueManagerDataObject* ibValueMetaObjectAccountingRegister::CreateManagerDataObjectValue() const
+ibValuePtr<ibValueManagerDataObject> ibValueMetaObjectAccountingRegister::CreateManagerDataObjectValue() const
 {
-	return new ibValueManagerDataObjectAccountingRegister(this);
+	return ibValuePtr<ibValueManagerDataObject>(new ibValueManagerDataObjectAccountingRegister(this));
 }
 
-ibValueRecordSetObject* ibValueMetaObjectAccountingRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
+ibValuePtr<ibValueRecordSetObject> ibValueMetaObjectAccountingRegister::CreateRecordSetObjectRegValue(const ibUniqueKeyPair& uniqueKey) const
 {
 	if (auto* cc = m_metaData->GetCompileCache()) {
 		ibValueRecordSetObject* pDataRef = nullptr;
 		if (!cc->FindCompileModule(m_propertyObjectModule->GetMetaObject(), pDataRef))
-			return new ibValueRecordSetObjectAccountingRegister(this, uniqueKey);
-		return pDataRef;
+			return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectAccountingRegister(this, uniqueKey));
+		return ibValuePtr<ibValueRecordSetObject>(pDataRef);
 	}
-	return new ibValueRecordSetObjectAccountingRegister(this, uniqueKey);
+	return ibValuePtr<ibValueRecordSetObject>(new ibValueRecordSetObjectAccountingRegister(this, uniqueKey));
 }
 
-ibSourceDataObject* ibValueMetaObjectAccountingRegister::CreateSourceObject(const ibValueMetaObjectFormBase* metaObject) const
+ibSourcePtr<ibSourceDataObject> ibValueMetaObjectAccountingRegister::CreateSourceObject(const ibCreateRequest& request, const ibFormID& form_id) const
 {
-	switch (metaObject->GetTypeForm()) {
-	case eFormList: return ibCreateList(GetQueryable(), GetRegisterPeriod()->GetQueryColumn());   // migrated onto the universal dynamic list
+	switch (form_id) {
+	case eFormList: return ibSourcePtr<ibSourceDataObject>(ibCreateList(request, GetQueryable(), GetRegisterPeriod()->GetQueryColumn()));   // migrated onto the universal dynamic list
 	}
 	return nullptr;
 }
