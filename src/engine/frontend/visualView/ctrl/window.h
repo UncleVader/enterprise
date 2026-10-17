@@ -4,6 +4,7 @@
 #include "control.h"
 #include "frontend/frontendTypes.h"
 #include "backend/backend_command.h"   // ibBackendCommandSender — a composite control (tablebox) is a command source
+#include "frontend/win/typeconv.h"      // ColourToWxColour — HasDefaultBackground compares against the system colour
 
 class ibCanvasWindow;   // layer canvas widget (visualView/canvasWindow.h)
 
@@ -44,7 +45,7 @@ protected:
 	// over it should not carry it as a strip of its own (see ibControlStaticTextValue::SetTransparentBackground).
 	// Any other colour was chosen, and stays.
 	bool HasDefaultBackground() const {
-		const wxColour bg = m_propertyBG->GetValueAsColour();
+		const wxColour bg = typeConv::ColourToWxColour(m_propertyBG->GetValueAsColour());
 		return bg == wxDefaultStypeBGColour
 			|| bg == wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW)
 			|| bg == *wxWHITE;

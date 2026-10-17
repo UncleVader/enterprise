@@ -195,22 +195,6 @@ ibValue ibValueTypeDescription::AdjustValue(const ibTypeDescription& typeDescrip
 
 	if (typeDescription.GetClsidCount() == 1) {
 
-		// ⭐ A DECLARATION THAT NAMES A FAMILY — `DocumentRef`, `AnyRef`, `CatalogRef` — is met by asking
-		// the family's GATE, the same question the interpreter asks a typed variable (OPER_SET_TYPE): may a
-		// value of this class pass? A member passes exactly as it is; empty passes; anything else has no
-		// "empty one of this type" to become, because a family creates nothing.
-		//
-		// 🛑 IT FELL THROUGH TO THE FACTORY instead: the value's class is the CONCRETE reference
-		// (`DocumentRef.Other`), which is not the family's id, so the comparison above missed, and the
-		// branch below asked the factory for a `DocumentRef` — which cannot be built without arguments.
-		// Every assignment of a reference to an attribute of a generic type raised that (#157). A
-		// concrete or composite declaration carries the member's own id, which is why only the generic
-		// ones failed.
-		if (const ibCtorAbstractType* family = ibValue::GetAvailableCtor(typeDescription.GetFirstClsid())) {
-			if (family->IsFamily())
-				return family->AllowValue(varValue.GetClassType()) ? varValue : wxEmptyValue;
-		}
-
 		if (source != nullptr ? source->IsRegisterCtor(typeDescription.GetFirstClsid())
 			: ibValue::IsRegisterCtor(typeDescription.GetFirstClsid())) {
 
