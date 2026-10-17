@@ -79,7 +79,6 @@ EVT_MENU(wxID_GROUP_ROW, ibSpreadsheetEditView::OnMenuEvent)
 EVT_MENU(wxID_UNGROUP_ROW, ibSpreadsheetEditView::OnMenuEvent)
 EVT_MENU(wxID_GROUP_COL, ibSpreadsheetEditView::OnMenuEvent)
 EVT_MENU(wxID_UNGROUP_COL, ibSpreadsheetEditView::OnMenuEvent)
-EVT_CHOICE(wxID_SHEET_ZOOM, ibSpreadsheetEditView::OnZoomChoice)
 EVT_GRID_ZOOM(ibSpreadsheetEditView::OnGridZoomChanged)
 wxEND_EVENT_TABLE()
 
@@ -228,6 +227,13 @@ void ibSpreadsheetEditView::OnCreateToolbar(wxAuiToolBar* toolbar)
 		zoomChoice->Append(label);
 	m_zoomChoice = zoomChoice;
 	SyncZoomChoice();
+	// Bound directly on the control rather than left to the event table: zoomChoice lives on
+	// m_docToolbar, owned by the main frame, not by this view's own MDI child frame. wx's MDI
+	// frame only special-cases wxEVT_MENU/wxEVT_UPDATE_UI for forwarding to the active child view
+	// (wxMDIParentFrameBase::TryBefore) - a wxEVT_CHOICE never reaches an EVT_CHOICE entry in this
+	// class's event table, so the choice silently never called SetGridZoom. Binding straight to the
+	// control sidesteps that forwarding entirely.
+	zoomChoice->Bind(wxEVT_CHOICE, &ibSpreadsheetEditView::OnZoomChoice, this);
 	toolbar->AddControl(zoomChoice, _("Zoom"));
 }
 
