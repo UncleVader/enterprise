@@ -4,6 +4,10 @@
 
 void ibValueNotebook::OnPageChanged(wxAuiNotebookEvent& event)
 {
+	fprintf(stderr, "NBTRACE OnPageChanged name=%s old=%d new=%d\n",
+		(const char*)GetControlName().mb_str(), event.GetOldSelection(), event.GetSelection());
+	fflush(stderr);
+
 	ibValueNotebookPage* activePage = nullptr;
 	if (event.GetOldSelection() != wxNOT_FOUND) {
 		wxAuiNotebook* notebook = dynamic_cast<wxAuiNotebook*>(GetWxObject());

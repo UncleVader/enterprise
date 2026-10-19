@@ -186,6 +186,7 @@
     <ClCompile Include="formatString.cpp" />
     <ClCompile Include="fstring.cpp" />
     <ClCompile Include="graphics\colour.cpp" />
+    <ClCompile Include="graphics\lunaPalette.cpp" />
     <ClCompile Include="graphics\font.cpp" />
     <ClCompile Include="graphics\geometry.cpp" />
     <ClCompile Include="picturePredefined.cpp" />
@@ -243,6 +244,7 @@
     <ClInclude Include="formatString.h" />
     <ClInclude Include="fstring.h" />
     <ClInclude Include="graphics\colour.h" />
+    <ClInclude Include="graphics\lunaPalette.h" />
     <ClInclude Include="graphics\font.h" />
     <ClInclude Include="graphics\geometry.h" />
     <ClInclude Include="graphics\picture.h" />

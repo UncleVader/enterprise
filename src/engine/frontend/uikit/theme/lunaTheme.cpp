@@ -23,17 +23,40 @@
 #include "frontend/uikit/ctrl/textCtrl.h"
 #include "frontend/uikit/ctrl/listBox.h"
 
+#include "core/graphics/lunaPalette.h"
+
 namespace {
 
-// palette tiers (docs/private/ui-palette.md — reuse a tier, don't invent a shade)
-const wxColour kChrome(0xB8, 0xC9, 0xD4);        // chrome        #B8C9D4
-const wxColour kChromeLight(0xC8, 0xD6, 0xDF);   // chrome-light  #C8D6DF
-const wxColour kContent(0xFA, 0xF7, 0xF0);       // content       #FAF7F0
-const wxColour kBorder(0xA8, 0xBA, 0xC8);        // border        #A8BAC8
-const wxColour kCaptionTop(0x5A, 0x7B, 0x95);    // caption-active-top
-const wxColour kCaptionBottom(0x3F, 0x5C, 0x77); // caption-active-bottom
-const wxColour kAccent(0xD9, 0x77, 0x57);        // accent        #D97757
-const wxColour kAccentDeep(0xB8, 0x5A, 0x38);    // accent-deep   #B85A38
+inline wxColour ToWx(const ibColour& col) { return wxColour(col.m_red, col.m_green, col.m_blue); }
+
+// palette tiers (docs/private/ui-palette.md — reuse a tier, don't invent a shade).
+// Mutable: LoadLunaPalette() below overwrites them from theme/lunaPalette.json
+// (core/graphics/lunaPalette.h — the single source of truth shared with the web
+// client's CSS, injected by wenterprise-server) when that file is found, so the
+// desktop theme and the web gallery never drift apart silently. Absent the file,
+// these keep the hardcoded ibLunaPalette defaults.
+wxColour kChrome;
+wxColour kChromeLight;
+wxColour kContent;
+wxColour kBorder;
+wxColour kCaptionTop;
+wxColour kCaptionBottom;
+wxColour kAccent;
+wxColour kAccentDeep;
+
+void LoadLunaPalette() {
+	ibLunaPalette palette;
+	ibLunaPalette::Load(ibLunaPalette::FilePath(), palette);
+
+	kChrome        = ToWx(palette.chrome);
+	kChromeLight   = ToWx(palette.chromeLight);
+	kContent       = ToWx(palette.content);
+	kBorder        = ToWx(palette.border);
+	kCaptionTop    = ToWx(palette.captionTop);
+	kCaptionBottom = ToWx(palette.captionBottom);
+	kAccent        = ToWx(palette.accent);
+	kAccentDeep    = ToWx(palette.accentDeep);
+}
 
 // menu metrics (FORKED from the wxWin32Renderer menu block — the only canon
 // implementation of the univ menu geometry contract; margins widened from
@@ -795,6 +818,7 @@ public:
 
 	ibLunaTheme() {
 		m_renderer = nullptr;
+		LoadLunaPalette();
 	}
 
 	virtual ~ibLunaTheme() {

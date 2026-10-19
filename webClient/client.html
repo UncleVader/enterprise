@@ -5,20 +5,43 @@
      client falls back to the English defaults further down, so a client served
      by anything else still works. -->
 <!--OES_I18N-->
+<!-- OES_THEME — the server replaces this line with a <style>:root{...}</style>
+     block built from theme/lunaPalette.json (core/graphics/lunaPalette.h), the
+     SAME file the desktop Luna theme reads. Left as a plain comment, the
+     client falls back to the Luna defaults baked into the stylesheet below. -->
+<!--OES_THEME-->
 <style>
+/* Luna palette — the SAME 8 colours the desktop theme paints with
+   (core/graphics/lunaPalette.h). These are this file's own defaults, so it
+   still looks right served standalone; the server overwrites the OES_THEME
+   marker above with the live theme/lunaPalette.json, so the two surfaces
+   never carry two different palettes silently. The derived
+   --panel/--accent-*/--text tokens exist only here (CSS, not the palette
+   file) — interaction states (hover/active/panel backgrounds), not brand
+   colours of their own. */
+:root{
+  --chrome:#B8C9D4;--chrome-light:#C8D6DF;--content:#FAF7F0;--border:#A8BAC8;
+  --caption-top:#5A7B95;--caption-bottom:#3F5C77;--accent:#D97757;--accent-deep:#B85A38;
+  --text:#2b2b2b;
+  --panel:color-mix(in srgb, var(--chrome-light) 30%, var(--content));
+  --accent-hover:color-mix(in srgb, var(--accent) 80%, white);
+  --accent-soft:color-mix(in srgb, var(--accent) 14%, white);
+  --accent-soft-active:color-mix(in srgb, var(--accent) 28%, white);
+  --accent-border-hover:color-mix(in srgb, var(--accent) 55%, var(--border));
+}
 /* Window chrome: title bar + status bar wrap the sidebar+main area.
    Body is flex-column so the middle row stretches; titlebar / statusbar
    are auto-sized strips. Mirrors desktop wxFrame's menubar+content+
    statusbar layout. */
 body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
-  flex-direction:column;height:100vh;color:#222}
-#titlebar{flex:0 0 auto;background:linear-gradient(#3b50a0,#2f4189);
+  flex-direction:column;height:100vh;color:#222;background:var(--content)}
+#titlebar{flex:0 0 auto;background:linear-gradient(var(--caption-top),var(--caption-bottom));
   color:#fff;padding:5px 12px;display:flex;align-items:center;gap:16px;
-  font-size:.92em;border-bottom:1px solid #1f2f70;user-select:none}
+  font-size:.92em;border-bottom:1px solid var(--caption-bottom);user-select:none}
 #app-title{font-weight:600;letter-spacing:.02em;font-size:.95em;
   display:inline-flex;align-items:center;gap:6px}
 #app-title::before{content:'';width:14px;height:14px;border-radius:3px;
-  background:linear-gradient(#ffffff,#c8d3ee);display:inline-block;
+  background:linear-gradient(#ffffff,var(--chrome-light));display:inline-block;
   box-shadow:0 0 0 1px rgba(255,255,255,.35) inset}
 #menubar{display:flex;gap:1px;flex:1 1 auto;min-width:0}
 #menubar button{background:transparent;border:0;color:#fff;
@@ -27,14 +50,14 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
 #menubar button:hover:not(:disabled){background:rgba(255,255,255,.18)}
 #menubar button:active:not(:disabled){background:rgba(255,255,255,.28)}
 #app-row{flex:1 1 auto;display:flex;min-height:0;overflow:hidden}
-#sidebar{width:260px;border-right:1px solid #ccc;padding:10px;
-  overflow:auto;background:#f7f7f7;flex:0 0 260px;box-sizing:border-box}
+#sidebar{width:260px;border-right:1px solid var(--border);padding:10px;
+  overflow:auto;background:var(--panel);flex:0 0 260px;box-sizing:border-box}
 #main{flex:1 1 auto;padding:12px;overflow:auto;min-width:0;min-height:0;
   display:flex;flex-direction:column}
-#statusbar{flex:0 0 auto;background:#ececec;border-top:1px solid #c0c0c0;
+#statusbar{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--border);
   padding:2px 12px;font-size:.82em;color:#555;display:flex;gap:14px;
   min-height:20px;align-items:center;user-select:none}
-#statusbar > .sep{width:1px;height:14px;background:#c0c0c0}
+#statusbar > .sep{width:1px;height:14px;background:var(--border)}
 #statusbar #status{margin:0}
 /* Status bar tabs: small toggle buttons (e.g. "Output") that show /
    hide attached panels. Active state when the matching panel is open;
@@ -43,22 +66,22 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
   padding:0 8px;margin:0;cursor:pointer;border-radius:3px;
   font:inherit;font-size:.95em;height:18px;display:inline-flex;
   align-items:center;line-height:1}
-.sb-tab:hover{background:#dde2ea;color:#222}
-.sb-tab.active{background:#3b50a0;color:#fff;border-color:#2f4189}
-.sb-tab.active:hover{background:#4561b2}
+.sb-tab:hover{background:var(--accent-soft);color:#222}
+.sb-tab.active{background:var(--accent);color:#fff;border-color:var(--accent-deep)}
+.sb-tab.active:hover{background:var(--accent-hover)}
 /* Output panel — sits between #app-row and #statusbar. Hidden by
    default; OES.output(msg) appends a line and opens it. Click on the
    header (or × button) hides. Mirrors desktop's "Output" / log window
    role: script Message() / wxLogMessage destinations land here. */
 #outputpanel{flex:0 0 auto;display:none;flex-direction:column;
-  background:#f7f8fa;border-top:1px solid #c0c0c0;height:180px;
+  background:var(--content);border-top:1px solid var(--border);height:180px;
   min-height:60px;max-height:50vh}
 #outputpanel.shown{display:flex}
-#output-header{flex:0 0 auto;padding:4px 10px;background:#e6e9ee;
-  border-bottom:1px solid #c0c0c0;display:flex;align-items:center;
+#output-header{flex:0 0 auto;padding:4px 10px;background:var(--panel);
+  border-bottom:1px solid var(--border);display:flex;align-items:center;
   gap:8px;font-weight:600;color:#444;font-size:.85em;user-select:none;
   cursor:pointer}
-#output-header:hover{background:#dde2ea}
+#output-header:hover{background:var(--accent-soft)}
 #output-title{flex:1 1 auto}
 #output-close{width:18px;height:18px;flex:0 0 18px;border-radius:50%;
   border:0;background:transparent;cursor:pointer;color:#666;
@@ -66,7 +89,7 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
   align-items:center;justify-content:center;padding:0}
 #output-close:hover{background:#d73a3a;color:#fff}
 #output-body{flex:1 1 auto;overflow:auto;padding:4px 10px;
-  background:#fff;font:12px/1.4 Consolas,"SF Mono",Menlo,monospace;
+  background:var(--content);font:12px/1.4 Consolas,"SF Mono",Menlo,monospace;
   color:#222}
 .output-line{padding:1px 0;white-space:pre-wrap;word-wrap:break-word}
 .output-line .ts{color:#9aa1ad;margin-right:8px;user-select:none}
@@ -86,24 +109,24 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
 /* tabs-row: flex container holding the scroll buttons + the scrollable
    tab strip. Buttons collapse to 0 width when not needed (scroll fits
    entirely) so narrow windows don't waste horizontal space. */
-#tabs-row{display:flex;align-items:stretch;background:#ececec;border-bottom:1px solid #bbb;padding-top:6px}
+#tabs-row{display:flex;align-items:stretch;background:var(--panel);border-bottom:1px solid var(--border);padding-top:6px}
 .tabs-scroll{flex:0 0 auto;border:none;background:transparent;color:#555;
   cursor:pointer;padding:0 6px;font:700 14px/1 Arial,sans-serif;
   align-self:stretch;display:none}
-.tabs-scroll:hover{color:#000;background:#dcdcdc}
+.tabs-scroll:hover{color:#000;background:var(--accent-soft)}
 .tabs-scroll.visible{display:inline-flex;align-items:center}
 #tabs{display:flex;gap:1px;margin:0;padding:0 8px 0;flex:1 1 auto;
   overflow-x:auto;scroll-behavior:smooth;scrollbar-width:none}
 #tabs::-webkit-scrollbar{display:none}
-.tab{padding:4px 10px 5px;border:1px solid #bbb;border-bottom:none;
-  border-radius:6px 6px 0 0;background:#dcdcdc;font-size:.9em;
+.tab{padding:4px 10px 5px;border:1px solid var(--border);border-bottom:none;
+  border-radius:6px 6px 0 0;background:var(--panel);font-size:.9em;
   cursor:pointer;display:inline-flex;align-items:center;gap:6px;
   color:#444;position:relative;top:1px;max-width:240px;
   flex:0 0 auto; /* don't shrink in the overflow-x flex container */
   transition:background .1s,color .1s}
-.tab:hover{background:#e8e8e8;color:#222}
-.tab.active{background:#fff;color:#000;border-color:#bbb;top:0;
-  box-shadow:0 -1px 0 #fff inset;z-index:1}
+.tab:hover{background:var(--accent-soft);color:#222}
+.tab.active{background:var(--content);color:#000;border-color:var(--border);top:0;
+  box-shadow:0 -1px 0 var(--content) inset;z-index:1}
 /* Icon sits on the LEFT of the title (horizontal flow) — matches the
    way Chrome / VS Code / desktop wxAUI render their tabs. No icon
    → the row collapses to text only without a layout shift. */
@@ -133,7 +156,7 @@ body{margin:0;font:14px/1.4 system-ui,sans-serif;display:flex;
 h3{margin:.6em 0 .3em;font-size:.9em;color:#555;text-transform:uppercase;letter-spacing:.04em}
 ul{list-style:none;padding:0;margin:0}
 li{padding:4px 6px;cursor:pointer;border-radius:3px}
-li:hover{background:#e3e9f0}
+li:hover{background:var(--accent-soft)}
 /* Sidebar Interfaces (subsystems) section: list of collapsible groups,
    each with an icon + name header and a list of clickable items. Hidden
    when the configuration has no Interfaces. Matches desktop's
@@ -143,8 +166,8 @@ li:hover{background:#e3e9f0}
   width:100%;text-align:left;padding:6px 8px;margin:1px 0;
   background:transparent;border:1px solid transparent;border-radius:4px;
   cursor:pointer;font:inherit;color:#2a3142}
-#interfaces .iface-btn:hover{background:#e3e9f0;border-color:#c0c8d4}
-#interfaces .iface-btn:active{background:#d0d8e4}
+#interfaces .iface-btn:hover{background:var(--accent-soft);border-color:var(--accent-border-hover)}
+#interfaces .iface-btn:active{background:var(--accent-soft-active)}
 #interfaces .iface-icon{width:18px;height:18px;flex-shrink:0;object-fit:contain}
 /* Host is flex column + full height so proportion-based growth on
    inner controls actually has room to expand into. Without this, the
@@ -160,7 +183,7 @@ li:hover{background:#e3e9f0}
    flex:1 inside #main → #app-row → body), so the hardcoded
    100vh-90px is no longer needed — the new layout (titlebar +
    app-row + statusbar) does the math via flex grow chain. */
-.form-host{border:1px solid #ddd;border-radius:4px;padding:10px;
+.form-host{border:1px solid var(--border);border-radius:4px;padding:10px;
   display:flex;flex-direction:column;min-height:0;flex:1 1 auto}
 .form-host > .boxsizer{flex:1;min-height:0}
 /* align-items:flex-start so children stay at their natural cross-axis
@@ -181,7 +204,7 @@ li:hover{background:#e3e9f0}
    in effect to desktop's ibVisualHost::CalculateLabelSize. */
 .labelrow{display:flex;align-items:stretch;gap:6px;min-height:0}
 .gridsizer{display:grid;gap:6px;margin:4px 0}
-.staticboxsizer{border:1px solid #bbb;border-radius:4px;padding:8px;margin:4px 0}
+.staticboxsizer{border:1px solid var(--border);border-radius:4px;padding:8px;margin:4px 0}
 .staticboxsizer>legend{padding:0 6px;color:#555;font-weight:600}
 /* pre-line preserves explicit \n in the caption while still wrapping
    at whitespace. Desktop's static text control draws multi-line
@@ -192,14 +215,14 @@ li:hover{background:#e3e9f0}
 /* Standalone buttons: platform-native-ish look with subtle gradient
    + hover/active shades. Matches the toolbar tool styling closely so
    the whole form reads as one control surface. */
-button.ctrl{padding:5px 14px;border:1px solid #b5bfcc;border-radius:3px;
-  background:linear-gradient(#fafbfc,#eef1f5);font:inherit;color:#222;
+button.ctrl{padding:5px 14px;border:1px solid var(--border);border-radius:3px;
+  background:linear-gradient(var(--content),var(--panel));font:inherit;color:#222;
   cursor:pointer;min-width:72px}
-button.ctrl:hover:not(:disabled){background:linear-gradient(#f2f6fc,#dde6f0);
-  border-color:#8fa7c8}
-button.ctrl:active:not(:disabled){background:#c6d5e8;border-color:#6b88ae}
+button.ctrl:hover:not(:disabled){background:linear-gradient(var(--content),var(--accent-soft));
+  border-color:var(--accent-border-hover)}
+button.ctrl:active:not(:disabled){background:var(--accent-soft-active);border-color:var(--accent-deep)}
 button.ctrl:disabled{opacity:.55;cursor:default}
-input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
+input.ctrl{padding:3px 6px;border:1px solid var(--border);border-radius:3px}
 /* Text editor group: input + inline side-buttons share one border,
    mirroring desktop ibControlTextEditor where the Select/Open/Clear
    glyphs sit INSIDE the control's frame. Inner input has no own
@@ -212,8 +235,8 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
    Mirrors desktop ibControlTextEditor where adding a side button
    doesn't change the control's outer width — only the inner input
    shrinks. */
-.texted{display:flex;align-items:stretch;border:1px solid #aaa;
-  border-radius:3px;background:#fff;overflow:hidden;min-height:0;
+.texted{display:flex;align-items:stretch;border:1px solid var(--border);
+  border-radius:3px;background:var(--content);overflow:hidden;min-height:0;
   flex:0 0 200px}
 /* input/textarea and side-buttons inherit colour from the .texted
    group, so the fg/bg pushed inline by TextCtrl.render reaches them.
@@ -227,16 +250,16 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
   background:transparent;flex-shrink:0}
 .texted > button:hover:not(:disabled){background:rgba(0,0,0,.06)}
 .texted > button:active:not(:disabled){background:rgba(0,0,0,.12)}
-.toolbar{display:flex;align-items:center;gap:2px;background:#eef1f4;border:1px solid #c9ced3;border-radius:3px;padding:3px 4px;margin:2px 0}
+.toolbar{display:flex;align-items:center;gap:2px;background:var(--panel);border:1px solid var(--border);border-radius:3px;padding:3px 4px;margin:2px 0}
 .tool{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid transparent;border-radius:3px;background:transparent;font:inherit;color:inherit;cursor:pointer;line-height:1.3}
-.tool:hover:not(:disabled){background:#dde6f0;border-color:#b5c4d6}
-.tool:active:not(:disabled){background:#c6d5e8;border-color:#90a9c7}
+.tool:hover:not(:disabled){background:var(--accent-soft);border-color:var(--accent-border-hover)}
+.tool:active:not(:disabled){background:var(--accent-soft-active);border-color:var(--accent-deep)}
 .tool:disabled{opacity:.5;cursor:default}
 .tool .tool-icon{display:inline-block;width:16px;height:16px;flex-shrink:0;vertical-align:middle}
 .tool span.tool-icon{background:#9aa5b1;border-radius:2px}
 .tool img.tool-icon{object-fit:contain}
 .tool.tool-picture-only{padding:3px 6px}
-.toolseparator{display:inline-block;width:1px;height:18px;background:#c9ced3;margin:0 3px}
+.toolseparator{display:inline-block;width:1px;height:18px;background:var(--border);margin:0 3px}
 #status{font-size:.85em;color:#888;margin-top:8px}
 /* Top-right network indicator: shown after 500ms of in-flight work
    (loading spinner) or on fetch failure (connection-lost banner).
@@ -246,12 +269,12 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
 #netStatus{position:fixed;top:38px;right:12px;padding:5px 12px;border-radius:4px;
   font-size:.85em;display:none;z-index:1000;box-shadow:0 1px 3px rgba(0,0,0,.1);
   transition:opacity .15s}
-#netStatus.loading{background:#eef2ff;color:#3b50a0;border:1px solid #c4cfed}
+#netStatus.loading{background:var(--accent-soft);color:var(--accent-deep);border:1px solid var(--border)}
 #netStatus.error{background:#fce5e5;color:#8a2e2e;border:1px solid #e6aaaa}
 #netStatus.debug-paused{background:#fff4e0;color:#a04020;border:1px solid #f0c0a0}
 #netStatus .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
   margin-right:6px;vertical-align:middle}
-#netStatus.loading .dot{background:#6a84e0;animation:pulse 1s infinite}
+#netStatus.loading .dot{background:var(--accent);animation:pulse 1s infinite}
 #netStatus.error .dot{background:#c43b3b}
 #netStatus.debug-paused .dot{background:#d06030;animation:pulse 1.2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -260,12 +283,12 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
    after login + loadForms + refreshTabs + paintActiveTab all resolve,
    so the user sees either nothing or the finished layout — no
    mid-construction flicker. */
-#bootOverlay{position:fixed;inset:0;background:#fff;z-index:2000;
+#bootOverlay{position:fixed;inset:0;background:var(--content);z-index:2000;
   display:flex;align-items:center;justify-content:center;
   transition:opacity .15s}
 #bootOverlay.hide{opacity:0;pointer-events:none}
-.bootSpinner{width:36px;height:36px;border:3px solid #c8c8c8;
-  border-top-color:#3b50a0;border-radius:50%;
+.bootSpinner{width:36px;height:36px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;
   animation:bootSpin 1s linear infinite}
 @keyframes bootSpin{to{transform:rotate(360deg)}}
 /* Debug indicator inside the sidebar status line. Reuses #status's
@@ -278,22 +301,22 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
 /* Credentials prompt — shown when GET /auth-info says hasUsers=true.
    Stacked on top of bootOverlay; both disappear together once login
    succeeds and the initial fetches finish. */
-#authOverlay{position:fixed;inset:0;background:#f3f5f9;z-index:2100;
+#authOverlay{position:fixed;inset:0;background:var(--panel);z-index:2100;
   display:flex;align-items:center;justify-content:center}
 #authOverlay.hide{display:none}
-#authForm{background:#fff;padding:24px 28px;border-radius:8px;
+#authForm{background:var(--content);padding:24px 28px;border-radius:8px;
   box-shadow:0 8px 24px rgba(0,0,0,.14);min-width:280px;
   display:flex;flex-direction:column;gap:10px;font-size:.92em}
 #authForm h3{margin:0 0 4px;font-weight:600}
 #authForm label{display:flex;flex-direction:column;gap:4px;color:#444}
-#authForm input{padding:6px 8px;border:1px solid #c3c9d1;border-radius:4px;
+#authForm input{padding:6px 8px;border:1px solid var(--border);border-radius:4px;
   font-size:1em}
-#authForm input:focus{outline:2px solid #3b50a0;outline-offset:-1px;border-color:#3b50a0}
+#authForm input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 #authError{color:#a22;font-size:.9em;min-height:1.1em}
 #authError.hide{visibility:hidden}
-#authForm button{padding:8px;background:#3b50a0;color:#fff;border:0;
+#authForm button{padding:8px;background:var(--accent);color:#fff;border:0;
   border-radius:4px;font-size:1em;cursor:pointer;margin-top:4px}
-#authForm button:hover{background:#2f4189}
+#authForm button:hover{background:var(--accent-deep)}
 /* Big rotating-circle loader shown centred on the content area while
    a request is in flight > 500ms OR the host hasn't painted its tree
    yet. Fixed-position + offset by sidebar width so it sits over the
@@ -316,15 +339,15 @@ input.ctrl{padding:3px 6px;border:1px solid #aaa;border-radius:3px}
   z-index:3000;display:flex;align-items:center;justify-content:center;
   animation:modalFadeIn .12s ease-out}
 @keyframes modalFadeIn{from{opacity:0}to{opacity:1}}
-.modal-dialog{background:#fff;border-radius:6px;
+.modal-dialog{background:var(--content);border-radius:6px;
   box-shadow:0 10px 40px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.18);
   min-width:280px;max-width:min(640px,calc(100vw - 48px));
   max-height:calc(100vh - 60px);display:flex;flex-direction:column;
   animation:modalSlideIn .14s ease-out;overflow:hidden}
 @keyframes modalSlideIn{from{transform:translateY(-8px);opacity:0}
   to{transform:translateY(0);opacity:1}}
-.modal-header{padding:10px 14px;background:linear-gradient(#f7f9fc,#eef2f7);
-  border-bottom:1px solid #d8dde6;display:flex;align-items:center;
+.modal-header{padding:10px 14px;background:linear-gradient(var(--content),var(--panel));
+  border-bottom:1px solid var(--border);display:flex;align-items:center;
   gap:8px;font-weight:600;color:#2a3142;font-size:.95em;
   user-select:none;cursor:move}
 /* `.dragging` is added during an active drag so the cursor stays
@@ -343,18 +366,18 @@ body.modal-dragging,body.modal-dragging *{cursor:move !important;user-select:non
 .modal-close:hover{background:#d73a3a;color:#fff}
 .modal-body{padding:14px 16px;overflow:auto;flex:1 1 auto;
   min-height:0;line-height:1.45;color:#222;white-space:pre-line}
-.modal-footer{padding:8px 12px;background:#f4f6fa;border-top:1px solid #dde2eb;
+.modal-footer{padding:8px 12px;background:var(--panel);border-top:1px solid var(--border);
   display:flex;gap:8px;justify-content:flex-end;flex:0 0 auto}
-.modal-button{padding:5px 16px;border:1px solid #b5bfcc;border-radius:3px;
-  background:linear-gradient(#fafbfc,#eef1f5);font:inherit;color:#222;
+.modal-button{padding:5px 16px;border:1px solid var(--border);border-radius:3px;
+  background:linear-gradient(var(--content),var(--panel));font:inherit;color:#222;
   cursor:pointer;min-width:80px;line-height:1.3}
-.modal-button:hover:not(:disabled){background:linear-gradient(#f2f6fc,#dde6f0);
-  border-color:#8fa7c8}
-.modal-button:active:not(:disabled){background:#c6d5e8;border-color:#6b88ae}
-.modal-button.primary{background:linear-gradient(#4561b2,#3b50a0);
-  border-color:#2f4189;color:#fff}
-.modal-button.primary:hover:not(:disabled){background:linear-gradient(#5773c2,#4561b2)}
-.modal-button.primary:active:not(:disabled){background:#2f4189;border-color:#243574}
+.modal-button:hover:not(:disabled){background:linear-gradient(var(--content),var(--accent-soft));
+  border-color:var(--accent-border-hover)}
+.modal-button:active:not(:disabled){background:var(--accent-soft-active);border-color:var(--accent-deep)}
+.modal-button.primary{background:linear-gradient(var(--accent-hover),var(--accent));
+  border-color:var(--accent-deep);color:#fff}
+.modal-button.primary:hover:not(:disabled){background:linear-gradient(color-mix(in srgb, var(--accent) 65%, white),var(--accent-hover))}
+.modal-button.primary:active:not(:disabled){background:var(--accent-deep);border-color:color-mix(in srgb, var(--accent-deep) 80%, black)}
 .modal-button:disabled{opacity:.55;cursor:default}
 /* Fields container inside dialog body — declarative `fields[]` option.
    Layout: vertical stack of labelrows. Reuses .labelrow / .statictext
@@ -366,18 +389,18 @@ body.modal-dragging,body.modal-dragging *{cursor:move !important;user-select:non
 .modal-fields .statictext{flex-shrink:0;min-width:0}
 .modal-fields input[type=text],.modal-fields input[type=number],
 .modal-fields input[type=password],.modal-fields textarea,
-.modal-fields select{padding:4px 8px;border:1px solid #aaa;
-  border-radius:3px;font:inherit;color:#222;background:#fff;
+.modal-fields select{padding:4px 8px;border:1px solid var(--border);
+  border-radius:3px;font:inherit;color:#222;background:var(--content);
   min-width:180px;box-sizing:border-box}
 .modal-fields textarea{min-height:60px;resize:vertical}
 .modal-fields input:focus,.modal-fields textarea:focus,
-.modal-fields select:focus{outline:2px solid #3b50a0;outline-offset:-1px;
-  border-color:#3b50a0}
+.modal-fields select:focus{outline:2px solid var(--accent);outline-offset:-1px;
+  border-color:var(--accent)}
 .modal-fields label.checkboxrow{display:inline-flex;align-items:center;
   gap:6px;cursor:pointer}
 #spinner.show{display:flex}
-#spinner .ring{width:42px;height:42px;border:4px solid #dbe3f0;
-  border-top-color:#3b50a0;border-radius:50%;animation:spin 1s linear infinite}
+#spinner .ring{width:42px;height:42px;border:4px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 </style></head><body>
 <!-- Title bar: app caption + slot for menubar (populated when /functions
@@ -1197,7 +1220,7 @@ async function openAllFunctionsDialog(){
     det.open = true;   // groups expanded by default, matching desktop's ExpandAll
     det.style.cssText = 'margin:2px 0';
     const sum = document.createElement('summary');
-    sum.style.cssText = 'font-weight:600;color:#3b50a0;cursor:pointer;'
+    sum.style.cssText = 'font-weight:600;color:var(--accent-deep);cursor:pointer;'
       + 'padding:4px 0;display:flex;align-items:center;gap:6px;'
       + 'list-style:none;user-select:none';
     // Hide native ▶/▼ marker; use our own ▸/▾ in front of the caption so
@@ -1222,7 +1245,7 @@ async function openAllFunctionsDialog(){
       const row = document.createElement('div');
       row.style.cssText = 'padding:3px 8px 3px 28px;cursor:pointer;'
         + 'border-radius:3px;display:flex;align-items:center;gap:6px';
-      row.onmouseenter = () => row.style.background = '#eef2f7';
+      row.onmouseenter = () => row.style.background = 'var(--accent-soft)';
       row.onmouseleave = () => row.style.background = '';
       if (it.icon){
         const ic = document.createElement('img');
@@ -1482,7 +1505,7 @@ function showInterfacePopup(iface){
     det.open = (sec.section === 100);
     det.style.cssText = 'margin:2px 0';
     const sum = document.createElement('summary');
-    sum.style.cssText = 'font-weight:600;color:#3b50a0;cursor:pointer;'
+    sum.style.cssText = 'font-weight:600;color:var(--accent-deep);cursor:pointer;'
       + 'padding:4px 0;display:flex;align-items:center;gap:6px;'
       + 'list-style:none;user-select:none';
     const marker = document.createElement('span');
@@ -1498,7 +1521,7 @@ function showInterfacePopup(iface){
       const row = document.createElement('div');
       row.style.cssText = 'padding:3px 8px 3px 28px;cursor:pointer;'
         + 'border-radius:3px;display:flex;align-items:center;gap:6px';
-      row.onmouseenter = () => row.style.background = '#eef2f7';
+      row.onmouseenter = () => row.style.background = 'var(--accent-soft)';
       row.onmouseleave = () => row.style.background = '';
       if (it.icon){
         const ic = document.createElement('img');
@@ -1546,7 +1569,7 @@ function showInterfacePopup(iface){
 class BaseControl{
   render(node){
     const el=document.createElement('div');
-    el.style.cssText='border:1px dashed #ccc;padding:4px;margin:2px 0;font-size:.85em;color:#888';
+    el.style.cssText='border:1px dashed var(--border);padding:4px;margin:2px 0;font-size:.85em;color:#888';
     el.textContent='['+node.type+']';
     return el;
   }
@@ -2169,7 +2192,7 @@ async function showSessionLost(){
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.4);'
     +'display:flex;align-items:center;justify-content:center;z-index:9999';
   const box = document.createElement('div');
-  box.style.cssText='background:#fff;padding:20px 24px;border-radius:6px;'
+  box.style.cssText='background:var(--content);padding:20px 24px;border-radius:6px;'
     +'box-shadow:0 6px 30px rgba(0,0,0,.3);max-width:400px;text-align:center';
   const msg = document.createElement('p');
   msg.textContent = configChanged

@@ -123,6 +123,9 @@
     <ClCompile Include="graphics\colour.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\lunaPalette.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\font.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -255,6 +258,9 @@
     <ClInclude Include="formatString.h" />
     <ClInclude Include="fstring.h" />
     <ClInclude Include="graphics\colour.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\lunaPalette.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\font.h">

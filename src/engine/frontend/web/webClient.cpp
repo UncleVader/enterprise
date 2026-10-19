@@ -28,12 +28,14 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "core/programFolder.h"
+#include "core/graphics/lunaPalette.h"
 
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
 #include <wx/wfstream.h>
 #include <wx/zipstrm.h>
 
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -236,6 +238,53 @@ std::string WithCaptions(std::string html)
 	return html.replace(at, std::strlen(kI18nMarker), TranslatedDictionary());
 }
 
+// ---------------------------------------------------------------------------
+//  Theme — the Luna palette, as CSS custom properties
+// ---------------------------------------------------------------------------
+//
+// THE COLOURS LIVE IN ONE FILE (theme/lunaPalette.json, core/graphics/lunaPalette.h)
+// AND NOWHERE ELSE. The desktop Luna theme (frontend/uikit/theme/lunaTheme.cpp)
+// reads the same file as wxColour; this pass reads it as ibColour and writes it
+// out as CSS variables, replacing the `<!--OES_THEME-->` marker — so the web
+// gallery and the desktop renderer can never silently drift onto two palettes.
+
+const char* const kThemeMarker = "<!--OES_THEME-->";
+
+std::string HexOf(const ibColour& col)
+{
+	char buf[8];
+	std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", col.m_red, col.m_green, col.m_blue);
+	return std::string(buf);
+}
+
+std::string ThemeCss()
+{
+	ibLunaPalette palette;
+	ibLunaPalette::Load(ibLunaPalette::FilePath(), palette);
+
+	std::string out("<style>:root{");
+	out += "--chrome:"        + HexOf(palette.chrome)        + ";";
+	out += "--chrome-light:"  + HexOf(palette.chromeLight)   + ";";
+	out += "--content:"       + HexOf(palette.content)       + ";";
+	out += "--border:"        + HexOf(palette.border)        + ";";
+	out += "--caption-top:"   + HexOf(palette.captionTop)    + ";";
+	out += "--caption-bottom:"+ HexOf(palette.captionBottom) + ";";
+	out += "--accent:"        + HexOf(palette.accent)        + ";";
+	out += "--accent-deep:"   + HexOf(palette.accentDeep)    + ";";
+	out += "}</style>";
+	return out;
+}
+
+// Same one-shot substitution as WithCaptions — the palette does not change
+// under a running process either.
+std::string WithTheme(std::string html)
+{
+	const std::size_t at = html.find(kThemeMarker);
+	if (at == std::string::npos)
+		return html;   // a client that does not ask for the theme keeps its own CSS
+	return html.replace(at, std::strlen(kThemeMarker), ThemeCss());
+}
+
 // SAID OUT LOUD, not served blank. A missing client is a deployment mistake —
 // the pack was not copied, the directory was not shipped — and an empty page
 // sends whoever sees it looking in the wrong place.
@@ -257,7 +306,7 @@ extern "C" WFRONTEND_API const char* wfrontendClientHTML()
 	static std::string    s_client;
 
 	std::call_once(s_once, [] {
-		s_client = WithCaptions(LoadClient());
+		s_client = WithTheme(WithCaptions(LoadClient()));
 	});
 
 	return s_client.empty() ? kMissingClient : s_client.c_str();
