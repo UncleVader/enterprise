@@ -36,7 +36,7 @@ ibValueNotebook::ibValueNotebook() : ibValueWindow(), m_activePage(nullptr)
 wxObject* ibValueNotebook::Create(wxWindow* wxparent, ibVisualHost* visualHost)
 {
 	long style = m_propertyOrient->GetValueAsInteger() |
-		wxAUI_NB_TAB_MOVE |
+		wxAUI_NB_TAB_MOVE | 
 		wxAUI_NB_SCROLL_BUTTONS;
 	if (!visualHost->IsDesignerHost())
 		style |= wxAUI_NB_TAB_SPLIT;
@@ -56,18 +56,9 @@ void ibValueNotebook::OnCreated(wxObject* wxobject, wxWindow* wxparent, ibVisual
 
 	wxAuiNotebook* notebook = dynamic_cast<wxAuiNotebook*>(wxobject);
 	if (notebook != nullptr) {
-		fprintf(stderr, "NBTRACE OnCreated name=%s size=%dx%d pages=%zu sel=%d\n",
-			(const char*)GetControlName().mb_str(), notebook->GetSize().GetWidth(), notebook->GetSize().GetHeight(),
-			notebook->GetPageCount(), notebook->GetSelection());
-		fflush(stderr);
 		notebook->Bind(wxEVT_AUINOTEBOOK_PAGE_CHANGED, &ibValueNotebook::OnPageChanged, this);
 		notebook->Bind(wxEVT_AUINOTEBOOK_END_DRAG, &ibValueNotebook::OnEndDrag, this);
 		notebook->Bind(wxEVT_AUINOTEBOOK_BG_DCLICK, &ibValueNotebook::OnBGDClick, this);
-		// See OnNotebookSize: the tab strip's own geometry (and each page's layout)
-		// can only be settled correctly once the notebook has its REAL size from the
-		// form's own layout pass, not the small/default size it has right after
-		// construction.
-		notebook->Bind(wxEVT_SIZE, &ibValueNotebook::OnNotebookSize, this);
 	}
 }
 
@@ -109,66 +100,13 @@ void ibValueNotebook::OnUpdated(wxObject* wxobject, wxWindow* wxparent, ibVisual
 		// confirmed by tracing: OnCreated still reads selection 0, this OnUpdated
 		// already reads a different one). Settle it to page 0 the first time this
 		// control is ever updated, and never again, so a tab the user later switches to
-		// is never stolen back. This alone needs no real size, so it is safe to do here
-		// rather than waiting for OnNotebookSize.
+		// is never stolen back.
 		if (!m_selectionSettled) {
 			m_selectionSettled = true;
-			fprintf(stderr, "NBTRACE OnUpdated name=%s size=%dx%d pages=%zu sel_before=%d\n",
-				(const char*)GetControlName().mb_str(), notebook->GetSize().GetWidth(), notebook->GetSize().GetHeight(),
-				notebook->GetPageCount(), notebook->GetSelection());
-			fflush(stderr);
 			if (notebook->GetPageCount() > 0)
 				notebook->ChangeSelection(0);  // not SetSelection: must not fire PAGE_CHANGED (see OnPageChanged)
-			fprintf(stderr, "NBTRACE OnUpdated name=%s sel_after=%d\n",
-				(const char*)GetControlName().mb_str(), notebook->GetSelection());
-			fflush(stderr);
 		}
 	}
-}
-
-void ibValueNotebook::OnNotebookSize(wxSizeEvent& event)
-{
-	event.Skip();   // let wxAuiNotebook's own handler run (it recomputes the tab strip against the real size)
-
-	wxAuiNotebook* notebook = wxDynamicCast(event.GetEventObject(), wxAuiNotebook);
-	fprintf(stderr, "NBTRACE OnNotebookSize name=%s size=%dx%d pages=%zu laidOut=%d sel=%d\n",
-		notebook ? (const char*)GetControlName().mb_str() : "?",
-		event.GetSize().GetWidth(), event.GetSize().GetHeight(),
-		notebook ? notebook->GetPageCount() : 0, (int)m_pagesLaidOut, notebook ? notebook->GetSelection() : -99);
-	fflush(stderr);
-	if (notebook == nullptr || m_pagesLaidOut || notebook->GetPageCount() == 0)
-		return;
-
-	// A notebook materialized wholesale from stored metadata has every AddPage()
-	// call happen before the top-level form window is ever shown — each page's tab
-	// geometry (wxAuiTabArt::SetSizingInfo sizes off the control's current rect) and
-	// the tab strip's own Render() (which stops drawing once it runs out of its
-	// CURRENT width — src/3rdparty/wxWidgets/src/aui/auibook.cpp) get computed
-	// against whatever small/default size the control happens to have at
-	// construction time, not its real final size. Forcing a resize ourselves at that
-	// point (an earlier version of this fix called SendSizeEvent() straight out of
-	// OnUpdated) just recomputes the same wrong geometry against the same wrong
-	// size — it has to wait for a size event the window did not ask for itself,
-	// i.e. one the form's own layout pass actually generates once it knows the
-	// real size. This handler is that: the first time the notebook is resized to
-	// something that isn't its tiny construction default, settle it once.
-	const wxSize size = event.GetSize();
-	if (size.GetWidth() < 2 || size.GetHeight() < 2)
-		return;   // still the construction-time placeholder — wait for a real one
-
-	m_pagesLaidOut = true;
-
-	// Showing a page does not retroactively lay out ITS OWN sizer — a page built
-	// while never shown (every one but whichever ends up selected first) never had
-	// its buttons/controls positioned, so they sit at (0,0) with no size and paint
-	// nothing. Every page needs this once, not just the selected one, since the
-	// user will switch to the rest.
-	for (size_t p = 0; p < notebook->GetPageCount(); ++p) {
-		wxWindow* page = notebook->GetPage(p);
-		if (page != nullptr)
-			page->Layout();
-	}
-	notebook->Refresh();
 }
 
 void ibValueNotebook::Cleanup(wxObject* wxobject, ibVisualHost* visualHost)
@@ -177,7 +115,6 @@ void ibValueNotebook::Cleanup(wxObject* wxobject, ibVisualHost* visualHost)
 	if (notebook != nullptr) {
 		notebook->Unbind(wxEVT_AUINOTEBOOK_PAGE_CHANGED, &ibValueNotebook::OnPageChanged, this);
 		notebook->Unbind(wxEVT_AUINOTEBOOK_END_DRAG, &ibValueNotebook::OnEndDrag, this);
-		notebook->Unbind(wxEVT_SIZE, &ibValueNotebook::OnNotebookSize, this);
 	}
 }
 

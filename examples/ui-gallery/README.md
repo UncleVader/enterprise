@@ -70,7 +70,7 @@ root sizer, no `Notebook`, no pages. Implementing the missing `ibWeb*` widgets
 for the 13 types above is real new engine work, not a gallery-authoring task —
 out of scope for this pass.
 
-### Desktop: a page-selection bug, found and fixed; a rendering bug, found but not fixed
+### Desktop: a page-selection bug and a tab-rendering bug, both fixed
 
 Opening this gallery in `enterprise.exe` (or the Designer's own form editor) used
 to show only one `NotebookPage` at a time, picking a different, seemingly
@@ -91,26 +91,24 @@ in `src/engine/frontend/visualView/ctrl/notebook.cpp`:
    never stolen back. Verified with a pristine-vs-fixed rebuild comparison: the
    unmodified code consistently mis-selects (confirmed across multiple cold
    restarts); the fixed build consistently selects page 0.
-2. **Rendering — not fixed, pre-existing, deeper.** Even with the correct page
-   now selected, only one tab button paints in the strip (not 20, with no
-   overflow/scroll arrows despite `wxAUI_NB_SCROLL_BUTTONS` being set), and that
-   page's own content does not render, despite `GetPageCount()` correctly
-   reporting 20 throughout. Ruled out, each confirmed to make no difference:
-   `Refresh()`, `SendSizeEvent()`, an explicit `Layout()` on every page,
-   `ChangeSelection` vs `SetSelection` (to avoid `OnPageChanged`'s
-   `g_visualHostContext`/`RefreshForm()` side effects), and `wxAUI_NB_TAB_SPLIT`.
-   Confirmed pre-existing (not a regression from the selection fix above) via a
-   stashed-vs-restored rebuild: the untouched original code shows the exact same
-   "one tab, wrong/stale content" symptom, just with the wrong page's content
-   bleeding through instead of nothing. This looks like a genuine
-   `wxAuiNotebook`/`wxAuiTabCtrl` internal desync specific to building many pages
-   in one scripted pass rather than through normal interactive one-at-a-time use
-   — the exact mechanism (likely in how `wxAuiTabCtrl`'s own, separate
-   `m_pages`/`active` bookkeeping gets populated across repeated `InsertPage`
-   calls) was not found. Left for a session that can attach a debugger to
-   `enterprise.exe` and step through `wxAuiTabContainer::DoShowHide` /
-   `wxAuiNotebook::DoModifySelection` (`src/3rdparty/wxWidgets/src/aui/auibook.cpp`)
-   live, rather than the trace-log-and-rebuild cycle this pass used.
+2. **Rendering — fixed.** Only the active tab painted in the strip; the other
+   19 took their place (the active one sat where it belonged, e.g. mid-strip for
+   `Textbox`) but drew nothing. Tracing `wxAuiLunaTabArt::DrawTab` showed every
+   inactive tab being drawn with an invalid normal font. The gallery's controls
+   carry a stored but unset `Font` (point size 0): the property is non-null, so
+   `ibValueWindow::ApplyLook` passed `typeConv::FontToWxFont()`'s `wxNullFont` on
+   to `SetFont()`. For a plain window that just resets the font, but
+   `wxAuiNotebook::SetFont` copies it into the tab art as the normal-tab font
+   (only the bold selected font comes out valid), and macOS draws text in an
+   invalid font as nothing. `ApplyLook` now leaves the inherited font alone when
+   the stored font is unset. The page contents were never the problem: a page
+   whose controls are unbound (e.g. `Button`) is empty by design (see above).
+
+   Still open: three pages (`Checkbox`, `Textctrl`, `Coming soon`) hold a long
+   single-line static text, about 2150 px wide, so the notebook is laid out
+   wider than the form window. The strip then believes every tab fits (no
+   scroll arrows), and tabs past the window edge (after `Gridbox` in an 800 px
+   window) are clipped and cannot be reached.
 
 ### Protocol divergence
 
