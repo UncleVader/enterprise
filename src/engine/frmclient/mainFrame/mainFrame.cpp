@@ -363,6 +363,7 @@ wxAuiMDIClientWindow* ibFrontendMainFrame::OnCreateClient()
 	return new wxAuiMDIClientWindowImpl(this);
 }
 
+#ifndef __WXOSX__
 // bring window to front
 void ibFrontendMainFrame::Raise()
 {
@@ -374,6 +375,7 @@ void ibFrontendMainFrame::Raise()
 
 	wxAuiMDIParentFrame::Raise();
 }
+#endif
 
 void ibFrontendMainFrame::RaiseFrame()
 {
