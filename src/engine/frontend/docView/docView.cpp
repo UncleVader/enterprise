@@ -738,6 +738,9 @@ void ibDocument::UpdateAllViews(ibView *sender, wxObject *hint)
             view->OnUpdate(sender, hint);
     }
 
+    if ( !*alive )
+        return;
+
     // Step-4 collapse: cascade lifted up from ibMetaDocument. Children get
     // the same update; sender stays propagated so the originating view
     // remains the de-duplication anchor across the whole subtree.
