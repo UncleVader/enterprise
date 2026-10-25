@@ -64,6 +64,9 @@
     <ClCompile Include="client\clientChildFrame.cpp">
       <Filter>client</Filter>
     </ClCompile>
+    <ClCompile Include="client\clientDebugger.cpp">
+      <Filter>client</Filter>
+    </ClCompile>
     <ClCompile Include="client\clientFrame.cpp">
       <Filter>client</Filter>
     </ClCompile>
@@ -118,6 +121,9 @@
     <ClCompile Include="docView\templates\designer\docViewDataProcessorEdit.cpp">
       <Filter>docView\templates\designer</Filter>
     </ClCompile>
+    <ClCompile Include="docView\templates\designer\docViewMetaFile.cpp">
+      <Filter>docView\templates\designer</Filter>
+    </ClCompile>
     <ClCompile Include="docView\templates\designer\docViewDataReportEdit.cpp">
       <Filter>docView\templates\designer</Filter>
     </ClCompile>
@@ -146,6 +152,12 @@
       <Filter>docView\templates\designer</Filter>
     </ClCompile>
     <ClCompile Include="docView\templates\designer\docViewFunctionalOptionEdit.cpp">
+      <Filter>docView\templates\designer</Filter>
+    </ClCompile>
+    <ClCompile Include="docView\templates\designer\docViewComposerEdit.cpp">
+      <Filter>docView\templates\designer</Filter>
+    </ClCompile>
+    <ClCompile Include="docView\templates\designer\queryConstructorRequest.cpp">
       <Filter>docView\templates\designer</Filter>
     </ClCompile>
     <ClCompile Include="docView\templates\designer\docViewInterfaceEdit.cpp">
@@ -208,6 +220,9 @@
     <ClCompile Include="schema\designer\objectText.cpp">
       <Filter>schema\designer</Filter>
     </ClCompile>
+    <ClCompile Include="schema\designer\configCompare.cpp">
+      <Filter>schema\designer</Filter>
+    </ClCompile>
     <ClCompile Include="schema\designer\database.cpp">
       <Filter>schema\designer</Filter>
     </ClCompile>
@@ -262,6 +277,9 @@
     <ClCompile Include="win\dlgs\generation.cpp">
       <Filter>win\dlgs</Filter>
     </ClCompile>
+    <ClCompile Include="win\dlgs\selectPredefined.cpp">
+      <Filter>win\dlgs</Filter>
+    </ClCompile>
     <ClCompile Include="win\dlgs\settings\savedSettings.cpp">
       <Filter>win\dlgs\settings</Filter>
     </ClCompile>
@@ -311,12 +329,6 @@
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\checkbox_res.cpp">
-      <Filter>visualView\ctrl</Filter>
-    </ClCompile>
-    <ClCompile Include="visualView\ctrl\choice.cpp">
-      <Filter>visualView\ctrl</Filter>
-    </ClCompile>
-    <ClCompile Include="visualView\ctrl\combobox.cpp">
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\control.cpp">
@@ -410,9 +422,6 @@
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\itemsizer.cpp">
-      <Filter>visualView\ctrl</Filter>
-    </ClCompile>
-    <ClCompile Include="visualView\ctrl\listbox.cpp">
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\notebook.cpp">
@@ -532,6 +541,9 @@
     <ClInclude Include="client\clientChildFrame.h">
       <Filter>client</Filter>
     </ClInclude>
+    <ClInclude Include="client\clientDebugger.h">
+      <Filter>client</Filter>
+    </ClInclude>
     <ClInclude Include="client\clientFrame.h">
       <Filter>client</Filter>
     </ClInclude>
@@ -589,6 +601,9 @@
     <ClInclude Include="docView\templates\designer\docViewDataProcessorEdit.h">
       <Filter>docView\templates\designer</Filter>
     </ClInclude>
+    <ClInclude Include="docView\templates\designer\docViewMetaFile.h">
+      <Filter>docView\templates\designer</Filter>
+    </ClInclude>
     <ClInclude Include="docView\templates\designer\docViewDataReportEdit.h">
       <Filter>docView\templates\designer</Filter>
     </ClInclude>
@@ -608,6 +623,12 @@
       <Filter>docView\templates\designer</Filter>
     </ClInclude>
     <ClInclude Include="docView\templates\designer\docViewFunctionalOptionEdit.h">
+      <Filter>docView\templates\designer</Filter>
+    </ClInclude>
+    <ClInclude Include="docView\templates\designer\docViewComposerEdit.h">
+      <Filter>docView\templates\designer</Filter>
+    </ClInclude>
+    <ClInclude Include="docView\templates\designer\queryConstructorRequest.h">
       <Filter>docView\templates\designer</Filter>
     </ClInclude>
     <ClInclude Include="docView\templates\designer\docViewInterfaceEdit.h">
@@ -667,6 +688,9 @@
     <ClInclude Include="schema\designer\objectText.h">
       <Filter>schema\designer</Filter>
     </ClInclude>
+    <ClInclude Include="schema\designer\configCompare.h">
+      <Filter>schema\designer</Filter>
+    </ClInclude>
     <ClInclude Include="schema\designer\database.h">
       <Filter>schema\designer</Filter>
     </ClInclude>
@@ -722,6 +746,9 @@
       <Filter>win\dlgs</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\generation.h">
+      <Filter>win\dlgs</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\selectPredefined.h">
       <Filter>win\dlgs</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\settings\savedSettings.h">
@@ -792,18 +819,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <Filter Include="res">
-      <UniqueIdentifier>{3a8c43ef-66aa-4a5f-9a8d-dfe454435925}</UniqueIdentifier>
-    </Filter>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="res\resource.h">
-      <Filter>res</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="res\frmserver.rc">
-      <Filter>res</Filter>
-    </ResourceCompile>
+    <ResourceCompile Include="frmserver.rc" />
   </ItemGroup>
 </Project>

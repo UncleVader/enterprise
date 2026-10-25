@@ -85,13 +85,13 @@ class BACKEND_API ibByteBinder;
 // layer. SerializeAOT writes a compiled ibByteCode to a memory
 // stream (intended for sys_bytecode_cache.blob); DeserializeAOT
 // reads it back. Keeping these out-of-line in byteCodeAOT.cpp so
-// byteCode.h stays free of fileSystem/fs.h.
-class ibWriterMemory; // backend/fileSystem/fs.h
-class ibReaderMemory; // backend/fileSystem/fs.h
+// byteCode.h stays free of core/memory/memoryStream.h.
+class ibWriterMemory; // core/memory/memoryStream.h
+class ibReaderMemory; // core/memory/memoryStream.h
 
 struct ibParamRunUnit {
-	wxLongLong_t m_numArray = 0;
-	wxLongLong_t m_numIndex = 0;
+	long long m_numArray = 0;
+	long long m_numIndex = 0;
 };
 
 struct ibParamUnit : ibParamRunUnit {
@@ -144,7 +144,7 @@ struct ibByteCode {
 		// Parameters are by reference by default, so this bit is set only by the
 		// keyword. It was called `m_bByRef` and meant the exact opposite of its
 		// name: the compiler wrote it at `Val` and the runtime copied on 1.
-		// Wire format is unchanged (one u8), so no AOT version moves.
+		// Wire format is unchanged (one std::uint8_t), so no AOT version moves.
 		bool        m_bByValue     = false;
 		ibClassID   m_clsid        = 0;        // 0 = dynamic; for CHECK_TYPE
 		// The default-value DESCRIPTOR — slot coordinates only. It used to be an
@@ -529,6 +529,10 @@ public:
 		return iterator != m_listFunc.end();
 	}
 
+	// The declared default of a parameter, from this module's constant pool. False for a
+	// parameter declared without one — the caller has to supply it.
+	bool GetParamDefValue(const long lCodeLine, const long lParamNum, ibValue& pvarParamDefValue) const;
+
 	// Reverse lookup: find the function whose entry-line equals
 	// lCodeLine. Used by Execute on function entry to populate
 	// ibRunContext::m_currentFunction so the runtime carries
@@ -551,7 +555,7 @@ public:
 	//
 	// ⚠ IT ADDS NOTHING TO THE BYTECODE. The struct is a query, not a field: every answer is READ
 	// from what the compile already emitted, so the base object stays exactly what the runtime
-	// executes and what the AOT writer stores. `m_numString` is on every instruction (AddLineInfo)
+	// executes and what the AOT writer stores. `m_numString` is on every instruction (StampSource)
 	// and is an absolute text offset — the same unit the editor measures a caret in.
 	struct ibCaretPoint {
 
@@ -559,7 +563,7 @@ public:
 
 		// ⚠ WHICH DECLARATION THE CARET STANDS IN IS NOT ASKED HERE, and the attempt is instructive:
 		// it was answered by walking the tape and comparing the caret against the source position on
-		// each FUNC / ENDFUNC. That position was never a boundary — AddLineInfo stamps the token the
+		// each FUNC / ENDFUNC. That position was never a boundary — StampSource stamps the token the
 		// parser was standing on, which after a body is the token AFTER it, and for the last
 		// declaration in a module that is the end of the text. The body then claimed to close where
 		// the text ends and a caret on the last line read as inside it. The compile knows the answer

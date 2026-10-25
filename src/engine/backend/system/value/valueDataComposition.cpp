@@ -5,8 +5,8 @@
 #include "backend/query/queryable.h"                 // ibBackendQueryable
 #include "backend/query/queryableFactory.h"          // ibQueryableSourceDescriptor (source holder + its command surface)
 #include "backend/query/queryColumn.h"               // ibBackendQueryColumn::GetColumnId
-#include "backend/query/queryParser.h"               // the query is READ by the engine's own parser
-#include "backend/query/queryLexer.h"                // ibQueryLexer::ParamNames — the parameters the TEXT asks for
+#include "core/query/queryParser.h"               // the query is READ by the engine's own parser
+#include "core/query/queryLexer.h"                // ibQueryLexer::ParamNames — the parameters the TEXT asks for
 #include "backend/system/systemManager.h"            // system functions
 #include "backend/compiler/procUnit.h"                // ibProcUnit::Evaluate — a parameter expression is run here
 #include "backend/compiler/procContext.h"             // ibRunContext — the frame an expression is evaluated in
@@ -14,7 +14,7 @@
 #include "backend/session/session.h"                   // ibSession::Current / GetPUState — where the root lives
 #include "backend/system/value/valueType.h"           // ibValueTypeDescription::AdjustValue — the result decides the type
 #include "backend/query/queryConstructorModel.h"      // ibQueryConstructorModel — the fields a window offers
-#include "backend/query/queryRender.h"               // ibRenderQuery / ibQueryColumnFromPath — the seed query, written out
+#include "core/query/queryRender.h"               // ibRenderQuery / ibQueryColumnFromPath — the seed query, written out
 #include "backend/backend_exception.h"               // the engine's verdict on a query that will not resolve
 #include "backend/srcDataObject.h"                   // ibSourceExplorer
 #include "core/serialize/dataBuilder.h"           // ibDataNode (object-level save/load)
@@ -184,7 +184,7 @@ void ibValueDataComposition::RebuildSource()
 	// ⚠ …UNLESS WE ARE THAT READ. A compose asks for the source to be built (Compose ->
 	// EnsureSourceBuilt -> here) on the very thread the run owns, and cancelling there would wait for
 	// this thread to finish — which is this thread. Asked by the id recorded when the run started.
-	if (m_fetchThread != wxThread::GetCurrentId())
+	if (m_fetchThread.load() != std::this_thread::get_id())
 		CancelFetch();
 
 	// WHAT THIS BUILD IS FOR — recorded before anything else, so an EnsureSourceBuilt after it knows
@@ -919,9 +919,9 @@ void ibValueDataComposition::SubmitFetchAsync(std::function<void()> work)
 			m_fetchRun = jobs->StartBackground(
 				[work, this](ibSession*) -> ibValue {
 					struct ibOnThisThread {
-						std::atomic<unsigned long>& m_slot;
-						explicit ibOnThisThread(std::atomic<unsigned long>& slot) : m_slot(slot) { m_slot = wxThread::GetCurrentId(); }
-						~ibOnThisThread() { m_slot = 0; }
+						std::atomic<std::thread::id>& m_slot;
+						explicit ibOnThisThread(std::atomic<std::thread::id>& slot) : m_slot(slot) { m_slot = std::this_thread::get_id(); }
+						~ibOnThisThread() { m_slot = std::thread::id(); }
 					} onThisThread{ m_fetchThread };
 					work();
 					return ibValue();

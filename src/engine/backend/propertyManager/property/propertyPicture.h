@@ -36,9 +36,14 @@ public:
 	virtual bool SetDataValue(const ibValue& varPropVal);
 	virtual bool GetDataValue(ibValue& pvarPropVal) const;
 
-	//load & save object in control 
+	//load & save object in control
 	virtual bool ReadNodeValue(const ibDataValue& value) override;
 	virtual bool WriteNodeValue(ibDataValue& value) const override;
+
+	// …and the configuration's pictures it may be loaded from, as the desktop's cell listed them (advpropPicture.cpp):
+	// Pictures — the picture metaobjects of the owner's configuration, or of the one it extends, each by its Name, its
+	// Guid and the Id it is drawn by, not as a Picture: a picture named in an answer is fetched before the answer is drawn.
+	virtual bool GetProtocolValue(ibDataNode& row, ibReader reader) override;
 
 public:
 
@@ -51,7 +56,8 @@ public:
 
 #pragma region _value_
 	wxBitmap GetValueAsBitmap() const;
-	ibExternalPictureDescription& GetValueAsPictureDesc() const;
+	const ibExternalPictureDescription& GetValueAsPictureDesc() const;
+	ibGuid GetValueAsVersion() const;
 	void SetValue(const ibExternalPictureDescription& val);
 #pragma endregion 
 

@@ -2,6 +2,7 @@
 
 #include "backend/backend_exception.h"     // a setting the schema refuses — said to the window, which stays open
 #include "backend/backend_mainFrame.h"
+#include "backend/backend_picture.h"       // ibBackendPicture::SendPicture — a field's picture, by its id
 #include "backend/backend_composition.h"   // ibValidateSettings — a setting the schema refuses
 #include "backend/metaData.h"              // the cell's value read and made, its type's quick choice
 #include "core/serialize/dataBuilder.h"
@@ -14,23 +15,26 @@
 #include "frmserver/visualView/ctrl/frame.h"       // ibControlFrame — the cell a value is chosen for
 #include "frmserver/visualView/ctrl/typeControl.h" // ibTypeControlFactory::ChooseValue — the one road a Select button walks
 
-#include "protocol/protocol.h"   // ibProtocolListSettingsAct
+#include "protocol/protocol.h"   // ibProtocol::ibRequest::ibListSettings::ibAct
 
 #include <map>
 #include <set>
 
 void ibWriteSettingsField(ibDataNode& fields, const wxString& name, const wxString& presentation, ibMetaID id,
-	const ibTypeDescription& type, bool available, const ibMetaData* metaData)
+	const ibTypeDescription& type, bool available, const ibPictureDescription& picture, const ibMetaData* metaData)
 {
 	ibDataNode& field = fields.AddChild(0, 0);
-	field.SetValue(ibProtocolName::Name, name);
+	field.SetValue(ibProtocol::ibRequest::ibListSettings::Name, name);
 	if (!presentation.IsEmpty())
-		field.SetValue(ibProtocolName::Presentation, presentation);
-	field.SetValue(ibProtocolName::Id, static_cast<s32>(id));
-	field.SetValue(ibProtocolName::Available, available);
+		field.SetValue(ibProtocol::ibRequest::ibListSettings::Presentation, presentation);
+	field.SetValue(ibProtocol::ibRequest::ibListSettings::Id, static_cast<std::int32_t>(id));
+	field.SetValue(ibProtocol::ibRequest::ibListSettings::Available, available);
+	// A field's picture is its source's, of the configuration the fields were read from.
+	if (!picture.IsEmptyPicture())
+		field.SetValue(ibProtocol::ibRequest::ibListSettings::Picture, ibBackendPicture::SendPicture(picture, metaData));
 	ibDataValue written;
 	ibTypeDescriptionMemory::WriteNode(written, type);
-	field.SetProperty(ibProtocolName::Type, written);
+	field.SetProperty(ibProtocol::ibRequest::ibListSettings::Type, written);
 }
 
 void ibWriteSettingsReferences(ibDataNode& references, const std::vector<ibTypeDescription>& types,
@@ -45,11 +49,11 @@ void ibWriteSettingsReferences(ibDataNode& references, const std::vector<ibTypeD
 			if (targets.empty())
 				continue;
 			ibDataNode& reference = references.AddChild(0, 0);
-			reference.SetValue(ibProtocolName::Type, wxString::Format(wxT("%llu"), (unsigned long long)clsid));
+			reference.SetValue(ibProtocol::ibRequest::ibListSettings::Type, wxString::Format(wxT("%llu"), (unsigned long long)clsid));
 			std::vector<ibDataValue> ids;
 			for (const ibMetaID& target : targets)
 				ids.push_back(ibDataValue::Int(target));
-			reference.AddField(ibProtocolName::Targets, ibDataValue::Array(ids));
+			reference.AddField(ibProtocol::ibRequest::ibListSettings::Targets, ibDataValue::Array(ids));
 		}
 	}
 }
@@ -112,7 +116,7 @@ void WriteTargetFields(ibDataNode& expanded, ibDataNode& references, const std::
 			const ibTypeDescription& type = united[col->GetSourceName()];
 			ibWriteSettingsField(expanded, col->GetSourceName(),
 				col->GetSourceSynonym().IsEmpty() ? col->GetSourceName() : col->GetSourceSynonym(),
-				static_cast<ibMetaID>(col->GetSourceId()), type, true, metaData);
+				static_cast<ibMetaID>(col->GetSourceId()), type, true, col->GetSourcePicture(), metaData);
 			types.push_back(type);
 		}
 	ibWriteSettingsReferences(references, types, metaData);
@@ -127,7 +131,7 @@ void WriteTargetFields(ibDataNode& expanded, ibDataNode& references, const std::
 class ibListSettingsChoice : public ibControlFrame, public ibTypeControlFactory {
 public:
 
-	ibListSettingsChoice(const ibMetaData* metaData, const ibClassID& clsid, const ibValue& value, s32 choice)
+	ibListSettingsChoice(const ibMetaData* metaData, const ibClassID& clsid, const ibValue& value, std::int32_t choice)
 		: m_metaData(metaData), m_typeDesc(clsid), m_value(value), m_choice(choice) {
 	}
 
@@ -166,11 +170,11 @@ public:
 	void WriteChosen(ibDataNode& request) const {
 		if (!m_chosen)
 			return;
-		ibDataNode& chosen = request.Child(ibProtocolName::Chosen);
-		chosen.SetValue(ibProtocolName::Choice, m_choice);
-		ibDataNode& value = chosen.Child(ibProtocolName::Value);
+		ibDataNode& chosen = request.Child(ibProtocol::ibRequest::ibListSettings::Chosen);
+		chosen.SetValue(ibProtocol::ibRequest::ibListSettings::Choice, m_choice);
+		ibDataNode& value = chosen.Child(ibProtocol::ibRequest::ibListSettings::Value);
 		m_value.Serialize(value);
-		value.SetValue(ibProtocolName::Presentation, wxString(m_value.GetString()));
+		value.SetValue(ibProtocol::ibRequest::ibListSettings::Presentation, wxString(m_value.GetString()));
 	}
 
 	// The window closed: a choice made later is nobody's.
@@ -182,7 +186,7 @@ private:
 	mutable ibTypeDescription   m_typeDesc;
 	mutable ibSourceDescription m_sourceDesc;
 	ibValue                     m_value;
-	const s32                   m_choice;
+	const std::int32_t                   m_choice;
 	const ibGuid                m_guid = ibGuid::newGuid();
 	unsigned                    m_refCount = 0;
 	bool                        m_chosen = false;
@@ -200,14 +204,14 @@ void ChooseValue(const ibDataNode& act, const ibMetaData* metaData, ibListSettin
 		choosing = nullptr;
 	}
 	unsigned long long parsed = 0;
-	if (metaData == nullptr || !act.GetValue<wxString>(ibProtocolName::Type).ToULongLong(&parsed) || parsed == 0)
+	if (metaData == nullptr || !act.GetValue<wxString>(ibProtocol::ibRequest::ibListSettings::Type).ToULongLong(&parsed) || parsed == 0)
 		return;
 	const ibClassID clsid = parsed;
 
 	// The value in the cell — the server's own node, given back; none, or one the configuration cannot read: the empty
 	// one of the type.
 	ibValue value;
-	if (const ibDataNode* const written = act.FindChild(ibProtocolName::Value)) {
+	if (const ibDataNode* const written = act.FindChild(ibProtocol::ibRequest::ibListSettings::Value)) {
 		try {
 			value = metaData->Deserialize(*written);
 		}
@@ -217,7 +221,7 @@ void ChooseValue(const ibDataNode& act, const ibMetaData* metaData, ibListSettin
 	if (value.GetClassType() != clsid && metaData->IsRegisterCtor(clsid))
 		value = metaData->CreateObject(clsid);
 
-	choosing = new ibListSettingsChoice(metaData, clsid, value, act.GetValue<s32>(ibProtocolName::Choice));
+	choosing = new ibListSettingsChoice(metaData, clsid, value, act.GetValue<std::int32_t>(ibProtocol::ibRequest::ibListSettings::Choice));
 	choosing->ControlIncrRef();
 	ibTypeControlFactory::ChooseValue(choosing);
 }
@@ -226,13 +230,19 @@ void ChooseValue(const ibDataNode& act, const ibMetaData* metaData, ibListSettin
 ibDataNode SettingsRequest(const ibDataNode& question, const ibSettingsDescription& shown, const wxString& error)
 {
 	ibDataNode request = question;
-	ibSettingsDescriptionMemory::WriteNode(request.Child(ibProtocolName::Settings), shown);
+	ibSettingsDescriptionMemory::WriteNode(request.Child(ibProtocol::ibRequest::ibListSettings::Settings), shown);
 	if (!error.IsEmpty())
-		request.SetValue(ibProtocolName::Error, error);
+		request.SetValue(ibProtocol::ibRequest::ibListSettings::Error, error);
 	return request;
 }
 
 } // namespace
+
+void ibWriteSettingsTargetFields(ibDataNode& expanded, ibDataNode& references, const std::vector<ibMetaID>& targets,
+	const ibMetaData* metaData)
+{
+	WriteTargetFields(expanded, references, targets, metaData);
+}
 
 bool ibRequestSettings(const ibDataNode& question, ibSettingsDescription& edited, const ibMetaData* metaData)
 {
@@ -264,20 +274,20 @@ bool ibRequestSettings(const ibDataNode& question, ibSettingsDescription& edited
 
 		// ON THE WAY — a reference field opened: the fields of its targets, and the window asked again with them; a cell's
 		// value to choose: chosen, and the window asked again — with it, when the choice was made at once.
-		if (response.FindField(ibProtocolName::Act) != nullptr) {
-			const ibProtocolListSettingsAct act = static_cast<ibProtocolListSettingsAct>(response.GetValue<s32>(ibProtocolName::Act));
+		if (response.FindField(ibProtocol::ibRequest::ibListSettings::Act) != nullptr) {
+			const ibProtocol::ibRequest::ibListSettings::ibAct act = static_cast<ibProtocol::ibRequest::ibListSettings::ibAct>(response.GetValue<std::int32_t>(ibProtocol::ibRequest::ibListSettings::Act));
 			request = SettingsRequest(question, shown, error);
-			if (act == ibProtocolListSettingsAct::Expand) {
+			if (act == ibProtocol::ibRequest::ibListSettings::ibAct::Expand) {
 				std::vector<ibMetaID> targets;
-				if (const ibDataValue* const listed = response.FindField(ibProtocolName::Targets)) {
+				if (const ibDataValue* const listed = response.FindField(ibProtocol::ibRequest::ibListSettings::Targets)) {
 					if (listed->Kind() == ibDataKind::Array)
 						for (const ibDataValue& id : listed->AsArray())
 							targets.push_back(static_cast<ibMetaID>(id.AsInt()));
 				}
-				WriteTargetFields(request.Child(ibProtocolName::Expanded), request.Child(ibProtocolName::References),
+				WriteTargetFields(request.Child(ibProtocol::ibRequest::ibListSettings::Expanded), request.Child(ibProtocol::ibRequest::ibListSettings::References),
 					targets, metaData);
 			}
-			else if (act == ibProtocolListSettingsAct::Choose) {
+			else if (act == ibProtocol::ibRequest::ibListSettings::ibAct::Choose) {
 				ChooseValue(response, metaData, choosing);
 				if (choosing != nullptr)
 					choosing->WriteChosen(request);
@@ -285,7 +295,7 @@ bool ibRequestSettings(const ibDataNode& question, ibSettingsDescription& edited
 			continue;
 		}
 
-		const ibDataNode* const settings = response.FindChild(ibProtocolName::Settings);
+		const ibDataNode* const settings = response.FindChild(ibProtocol::ibRequest::ibListSettings::Settings);
 		if (settings == nullptr)
 			return false;   // …and Cancel leaves the composer exactly as it was: the copy is dropped
 

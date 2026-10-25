@@ -246,7 +246,7 @@ public:
 	// caption and picture as the representation chooses them, whether it is enabled, its tooltip, its kind —
 	// and for a group, its members with the same, greyed where a view-only form forbids a command that changes
 	// data. Everything a client needs to draw the bar and its submenus without asking again — the pictures by their
-	// ids (ibClientFrame::SendPicture).
+	// ids (ibBackendPicture::SendPicture).
 	void Update(ibDataNode& state);
 
 	// Reverse-lookup the child that produced the command with this id (built by BuildCommands).
@@ -329,5 +329,10 @@ FRMSERVER_API std::vector<wxString> GetCommandSections();
 //   [2] every OTHER command metaobject in the config (common + section commands, recursive by classid).
 // The command-door twin of walking the form's source explorers. Empty when form is null.
 FRMSERVER_API std::vector<ibCommandSourceEntry> GatherFormCommands(ibValueForm* form);
+
+// The same gather as the rows a client draws (the form editor's command tree, the inspector's command-source row): the
+// three sections, each with a row per sub-group and per command — Name, Picture, CommandPath (children Id), Kind; a
+// form command's row its node id the command's. Nothing for no form.
+FRMSERVER_API void WriteCommandTree(class ibDataNode& node, ibValueForm* form);
 
 #endif

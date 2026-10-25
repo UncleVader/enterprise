@@ -212,6 +212,13 @@ bool ibValueTabularSectionDataObjectBase::CallAsFunc(const long lMethodNum, ibVa
 	case enGetMetadata:
 		pvarRetValue = m_metaTable;
 		return true;
+	// The RAM base's, as a table of values answers them - the rows are held there.
+	case enIndex:
+		pvarRetValue = static_cast<int>(IndexOf(*paParams[0]));
+		return true;
+	case enTotal:
+		pvarRetValue = TotalOf(paParams[0]->GetString());
+		return true;
 	}
 
 	return false;
@@ -587,6 +594,8 @@ void ibValueTabularSectionDataObjectBase::FillMembers(ibMemberTable& helper) con
 		helper.AppendFunc(wxT("Find"), 2, wxT("Find(value : any, columnName : string)"), enFind, eTabularSection);
 		helper.AppendFunc(wxT("Unload"), wxT("Unload()"), enUnload, eTabularSection);
 		helper.AppendFunc(wxT("GetMetadata"), wxT("GetMetadata()"), enGetMetadata, eTabularSection);
+		helper.AppendFunc(wxT("Index"), 1, wxT("Index(row : tabularSectionRow) : number"), enIndex, eTabularSection);
+		helper.AppendFunc(wxT("Total"), 1, wxT("Total(columnName : string) : number"), enTotal, eTabularSection);
 	}
 	else {
 		helper.AppendFunc(wxT("Add"), wxT("Add()"), enAddValue, eTabularSection);
@@ -597,6 +606,8 @@ void ibValueTabularSectionDataObjectBase::FillMembers(ibMemberTable& helper) con
 		helper.AppendFunc(wxT("Load"), 1, wxT("Load(table : any table)"), enLoad, eTabularSection);
 		helper.AppendFunc(wxT("Unload"), wxT("Unload()"), enUnload, eTabularSection);
 		helper.AppendFunc(wxT("GetMetadata"), wxT("GetMetadata()"), enGetMetadata, eTabularSection);
+		helper.AppendFunc(wxT("Index"), 1, wxT("Index(row : tabularSectionRow) : number"), enIndex, eTabularSection);
+		helper.AppendFunc(wxT("Total"), 1, wxT("Total(columnName : string) : number"), enTotal, eTabularSection);
 	}
 }
 

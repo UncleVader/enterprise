@@ -33,15 +33,26 @@ public:
 	// a file's are made from what they keep.
 	static ibPicture GetServerPicture(const ibPictureDescription& pictureDesc, const class ibMetaData* metaData = nullptr);
 
+	// ⭐ A PICTURE BY ITS ID — all an answer names a picture by: a backend picture's number, a configuration picture's
+	// guid and its version, `<guid>#<version>`, of the configuration given (none given: no configuration picture). The
+	// picture itself the client loads apart, by the id (ibProtocol::ibMethod::Picture), and keeps with its version; one
+	// held as a file's bytes has no id of its own and goes as itself. Empty: no picture.
+	static ibString SendPicture(const ibPictureDescription& pictureDesc, const class ibMetaData* metaData);
+	// …a backend picture by its number alone — no configuration names it: a decimal (a std::uint64_t is past what a JSON number
+	// keeps). 0: no picture.
+	static ibString SendPicture(const ibPictureID& id);
+
 #pragma region __picture_factory_h__
 	static bool IsRegisterPicture(const ibPictureID& id);
 	static wxBitmap GetPicture(const ibPictureID& id);
 	static wxIcon GetPictureAsIcon(const ibPictureID& id);
+	// …and by its description: a backend one by its number, as above; a configuration's and a file's made from what they keep.
+	static wxIcon GetPictureAsIcon(const ibPictureDescription& pictureDesc, const class ibMetaData* metaData = nullptr);
 	static std::vector<ibBackendPictureEntry> GetArrayPicture();
 #pragma endregion 
 
 #pragma region __picture_conv_h__
-	static wxString CreateBase64Image(const wxImage& image);
+	static ibString CreateBase64Image(const wxImage& image);
 	static wxImage GetImageFromBase64(const wxString& src, const wxSize& size = wxDefaultSize);
 	static wxBitmap GetBitmapFromBase64(const wxString& src, const wxSize& size = wxDefaultSize);
 	static wxIcon GetIconFromBase64(const wxString& src, const wxSize& size = wxDefaultSize);

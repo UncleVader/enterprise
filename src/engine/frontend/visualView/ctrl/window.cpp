@@ -76,7 +76,11 @@ void ibValueWindow::ApplyLook(ibFrontendWindow* window)
 {
 	if (window == nullptr)
 		return;
-	if (m_propertyFont->IsOk())
+	// A stored but unset font (point size 0) converts to wxNullFont; handing that to SetFont is not
+	// "use the parent's font": wxAuiNotebook::SetFont copies it into its tab art as the normal-tab
+	// font, and every inactive tab is then drawn with no font at all (macOS paints nothing, so only
+	// the active tab shows). Unset is unset - leave the inherited font alone.
+	if (!m_propertyFont->IsEmptyProperty())
 		window->SetFont(typeConv::FontToWxFont(m_propertyFont->GetValueAsFont()));
 	if (m_propertyFG->IsOk())
 		window->SetForegroundColour(typeConv::ColourToWxColour(m_propertyFG->GetValueAsColour()));

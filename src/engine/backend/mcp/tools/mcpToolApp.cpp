@@ -33,7 +33,8 @@
 #include "backend/metadataConfiguration.h"    // …and the configuration must already be in the base
 
 #include <wx/process.h>                       // wxProcess::Exists — has the previous run actually gone
-#include <wx/utils.h>                         // wxMilliSleep — the wait while it goes
+#include <chrono>
+#include <thread>                             // the wait while it goes
 
 namespace {
 
@@ -52,7 +53,7 @@ const ibArg& ArgApplication()
 {
 	static const ibArg s_a(wxT("application"), ibArg::Kind::Text,
 		ibMcpText("Which one. Default is the thick client."),
-			/*required*/ false, { wxT("enterprise"), wxT("enterprise-thin"), wxT("wenterprise-server") });
+			/*required*/ false, { wxT("enterprise"), wxT("enterprise-thin"), wxT("webserver") });
 	return s_a;
 }
 
@@ -97,8 +98,8 @@ public:
 
 	wxString GetDescription() const override
 	{
-		return ibMcpText("Start the application on this base - the thick client or the web server, with "
-			"or without the debugger attached. The same launch the designer's Debug menu "
+		return ibMcpText("Start the application on this base - the thick client, the thin one or the web "
+			"server, with or without the debugger attached. The same launch the designer's Debug menu "
 			"performs, so connection flags and the debug port are handled. Refuses when the "
 			"configuration has edits the base does not hold - a module written a moment ago as much as "
 			"a change of structure: config_apply them first, because a launch must never write to a base "
@@ -120,17 +121,10 @@ public:
 			return false;
 		}
 
+		// Any of the argument's words — one it does not take was refused before Call (ibMcpArgument's list).
 		wxString application = ArgApplication().Text(params);
 		if (application.IsEmpty())
 			application = wxT("enterprise");
-
-		if (!application.IsSameAs(wxT("enterprise"), false)
-			&& !application.IsSameAs(wxT("wenterprise-server"), false)) {
-			refusal = wxString::Format(
-				ibMcpText("'%s' is not something to start. Use enterprise or wenterprise-server."),
-				application);
-			return false;
-		}
 
 		// DEFAULTS TO TRUE, and asked of the field rather than of the value: `debug: false` has
 		// to be distinguishable from "not said", or the default silently wins over an explicit no.
@@ -182,11 +176,9 @@ public:
 
 			if (restart) {
 				// ⭐ THE PLATFORM'S OWN ENDING, asked of every connection rather than of a chosen
-				// one: DetachConnection is a no-op on a connection that is not attached, so the
-				// filtering that would otherwise be written here is already inside it.
-				for (auto* connection : debugClient->GetListConnection())
-					if (connection != nullptr)
-						connection->DetachConnection(/*kill=*/true);
+				// one — the debugger's Stop: DetachConnection is a no-op on a connection that is not
+				// attached, so the filtering that would otherwise be written here is already inside it.
+				debugClient->Stop(/*kill=*/true);
 
 				ended = true;
 
@@ -196,10 +188,10 @@ public:
 				// second one a lock error that reads like a corrupt installation.
 				if (lastStarted != 0) {
 					for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-						wxMilliSleep(50);
+						std::this_thread::sleep_for(std::chrono::milliseconds(50));
 				}
 				else {
-					wxMilliSleep(1000);   // started by somebody else - there is no pid to watch
+					std::this_thread::sleep_for(std::chrono::milliseconds(1000));   // started by somebody else - there is no pid to watch
 				}
 			}
 		}
@@ -210,16 +202,16 @@ public:
 		else if (restart && lastStarted != 0 && wxProcess::Exists((int)lastStarted)) {
 			wxProcess::Kill((int)lastStarted, wxSIGTERM, wxKILL_CHILDREN);
 			for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-				wxMilliSleep(50);
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			if (wxProcess::Exists((int)lastStarted))
 				wxProcess::Kill((int)lastStarted, wxSIGKILL, wxKILL_CHILDREN);
 			for (int waited = 0; waited < 100 && wxProcess::Exists((int)lastStarted); ++waited)
-				wxMilliSleep(50);
+				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 			ended = true;
 		}
 
 		const wxString useWeb = application.Lower();
-		const bool manifest = useWeb.IsSameAs(wxT("wenterprise-server"));
+		const bool manifest = useWeb.IsSameAs(wxT("webserver"));
 
 		const long pid = appData->RunApplication(useWeb, withDebug, manifest);
 
@@ -231,7 +223,7 @@ public:
 		ibMcpRememberStartedApplication(pid);
 
 		result.SetValue(wxT("started"), application);
-		result.AddField(wxT("pid"), ibDataValue::Int((s64)pid));
+		result.AddField(wxT("pid"), ibDataValue::Int((std::int64_t)pid));
 		result.AddField(wxT("debug"), ibDataValue::Bool(withDebug));
 
 		if (ended)

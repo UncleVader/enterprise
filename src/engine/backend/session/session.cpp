@@ -826,6 +826,31 @@ void ibSession::SetActivity(const wxString& activity)
 	reg.Submit(std::move(req), ibPriority::Low);
 }
 
+bool ibSession::SetTokenHash(const wxString& tokenHash)
+{
+	ibSessionRegistry* const regPtr = RegistryOf(*this);
+	if (regPtr == nullptr || regPtr->IsFatal())
+		return false;
+
+	ibRegistryRequest req;
+	req.kind      = ibRegistryRequestKind::SetTokenHash;
+	req.session   = shared_from_this();
+	req.tokenHash = tokenHash;
+	req.written   = std::make_shared<std::promise<bool>>();
+	std::future<bool> written = req.written->get_future();
+	regPtr->Submit(std::move(req), ibPriority::Normal);
+
+	// As long as Add and Attach are waited for: a registry that has not answered by then is a busy server.
+	if (written.wait_for(std::chrono::seconds(20)) != std::future_status::ready)
+		return false;
+	try {
+		return written.get();
+	}
+	catch (const std::future_error&) {
+		return false;   // the registry stopped with the request still queued
+	}
+}
+
 void ibSession::SetExclusive(bool on)
 {
 	// Registry runs the queue handshake + wait and gives us back the
@@ -1000,7 +1025,22 @@ void ibSession::AcquireMetaData()
 {
 	if (m_metaData)
 		return;
-	if (ibMetaDataConfigurationBase* const active = ibApplicationInstance::GetActiveMetaData(GetApplicationInstance()))
+	// ⭐ A DESIGNER'S SESSION WORKS IN A WORLD OF ITS OWN (Max, 2026-10-20: *"the designer's metadata is held only
+	// by the designer's session; the rest live with the active one, by reference count"*) — the configuration it
+	// edits, made for it and held by it alone. The base's active one it leaves to the rest, and only an apply
+	// replaces it.
+	if (IsDesignerSessionKind(GetKind())) {
+
+		// Held BEFORE it loads — a session's own configuration is the first answer `activeMetaData` gives on its
+		// thread (ibApplicationInstance::GetActiveMetaData), and its loading asks for it. The session is bound to the
+		// thread for its bring-up (NotifyAuthenticated), so the rights checked and the language pinned are its user's.
+		m_metaData = ibMetaData::MakeShared<ibMetaDataConfigurationStorage>(ib::AppDataCtorToken{ GetApplicationInstance() });
+
+		// …and one that did not come up goes with the reference: nobody else holds it.
+		if (!m_metaData->OnInitialize(_app_start_default_flag) || !m_metaData->RunDatabase())
+			m_metaData.reset();
+	}
+	else if (ibMetaDataConfigurationBase* const active = ibApplicationInstance::GetActiveMetaData(GetApplicationInstance()))
 		m_metaData = std::static_pointer_cast<ibMetaDataConfigurationBase>(active->shared_from_this());
 }
 
@@ -1013,8 +1053,8 @@ void ibSession::ReleaseMetaData()
 void ibSession::EnsureRoot()
 {
 	// Wired by ibSessionRegistry::NotifyAuthenticated to land between
-	// OnFirstConnect (metadataCreate) and OnAuthenticated (RunDatabase /
-	// CompileRoot). CreateRoot itself is idempotent; this wrapper just
+	// AcquireMetaData and OnAuthenticated (CompileRoot).
+	// CreateRoot itself is idempotent; this wrapper just
 	// guards on the acquired configuration so headless sessions
 	// (Launcher, technical) without metadata don't fault.
 	if (m_root) return;
@@ -1100,8 +1140,9 @@ void ibSession::Cancel()
 		ibRunState running = ibRunState::Running;
 		m_procUnitState.m_runState.compare_exchange_strong(running, ibRunState::Cancelled);
 	}
-	// A script that waits for its client (ibWorkerPool::Await — a question on the web) hears it too: rung, it
-	// finds the run cancelled and throws the interruption up the script.
+	// Work that waits for its client (ibWorkerPool::Await — a question on the web) hears it too, a script's or the
+	// engine's own (the wait is a run of its own when no script is under it): rung, it finds the run cancelled and
+	// throws the interruption up the work that asked.
 	if (ibWorkerPool* const pool = GetWorkerPool())
 		pool->Wake(this);
 	for (const std::shared_ptr<ibSession>& tenant : tenants)
@@ -1368,10 +1409,9 @@ void ibSession::WakeDebugLoop()
 	// returns immediately. Mirrors the per-session wake performed by
 	// ibDebuggerServer::WakeDebugSession on designer disconnect — same
 	// graceful LeaveLoop is sent on the wire when the loop unwinds.
-	if (m_debug == nullptr) return;
-	m_debug->m_debugLoop = false;
-	std::lock_guard<std::mutex> lk(m_debug->m_mutex);
-	m_debug->m_cv.notify_all();
+	m_debug.m_debugLoop = false;
+	std::lock_guard<std::mutex> lk(m_debug.m_mutex);
+	m_debug.m_cv.notify_all();
 }
 
 bool ibSession::OnClose(bool /*force*/)
@@ -1539,14 +1579,14 @@ ibSession::OpenResult ibSession::Open(const wxString& user, const wxString& pass
 	ibAuthState res = submitAttach(user, password);
 	if (res == ibAuthState::Authenticated) {
 		// NotifyAuthenticated fires three phases in order:
-		//   1. OnFirstConnect listeners — process-level metadata bootstrap
-		//      (metadataCreate, populates the base's active one) on the first auth.
+		//   1. OnFirstConnect listeners, on the first auth (the base's
+		//      configuration ran as it opened, before anybody came in).
 		//   2. session->AcquireMetaData + EnsureRoot — the session's own reference
-		//      to it, and the per-session root mm allocated over it NOW so
-		//      step 3's listeners can rely on GetManagerModule() != null.
+		//      to it (a designer's: one of its own), and the per-session root mm
+		//      allocated over it NOW so step 3's listeners can rely on
+		//      GetManagerModule() != null.
 		//   3. OnAuthenticated listeners — per-session bring-up
-		//      (RunDatabase fires OnBefore/AfterRunMetaObject which read
-		//      session->mm; CompileRoot; AttachRuntime).
+		//      (CompileRoot; AttachRuntime).
 		// Note: NotifyAuthenticated binds this session for the bring-up
 		// (and gives the thread back after), so any breakpoint hit inside
 		// the listeners resolves Current() to THIS session (the registry-
@@ -1554,6 +1594,10 @@ ibSession::OpenResult ibSession::Open(const wxString& user, const wxString& pass
 		reg.NotifyAuthenticated(this);
 		return OpenResult::Authenticated;
 	}
+	// The registry did not answer at all: nothing was said of the creds, and a dialog would ask for a password that
+	// was never the question.
+	if (res == ibAuthState::Anonymous)
+		return OpenResult::Timeout;
 
 	// Interactive fallback — GUI override shows login dialog (shared for
 	// designer + enterprise via ibGUISession::OnShowAuthenticate). Pin
@@ -1579,7 +1623,7 @@ ibSession::OpenResult ibSession::Open(const wxString& user, const wxString& pass
 		reg.NotifyAuthenticated(this);
 		return OpenResult::Authenticated;
 	}
-	return OpenResult::Failed;
+	return res == ibAuthState::Anonymous ? OpenResult::Timeout : OpenResult::Failed;
 }
 
 // --- ibSessionThreadBinding --------------------------------------------

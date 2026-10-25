@@ -21,7 +21,7 @@ public:
 	// THE ROWS, into the frame's MetaData — the tree as it stands.
 	virtual void OnDraw(ibDataNode& frame) override;
 
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::DataProcessor; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::DataProcessor; }
 
 	ibDataProcessorTree* GetMetaTree() const { return m_metaTree.get(); }
 
@@ -60,7 +60,8 @@ protected:
 	virtual bool DoOpenDocument(const wxString& filename) override;
 	virtual bool DoSaveDocument(const wxString& filename) override;
 
-	wxDECLARE_NO_COPY_CLASS(ibDataProcessorEditDocument);
+	ibDataProcessorEditDocument(const ibDataProcessorEditDocument&) = delete;
+	ibDataProcessorEditDocument& operator=(const ibDataProcessorEditDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibDataProcessorEditDocument);
 };
 

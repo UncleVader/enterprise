@@ -101,7 +101,7 @@ public:
 	// hierarchical render (the front paints it flowing across the columns that have no value of their own).  The
 	// node SELF-describes it (the model is not consulted — the front asks the item directly, like IsContainer);
 	// only a composer GROUP node overrides.  Default: not a group → false.
-	virtual bool GetGroupCaption(wxString& WXUNUSED(caption)) const { return false; }
+	virtual bool GetGroupCaption(wxString& /*caption*/) const { return false; }
 
 	// Item's logical parent inside the data source.  Default: no parent.
 	// Tree-node subclasses override to walk up the live tree; row
@@ -391,7 +391,7 @@ private:
 // ibDataViewModel
 // ---------------------------------------------------------
 
-typedef wxVector<ibDataViewModelNotifier*> ibDataViewModelNotifiers;
+typedef std::vector<ibDataViewModelNotifier*> ibDataViewModelNotifiers;
 
 class CORE_API ibDataViewModel : public wxRefCounter
 {
@@ -426,16 +426,16 @@ public:
 	}
 
 	// Get text attribute, return false of default attributes should be used
-	virtual bool GetAttr(const ibDataViewItem& WXUNUSED(item),
-		unsigned int WXUNUSED(col),
-		ibDataViewItemAttr& WXUNUSED(attr)) const
+	virtual bool GetAttr(const ibDataViewItem& /*item*/,
+		unsigned int /*col*/,
+		ibDataViewItemAttr& /*attr*/) const
 	{
 		return false;
 	}
 
 	// Override this if you want to disable specific items
-	virtual bool IsEnabled(const ibDataViewItem& WXUNUSED(item),
-		unsigned int WXUNUSED(col)) const
+	virtual bool IsEnabled(const ibDataViewItem& /*item*/,
+		unsigned int /*col*/) const
 	{
 		return true;
 	}
@@ -464,7 +464,7 @@ public:
 	}
 
 	// Is the container just a header or an item with all columns
-	virtual bool HasContainerColumns(const ibDataViewItem& WXUNUSED(item)) const
+	virtual bool HasContainerColumns(const ibDataViewItem& /*item*/) const
 	{
 		return false;
 	}
@@ -520,6 +520,22 @@ public:
 		const ibDataViewItem& anchor, int count, ibDataViewItemArray& out) const {
 		(void)parent; (void)anchor; (void)count; (void)out;
 		return 0;
+	}
+	// The first page and up to `before` rows ahead of it, in that order — what a reset that keeps
+	// its row mid-view reads. `above` is how many of `out` stand before the page; the return is the
+	// page's own count, as GetFirstFetch's. Here the two reads it is made of; a model whose source is
+	// across a wire answers both in one.
+	virtual unsigned int GetAroundFetch(const ibDataViewItem& parent,
+		const ibDataViewItem& anchor, int count, int before, ibDataViewItemArray& out,
+		unsigned int& above) const {
+		above = 0;
+		ibDataViewItemArray page;
+		const unsigned int n = GetFirstFetch(parent, anchor, count, page);
+		if (before > 0 && n > 0)
+			above = GetPrevFetch(parent, page[0], before, out);
+		for (unsigned int i = 0; i < page.GetCount(); ++i)
+			out.Add(page[i]);
+		return n;
 	}
 
 	// Is this model paged (has a `Get*Fetch` cursor source backing it)?
@@ -654,7 +670,7 @@ public:
 	// of its first column, after the tree's expander, the way it draws the expander; the cell renderers never
 	// see it. Asked of a cell instead (the cell's attributes), it was asked once per COLUMN of every row on every
 	// paint, and scrolling a list slowed down (2026-09-22). 0 = the row shows none.
-	virtual ibPictureID GetRowPicture(const ibDataViewItem& WXUNUSED(item)) const { return 0; }
+	virtual ibPictureID GetRowPicture(const ibDataViewItem& /*item*/) const { return 0; }
 
 protected:
 	// Dtor is protected because the objects of this class must not be deleted,
@@ -666,8 +682,8 @@ protected:
 	// Helper function used by the default Compare() implementation to compare
 	// values of types it is not aware about. Can be overridden in the derived
 	// classes that use columns of custom types.
-	virtual int DoCompareValues(const wxVariant& WXUNUSED(value1),
-		const wxVariant& WXUNUSED(value2)) const
+	virtual int DoCompareValues(const wxVariant& /*value1*/,
+		const wxVariant& /*value2*/) const
 	{
 		return 0;
 	}

@@ -2,18 +2,16 @@
 
 #include "journal.h"                 // the technology journal opens with the guard, before anything else
 #include "core/exception.h"         // ibCoreException — a refusal, named as such in the dump's reason
-#include "core/programFolder.h"     // crashdumps/ sits with the journal, in the diagnostic folder
+#include "core/fileSystem.h"        // crashdumps/ sits with the journal, in the diagnostic folder
 
 #include <wx/datetime.h>
-#include <wx/ffile.h>
 #include <wx/file.h>
 #include <wx/filename.h>
-#include <wx/log.h>
-#include <wx/thread.h>
 #include <wx/utils.h>
 
 #include <atomic>
 #include <cstdarg>      // va_list — the journal's vararg door
+#include <cstdint>      // std::uint64_t — a thread's id on macOS
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -30,7 +28,9 @@
 // Wrap behind a feature check if a future port lacks it.
 #include <execinfo.h>
 #include <fcntl.h>
+#include <pthread.h>        // pthread_threadid_np — a thread's id on macOS
 #include <sys/mman.h>
+#include <sys/syscall.h>    // SYS_gettid — on Linux
 #include <unistd.h>
 #endif
 
@@ -51,11 +51,6 @@ char s_exeName[64] = {};
 unsigned int CurrentPidPortable()
 {
 	return static_cast<unsigned int>(wxGetProcessId());
-}
-
-unsigned long CurrentTidPortable()
-{
-	return static_cast<unsigned long>(wxThread::GetCurrentId());
 }
 
 #ifdef __WXMSW__
@@ -341,6 +336,19 @@ void ArmCurrentThread()
 #endif
 }
 
+unsigned long CurrentTidPortable()
+{
+#ifdef __WXMSW__
+	return static_cast<unsigned long>(::GetCurrentThreadId());
+#elif defined(__APPLE__)
+	std::uint64_t tid = 0;
+	::pthread_threadid_np(nullptr, &tid);
+	return static_cast<unsigned long>(tid);
+#else
+	return static_cast<unsigned long>(::syscall(SYS_gettid));
+#endif
+}
+
 void Install(const wxString& exeName)
 {
 	// Update the label even on repeat install — frontend might call
@@ -359,9 +367,8 @@ void Install(const wxString& exeName)
 	// write one at all yet — turning it on there is a decision about disk, privacy and support
 	// workflow, and it will be made when there is a Release story to make it for. The API stays
 	// either way, so a `ibJournalInfo(...)` callsite compiles in both and simply writes nowhere.
-#ifndef NDEBUG
+	// Opened in both all the same: Open decides the file, and the program's name is the console's too.
 	ibTechJournal::Open(exeName);
-#endif
 
 	if (s_prevTerminate == nullptr)
 		s_prevTerminate = std::set_terminate(&OesTerminateHandler);

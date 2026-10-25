@@ -50,6 +50,13 @@ bool ibValueModuleManager::CallAsFunc(const long lMethodNum, ibValue& pvarRetVal
 	);
 }
 
+bool ibValueModuleManager::GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const
+{
+	return ibRuntimeModuleDataObject::GetParamDefValue(
+		GetMethodName(lMethodNum), lParamNum, pvarParamDefValue
+	);
+}
+
 bool ibValueModuleManager::SetPropVal(const long lPropNum, const ibValue& varPropVal)        //setting attribute
 {
 	if (m_procUnit != nullptr)
@@ -365,9 +372,10 @@ bool ibValueModuleManagerRuntimeConfiguration::CreateMainModule()
 	BindScopeVariable(objectManager, m_objectManager);
 
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
-		// EnumManager / SystemManager — transparent scope containers too.
+		// EnumManager / SystemManager — transparent scope containers too; made for this manager, held by it.
 		const ibValue created = ctor->CreateObject();
 		BindScopeVariable(ctor->GetClassName(), created.GetRef());
+		m_listContextManager.emplace_back(created);
 	}
 
 	// Compile only — runtime (ibProcUnit) is created per session by
@@ -424,6 +432,7 @@ bool ibValueModuleManagerRuntimeConfiguration::DestroyMainModule()
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		UnbindVariable(ctor->GetClassName());
 	}
+	m_listContextManager.clear();
 
 	//reset global module
 	m_compileModule->Reset();
@@ -541,10 +550,11 @@ bool ibValueModuleManagerDesigner::CreateMainModule()
 	// editor identifier; its props Catalogs / Documents / Enums surface).
 	BindScopeVariable(objectManager, m_objectManager);
 
-	//ctor-context objects (EnumManager / SystemManager) — transparent too.
+	//ctor-context objects (EnumManager / SystemManager) — transparent too; made for this manager, held by it.
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		const ibValue created = ctor->CreateObject();
 		BindScopeVariable(ctor->GetClassName(), created.GetRef());
+		m_listContextManager.emplace_back(created);
 	}
 
 	// No unit compilation here — see AddCommonModule. The editor parses common
@@ -571,6 +581,7 @@ bool ibValueModuleManagerDesigner::DestroyMainModule()
 	for (auto ctor : ibValue::GetListCtorsByType(ibCtorObjectType_object_context)) {
 		UnbindVariable(ctor->GetClassName());
 	}
+	m_listContextManager.clear();
 
 	m_compileModule->Reset();
 

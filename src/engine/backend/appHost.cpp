@@ -16,7 +16,7 @@
 #include "backend/metadataConfiguration.h"   // a scope holds the configuration it works in
 #include "backend/plugin/pluginManager.h"
 #include "core/fiber/fiberLocals.h"
-#include "core/programFolder.h"   // backend.conf and lang/ sit in the program folder, not inside a bundle
+#include "core/fileSystem.h"   // backend.conf and lang/ sit in the program folder, not inside a bundle
 #include "backend/session/session.h"   // ibSession::CurrentCached — the journal's first question
 #include "backend/session/workerPoolHeadless.h"   // the process's worker pool
 #include "backend/compiler/value.h"   // ibValue::IsRegisterCtor / GetNameObjectFromID — the registry the help corpus checks by
@@ -292,8 +292,8 @@ std::size_t ibApplicationHost::ReadCount(const wxConfigBase& conf, const wxStrin
 
 std::size_t ibApplicationHost::ResumeSeconds(bool present, long configured)
 {
-	// The same 30 minutes a client already dies by when nobody calls (kIdleLimit). A window longer than that
-	// would hold locks and a seat past the idle limit the process already has.
+	// The same 30 minutes a connectionless client dies by when nobody calls (kIdleLimit). A window longer than that
+	// would hold a dropped client's locks and seat for longer than any client is kept unheard.
 	constexpr long kMost = 30 * 60;
 	constexpr std::size_t kDefault = 120;
 	if (!present)
@@ -315,18 +315,7 @@ std::size_t ibApplicationHost::ResumeSeconds(bool present, long configured)
 
 void ibApplicationHost::ReadBackendConf()
 {
-	const wxString& workingDir = wxGetCwd(); wxString strConfigFile;
-	if (wxFileName::FileExists(workingDir + wxFILE_SEP_PATH + BACKEND_CONF)) {
-		strConfigFile = workingDir +
-			wxFILE_SEP_PATH + BACKEND_CONF;
-	}
-	else {
-		// Beside the program. Inside a bundle that is the folder that contains the .app,
-		// which is where the file is shipped; the working directory above still wins.
-		const wxString beside = ibProgramFolder() + wxFILE_SEP_PATH + BACKEND_CONF;
-		if (wxFileName::FileExists(beside))
-			strConfigFile = beside;
-	}
+	const wxString strConfigFile = ibBackendConfPath();
 
 	// Read as written, as infobase.conf is: a Windows path keeps its backslashes (the \t of C:\tls\server.key is not a tab).
 	wxFileConfig fc(wxT(""), wxT(""), wxT(""), strConfigFile,
@@ -349,7 +338,7 @@ void ibApplicationHost::ReadBackendConf()
 	long resume = 0;
 	const bool resumePresent = fc.Read(wxT("Resume"), &resume);
 	m_configResume = ResumeSeconds(resumePresent, resume);
-	// The certificate the listeners speak TLS over, named relative to this file's folder (server/listener.h).
+	// The certificate the listeners speak TLS over, named relative to this file's folder (core/server/listener.h).
 	m_configTls = ibTlsFiles::FromConf(fc, wxFileName(strConfigFile).GetPath());
 
 	// (THE MCP SERVER'S SETTINGS ARE NOT HERE. They belong to a PERSON in a
@@ -389,7 +378,7 @@ bool ibApplicationHost::InitLocale(const wxString& locale)
 	// Independently of whether we succeeded to set the locale or not, try
 	// to load the translations (for the default system language) here.
 
-	const wxString& workingDir = wxGetCwd();
+	const wxString& workingDir = ibGetCwd();
 
 	// normally this wouldn't be necessary as the catalog files would be found
 	// in the default locations, but when the program is not installed the
@@ -410,7 +399,7 @@ bool ibApplicationHost::InitLocale(const wxString& locale)
 		wxFileName walk(fn.GetPath(), wxEmptyString);
 		for (int level = 0; level < 6; ++level) {
 			const wxString candidate = walk.GetPath() + wxFILE_SEP_PATH + wxT("lang");
-			if (wxFileName::DirExists(candidate)) {
+			if (ibDirExists(candidate)) {
 				wxLocale::AddCatalogLookupPathPrefix(candidate);
 				break;
 			}

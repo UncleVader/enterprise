@@ -512,7 +512,7 @@ m_reference_impl(nullptr), m_foundedRef(false)
 	m_members.Bind(this, &ibValueReferenceDataObject::FillMembers);
 	// The stored key (_RRRef) is the pure object guid; the type is carried separately (metaObject / _RTRef).
 	// An unset reference is simply an empty guid — no normalization needed.
-	m_reference_impl = new ibReference(m_objGuid);
+	m_reference_impl = std::make_unique<ibReference>(m_objGuid);
 
 	// ⭐ REGISTERED HERE, not in the doors. Every reference is born through this constructor —
 	// all three Create overloads, and the value-ctor registry through them — so one line covers every
@@ -614,7 +614,6 @@ int ibValueReferenceDataObject::CompareValueLS(const ibValue& cParam) const
 
 ibValueReferenceDataObject::~ibValueReferenceDataObject()
 {
-	wxDELETE(m_reference_impl);
 	ibReferenceRegistry::Forget(this);   // the last owner let go — see the note above the registry
 }
 
@@ -841,8 +840,6 @@ ibValuePtr<ibValueRecordDataObjectRef> ibValueReferenceDataObject::GetObject() c
 	}
 	return nullptr;
 }
-
-#include "backend/objCtor.h"
 
 // ⭐⭐ A DYNAMIC VALUE'S CLSID IS CONSTRUCTIVE — kind, metaclass and metaID: `reference_to_clsid(metaID,
 // metaclass)` IS the id the registry would have handed back, by the same construction that put it there
@@ -1139,7 +1136,7 @@ bool ibValueReferenceDataObject::DoSerialize(ibDataNode& node) const
 	// of this metaobject. The class id stays in the header for the fast path;
 	// this is what a reader consults when the fast path is not enough.
 	if (m_metaObject != nullptr)
-		node.SetValue(wxT("m"), (s32)m_metaObject->GetMetaID());
+		node.SetValue(wxT("m"), (std::int32_t)m_metaObject->GetMetaID());
 
 	node.SetValue(wxT("g"), m_reference_impl != nullptr
 		? ibGuid(m_reference_impl->m_guid).str()
@@ -1160,7 +1157,7 @@ bool ibValueReferenceDataObject::DoDeserialize(const ibDataNode& node)
 	//
 	// Absent (0) is not a mismatch: it is a value written before the metaID went
 	// into the payload, and the class id is all it ever had.
-	const ibMetaID storedMetaId = (ibMetaID)node.GetValue<s32>(wxT("m"));
+	const ibMetaID storedMetaId = (ibMetaID)node.GetValue<std::int32_t>(wxT("m"));
 	if (storedMetaId != 0 && m_metaObject != nullptr
 		&& storedMetaId != m_metaObject->GetMetaID())
 		return false;

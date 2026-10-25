@@ -32,7 +32,7 @@ class ibValueButton : public ibValueWindow, public ibFrontendCommandReceiver {
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// Press — the bound command runs; with Member, one command of its group.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 	//support icons
 	virtual wxIcon GetIcon() const;
@@ -148,7 +148,7 @@ class ibValueStaticText : public ibValueWindow,
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// Open — the link clicked.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 	//support icons
 	virtual wxIcon GetIcon() const;
@@ -273,10 +273,10 @@ class ibValueTextCtrl : public ibValueWindow,
 	// Input — the person started changing the text (nothing committed; the object is modified from the first
 	// keystroke); Change — the text as it stands is committed (Text: the client sends it on Enter, or on
 	// leaving a field that was typed into); Select / Open / Clear — the field's three buttons.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 	// Input while the form's object is not modified yet: the first keystroke modifies it, and the «*» of its tab comes
 	// with that frame. Any later one changes nothing until the next call.
-	virtual bool IsSubscribed(ibProtocolEvent event) const override;
+	virtual bool IsSubscribed(ibProtocol::ibEvent::ibKind event) const override;
 
 	//support icons
 	virtual wxIcon GetIcon() const;
@@ -371,36 +371,6 @@ private:
 	ibEventControl* m_eventChoiceProcessing = ibPropertyObject::CreateEvent<ibEventControl>(m_propertyEvent, wxT("ChoiceProcessing"), _("Choice processing"), wxArrayString{ wxT("Control"), wxT("ValueSelected"), wxT("StandardProcessing") });
 
 	friend class ibValueForm;
-};
-
-class ibValueComboBox : public ibValueWindow {
-	public:
-
-	ibValueComboBox();
-
-	//load & save object in control
-	virtual bool ReadData(const ibDataNode& node);
-	virtual bool WriteData(ibDataNode& node) const;
-};
-
-class ibValueChoice : public ibValueWindow {
-	public:
-
-	ibValueChoice();
-
-	//load & save object in control
-	virtual bool ReadData(const ibDataNode& node);
-	virtual bool WriteData(ibDataNode& node) const;
-};
-
-class ibValueListBox : public ibValueWindow {
-	public:
-
-	ibValueListBox();
-
-	//load & save object in control
-	virtual bool ReadData(const ibDataNode& node);
-	virtual bool WriteData(ibDataNode& node) const;
 };
 
 constexpr ibClassID g_controlCheckboxCLSID = control_to_clsid("CT_CHKB");
@@ -498,7 +468,7 @@ public:
 	virtual bool SetControlValue(const ibValue& varControlVal = ibValue());
 
 	// Toggle — the box clicked (Checked: the state the person toggled it to).
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 private:
 

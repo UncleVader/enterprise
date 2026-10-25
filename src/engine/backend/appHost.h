@@ -14,7 +14,7 @@
 // session's application data, else the base the thread is bound to).
 
 #include "backend/appData.h"
-#include "backend/server/listener.h"   // ibTlsFiles - the listeners' transport, said in backend.conf
+#include "core/server/listener.h"   // ibTlsFiles - the listeners' transport, said in backend.conf
 
 #include <atomic>
 #include <memory>
@@ -65,8 +65,8 @@ public:
 
 	// How many client connections the application server will hold at once — backend.conf
 	// (ClientConnections). Left out, or 0, that is kDefaultClientConnections, not "no limit".
-	// Above kMostClientConnections the most is used, and the journal says so. Each one keeps a
-	// thread until the network core is asynchronous.
+	// Above kMostClientConnections the most is used, and the journal says so. Each one is a socket's
+	// buffer, not a thread (appserver/clientListener.cpp).
 	static constexpr std::size_t kDefaultClientConnections = 1000;
 	static constexpr std::size_t kMostClientConnections    = 10000;
 	std::size_t      GetClientConnections() const { return m_configClientConnections; }
@@ -79,7 +79,7 @@ public:
 	static std::size_t ResumeSeconds(bool present, long configured);
 
 	// The certificate the listeners speak TLS over — backend.conf (Certificate, PrivateKey); nothing named, they
-	// listen plain on this machine's own addresses only (server/listener.h).
+	// listen plain on this machine's own addresses only (core/server/listener.h).
 	const ibTlsFiles& GetTlsFiles() const     { return m_configTls; }
 
 	ibHelpService*   GetHelpService() const   { return m_helpService.get(); }

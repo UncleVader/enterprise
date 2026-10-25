@@ -29,7 +29,7 @@
 #include "backend/debugger/debugClient.h"
 #include "backend/mcp/mcpDebugBridge.h"
 
-#include <wx/base64.h>
+#include "core/utils/base64.h"   // ibBase64 — the picture, written into the answer's text
 
 namespace {
 
@@ -143,7 +143,7 @@ public:
 		const wxString area = ArgArea().Given(params) ? ArgArea().Text(params) : wxString(wxT("active"));
 
 		bool allowed = false;
-		wxMemoryBuffer png;
+		ibMemoryBuffer png;
 		wxString focus;
 
 		const wxString format = ArgFormat().Given(params) ? ArgFormat().Text(params) : wxString(wxT("png"));
@@ -168,10 +168,11 @@ public:
 		// ⭐⭐ HANDED BACK AS AN IMAGE, not as a description of one — the whole point is that it gets
 		// LOOKED AT. `image` is the field the server turns into an image block, so this arrives as a
 		// picture rather than as a wall of base64 inside a sentence.
-		result.SetValue(wxT("image"),
-			wxBase64Encode(png.GetData(), png.GetDataLen()));
+		ibString image;
+		ibBase64::Append(image, png.GetData(), png.GetDataLen());
+		result.SetValue(wxT("image"), image);
 		result.SetValue(wxT("imageType"), wxString(format.IsSameAs(wxT("jpeg"), false) ? wxT("image/jpeg") : wxT("image/png")));
-		result.AddField(wxT("bytes"), ibDataValue::Int((s64)png.GetDataLen()));
+		result.AddField(wxT("bytes"), ibDataValue::Int((std::int64_t)png.GetDataLen()));
 
 		// ⭐⭐ WHAT THEY WERE POINTING AT. Somebody who cannot say what is wrong CAN click on it, and
 		// that click is the missing half of the sentence: the control holding the focus is ringed in

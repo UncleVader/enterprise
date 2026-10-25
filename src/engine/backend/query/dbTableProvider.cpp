@@ -2092,6 +2092,7 @@ ibQueryExprPtr ibMetaIRBuilder::BuildColumnExpr(const ibBackendQueryable* querya
 	case ibQueryColumnExprKind::Arith: {
 		const ibQueryBinOp op =
 			expr->m_arith == ibQueryColumnArithOp::Add ? ibQueryBinOp::Add
+			: expr->m_arith == ibQueryColumnArithOp::Concat ? ibQueryBinOp::Concat
 			: expr->m_arith == ibQueryColumnArithOp::Sub ? ibQueryBinOp::Sub
 			: expr->m_arith == ibQueryColumnArithOp::Mul ? ibQueryBinOp::Mul
 			: expr->m_arith == ibQueryColumnArithOp::Div ? ibQueryBinOp::Div

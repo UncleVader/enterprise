@@ -14,6 +14,8 @@
 #include "backend/propertyManager/property/propertyChoiceLink.h"         // a choice reads in its own shape too
 #include "backend/propertyManager/property/variant/variantChoiceLink.h"  // …named as the inspector names it
 #include "backend/propertyManager/property/variant/variantMetaDesc.h"    // a set of objects, placed whole
+#include "backend/propertyManager/property/propertyCommandSource.h"      // a command binding reads in its own shape too
+#include "core/description/commandDescription.h"                        // ibCommandDescriptionMemory — that shape
 #include "backend/propertyManager/propertyObject.h"            // the whole property list, walked below
 
 #include "backend/backend_localization.h"                      // a caption is an array by language
@@ -181,7 +183,7 @@ wxString ibMcpTool::ibMcpArgument::Text(const ibDataNode& params) const
 	return params.GetValue<wxString>(m_name);
 }
 
-s64 ibMcpTool::ibMcpArgument::Whole(const ibDataNode& params) const
+std::int64_t ibMcpTool::ibMcpArgument::Whole(const ibDataNode& params) const
 {
 	const ibDataValue* given = params.FindField(m_name);
 	return given != nullptr && given->Kind() == ibDataKind::Number ? given->AsInt() : 0;
@@ -413,7 +415,7 @@ const ibMcpTool* ibFindMcpTool(const wxString& name)
 
 wxString ibMcpNameOf(const ibDataNode& params, const wxString& field)
 {
-	const s32 id = params.GetValue<s32>(field);
+	const std::int32_t id = params.GetValue<std::int32_t>(field);
 	if (id <= 0)
 		return wxEmptyString;
 
@@ -469,11 +471,11 @@ bool ibMcpIsRegex(const wxString& query)
 	// regular expression — "cost adjustment (RAUZ)" compiles, and then matches nothing, because
 	// the brackets it happens to contain silently became grouping. Ordinary punctuation therefore
 	// does NOT switch modes; only the marks that have no business in prose do.
-	static const wxChar* s_marks[] = { wxT("|"), wxT("\\"), wxT("["), wxT("]"),
+	static const ibChar* s_marks[] = { wxT("|"), wxT("\\"), wxT("["), wxT("]"),
 		wxT(".*"), wxT(".+"), wxT("^"), wxT("$") };
 
 	bool looks = false;
-	for (const wxChar* mark : s_marks)
+	for (const ibChar* mark : s_marks)
 		looks = looks || query.Find(mark) != wxNOT_FOUND;
 
 	return looks && CompiledQuery(query) != nullptr;
@@ -532,7 +534,7 @@ void ibMcpWordsPresent(const wxString& haystack, const wxString& query, std::vec
 		// is honest and small: a word whose form differs by more than a third — `deleting` against
 		// "deleted" — is no longer met at the stem. It is met by the OTHER words of the same query,
 		// which is what asking in a sentence is for.
-		const size_t keep = wxMax<size_t>(4, (word.length() * 2 + 2) / 3);
+		const size_t keep = std::max<size_t>(4, (word.length() * 2 + 2) / 3);
 
 		for (size_t length = word.length(); length >= keep && !present; --length)
 			present = text.Find(word.Left(length)) != wxNOT_FOUND;
@@ -725,7 +727,7 @@ wxString ibMcpLineNaming(const wxString& text, const wxString& name)
 	// A NAME IS A WORD OF THE LANGUAGE, so what may not touch it is what may be part of an
 	// identifier. A dot on either side is fine and wanted: `Catalog.Goods.Ref` names Goods.
 	const auto partOfAWord = [](wxUniChar symbol) {
-		return wxIsalnum(symbol) != 0 || symbol == wxT('_');
+		return ibIsAlnum(symbol) || symbol == wxT('_');
 	};
 
 	const wxString wanted = name.Lower();
@@ -760,7 +762,7 @@ wxString ibMcpLineNaming(const wxString& text, const wxString& name)
 }
 
 int ibMcpSayObjectLinks(const wxString& text, ibMetaData* metaData,
-	std::vector<ibDataValue>& into, std::set<wxLongLong_t>& seen)
+	std::vector<ibDataValue>& into, std::set<long long>& seen)
 {
 	if (metaData == nullptr || text.IsEmpty())
 		return 0;
@@ -779,7 +781,7 @@ int ibMcpSayObjectLinks(const wxString& text, ibMetaData* metaData,
 
 		const size_t first = open + s_marker.length();
 		size_t last = first;
-		while (last < text.length() && wxIsdigit(text[last]))
+		while (last < text.length() && ibIsDigit(text[last]))
 			++last;
 
 		at = last;
@@ -791,7 +793,7 @@ int ibMcpSayObjectLinks(const wxString& text, ibMetaData* metaData,
 		if (!text.Mid(first, last - first).ToLong(&id))
 			continue;
 
-		if (!seen.insert((wxLongLong_t)id).second)
+		if (!seen.insert((long long)id).second)
 			continue;      // the same object linked twice is one fact, not two
 
 		// The label is what the WRITER believed the id names, and comparing the two is the whole
@@ -808,7 +810,7 @@ int ibMcpSayObjectLinks(const wxString& text, ibMetaData* metaData,
 		}
 
 		std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
-		entry->AddField(wxT("id"), ibDataValue::Int((s64)id));
+		entry->AddField(wxT("id"), ibDataValue::Int((std::int64_t)id));
 		if (!label.IsEmpty())
 			entry->SetValue(wxT("label"), label);
 
@@ -850,7 +852,7 @@ void ibMcpSayObject(const ibValueMetaObject* object, ibDataNode& node, bool with
 
 	// Asked of the object, in the object's own words. Nothing here knows a storage key, so a
 	// metatype is free to change how it saves itself without changing what a caller reads.
-	node.AddField(wxT("id"), ibDataValue::Int((s64)object->GetMetaID()));
+	node.AddField(wxT("id"), ibDataValue::Int((std::int64_t)object->GetMetaID()));
 	node.SetValue(wxT("name"), object->GetName());
 	node.SetValue(wxT("kind"), object->GetClassName());
 
@@ -897,7 +899,7 @@ void ibMcpSayObject(const ibValueMetaObject* object, ibDataNode& node, bool with
 	if (ibMetaData* metaData = const_cast<ibMetaData*>(object->GetMetaData())) {
 
 		std::vector<ibDataValue> links;
-		std::set<wxLongLong_t> seen;
+		std::set<long long> seen;
 		int wrong = ibMcpSayObjectLinks(note, metaData, links, seen);
 		wrong += ibMcpSayObjectLinks(help, metaData, links, seen);
 		wrong += ibMcpSayObjectLinks(comment, metaData, links, seen);
@@ -1098,6 +1100,11 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 					item->SetValue(wxT("name"), choices.GetName(choice));
 					if (!choices.GetSynonym(choice).IsEmpty())
 						item->SetValue(wxT("synonym"), choices.GetSynonym(choice));
+					// …and its kind, where its data names a class (a metaobject's): what the class is registered as.
+					if (const std::uint64_t data = choices.GetData(choice)) {
+						if (const ibCtorAbstractType* const kind = ibValue::GetAvailableCtor(data))
+							item->SetValue(wxT("kind"), kind->GetClassName());
+					}
 					words.push_back(ibDataValue::Child(item));
 				}
 
@@ -1119,7 +1126,7 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 
 			if (choices.GetCount() > words.size()) {
 
-				entry->AddField(wxT("choiceCount"), ibDataValue::Int((s64)choices.GetCount()));
+				entry->AddField(wxT("choiceCount"), ibDataValue::Int((std::int64_t)choices.GetCount()));
 				entry->SetValue(wxT("choicesNote"), wxString::Format(
 					ibMcpText("The first %u of %u. Ask for this property by name - "
 					  "metadata_get {id, property: \"%s\"} - for all of them."),
@@ -1251,6 +1258,33 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 				"table. A row whose field was deleted is dropped by itself; `<gone>` is a field this one can no "
 				"longer name, and leaving it out of the rows sent removes it."));
 		}
+		else if (const ibPropertyCommandSource* wiring = dynamic_cast<const ibPropertyCommandSource*>(property)) {
+
+			// 🛑 THE SAME TRAP A FIFTH TIME: a command binding (a Button's Command, a bar item's) is a
+			// Child too — a hop path, not a Name/Id pair — so it fell into "a structure is named" and
+			// read back as {"name": ""} whether nothing was bound, a command was bound and working, or
+			// a bound command's hops no longer resolved to anything (a merged-in button whose command
+			// kept its old, now-foreign id: the designer's own property cell shows "<not found>" for
+			// exactly this, form_control showed nothing at all - right up to the moment a caller would
+			// have trusted the blank and never looked again).
+			//
+			// ⭐ SAID THE WAY THE CELL IS: GetValueAsString() walks the binding through the control
+			// that owns it (WalkCommand, the same call form_bind judges a new one by) and answers
+			// "<not selected>" with nothing bound, "<not found>" for a path that no longer resolves,
+			// or the command's live name - never blank regardless of which is true. The raw wiring
+			// rides beside it in the shape form_bind's own answer already uses, so a caller comparing
+			// the two needs no second lookup.
+			entry->SetValue(wxT("kind"), wxString(wxT("structure")));
+			entry->SetValue(wxT("value"), wiring->GetValueAsString());
+
+			ibDataValue described;
+			if (ibCommandDescriptionMemory::WriteNode(described, wiring->GetValueAsCommandDesc()))
+				entry->AddField(wxT("wiring"), described);
+
+			entry->SetValue(wxT("shape"), ibMcpText(
+				"Bound through form_bind {form, control, property, path}, not through this verb - a command is "
+				"a chain of hops too, the same as a field binding, and form_bind resolves either kind by name."));
+		}
 		else {
 			const ibDataValue value = property->GetNodeValue();
 			entry->SetValue(wxT("kind"), KindOf(value));
@@ -1286,7 +1320,7 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 		out.push_back(ibDataValue::Child(entry));
 	}
 
-	node.AddField(wxT("count"), ibDataValue::Int((s64)out.size()));
+	node.AddField(wxT("count"), ibDataValue::Int((std::int64_t)out.size()));
 	node.AddField(wxT("properties"), ibDataValue::Array(out));
 }
 
@@ -1310,7 +1344,7 @@ ibValueMetaObject* ibMcpObjectNamed(const ibDataNode& params, wxString& refusal,
 		return nullptr;
 	}
 
-	const s64 id = given->AsInt();
+	const std::int64_t id = given->AsInt();
 
 	if (id <= 0) {
 		refusal = wxString::Format(
@@ -1415,7 +1449,7 @@ void ibMcpPictureIdAsNumber(ibDataValue& shape)
 	if (id == nullptr || id->Kind() != ibDataKind::String)
 		return;
 
-	// Parsed into wx's own type first: ToULongLong writes through an `unsigned long long*` and u64 is
+	// Parsed into wx's own type first: ToULongLong writes through an `unsigned long long*` and std::uint64_t is
 	// uint64_t — the same WIDTH but a different TYPE on LP64, so its address does not fit the
 	// parameter (MSVC takes it, GCC refuses; valueSerialization.cpp says the same in ibReadNodeType).
 	// And the field is replaced only when the text really was a number: writing 0 over an unparseable
@@ -1423,7 +1457,7 @@ void ibMcpPictureIdAsNumber(ibDataValue& shape)
 	unsigned long long parsed = 0;
 	if (!id->AsString().ToULongLong(&parsed))
 		return;
-	node->SetField(wxT("ClassId"), ibDataValue::UInt(static_cast<u64>(parsed)));
+	node->SetField(wxT("ClassId"), ibDataValue::UInt(static_cast<std::uint64_t>(parsed)));
 }
 
 wxString ibMcpFencedExcerpt(const wxString& text, const wxString& language, size_t maxLines)
@@ -1820,7 +1854,7 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 				}
 
 				const long memberId = memberByNumber ? (long)member.AsNumber().ToInt() : 0;
-				const wxString memberWord = memberByNumber ? wxString() : member.AsString();
+				const wxString memberWord = memberByNumber ? wxString() : member.AsString().ToWxString();
 
 				unsigned int index = 0;
 				for (; index < choices.GetCount(); ++index) {

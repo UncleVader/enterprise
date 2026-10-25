@@ -86,7 +86,7 @@ public:
 		return s_arguments;
 	}
 
-	bool Call(const ibDataNode& WXUNUSED(params), ibDataNode& result, wxString& refusal) const override
+	bool Call(const ibDataNode& /*params*/, ibDataNode& result, wxString& refusal) const override
 	{
 		ibMcpServer* server = Server(refusal);
 		if (server == nullptr)
@@ -180,7 +180,7 @@ public:
 
 	wxString GetName() const override { return wxT("chat_history"); }
 
-	wxString GetActivity(const ibDataNode& WXUNUSED(params)) const override
+	wxString GetActivity(const ibDataNode& /*params*/) const override
 	{
 		return ibMcpText("reading back the conversation");
 	}
@@ -208,9 +208,9 @@ public:
 
 		const std::vector<ibMcpServer::Turn> conversation = server->GetConversation();
 
-		s32 last = (s32)ArgLast().Whole(params);
-		if (last <= 0 || last > (s32)conversation.size())
-			last = (s32)conversation.size();
+		std::int32_t last = (std::int32_t)ArgLast().Whole(params);
+		if (last <= 0 || last > (std::int32_t)conversation.size())
+			last = (std::int32_t)conversation.size();
 
 		std::vector<ibDataValue> turns;
 
@@ -230,8 +230,8 @@ public:
 			turns.push_back(ibDataValue::Child(entry));
 		}
 
-		result.AddField(wxT("turns"), ibDataValue::Int((s64)turns.size()));
-		result.AddField(wxT("total"), ibDataValue::Int((s64)conversation.size()));
+		result.AddField(wxT("turns"), ibDataValue::Int((std::int64_t)turns.size()));
+		result.AddField(wxT("total"), ibDataValue::Int((std::int64_t)conversation.size()));
 		result.AddField(wxT("conversation"), ibDataValue::Array(turns));
 
 		if (conversation.empty())

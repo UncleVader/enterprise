@@ -20,8 +20,8 @@ class ibMetaView;
 // toolbar, its search, its menus and keys. The ROWS are the server's: its ibConfigurationTree (frmserver/metaTree)
 // writes them into the frame's MetaData, an external file's tree into its tab's View; a row is NodeId — its object's
 // id, or below 0 a group row's place among its siblings — Title, Picture, Group (what New makes under it), Type,
-// Position, Menu (protocol.h, ibProtocolSchema::MetaData). What a person does goes back as the doors of schema
-// MetaData (ibProtocolMetaDataCommand), and the rows come back with the frame: a click ASKS, the row follows from the
+// Position, Menu (protocol.h, ibProtocol::ibSchema::ibKind::MetaData). What a person does goes back as the doors of schema
+// MetaData (ibProtocol::ibSchema::ibMetaData::ibCommand), and the rows come back with the frame: a click ASKS, the row follows from the
 // metadata — as on the desktop it followed the stage and never the click.
 class ibMetaTreeBase : public wxPanel {
 public:
@@ -33,11 +33,16 @@ public:
 	// too.
 	virtual void Draw(const ibProtocolNode& root);
 
-	// The tree's tab — 0: the configuration's (the frame's MetaData), else an external file's.
+	// The tree's tab — 0: the configuration's (the frame's MetaData), else its tab's: an external file's, or a configuration
+	// browsed.
 	long long GetTab() const { return m_tab; }
 
-	// Its tab became the active one, or the tree the focus — the object it holds is sent to the inspector, received anew
-	// only where another was shown (the desktop's ibMetaTreeView::OnActivateView).
+	// THE DESKTOP'S SetReadOnly — New / Delete / Up / Down / Sort shut; Edit and Open still work for browsing.
+	void SetReadOnly(bool readOnly = true) { m_readOnly = readOnly; }
+	bool IsEditable() const { return !m_readOnly; }
+
+	// Its tab became the active one, or the tree the focus — the object it holds is sent to the inspector once the event
+	// is done, received anew only where another was shown (the desktop's ibMetaTreeView::OnActivateView).
 	void ActivateTree();
 
 	// THE MODULE, SHOWN — the desktop's (ibConfigurationTree::EditModule), by the address a runtime stopped or failed
@@ -47,7 +52,9 @@ public:
 
 protected:
 
-	ibMetaTreeBase(wxWindow* parent, long long tab, bool search);
+	// `kind` — what it draws: a Configuration's tree (its root shown, searched — in the frame or in a tab), or an external
+	// file's (DataProcessor, Report: its root hidden, its rows framed — the desktop's tree control of those).
+	ibMetaTreeBase(wxWindow* parent, long long tab, ibProtocol::ibView::ibKind kind);
 
 	// THE MODAL EDITOR over an object, the desktop's — its row's menu opens it (the engine's ProcessCommand, by the item's
 	// Name). A tree that has none answers by doing nothing: an external file's.
@@ -56,8 +63,8 @@ protected:
 
 	// THE DOORS — schema MetaData's parameters: the command, its arguments, the tab's id with them; and the command
 	// asked, the frame drawn after it. False: refused (said to the person).
-	ibProtocolNode GetParams(ibProtocolMetaDataCommand command, ibProtocolNode args) const;
-	bool Command(ibProtocolMetaDataCommand command, ibProtocolNode args) const;
+	ibProtocolNode GetParams(ibProtocol::ibSchema::ibMetaData::ibCommand command, ibProtocolNode args) const;
+	bool Command(ibProtocol::ibSchema::ibMetaData::ibCommand command, ibProtocolNode args) const;
 	// …and a header's choice drawn from its property's row: "<not selected>", what may be chosen (its children: Title,
 	// Id), the one chosen by its Value.
 	void UpdateChoiceSelection(wxChoice* choice, const ibProtocolNode& property);
@@ -129,6 +136,9 @@ private:
 	void SortItem();
 	void CopyItem();
 	void PasteItem();
+	// …a data processor or a report as the file of that extension it is kept in (its menu's Load, Unload).
+	void LoadItem(const wxString& extension);
+	void UnloadItem(const wxString& extension);
 	// …the row put where its sibling stands (Up, Down).
 	void MoveItem(const wxTreeItemId& item, const wxTreeItemId& sibling);
 	// …the row of the object not among `drawn` selected and opened (Create, Paste); false — there is none.
@@ -156,6 +166,7 @@ private:
 	void OnStartSearch(wxCommandEvent& event);
 	void OnCancelSearch(wxCommandEvent& event);
 
+	bool m_readOnly = false;
 	const long long m_tab;
 
 	// THE OBJECT THE INSPECTOR SHOWS — made when a row is selected, of the server's rows for it, and linked to this tree's
@@ -182,7 +193,10 @@ private:
 // MetaData, the search above them.
 class ibConfigurationTree : public ibMetaTreeBase {
 public:
-	explicit ibConfigurationTree(wxWindow* parent) : ibMetaTreeBase(parent, 0, true) {}
+	explicit ibConfigurationTree(wxWindow* parent) : ibMetaTreeBase(parent, 0, ibProtocol::ibView::ibKind::Configuration) {}
+	// A configuration browsed in a tab (File → Open / Open database configuration) — the same rows, schema MetaData with
+	// that Tab.
+	ibConfigurationTree(wxWindow* parent, long long tab) : ibMetaTreeBase(parent, tab, ibProtocol::ibView::ibKind::Configuration) {}
 
 	// The predefined values editor over the object (ibDialogPredefinedEditor), its items read from the server as it opens.
 	virtual void EditPredefinedValues(class ibValueMetaObjectRecordDataHierarchyMutableRef* metaObject) override;

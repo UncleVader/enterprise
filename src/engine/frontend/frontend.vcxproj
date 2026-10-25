@@ -47,13 +47,9 @@
     <ClCompile Include="mainFrame\settings\fontcolorsettings.cpp" />
     <ClCompile Include="mainFrame\settings\fontcolorsettingspanel.cpp" />
     <ClCompile Include="mainFrame\settings\keybinder.cpp" />
-    <ClCompile Include="mainFrame\settings\keybinderdialog.cpp" />
-    <ClCompile Include="mainFrame\settings\keymonitortextctrl.cpp" />
+    <ClCompile Include="mainFrame\settings\keybinderpanel.cpp" />
     <ClCompile Include="mainFrame\settings\settingsdialog.cpp" />
     <ClCompile Include="mainFrame\settings\showhelpevent.cpp" />
-    <ClCompile Include="mainFrame\settings\statictextex.cpp" />
-    <ClCompile Include="mainFrame\settings\stlutility.cpp" />
-    <ClCompile Include="mainFrame\settings\xmlutility.cpp" />
     <ClCompile Include="propertyManager\propertyEditor.cpp" />
     <ClCompile Include="propertyManager\property\private\propertyRegistry.cpp" />
     <ClCompile Include="propertyManager\property\advprop\advpropBoolean.cpp" />
@@ -533,13 +529,10 @@
     <ClInclude Include="mainFrame\settings\fontcolorsettings.h" />
     <ClInclude Include="mainFrame\settings\fontcolorsettingspanel.h" />
     <ClInclude Include="mainFrame\settings\keybinder.h" />
-    <ClInclude Include="mainFrame\settings\keybinderdialog.h" />
-    <ClInclude Include="mainFrame\settings\keymonitortextctrl.h" />
+    <ClInclude Include="mainFrame\settings\keybinderpanel.h" />
     <ClInclude Include="mainFrame\settings\settingsdialog.h" />
+    <ClInclude Include="mainFrame\settings\settingsxml.h" />
     <ClInclude Include="mainFrame\settings\showhelpevent.h" />
-    <ClInclude Include="mainFrame\settings\statictextex.h" />
-    <ClInclude Include="mainFrame\settings\stlutility.h" />
-    <ClInclude Include="mainFrame\settings\xmlutility.h" />
     <ClInclude Include="propertyManager\propertyEditor.h" />
     <ClInclude Include="propertyManager\property\advprop\advpropEvent.h" />
     <ClInclude Include="propertyManager\property\advprop\advpropEventTool.h" />
@@ -567,7 +560,6 @@
     <ClInclude Include="propertyManager\property\advprop\advpropValuePicture.h" />
     <ClInclude Include="propertyManager\property\private\prop.h" />
     <ClInclude Include="propertyManager\property\private\propertyRegistry.h" />
-    <ClInclude Include="res\resource.h" />
     <ClInclude Include="visualView\controlCtor.h" />
     <ClInclude Include="visualView\controlEnum.h" />
     <ClInclude Include="visualView\ctrl\chartBox.h" />
@@ -816,7 +808,7 @@
     <ClInclude Include="win\theme\luna_toolbarart.h" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="res\frontend.rc" />
+    <ResourceCompile Include="frontend.rc" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
@@ -899,7 +891,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(oes3rdParty)wxWidgets\lib\vc_dll;$(oesLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wxmsw33ud_aui.lib;wxmsw33ud_qa.lib;wxmsw33ud_html.lib;wxmsw33ud_propgrid.lib;wxmsw33ud_adv.lib;wxmsw33ud_core.lib;wxbase33ud_xml.lib;wxbase33ud_net.lib;wxmsw33ud_stc.lib;wxmsw33ud_xrc.lib;wxbase33ud.lib;wxtiffd.lib;wxjpegd.lib;wxpngd.lib;wxzlibd.lib;wxscintillad.lib;wxregexud.lib;wxexpatd.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wxmsw33ud_aui.lib;wxmsw33ud_html.lib;wxmsw33ud_propgrid.lib;wxmsw33ud_core.lib;wxbase33ud_xml.lib;wxmsw33ud_stc.lib;wxbase33ud.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -918,7 +910,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(oes3rdParty)wxWidgets\lib\vc_x64_dll;$(oesLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wxmsw33ud_aui.lib;wxmsw33ud_qa.lib;wxmsw33ud_html.lib;wxmsw33ud_propgrid.lib;wxmsw33ud_adv.lib;wxmsw33ud_core.lib;wxbase33ud_xml.lib;wxbase33ud_net.lib;wxmsw33ud_stc.lib;wxmsw33ud_xrc.lib;wxbase33ud.lib;wxtiffd.lib;wxjpegd.lib;wxpngd.lib;wxzlibd.lib;wxscintillad.lib;wxregexud.lib;wxexpatd.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wxmsw33ud_aui.lib;wxmsw33ud_html.lib;wxmsw33ud_propgrid.lib;wxmsw33ud_core.lib;wxbase33ud_xml.lib;wxmsw33ud_stc.lib;wxbase33ud.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -944,7 +936,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(oes3rdParty)wxWidgets\lib\vc_dll;$(oesLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wxmsw33u_aui.lib;wxmsw33u_qa.lib;wxmsw33u_html.lib;wxmsw33u_propgrid.lib;wxmsw33u_adv.lib;wxmsw33u_core.lib;wxbase33u_xml.lib;wxbase33u_net.lib;wxmsw33u_stc.lib;wxmsw33u_xrc.lib;wxbase33u.lib;wxtiffd.lib;wxjpegd.lib;wxpngd.lib;wxzlibd.lib;wxscintillad.lib;wxregexud.lib;wxexpatd.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wxmsw33u_aui.lib;wxmsw33u_html.lib;wxmsw33u_propgrid.lib;wxmsw33u_core.lib;wxbase33u_xml.lib;wxmsw33u_stc.lib;wxbase33u.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -970,7 +962,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(oes3rdParty)wxWidgets\lib\vc_x64_dll;$(oesLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wxmsw33u_aui.lib;wxmsw33u_qa.lib;wxmsw33u_html.lib;wxmsw33u_propgrid.lib;wxmsw33u_adv.lib;wxmsw33u_core.lib;wxbase33u_xml.lib;wxbase33u_net.lib;wxmsw33u_stc.lib;wxmsw33u_xrc.lib;wxbase33u.lib;wxtiffd.lib;wxjpegd.lib;wxpngd.lib;wxzlibd.lib;wxscintillad.lib;wxregexud.lib;wxexpatd.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wxmsw33u_aui.lib;wxmsw33u_html.lib;wxmsw33u_propgrid.lib;wxmsw33u_core.lib;wxbase33u_xml.lib;wxmsw33u_stc.lib;wxbase33u.lib;backend.lib;core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

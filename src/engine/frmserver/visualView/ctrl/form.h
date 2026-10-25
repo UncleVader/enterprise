@@ -173,6 +173,7 @@ public:
 
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray);
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
+	virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 	//****************************************************************************
 	//*                              Support form context                        *
@@ -435,8 +436,8 @@ public:
 
 public:
 
-	virtual bool LoadForm(const wxMemoryBuffer& data);
-	virtual bool SaveForm(wxMemoryBuffer &data) const;
+	virtual bool LoadForm(const ibMemoryBuffer& data);
+	virtual bool SaveForm(ibMemoryBuffer &data) const;
 
 	//notify
 	virtual void NotifyCreate(const ibValue& vCreated);
@@ -500,7 +501,7 @@ public:
 	// the client was drawn from, so a client cannot do what it was not offered. Focus is the form's own: the
 	// control becomes the active one (the row a command acts on is the active table's). Every other event is
 	// the control's (ibValueFrame::OnClientEvent).
-	bool DispatchEvent(const ibFormID& controlId, ibProtocolEvent event, const ibDataNode& args);
+	bool DispatchEvent(const ibFormID& controlId, ibProtocol::ibEvent::ibKind event, const ibDataNode& args);
 
 	//actionData
 	virtual ibStandardCommandSet GetStandardCommands(const ibFormID& formType);

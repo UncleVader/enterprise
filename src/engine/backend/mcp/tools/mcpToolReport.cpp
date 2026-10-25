@@ -47,7 +47,7 @@
 #include "backend/query/queryConstructorModel.h"   // ibQueryFieldsOfText — what the TEXT offers
 #include "backend/query/queryException.h"          // …and the judge that refuses one
 #include "backend/query/queryLowering.h"
-#include "backend/query/queryParser.h"
+#include "core/query/queryParser.h"
 #include "backend/query/queryable.h"
 
 #include <algorithm>   // std::remove_if — taking a grouping level back out
@@ -96,7 +96,7 @@ const ibArg& ArgRemove()
 // THE COMPARISON AS A WORD. Spelled out in the schema and matched here, so the two cannot drift -
 // and so a caller reading the description knows the whole vocabulary without guessing at numbers.
 // ONE TABLE: the schema's choices, the descriptions and the refusals are all read off it.
-struct ibComparisonWord { const wxChar* m_word; ibComparisonKind m_kind; };
+struct ibComparisonWord { const ibChar* m_word; ibComparisonKind m_kind; };
 const std::vector<ibComparisonWord>& ComparisonWords()
 {
 	static const std::vector<ibComparisonWord> s_words = {
@@ -665,7 +665,7 @@ bool ValueForPath(const ibCompositionDescription& composition, const wxString& p
 		return false;
 	}
 
-	const wxString text = given->Kind() == ibDataKind::String ? given->AsString() : wxString();
+	const wxString text = given->Kind() == ibDataKind::String ? given->AsString().ToWxString() : wxString();
 
 	// ⭐ A REFERENCE IS WRITTEN THE WAY A SCRIPT WRITES ONE - "Catalog.Warehouses.MainWarehouse",
 	// kind, object, then the predefined item's name (or `EmptyRef` for the empty reference). Three
@@ -801,9 +801,9 @@ const ibArg& ArgLinePath()
 }
 
 // THE GROUP'S WORD — and, with none, not a group.
-const std::vector<std::pair<const wxChar*, ibFilterGroupKind>>& GroupWords()
+const std::vector<std::pair<const ibChar*, ibFilterGroupKind>>& GroupWords()
 {
-	static const std::vector<std::pair<const wxChar*, ibFilterGroupKind>> s_words = {
+	static const std::vector<std::pair<const ibChar*, ibFilterGroupKind>> s_words = {
 		{ wxT("and"), ibFilterGroupKind_And }, { wxT("or"), ibFilterGroupKind_Or }, { wxT("not"), ibFilterGroupKind_Not } };
 	return s_words;
 }
@@ -828,9 +828,9 @@ bool ConditionFromTree(const ibCompositionDescription& composition, const ibData
 		const bool on = use == nullptr || use->Kind() != ibDataKind::Bool || use->AsBool();
 
 		if (const ibDataValue* group = line.FindField(wxT("group"))) {
-			const wxString word = group->Kind() == ibDataKind::String ? group->AsString() : wxString();
+			const wxString word = group->Kind() == ibDataKind::String ? group->AsString().ToWxString() : wxString();
 			const auto kind = std::find_if(GroupWords().begin(), GroupWords().end(),
-				[&word](const std::pair<const wxChar*, ibFilterGroupKind>& known) { return word.IsSameAs(known.first, false); });
+				[&word](const std::pair<const ibChar*, ibFilterGroupKind>& known) { return word.IsSameAs(known.first, false); });
 			if (kind == GroupWords().end()) {
 				refusal = wxString::Format(ibMcpText("'%s' is not a group - and, or or not."), word);
 				return false;
@@ -846,7 +846,7 @@ bool ConditionFromTree(const ibCompositionDescription& composition, const ibData
 		}
 
 		const ibDataValue* pathSaid = line.FindField(wxT("path"));
-		const wxString path = pathSaid != nullptr && pathSaid->Kind() == ibDataKind::String ? pathSaid->AsString() : wxString();
+		const wxString path = pathSaid != nullptr && pathSaid->Kind() == ibDataKind::String ? pathSaid->AsString().ToWxString() : wxString();
 		if (path.IsEmpty()) {
 			refusal = ibMcpText("A line of `condition` names its field - \"path\".");
 			return false;
@@ -855,7 +855,7 @@ bool ConditionFromTree(const ibCompositionDescription& composition, const ibData
 			return false;
 		const ibDataValue* comparisonSaid = line.FindField(wxT("comparison"));
 		const wxString word = comparisonSaid != nullptr && comparisonSaid->Kind() == ibDataKind::String
-			? comparisonSaid->AsString() : wxString();
+			? comparisonSaid->AsString().ToWxString() : wxString();
 		ibComparisonKind comparison = ibComparisonKind_Equal;
 		if (!ComparisonFromWord(word, comparison, refusal))
 			return false;
@@ -1654,7 +1654,7 @@ public:
 		std::vector<ibConditionalAppearanceRuleDescription>& rules = settings->m_conditionalAppearance.m_rules;
 
 		// THE RULE — the one `at` names, or a new one.
-		const s64 at = ArgRuleAt().Given(params) ? ArgRuleAt().Whole(params) : 0;
+		const std::int64_t at = ArgRuleAt().Given(params) ? ArgRuleAt().Whole(params) : 0;
 		if (ArgRuleAt().Given(params) && (at < 1 || static_cast<size_t>(at) > rules.size())) {
 			refusal = rules.empty()
 				? ibMcpText("These settings have no rules yet - omit `at` to add one.")
@@ -1766,7 +1766,7 @@ public:
 		for (size_t i = 0; i < rules.size(); ++i) {
 			const ibConditionalAppearanceRuleDescription& rule = rules[i];
 			std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
-			entry->SetValue(wxT("at"), static_cast<s32>(i + 1));
+			entry->SetValue(wxT("at"), static_cast<std::int32_t>(i + 1));
 			if (!rule.m_use)
 				entry->AddField(wxT("use"), ibDataValue::Bool(false));
 			// THE WHOLE CONDITION, groups included, in the shape `condition` takes. (It read the lines of the top only,
@@ -2041,7 +2041,7 @@ public:
 		// refused six good columns because the seventh was misspelled would teach a caller to go
 		// back to one field per call, which is what this is here to end.
 		std::vector<ibDataValue> refused;
-		s32 at = (s32)ArgAt().Whole(params);
+		std::int32_t at = (std::int32_t)ArgAt().Whole(params);
 
 		for (const wxString& path : wanted) {
 
@@ -2251,7 +2251,7 @@ public:
 					if (word.IsSameAs(ibBalanceRoleWord(known), false))
 						role = known;
 			}
-			const s64 number = ArgPeriodNumber().Given(params) ? ArgPeriodNumber().Whole(params) : 0;
+			const std::int64_t number = ArgPeriodNumber().Given(params) ? ArgPeriodNumber().Whole(params) : 0;
 			if (number != 0 && role != ibBalanceRole::Moment) {
 				refusal = ibMcpText("A number orders PERIODS: give `period_number` to a field whose role is `period`.");
 				return false;
@@ -2276,7 +2276,7 @@ public:
 		result.SetValue(wxT("title"), field->TitleInForce(caption));
 		result.SetValue(wxT("role"), wxString(ibBalanceRoleWord(field->RoleInForce(sourceRole))).Lower());
 		if (field->m_useRole && field->m_periodRank > 0)
-			result.SetValue(wxT("period_number"), static_cast<s32>(field->m_periodRank));
+			result.SetValue(wxT("period_number"), static_cast<std::int32_t>(field->m_periodRank));
 		result.SetValue(wxT("format"),
 			wxString(ibStoredValue(field->m_appearance.ValueInForce(ibAppearanceParameter::Format), nullptr).GetString()));
 		ibMcpSayComposerComplaints(composition, result);
@@ -2654,7 +2654,7 @@ public:
 			composer->SetCompositionDesc(composition);
 			activeMetaData->Modify(true);
 
-			result.AddField(wxT("removed"), ibDataValue::Int((s64)(before - levels.size())));
+			result.AddField(wxT("removed"), ibDataValue::Int((std::int64_t)(before - levels.size())));
 			result.SetValue(wxT("output"), outputName);
 			ibMcpSayComposerComplaints(composition, result);
 			return true;
@@ -2921,7 +2921,10 @@ public:
 
 			try {
 				ibQueryParser parser;
-				const ibQueryPackage package = parser.ParsePackage(text);
+				// The engine's door: the core parser's refusal is raised as the engine's, so the syntax handler below reads its span.
+				ibQueryPackage package;
+				try { package = parser.ParsePackage(text); }
+				catch (const ibQueryRefusal& refusal) { ibBackendQuerySyntaxException::Raise(refusal); }
 
 				// Against THIS configuration, named explicitly: a tool is not standing inside one.
 				const ibSourceMetaDataScope resolveAgainst(activeMetaData);
@@ -2982,7 +2985,7 @@ public:
 		activeMetaData->Modify(true);
 
 		result.SetValue(wxT("composer"), composer->GetName());
-		result.AddField(wxT("characters"), ibDataValue::Int((s64)text.Length()));
+		result.AddField(wxT("characters"), ibDataValue::Int((std::int64_t)text.Length()));
 
 		// ⭐ WHAT IT NOW OFFERS, in the same breath. The next question after "the query is set" is
 		// always "so what can I group by", and answering it here saves the round trip — and shows

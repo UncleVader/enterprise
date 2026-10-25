@@ -12,7 +12,7 @@
 #include "protocol/protocol.h"
 
 ibValue::ibValue(ibValue* pParam)
-	: ibLexValue(pParam != nullptr ? ibValueTypes::TYPE_REFFER : ibValueTypes::TYPE_EMPTY), m_pRef(pParam)
+	: ibLiteral(pParam != nullptr ? ibValueTypes::TYPE_REFFER : ibValueTypes::TYPE_EMPTY), m_pRef(pParam)
 {
 	if (m_pRef != nullptr)
 		m_pRef->IncrRef();
@@ -20,7 +20,7 @@ ibValue::ibValue(ibValue* pParam)
 
 void ibValue::Assign(const ibValue& rhs)
 {
-	ibLexValue::operator=(rhs);   // the primitive, without the count
+	ibLiteral::operator=(rhs);   // the primitive, without the count
 	m_classType = rhs.m_classType;
 	m_stored = rhs.m_stored;
 	m_pRef = rhs.m_pRef;
@@ -72,7 +72,7 @@ ibString ibValue::GetString() const
 {
 	if (m_pRef != nullptr && IsReference())
 		return m_pRef->GetString();
-	return ibLexValue::GetString();
+	return ibLiteral::GetString();
 }
 
 bool ibValue::IsEmpty() const
@@ -88,7 +88,7 @@ bool ibValue::IsEmpty() const
 	case ibValueTypes::TYPE_BOOLEAN:
 	case ibValueTypes::TYPE_NUMBER:
 	case ibValueTypes::TYPE_DATE:
-	case ibValueTypes::TYPE_STRING:  return ibLexValue::IsEmpty();   // a primitive — the base's
+	case ibValueTypes::TYPE_STRING:  return ibLiteral::IsEmpty();   // a primitive — the base's
 	case ibValueTypes::TYPE_ENUM:    return m_number < 0;   // the negative range is "no member" — the engine's
 	default:                         return m_stored == nullptr;
 	}
@@ -129,7 +129,7 @@ bool ibValue::CompareValueEQ(const ibValue& rhs) const
 		return false;
 	const ibDataValue* const left = m_stored->FindField(kValueFieldData);
 	const ibDataValue* const right = rhs.m_stored->FindField(kValueFieldData);
-	return (left != nullptr ? left->AsString() : wxString()) == (right != nullptr ? right->AsString() : wxString());
+	return (left != nullptr ? left->AsString() : ibString()) == (right != nullptr ? right->AsString() : ibString());
 }
 
 bool ibValue::Serialize(ibDataNode& node) const
@@ -154,7 +154,7 @@ bool ibValue::DoSerialize(ibDataNode& node) const
 	case ibValueTypes::TYPE_NUMBER:  node.SetValue(kValueFieldData, m_numeric); return true;
 	case ibValueTypes::TYPE_DATE:    node.SetValue(kValueFieldData, m_date); return true;
 	case ibValueTypes::TYPE_STRING:  node.SetValue(kValueFieldData, m_text); return true;
-	case ibValueTypes::TYPE_ENUM:    node.SetValue(kValueFieldData, (s32)m_number); return true;   // the member, by its number
+	case ibValueTypes::TYPE_ENUM:    node.SetValue(kValueFieldData, (std::int32_t)m_number); return true;   // the member, by its number
 	default:                         return false;
 	}
 }
@@ -188,7 +188,7 @@ ibValue ibValue::FromNode(const ibDataNode& node)
 		}
 		return ibValue(data != nullptr ? data->AsDate() : ibDateTime());
 	}
-	case ibValueTypes::TYPE_STRING:  return ibValue(data != nullptr ? data->AsString() : wxString());
+	case ibValueTypes::TYPE_STRING:  return ibValue(data != nullptr ? data->AsString().ToWxString() : wxString());
 	default:
 		break;
 	}
@@ -217,7 +217,7 @@ ibValue ibValue::FromNode(const ibDataNode& node)
 	ibValue made;
 	made.m_typeClass = ibValueTypes::TYPE_VALUE;
 	made.m_classType = clsid;
-	made.m_text = node.GetValue<wxString>(ibProtocolName::Presentation);
+	made.m_text = node.GetValue<wxString>(ibProtocol::ibRequest::ibListSettings::Presentation);
 	made.m_stored = std::make_shared<const ibDataNode>(node);
 	return made;
 }
@@ -281,12 +281,12 @@ std::vector<ibCtorAbstractType*> ibValue::GetListCtorsByType(ibCtorObjectType ob
 	if (frame == nullptr || objectType != ibCtorObjectType::ibCtorObjectType_object_control)
 		return listed;
 
-	for (const ibProtocolNode& described : frame->GetRequest().FindChild(ibProtocolName::Classes).Children()) {
+	for (const ibProtocolNode& described : frame->GetRequest().FindChild(ibProtocol::ibRequest::ibFormEditor::Classes).Children()) {
 		wxIcon icon;
-		const wxBitmap picture = ibProtocolPicture(described.GetString(ibProtocolName::Picture));
+		const wxBitmap picture = ibProtocolPicture(described.GetString(ibProtocol::ibRequest::ibFormEditor::Picture));
 		if (picture.IsOk())
 			icon.CopyFromBitmap(picture);
-		s_ctors.push_back(std::make_unique<ibCtorAbstractType>(described.GetString(ibProtocolName::Name), icon));
+		s_ctors.push_back(std::make_unique<ibCtorAbstractType>(described.GetString(ibProtocol::ibRequest::ibFormEditor::Name), icon));
 		listed.push_back(s_ctors.back().get());
 	}
 	return listed;

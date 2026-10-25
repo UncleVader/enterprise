@@ -6,10 +6,10 @@
 #include "queryLowering.h"
 
 #include "queryException.h"                // ibBackendQuerySourceException — L3 refuses in its own variety
-#include "queryRewrite.h"                 // ibQueryRewrite — optimizer pass (AST -> AST)
-#include "queryRender.h"                  // ibQueryOutputName — the ONE answer to "what is this field called"
-#include "queryLexer.h"                   // ibQueryLexer::ParamNames — which words of a query are its parameters
-#include "queryParser.h"                  // ibQueryCastType — the primitive a CAST converts to, as the parser read it
+#include "core/query/queryRewrite.h"                 // ibQueryRewrite — optimizer pass (AST -> AST)
+#include "core/query/queryRender.h"                  // ibQueryOutputName — the ONE answer to "what is this field called"
+#include "core/query/queryLexer.h"                   // ibQueryLexer::ParamNames — which words of a query are its parameters
+#include "core/query/queryParser.h"                  // ibQueryCastType — the primitive a CAST converts to, as the parser read it
 #include "queryRamTable.h"                // ibQueryRamTable — a package's temp table IS a snapshot
 #include "queryTempStore.h"               // ibQueryTempTableStore — WHO keeps the temp tables alive
 #include "tempTableQueryable.h"           // ibTempTableQueryable — a table handed in as a PARAMETER is a source
@@ -28,6 +28,7 @@
 #include "backend/backend_exception.h"    // ibBackendCoreException
 #include "core/fiber/fiber.h"             // StackLow — a nested query is native recursion with no count
 #include "backend/system/value/valueType.h"   // ibValueTypeDescription::AdjustValue — a field's empty value, for a NULL key
+#include "core/query/queryAggregates.h"   // ibQueryAggregatesFor — CheckNames refuses what a type does not admit
 
 // ⚠ NAMED, NOT INHERITED. std::find / std::remove_if arrived in this file with the grouping and
 // prune passes; MSVC hands <algorithm> over transitively and GCC/Clang do not, so the Windows build
@@ -973,30 +974,40 @@ std::vector<const ibBackendQueryColumn*> ResolvePath(const std::vector<ibSourceB
 	if (path.size() >= 2) {
 		const ibBackendQueryable* aliased = SourceForAlias(sources, path[0]);
 		if (aliased != nullptr) { cur = aliased; i = 1; }
+		else if (SourceIsOpaque(sources, path[0]))
+			return cols;   // a field of the table this resolver cannot see into — see the silence below
 	}
 	if (i == 0) {   // unqualified — start on the source that owns the first segment
 		if (const ibBackendQueryable* q = OwnerOfBareColumn(sources, path[0], e.m_line, e.m_col)) {
 			cur = q;   // ambiguous -> Fail, inside
 		}
-		else if (path.size() >= 2 && !SourceIsOpaque(sources, path[0])) {
-			// ⭐ A QUALIFIED NAME WHOSE QUALIFIER IS NOTHING — `SliceLast.Dimension2` in a query that
-			// no longer reads SliceLast. The first segment is neither a source alias nor a column of
-			// any source, so this is not a dot-walk that went wrong somewhere in the middle: it is a
-			// FIELD LEFT OVER from a table that is gone.
-			//
-			// ⚠ …AND NOT ONE THIS RESOLVER MERELY CANNOT SEE INTO. `SDFGH.Dimension1` over a nested
-			// query named SDFGH is the table standing right there in the FROM; accusing it of being
-			// gone painted the verdict line red over a query with nothing wrong with it.
-			//
-			// Said as itself, and with what to do about it. "unknown attribute 'SliceLast'" named the
-			// segment the resolver happened to stop on and left the reader to work out that the thing
-			// to delete is the whole field — which is the one thing the message could have said.
-			wxString field;
-			for (size_t k = 0; k < path.size(); ++k)
-				field += (k > 0 ? wxT(".") : wxT("")) + path[k];
-			ThrowQueryException(e.m_line, e.m_col, wxString::Format(
-				_("'%s' is left over from a table this query does not read: remove the field, or add "
-				  "'%s' back to the tables"), field, path[0]));
+		else {
+			// ⭐⭐ A NAME NO VISIBLE SOURCE PLACES, IN A QUERY WITH A SOURCE THIS RESOLVER CANNOT SEE INTO
+			// (a nested select a check holds opaque): it may perfectly well be that table's — `SDFGH.Dimension1`
+			// over a nested query named SDFGH, a bare field of it, a walk from one — and silence is the only
+			// honest answer. Said HERE, once, for every question a check asks: walking on from the first
+			// source instead accused THAT table of the name (2026-10-22: "unknown attribute 'NestedQuery1'
+			// on source 'Catalog1'", from the rule that a folded column is no group key, which resolves
+			// every projection and was not among the callers that knew to skip it).
+			for (const ibSourceBinding& binding : sources)
+				if (binding.m_q == nullptr)
+					return cols;
+			if (path.size() >= 2) {
+				// ⭐ A QUALIFIED NAME WHOSE QUALIFIER IS NOTHING — `SliceLast.Dimension2` in a query that
+				// no longer reads SliceLast. The first segment is neither a source alias nor a column of
+				// any source, so this is not a dot-walk that went wrong somewhere in the middle: it is a
+				// FIELD LEFT OVER from a table that is gone.
+				//
+				// Said as itself, and with what to do about it. "unknown attribute 'SliceLast'" named the
+				// segment the resolver happened to stop on and left the reader to work out that the thing
+				// to delete is the whole field — which is the one thing the message could have said.
+				wxString field;
+				for (size_t k = 0; k < path.size(); ++k)
+					field += (k > 0 ? wxT(".") : wxT("")) + path[k];
+				ThrowQueryException(e.m_line, e.m_col, wxString::Format(
+					_("'%s' is left over from a table this query does not read: remove the field, or add "
+					  "'%s' back to the tables"), field, path[0]));
+			}
 		}
 	}
 
@@ -1010,11 +1021,6 @@ std::vector<const ibBackendQueryColumn*> ResolvePath(const std::vector<ibSourceB
 	// An error is the honest answer and the window already knows how to show one — the verdict line
 	// under the tabs, in the engine's own words.
 	if (cur == nullptr) {
-		// Same distinction one more time: with an unreadable source in the query, a name this resolver
-		// cannot place may perfectly well be that table's, and silence is the only honest answer.
-		for (const ibSourceBinding& binding : sources)
-			if (binding.m_q == nullptr)
-				return cols;
 		ThrowQueryException(e.m_line, e.m_col, wxString::Format(_("'%s' belongs to no table of this query"),
 			path.empty() ? wxString() : path[0]));
 		return {};
@@ -1446,7 +1452,7 @@ std::map<wxString, ibValue> WithEveryParameter(const wxString& text, const std::
 ibValue EvalValue(const ibQueryAstExpr& e, const std::map<wxString, ibValue>& params)
 {
 	RefuseIfQueryStackLow(e.m_line, e.m_col);
-	if (e.m_kind == ibQueryAstExprKind::Literal) return e.m_literal;
+	if (e.m_kind == ibQueryAstExprKind::Literal) return ibValue(e.m_literal);
 	if (e.m_kind == ibQueryAstExprKind::Param) {
 		const ibValue* v = FindParam(params, e.m_paramName);
 		if (v == nullptr) {
@@ -1630,6 +1636,8 @@ ibQueryColumnExprPtr BuildColumnExprFromAst(const std::vector<ibSourceBinding>& 
                                             const ibQueryAstExpr& e, const std::map<wxString, ibValue>& params);   // defined below
 ibQueryColumnExprPtr BuildWindowExprFromAst(const std::vector<ibSourceBinding>& sources,
                                             const ibQueryAstExpr& e, const std::map<wxString, ibValue>& params);   // defined below
+static ibTypeDescription TypeOfExpr(const std::vector<ibSourceBinding>& sources,
+                                    const ibQueryAstExpr& e, const std::map<wxString, ibValue>& params);   // defined below
 
 // Is this AST expression a COMPUTED WHERE / aggregate-input lhs (arithmetic or CASE)?
 // A CONDITION — what a WHERE is made of. Standing where a VALUE is asked for (`Qty > 100 AS Big`, a CASE
@@ -2810,14 +2818,20 @@ ibQueryColumnExprPtr BuildColumnExprFromAst(const std::vector<ibSourceBinding>& 
 		return ibQueryColumnExpr::Col(cols[0]);
 	}
 	case ibQueryAstExprKind::Literal:
-		return ibQueryColumnExpr::Const(e.m_literal);
+		return ibQueryColumnExpr::Const(ibValue(e.m_literal));
 	case ibQueryAstExprKind::Param:
 	case ibQueryAstExprKind::Value:   // value(...) resolves to a constant, exactly like a &parameter
 		return ibQueryColumnExpr::Const(EvalValue(e, params));
 
 	case ibQueryAstExprKind::Arith: {
+		// A '+' that answers a string is concatenation. The one typing says so, the same that types
+		// the output (TypeOfExpr); nothing downstream guesses it again.
+		const auto concat = [&]() {
+			const ibTypeDescription t = TypeOfExpr(sources, e, params);
+			return t.GetClsidCount() == 1 && t.ContainType(ibValueTypes::TYPE_STRING);
+		};
 		const ibQueryColumnArithOp op =
-			e.m_arith == ibQueryArithOp::Add ? ibQueryColumnArithOp::Add
+			e.m_arith == ibQueryArithOp::Add ? (concat() ? ibQueryColumnArithOp::Concat : ibQueryColumnArithOp::Add)
 			: e.m_arith == ibQueryArithOp::Sub ? ibQueryColumnArithOp::Sub
 			: e.m_arith == ibQueryArithOp::Mul ? ibQueryColumnArithOp::Mul
 			: e.m_arith == ibQueryArithOp::Div ? ibQueryColumnArithOp::Div
@@ -3099,6 +3113,14 @@ static ibTypeDescription TypeOfExpr(const std::vector<ibSourceBinding>& sources,
 		const bool shift = e.m_arith == ibQueryArithOp::Add || e.m_arith == ibQueryArithOp::Sub;
 		if (shift && l.GetClsidCount() == 1 && l.ContainType(ibValueTypes::TYPE_DATE) && rNum)
 			return l;
+		// A string added to a string is a string. One side may be untyped (a carried column this
+		// select cannot see); a number or a date on either side is not concatenation, and stays
+		// unclaimed the way mixed arithmetic always has.
+		const bool lStr = l.GetClsidCount() == 1 && l.ContainType(ibValueTypes::TYPE_STRING);
+		const bool rStr = r.GetClsidCount() == 1 && r.ContainType(ibValueTypes::TYPE_STRING);
+		if (e.m_arith == ibQueryArithOp::Add && (lStr || rStr)
+		    && (lStr || l.GetClsidCount() == 0) && (rStr || r.GetClsidCount() == 0))
+			return ibTypeDescription(g_valueStringCLSID);
 		return ibTypeDescription();
 	}
 
@@ -6024,93 +6046,8 @@ bool BuildCheckSources(const ibQuerySelect& ast, const std::map<wxString, ibValu
 // WHICH PROJECTIONS ARE NEITHER A GROUP KEY NOR INSIDE AN AGGREGATE — the rule itself, over sources
 // that are already resolved. Its two readings (a refusal, and the work still to do) are the public
 // entries; this is what both of them ask. See ibQueryLowering::UngroupedProjections.
-// ⭐ ONE WALK, AND IT ANSWERS BOTH HALVES: which columns a projection FOLDS, and which it reads
-// FREE. A column under an aggregate is accounted for; a column outside every aggregate has to be a
-// group key. That is the whole grouping rule, and it is one question about one tree.
-//
-// ⚠ IT IS NOT A QUESTION ABOUT THE TOP OF THE PROJECTION. Both halves used to look only at what a
-// projection IS — a bare Column, or a Func — which is right for `Qty` and for `SUM(Qty)` and wrong
-// for everything in between. `SUM(Price * Qty) / COUNT(*) * 1.2` is neither: it belongs in no list
-// the constructor shows, and both collectors skipped it whole. So the columns inside it were held to
-// no rule at all — a free `Price` beside a folded `Qty` in one expression, and the check silent on
-// both. An expression is a TREE; the rule reads it as one.
-void CollectFoldedAndFree(const ibQueryAstExprPtr& e, bool insideAggregate,
-                          std::vector<const ibQueryAstExpr*>& folded,
-                          std::vector<const ibQueryAstExpr*>& free,
-                          const std::vector<wxString>* groupedExprs = nullptr)
-{
-	if (!e)
-		return;
-	if (e->m_kind == ibQueryAstExprKind::Column) {
-		(insideAggregate ? folded : free).push_back(e.get());
-		return;
-	}
-	// ⭐ A SUBTREE THAT IS ITSELF A GROUP KEY reads nothing free. `SELECT BEGINOFPERIOD(Date, Month) AS M,
-	// COUNT(*) … GROUP BY BEGINOFPERIOD(Date, Month)` groups by the month, and `Date` inside it is fixed
-	// for the group by that key — the execution matches the two as TEXT (the GROUP BY branch of
-	// PopulateBuilder), so the check does too. Refused here, it was the check against the engine, and the
-	// constructor's "complete the grouping" would have added the raw date — a different query.
-	if (!insideAggregate && groupedExprs != nullptr && IsComputedExprAst(*e)) {
-		const wxString written = ibRenderQueryExpr(*e);
-		for (const wxString& key : *groupedExprs)
-			if (key.IsSameAs(written, false))
-				return;
-	}
-	// A GROUP aggregate folds everything beneath it, however deep. A WINDOW aggregate does not fold
-	// the SELECT: it keeps one answer per input row, so its argument is free with respect to any
-	// ordinary GROUP BY beside it. Treating SUM(x) OVER (...) as a group aggregate made an otherwise
-	// non-grouping window query demand every plain projection in GROUP BY.
-	const bool fold = insideAggregate
-		|| (e->m_kind == ibQueryAstExprKind::Func && ibIsAggregateKeyword(e->m_func) && !e->m_over);
-
-	ibQueryForEachOperand(*e, [&](const ibQueryAstExprPtr& child) {
-		CollectFoldedAndFree(child, fold, folded, free, groupedExprs);
-	});
-	// Window keys live beside the ordinary operand tree. In a SELECT that also has a GROUP BY they
-	// must obey the same rule as the window argument: the window runs over grouped rows, so a raw key
-	// cannot escape grouping merely because it is written inside OVER (...).
-	if (e->m_over) {
-		for (const ibQueryAstExprPtr& partition : e->m_over->m_partitionBy)
-			CollectFoldedAndFree(partition, insideAggregate, folded, free, groupedExprs);
-		for (const ibQueryOrderItem& order : e->m_over->m_orderBy)
-			CollectFoldedAndFree(order.m_expr, insideAggregate, folded, free, groupedExprs);
-	}
-}
-
-// THE OTHER HALF OF THE SAME RULE: the columns that live INSIDE an aggregate.
-//
-// A column being folded is already accounted for — it is not "missing from GROUP BY", and it must
-// not be ADDED to it either. `SELECT SUM(Parent) ... GROUP BY Parent` folds each group over a single
-// row, so the sum is the value itself: legal to write, and never what anybody meant. The window let
-// exactly that happen — the same field standing in the grouping list and in the aggregates list at
-// once — because nothing anywhere said the two lists are disjoint.
-//
-// One collector, two readings, like CollectUngrouped beside it: the check reads it as a refusal, the
-// constructor reads it as "do not offer this one".
-// A COLUMN NODE STANDING ON ITS OWN — the caller gets a path it can resolve and report without
-// holding the projection alive.
-ibQueryAstExprPtr ColumnCopy(const ibQueryAstExpr& column)
-{
-	ibQueryAstExprPtr copy = ibQueryAstExpr::Make(ibQueryAstExprKind::Column);
-	copy->m_path = column.m_path;
-	copy->m_line = column.m_line;
-	copy->m_col  = column.m_col;
-	return copy;
-}
-
-std::vector<ibQueryAstExprPtr> CollectAggregated(const ibQuerySelect& ast)
-{
-	std::vector<ibQueryAstExprPtr> out;
-	for (const ibQueryProjection& projection : ast.m_projections) {
-		std::vector<const ibQueryAstExpr*> folded, free;
-		CollectFoldedAndFree(projection.m_expr, false, folded, free);
-		for (const ibQueryAstExpr* column : folded)
-			if (column != nullptr && !column->m_path.empty())
-				out.push_back(ColumnCopy(*column));
-	}
-	return out;
-}
-
+// The walk is the core's (ibQueryCollectFoldedAndFree, queryRewrite.h): which columns a projection folds and which it
+// reads free, one question about one tree — the constructor's windows ask it too.
 std::vector<ibQueryAstExprPtr> CollectUngrouped(const ibQuerySelect& ast,
                                                 const std::vector<ibSourceBinding>& sources)
 {
@@ -6127,7 +6064,7 @@ std::vector<ibQueryAstExprPtr> CollectUngrouped(const ibQuerySelect& ast,
 	// itself; for `SUM(Qty)` there are none; for `SUM(Qty) / Price` it is Price alone — exactly the
 	// field that has to be a group key, and the one the old shape never looked at.
 	bool grouping = !ast.m_groupBy.empty();
-	// The COMPUTED keys, in the text the execution matches them by (see CollectFoldedAndFree).
+	// The COMPUTED keys, in the text the execution matches them by (see ibQueryCollectFoldedAndFree).
 	std::vector<wxString> groupedExprs;
 	for (const ibQueryAstExprPtr& key : ast.m_groupBy)
 		if (key && IsComputedExprAst(*key))
@@ -6136,7 +6073,7 @@ std::vector<ibQueryAstExprPtr> CollectUngrouped(const ibQuerySelect& ast,
 	freePerProjection.reserve(ast.m_projections.size());
 	for (const ibQueryProjection& projection : ast.m_projections) {
 		std::vector<const ibQueryAstExpr*> folded, free;
-		CollectFoldedAndFree(projection.m_expr, false, folded, free, &groupedExprs);
+		ibQueryCollectFoldedAndFree(projection.m_expr, false, folded, free, &groupedExprs);
 		if (!folded.empty())
 			grouping = true;
 		freePerProjection.push_back(std::move(free));
@@ -6189,7 +6126,7 @@ std::vector<ibQueryAstExprPtr> CollectUngrouped(const ibQuerySelect& ast,
 				grouped = same;
 			}
 			if (!grouped)
-				out.push_back(ColumnCopy(*column));
+				out.push_back(ibQueryColumnCopy(*column));
 		}
 	}
 	return out;
@@ -6565,37 +6502,11 @@ void CheckSelectNames(const ibQuerySelect& astAsWritten, const std::map<wxString
 	for (const ibQueryOrderItem& item : ast.m_orderBy)
 		CollectColumns(item.m_expr, ordering);
 	// THE SAME RESOLVER THE EXECUTION USES. Its words are the ones the user sees — there is no
-	// second definition here of what a known field is.
-	// ⚠ A COLUMN THIS CHECK CANNOT ATTRIBUTE TO A VERIFIABLE SOURCE IS LEFT ALONE. With an opaque
-	// source in the query (a nested select), a name it does not recognise may perfectly well be one of
-	// THAT table's columns — inventing an error about it would be the old blanket silence's mistake
-	// made in the other direction. Everything that DOES land on a source this check knows is checked.
-	bool anyOpaque = false;
-	for (const ibSourceBinding& binding : sources)
-		if (binding.m_q == nullptr)
-			anyOpaque = true;
-
-	const auto checkable = [&sources, anyOpaque](const ibQueryAstExpr& column) {
-		if (!anyOpaque)
-			return true;   // nothing to be uncertain about
-		if (column.m_path.empty())
-			return false;
-		// Qualified: the source it names decides — known table, checked; opaque one, silent.
-		for (const ibSourceBinding& binding : sources)
-			if (!binding.m_alias.IsEmpty() && binding.m_alias.IsSameAs(column.m_path[0], false))
-				return binding.m_q != nullptr;
-		// Unqualified: checked only if a source this check KNOWS owns it. Otherwise it may be the
-		// opaque table's, and nothing can be said.
-		for (const ibSourceBinding& binding : sources)
-			if (binding.m_q != nullptr && binding.m_q->ResolveColumnByName(column.m_path[0]) != nullptr)
-				return true;
-		return false;
-	};
-
+	// second definition here of what a known field is. A column of a source this check cannot see into
+	// (a nested select) is left alone by the resolver itself (ResolvePath), for this loop and every
+	// question below alike.
 	for (const ibQueryAstExpr* column : strict) {
 		if (column == nullptr || column->m_path.empty())
-			continue;
-		if (!checkable(*column))
 			continue;
 		ResolvePath(sources, *column);   // raises "unknown attribute" / "ambiguous attribute"
 	}
@@ -6632,7 +6543,7 @@ void CheckSelectNames(const ibQuerySelect& astAsWritten, const std::map<wxString
 		if (column->m_path.size() == 1)
 			for (const wxString& name : outputs)
 				if (name.IsSameAs(column->m_path[0], false)) { namesAnOutput = true; break; }
-		if (!namesAnOutput && checkable(*column))
+		if (!namesAnOutput)
 			ResolvePath(sources, *column);
 	}
 
@@ -6667,7 +6578,7 @@ void CheckSelectNames(const ibQuerySelect& astAsWritten, const std::map<wxString
 		// ⚠ THE SAME LIST THE CONSTRUCTOR OFFERS. Read here as a refusal, read there as what to put
 		// in the dropdown — one answer, so a person is never shown a choice their engine rejects.
 		const std::vector<ibQueryKeyword> allowed =
-			ibQueryLowering::AggregatesFor(argCols.back()->GetTypeDesc());
+			ibQueryAggregatesFor(argCols.back()->GetTypeDesc());
 		if (std::find(allowed.begin(), allowed.end(), expr->m_func) == allowed.end()) {
 			const bool sumLike = expr->m_func == ibQueryKeyword::Sum || expr->m_func == ibQueryKeyword::Avg;
 			ThrowQueryException(expr->m_line, expr->m_col, wxString::Format(
@@ -6684,7 +6595,7 @@ void CheckSelectNames(const ibQuerySelect& astAsWritten, const std::map<wxString
 	// doing it inside the pairing loop cost (folded × keys) walks of the same two paths — and this
 	// runs on every check, which is every keystroke in the constructor.
 	{
-		const std::vector<ibQueryAstExprPtr> foldedList = CollectAggregated(ast);
+		const std::vector<ibQueryAstExprPtr> foldedList = ibQueryAggregatedColumns(ast);
 		std::vector<std::vector<const ibBackendQueryColumn*>> keyCols;
 		keyCols.reserve(ast.m_groupBy.size());
 		for (const ibQueryAstExprPtr& key : ast.m_groupBy)
@@ -6963,58 +6874,6 @@ std::vector<wxString> ibQueryLowering::FiltersAroundVirtualTables(const ibQueryP
 		if (statement.m_select)
 			visit(*statement.m_select);
 	return out;
-}
-
-std::vector<ibQueryKeyword> ibQueryLowering::AggregatesFor(const ibTypeDescription& type)
-{
-	// COUNT is always in — it asks nothing of the type, and a list with nothing in it would be a
-	// cell a person cannot fill.
-	std::vector<ibQueryKeyword> out{ ibQueryKeyword::Count };
-
-	// UNKNOWN OR COMPOSITE: offer everything. Which type a row holds is the row's business, and
-	// narrowing here on a guess would take away a choice the query can perfectly well make.
-	if (type.GetClsidCount() != 1) {
-		out.push_back(ibQueryKeyword::Sum);
-		out.push_back(ibQueryKeyword::Min);
-		out.push_back(ibQueryKeyword::Max);
-		out.push_back(ibQueryKeyword::Avg);
-		return out;
-	}
-
-	const bool numeric = type.ContainType(ibValueTypes::TYPE_NUMBER);
-	const bool ordered = numeric || type.ContainType(ibValueTypes::TYPE_DATE)
-	                             || type.ContainType(ibValueTypes::TYPE_STRING);
-
-	if (numeric) out.push_back(ibQueryKeyword::Sum);
-	if (ordered) { out.push_back(ibQueryKeyword::Min); out.push_back(ibQueryKeyword::Max); }
-	if (numeric) out.push_back(ibQueryKeyword::Avg);
-	return out;
-}
-
-std::vector<wxString> ibQueryLowering::AggregateCallsFor(const ibTypeDescription& type, const wxString& field)
-{
-	std::vector<wxString> calls;
-	if (field.IsEmpty())
-		return calls;
-
-	for (const ibQueryKeyword keyword : AggregatesFor(type)) {
-		calls.push_back(ibQueryKeywordText(keyword) + wxT("(") + field + wxT(")"));
-
-		// …AND ITS DISTINCT FORM where that asks a DIFFERENT question — `COUNT(DISTINCT x)` counts how
-		// many different values there are, `COUNT(x)` how many rows have one. WHICH functions get the
-		// twin is the keyword table's answer (ibDistinctMattersFor), so MIN and MAX do not: their
-		// result is the same value however often it occurs, and a padded list is one people stop
-		// reading. The same rule the expression editor already follows.
-		if (ibDistinctMattersFor(keyword))
-			calls.push_back(ibQueryKeywordText(keyword) + wxT("(")
-				+ ibQueryKeywordText(ibQueryKeyword::Distinct) + wxT(" ") + field + wxT(")"));
-	}
-	return calls;
-}
-
-std::vector<ibQueryAstExprPtr> ibQueryLowering::AggregatedColumns(const ibQuerySelect& ast)
-{
-	return CollectAggregated(ast);
 }
 
 std::vector<ibQueryAstExprPtr> ibQueryLowering::UngroupedProjections(

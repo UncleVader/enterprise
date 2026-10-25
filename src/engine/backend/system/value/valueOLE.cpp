@@ -1,5 +1,5 @@
 ////////////////////////////////////////////////////////////////////////////
-//	Author		: Maxim Kornienko, Vadim Zeitlin, 2C-Team
+//	Author		: Maxim Kornienko, Vadim Zeitlin
 //	Description : OLE-supporter
 ////////////////////////////////////////////////////////////////////////////
 
@@ -385,7 +385,7 @@ VARIANT ibValueOLE::FromValue(const ibValue& varRetValue) const
 	{
 		ibNumber fData = varRetValue.GetNumber();
 		if (fData == fData.Round()) {
-			wxLongLong_t llVal; fData.ToInt(llVal);
+			long long llVal; fData.ToInt(llVal);
 			oleVariant.vt = VT_I8;
 			oleVariant.llVal = llVal;
 		}

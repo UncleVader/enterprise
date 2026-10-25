@@ -7,6 +7,8 @@ class BACKEND_API ibValueMetaObjectPicture : public ibValueMetaObject {
 	public:
 
 	wxBitmap GetValueAsBitmap() const { return m_propertyPicture->GetValueAsBitmap(); }
+	// Which picture it holds — new with each its Picture is given: what its id carries (ibBackendPicture::SendPicture).
+	ibGuid GetValueAsVersion() const { return m_propertyPicture->GetValueAsVersion(); }
 
 	ibValueMetaObjectPicture(const wxString& name = wxEmptyString, const wxString& synonym = wxEmptyString, const wxString& comment = wxEmptyString);
 

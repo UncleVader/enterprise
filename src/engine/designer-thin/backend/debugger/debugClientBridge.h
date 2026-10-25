@@ -2,7 +2,8 @@
 #define _DEBUG_CLIENT_BRIDGE_H__
 
 #include <wx/wx.h>
-#include <wx/socket.h>
+
+#include "core/memory/memoryBuffer.h"   // OnScreenshot / OnComposed — the bytes the engine sent
 
 #include "debugDefs.h"
 
@@ -40,11 +41,11 @@ public:
 	//  Max, 2026-09-06: *"remove the sessions from the bridges, they duplicate"*.)
 
 	//commands 
-	virtual void OnSessionStart(wxSocketClient* sock) = 0;
-	virtual void OnSessionEnd(wxSocketClient* sock) = 0;
+	virtual void OnSessionStart() = 0;
+	virtual void OnSessionEnd() = 0;
 
-	virtual void OnEnterLoop(wxSocketClient* sock, const ibDebugLineData& data) = 0;
-	virtual void OnLeaveLoop(wxSocketClient* sock, const ibDebugLineData& data) = 0;
+	virtual void OnEnterLoop(const ibDebugLineData& data) = 0;
+	virtual void OnLeaveLoop(const ibDebugLineData& data) = 0;
 
 	virtual void OnAutoComplete(const ibDebugAutoCompleteData& data) = 0;
 	// ⚠ THE LEVEL IS NOT A SEVERITY OF THE PLATFORM. A document refusing to post says so at
@@ -77,7 +78,7 @@ public:
 
 	// A picture of the running application's window, sent because its user allowed it. Empty bytes
 	// mean they declined — the one outcome a listener must not mistake for a broken transfer.
-	virtual void OnScreenshot(const wxMemoryBuffer& png, const wxString& focus) {}
+	virtual void OnScreenshot(const ibMemoryBuffer& png, const wxString& focus) {}
 
 	// The state of a filling run over there: one shape for start, status and cancel alike, since all
 	// three ask about the same run. `which` is the CommandId being answered, so a waiter can tell an
@@ -92,7 +93,7 @@ public:
 	// What a composition answered: `answered` true and the tables in `result`, or false and the
 	// reason in `refusal`. One or the other, and never silence — a read that produced nothing
 	// because a parameter was not set is a sentence, not an empty table.
-	virtual void OnComposed(bool answered, const wxString& refusal, const wxMemoryBuffer& result) {}
+	virtual void OnComposed(bool answered, const wxString& refusal, const ibMemoryBuffer& result) {}
 
 private:
 	// Its own, from birth — see the constructor. Nothing hands it in, so two bridges cannot be given

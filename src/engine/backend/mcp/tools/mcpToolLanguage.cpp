@@ -29,7 +29,7 @@ namespace {
 // The factory's kinds, in the caller's words. Kept as a table so the tool that
 // FILTERS and the answer that LABELS cannot disagree — they read the same rows.
 struct KindRow {
-	const wxChar*     m_word;
+	const ibChar*     m_word;
 	ibCtorObjectType  m_kind;
 };
 
@@ -64,7 +64,7 @@ void AppendKind(const KindRow& row, const wxString& query, std::vector<ibDataVal
 		std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
 		entry->SetValue(wxT("name"), ctor->GetClassName());
 		entry->SetValue(wxT("kind"), wxString(row.m_word));
-		entry->AddField(wxT("id"), ibDataValue::UInt((u64)ctor->GetClassType()));
+		entry->AddField(wxT("id"), ibDataValue::UInt((std::uint64_t)ctor->GetClassType()));
 
 		types.push_back(ibDataValue::Child(entry));
 	}
@@ -203,14 +203,14 @@ public:
 					std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
 					entry->SetValue(wxT("name"), ctor->GetClassName());
 					entry->SetValue(wxT("kind"), wxString(wxT("configuration")));
-					entry->AddField(wxT("id"), ibDataValue::UInt((u64)ctor->GetClassType()));
+					entry->AddField(wxT("id"), ibDataValue::UInt((std::uint64_t)ctor->GetClassType()));
 
 					types.push_back(ibDataValue::Child(entry));
 				}
 			}
 		}
 
-		result.AddField(wxT("found"), ibDataValue::Int((s64)types.size()));
+		result.AddField(wxT("found"), ibDataValue::Int((std::int64_t)types.size()));
 		result.AddField(wxT("types"), ibDataValue::Array(types));
 
 		// ⭐ "THIS PLATFORM HAS NO SUCH TYPE" IS AN ANSWER, and it is usually the one being asked
@@ -295,7 +295,7 @@ public:
 				return false;
 			}
 
-			result.AddField(wxT("typeId"), ibDataValue::UInt((u64)clsid));
+			result.AddField(wxT("typeId"), ibDataValue::UInt((std::uint64_t)clsid));
 		}
 
 		if (name.IsEmpty()) {
@@ -434,7 +434,7 @@ public:
 			if (!helper.IsEmpty())
 				entry->SetValue(wxT("signature"), helper);
 
-			entry->AddField(wxT("parameters"), ibDataValue::Int((s64)value.GetNParams(i)));
+			entry->AddField(wxT("parameters"), ibDataValue::Int((std::int64_t)value.GetNParams(i)));
 			// Function or procedure — not cosmetic: calling a procedure where a
 			// value is expected is a compile error, and the two are told apart
 			// only here.
@@ -575,7 +575,7 @@ public:
 		return s_arguments;
 	}
 
-	bool Call(const ibDataNode& WXUNUSED(params), ibDataNode& result, wxString& WXUNUSED(refusal)) const override
+	bool Call(const ibDataNode& /*params*/, ibDataNode& result, wxString& /*refusal*/) const override
 	{
 		std::vector<ibDataValue> methods;
 

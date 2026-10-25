@@ -261,7 +261,7 @@ ibMetaDocument* ibDocManager::GetCurrentMetaDocument() const
 
 // THE BASE SET: what every application's manager has — the shared templates and the shared schemas. An
 // application's own manager adds its own in its ctor (ibDocManagerRuntime, ibDocManagerDesigner).
-ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
+ibDocManager::ibDocManager(long /*flags*/, bool initialize)
 {
 	m_defaultDocumentNameCounter = 1;
 	m_currentView = nullptr;
@@ -281,7 +281,7 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 	AddDocTemplate(g_metaTemplateCLSID,
 		_("Spreadsheet document"), ibSheetFormatMask(), ibSheetFormatExtensions(),
 		_("Spreadsheet Doc"), _("Spreadsheet View"),
-		CLASSINFO(ibSpreadsheetFileDocument), CLASSINFO(ibSpreadsheetEditView),
+		CLASSINFO(ibSheetFileDocument), CLASSINFO(ibSheetView),
 		ibTEMPLATE_VISIBLE);
 
 	AddDocTemplate(g_metaSectionCLSID,
@@ -308,13 +308,13 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 		ibTEMPLATE_INVISIBLE);
 
 	// Active users — the sessions and the locks; the designer's dialog and the runtime's showed the same tables.
-	RegisterSchema(ibProtocolSchema::ActiveUser, std::make_unique<ibSchemaActiveUser>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::ActiveUser, std::make_unique<ibSchemaActiveUser>());
 	// The registration journal — a tab its command opens; both applications' Administration had it.
-	RegisterSchema(ibProtocolSchema::AuditLog, std::make_unique<ibSchemaAuditLog>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::AuditLog, std::make_unique<ibSchemaAuditLog>());
 	// About — what the client works in; both applications' Help showed it.
-	RegisterSchema(ibProtocolSchema::About, std::make_unique<ibSchemaAbout>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::About, std::make_unique<ibSchemaAbout>());
 	// The configuration's languages — what a translated text is written in; both applications' translation window.
-	RegisterSchema(ibProtocolSchema::Languages, std::make_unique<ibSchemaLanguages>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::Languages, std::make_unique<ibSchemaLanguages>());
 
 	// The commands every document answers to — and the window's besides, Open, Exit and the edit commands — with the
 	// default keys the desktop's windows gave them (SetDefaultHotKeys) and the pictures its menu showed them with. A
@@ -334,7 +334,7 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 	RegisterCommand(ibDocCommand::SaveAs,    _("Save as..."), wxEmptyString, ibClientStockPicture::SaveAs);
 }
 
-void ibDocManager::RegisterSchema(ibProtocolSchema kind, std::unique_ptr<ibClientSchema> schema)
+void ibDocManager::RegisterSchema(ibProtocol::ibSchema::ibKind kind, std::unique_ptr<ibClientSchema> schema)
 {
 	m_schemas[kind] = std::move(schema);
 }
@@ -345,15 +345,15 @@ void ibDocManager::RegisterCommand(ibDocCommand command, const wxString& title, 
 	m_commands[command] = ibDocCommandInfo{ title, shortcut, picture };
 }
 
-const ibClientSchema* ibDocManager::FindSchema(ibProtocolSchema kind) const
+const ibClientSchema* ibDocManager::FindSchema(ibProtocol::ibSchema::ibKind kind) const
 {
 	const auto found = m_schemas.find(kind);
 	return found != m_schemas.end() ? found->second.get() : nullptr;
 }
 
-std::vector<ibProtocolSchema> ibDocManager::GetSchemaKinds() const
+std::vector<ibProtocol::ibSchema::ibKind> ibDocManager::GetSchemaKinds() const
 {
-	std::vector<ibProtocolSchema> kinds;
+	std::vector<ibProtocol::ibSchema::ibKind> kinds;
 	for (const auto& schema : m_schemas)
 		kinds.push_back(schema.first);
 	return kinds;
@@ -443,6 +443,20 @@ ibMetaDocTemplate* ibDocManager::FindMetaTemplate(const ibClassID& clsid) const
 	return nullptr;
 }
 
+std::vector<ibClassID> ibDocManager::GetMetaTemplateClasses() const
+{
+	std::vector<ibClassID> classes;
+	for (wxList::compatibility_iterator node = m_templates.GetFirst();
+	     node != nullptr; node = node->GetNext())
+	{
+		auto* mt = dynamic_cast<ibMetaDocTemplate*>(
+			static_cast<ibDocTemplate*>(node->GetData()));
+		if (mt != nullptr)
+			classes.push_back(mt->GetClassID());
+	}
+	return classes;
+}
+
 ibDocTemplate* ibDocManager::FindTemplateByDocClassInfo(const wxClassInfo* classInfo) const
 {
 	for (wxList::compatibility_iterator node = m_templates.GetFirst();
@@ -461,6 +475,11 @@ ibDocTemplate* ibDocManager::FindTemplateByDocClassInfo(const wxClassInfo* class
 
 ibMetaDocument* ibDocManager::OpenForm(ibValueMetaObject* metaObject, long flags)
 {
+	// ⭐⭐ WHOSE IT IS, WORKED OUT HERE (the desktop's): an editor of the database's configuration or of a file's belongs
+	// under the document that shows it, one of the session's own to the manager itself. The caller knows WHAT to open;
+	// the owner follows from the object.
+	ibMetaDocument* docParent = FindMetaDataDocument(metaObject->GetMetaData());
+
 	// ⭐⭐ ALREADY OPEN? THEN RAISE IT. This opened UNCONDITIONALLY, so the second Open on the same
 	// module built a rival document over the first: two editors of one text, each unaware of the
 	// other's edits, and whichever was saved last won. It is what made the property panel's Open
@@ -486,13 +505,19 @@ ibMetaDocument* ibDocManager::OpenForm(ibValueMetaObject* metaObject, long flags
 	auto* newDocument = wxDynamicCast(docClassInfo->CreateObject(), ibMetaDocument);
 	wxASSERT(newDocument);
 
+	if (docParent != nullptr)
+		newDocument->SetDocParent(docParent);
+
 	try {
 		newDocument->SetTitle(metaObject->GetModuleName());
 		newDocument->SetFilename(metaObject->GetDocPath());
 		newDocument->SetDocumentTemplate(docTemplate);
 		newDocument->SetMetaObject(metaObject);
 
-		AddDocument(newDocument);
+		// Owned documents (those with a parent) are managed by the parent, not the global doc list — adding them here
+		// would double-delete on close.
+		if (docParent == nullptr)
+			AddDocument(newDocument);
 
 		newDocument->SetIcon(ibPictureDescription(metaObject->GetClassType()));
 

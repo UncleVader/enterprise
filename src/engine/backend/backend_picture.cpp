@@ -3,11 +3,11 @@
 #include <map>
 #include <mutex>
 
-#include <wx/base64.h>
 #include <wx/filename.h>
 #include <wx/mstream.h>
 
 #include "core/pictureRegistry.h"   // the registry — each picture kept as the server keeps it
+#include "core/utils/base64.h"      // ibBase64 — a picture's PNG, written into its text and read where it lies
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -154,6 +154,14 @@ wxBitmap ibBackendPicture::CreatePicture(const ibExternalPictureDescription& pic
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaPictureObject.h"
 
+// A CONFIGURATION'S PICTURE, where the configuration keeps it: in the one it extends when it extends one, else its own.
+static const ibValueMetaObjectPicture* FindConfigurationPicture(const ibMetaData& metaData, const ibGuid& guid)
+{
+	ibMetaData* metaDataOwner = nullptr;
+	const ibMetaData& source = metaData.GetOwner(metaDataOwner) && metaDataOwner != nullptr ? *metaDataOwner : metaData;
+	return source.FindAnyObjectByFilter<ibValueMetaObjectPicture>(guid);
+}
+
 wxBitmap ibBackendPicture::CreatePicture(const ibPictureDescription& pictureDesc, const ibMetaData* metaData, const wxSize& size)
 {
 	if (pictureDesc.m_type == ibPictureType::eFromBackend) {
@@ -161,17 +169,8 @@ wxBitmap ibBackendPicture::CreatePicture(const ibPictureDescription& pictureDesc
 	}
 	else if (pictureDesc.m_type == ibPictureType::eFromConfiguration) {
 		if (metaData != nullptr && pictureDesc.m_meta_guid.isValid()) {
-			ibMetaData* metaDataOwner = nullptr;
-			if (metaData != nullptr && metaData->GetOwner(metaDataOwner) && metaDataOwner != nullptr) {
-				const ibValueMetaObjectPicture* picture =
-					metaDataOwner->FindAnyObjectByFilter<ibValueMetaObjectPicture>(pictureDesc.m_meta_guid);
-				return picture != nullptr && picture->IsAllowed() ? picture->GetValueAsBitmap() : wxNullBitmap;
-			}
-			else if (metaData != nullptr) {
-				const ibValueMetaObjectPicture* picture =
-					metaData->FindAnyObjectByFilter<ibValueMetaObjectPicture>(pictureDesc.m_meta_guid);
-				return picture != nullptr && picture->IsAllowed() ? picture->GetValueAsBitmap() : wxNullBitmap;
-			}
+			const ibValueMetaObjectPicture* picture = FindConfigurationPicture(*metaData, pictureDesc.m_meta_guid);
+			return picture != nullptr && picture->IsAllowed() ? picture->GetValueAsBitmap() : wxNullBitmap;
 		}
 	}
 	else if (pictureDesc.m_type == ibPictureType::eFromFile) {
@@ -209,6 +208,32 @@ ibPicture ibBackendPicture::GetServerPicture(const ibPictureDescription& picture
 	// A configuration's picture and a file's are made from the bytes they keep — anew, shared with nobody.
 	const wxBitmap bitmap = CreatePicture(pictureDesc, metaData);
 	return bitmap.IsOk() ? FromImage(bitmap.ConvertToImage()) : ibPicture();
+}
+
+ibString ibBackendPicture::SendPicture(const ibPictureDescription& pictureDesc, const ibMetaData* metaData)
+{
+	if (pictureDesc.IsEmptyPicture())
+		return ibString();
+	// A picture held as a file's bytes has no name of its own: it goes as itself.
+	if (pictureDesc.m_type == ibPictureType::eFromFile)
+		return GetServerPicture(pictureDesc, metaData).GetData();
+
+	if (pictureDesc.m_type == ibPictureType::eFromBackend)
+		return SendPicture(pictureDesc.m_class_identifier);
+
+	// A configuration picture's guid and the version of what it holds now: a client keeps a picture by its guid with the
+	// version it was given, and asks anew for one named by another. One no configuration has — none given, or the
+	// one given has none of it — is no picture.
+	const ibValueMetaObjectPicture* const picture =
+		metaData != nullptr ? FindConfigurationPicture(*metaData, pictureDesc.m_meta_guid) : nullptr;
+	if (picture == nullptr)
+		return ibString();
+	return ibString(pictureDesc.m_meta_guid.str() + wxT('#') + picture->GetValueAsVersion().str());
+}
+
+ibString ibBackendPicture::SendPicture(const ibPictureID& id)
+{
+	return id != 0 ? ibString::Format(wxT("%llu"), static_cast<unsigned long long>(id)) : ibString();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -253,8 +278,20 @@ wxIcon ibBackendPicture::GetPictureAsIcon(const ibPictureID& id)
 	const ibCtorAbstractType* so = ibValue::GetAvailableCtor(id);
 	if (so != nullptr)
 		return so->GetClassIcon();
-	
+
 	return wxNullIcon;
+}
+
+wxIcon ibBackendPicture::GetPictureAsIcon(const ibPictureDescription& pictureDesc, const ibMetaData* metaData)
+{
+	if (pictureDesc.m_type == ibPictureType::eFromBackend)
+		return GetPictureAsIcon(pictureDesc.m_class_identifier);
+
+	const wxBitmap bitmap = CreatePicture(pictureDesc, metaData);
+	wxIcon icon;
+	if (bitmap.IsOk())
+		icon.CopyFromBitmap(bitmap);
+	return icon;
 }
 
 std::vector<ibBackendPictureEntry> ibBackendPicture::GetArrayPicture()
@@ -289,18 +326,21 @@ std::vector<ibBackendPictureEntry> ibBackendPicture::GetArrayPicture()
 }
 #pragma endregion
 #pragma region __picture_conv_h__
-wxString ibBackendPicture::CreateBase64Image(const wxImage& image) {
+ibString ibBackendPicture::CreateBase64Image(const wxImage& image) {
 	wxMemoryOutputStream outputStream;
+	ibString text;
 	if (image.SaveFile(outputStream, wxBitmapType::wxBITMAP_TYPE_PNG)) {
 		const wxStreamBuffer* buffer =
 			outputStream.GetOutputStreamBuffer();
-		return wxBase64Encode(buffer->GetBufferStart(), buffer->GetLastAccess());
+		ibBase64::Append(text, buffer->GetBufferStart(), buffer->GetLastAccess());
 	}
-	return wxEmptyString;
+	return text;
 }
 
 wxImage ibBackendPicture::GetImageFromBase64(const wxString& src, const wxSize& size) {
-	const wxMemoryBuffer buffer = wxBase64Decode(src);
+	ibMemoryBuffer buffer;
+	if (!ibBase64::Read(src.wc_str(), src.length(), buffer))
+		return wxImage();
 	wxMemoryInputStream stream(buffer.GetData(), buffer.GetDataLen());
 	wxImage image(stream);
 	return size != wxDefaultSize ? image.Scale(

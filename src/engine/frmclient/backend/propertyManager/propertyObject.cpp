@@ -6,13 +6,9 @@
 #include "propertyObject.h"
 #include "core/serialize/dataBuilder.h"   // ibDataValue — property node serialization
 #include "core/typeName.h"                // ibTypeInfoName — a property's class, named as the server names one
-#include "frmclient/backend/metaData.h"                                        // GetAnyArrayObject — the candidates
-#include "frmclient/backend/metaCollection/metaObject.h"                       // …each one's id, name, synonym
-#include "frmclient/backend/propertyManager/property/propertySerializable.h"          // a row's property
-#include "frmclient/backend/propertyManager/property/variant/variantOwner.h"   // the variant a relationship holds
 #include "frmclient/backend/serialize/dataProtocol.h"                         // ibReadProtocolNode — the answer's rows
 #include "frmclient/win/picture.h"                                            // ibProtocolPictureReceive — the choices' pictures
-#include "protocol/protocol.h"                                                // ibProtocolName — the rows' keys
+#include "protocol/protocol.h"                                                // ibProtocol::ibSchema::ibProperties — the rows' keys
 
 #define propBlock 0x00023456
 #define eventBlock 0x00023457
@@ -21,7 +17,7 @@
 static void PicturesOf(const ibDataNode& rows, std::vector<wxString>& pictures)
 {
 	for (const ibDataNode& row : rows.Children()) {
-		if (const ibDataValue* const picture = row.FindField(ibProtocolName::Picture))
+		if (const ibDataValue* const picture = row.FindField(ibProtocol::ibSchema::ibProperties::Picture))
 			pictures.push_back(picture->AsString());
 		PicturesOf(row, pictures);
 	}
@@ -157,45 +153,6 @@ bool SetEvent(ibPropertyObject* asked, ibEvent* event, const ibDataValue& newVal
 
 } // namespace ibPropertyGate
 
-ibPropertyChoiceMode ibBackendProperty::CreateValueList(ibPropertyChoiceList& list,
-	ibPropertyChoiceMode mode, const std::initializer_list<ibClassID> classes,
-	bool (*accept)(const ibPropertyObject*))
-{
-	// ⚠ THE CONST OWNER, deliberately. GetMetaData has an overload pair and the non-const one is a
-	// wxFAIL unless a subclass overrode it — reading through the const handle is both the working
-	// road and the honest one: listing what a property MAY hold changes nothing.
-	//
-	// No dynamic_cast: the owner answers GetMetaData virtually. It used to be cast to
-	// ibValueMetaObjectGenericData first, which is the narrower type nobody here needed.
-	const ibPropertyObject* owner = m_owner;
-	const ibMetaData* metaData = owner != nullptr ? owner->GetMetaData() : nullptr;
-	if (metaData == nullptr)
-		return ibPropertyChoiceMode::None;
-
-	for (const ibValueMetaObject* object : metaData->GetAnyArrayObject(classes)) {
-
-		if (accept != nullptr && !accept(object))
-			continue;
-
-		// ⭐ THE VARIANT IS BUILT WHILE LISTING, so a caller that picked an item has nothing left to
-		// work out: it places this. One metaID per choice, because one choice is one relationship —
-		// a Mult property composes the set out of the ones that were picked.
-		// ⭐ THE NUMBER SAYS WHICH, THE VARIANT IS WHAT TO PLACE. The metaID identifies the candidate
-		// — a wxPGChoices entry carries it and a caller points at it by that. The value is the
-		// METADESCRIPTION, built here while listing, so whoever picked this item places it as it
-		// stands and nothing downstream has to turn a number back into a relationship.
-		list.Add((long)object->GetMetaID(), object->GetName(), object->GetSynonym(),
-			wxVariant(new ibVariantDataOwner(owner, ibMetaDescription(object->GetMetaID()))),
-			object->GetIcon());
-	}
-
-	// THE MODE EVEN WHEN THE LIST CAME OUT EMPTY. "There is nothing of that kind in this
-	// configuration yet" is a real answer — it is what a caller sees before the first chart of
-	// accounts exists — and it is NOT "this property is not chosen from a list". Collapsing the two
-	// would make an empty configuration look like an unsupported property.
-	return mode;
-}
-
 ////////////////////////////////////////////////////////////////////////
 
 
@@ -282,6 +239,31 @@ ibDataValue ibBackendProperty::GetNodeValue() const
 	if (!WriteNodeValue(value))
 		return ibDataValue();
 	return value;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// property -> protocol value
+
+bool ibBackendProperty::GetProtocolValue(ibDataNode& row) const
+{
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Name, GetName());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Title, GetLabel());
+	if (!GetHelp().IsEmpty())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::Help, GetHelp());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Class, GetType());
+
+	// …as it is stored: a scalar a field, a composite a node of its own.
+	const ibDataValue value = GetNodeValue();
+	if (value.Kind() == ibDataKind::Child)
+		row.SetProperty(ibProtocol::ibSchema::ibProperties::Value, value);
+	else
+		row.AddField(ibProtocol::ibSchema::ibProperties::Value, value);
+	// …and what it reads as.
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Presentation, GetValue().MakeString());
+
+	if (!IsEditable())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::ReadOnly, true);
+	return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -432,6 +414,8 @@ void ibPropertyObject::AddNotifier(ibPropertyObjectNotifier* notifier)
 		return;
 	m_notifiers.push_back(notifier);
 	notifier->SetOwner(this);
+	// …and what it shows, fetched — what the server says of it (a metaobject's rows).
+	Fetch();
 }
 
 void ibPropertyObject::RemoveNotifier(ibPropertyObjectNotifier* notifier)
@@ -451,13 +435,25 @@ bool ibPropertyObject::HideProperty(const ibProperty* property, bool hide)
 		return false;
 	bool result = false;
 	for (ibPropertyObjectNotifier* notifier : m_notifiers)
-		if (notifier->PropertyHidden(property, hide))
+		if (notifier->SetState(property, hide))
 			result = true;
 	// ⭐ …AND UP THE ATTACH CHAIN. An attached object's properties are DRAWN by its owner's
 	// inspector, and the notifier lives on the owner — so an attached object hiding one of its own
 	// properties reached nobody at all. (That is why a composition kept showing Source and Query
 	// text after being told to hide them: it was talking to an empty notifier list.)
 	if (m_attachOwner != nullptr && m_attachOwner != this && m_attachOwner->HideProperty(property, hide))
+		result = true;
+	return result;
+}
+
+bool ibPropertyObject::Cleared()
+{
+	bool result = false;
+	for (ibPropertyObjectNotifier* notifier : m_notifiers)
+		if (notifier->Cleared())
+			result = true;
+	// …and up the attach chain, as a hidden one: an attached object is drawn by its owner's inspector.
+	if (m_attachOwner != nullptr && m_attachOwner != this && m_attachOwner->Cleared())
 		result = true;
 	return result;
 }
@@ -510,15 +506,15 @@ bool ibPropertyObject::Receive(const ibProtocolNode& answer)
 	return true;
 }
 
-void ibPropertyObject::Receive(ibPropertyCategory* category, const ibDataNode& rows)
+void ibPropertyObject::Receive(ibPropertyCategory* category, ibDataNode& rows)
 {
-	for (const ibDataNode& row : rows.Children()) {
+	for (ibDataNode& row : rows.Children()) {
 		// A CATEGORY — a row with no class, its rows within.
-		if (row.FindField(ibProtocolName::Class) == nullptr)
-			Receive(CreatePropertyCategory(category, row.GetValue<wxString>(ibProtocolName::Name),
-				row.GetValue<wxString>(ibProtocolName::Title)), row);
+		if (row.FindField(ibProtocol::ibSchema::ibProperties::Class) == nullptr)
+			Receive(CreatePropertyCategory(category, row.GetValue<wxString>(ibProtocol::ibSchema::ibProperties::Name),
+				row.GetValue<wxString>(ibProtocol::ibSchema::ibProperties::Title)), row);
 		else
-			CreateProperty<ibPropertySerializable>(category, row);
+			CreateProperty(category, std::move(row));
 	}
 }
 

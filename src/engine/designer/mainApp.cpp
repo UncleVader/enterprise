@@ -5,6 +5,7 @@
 
 #include "mainApp.h"
 #include "backend/appData.h"
+#include "core/launchTicket.h"
 #include "backend/backend_exception.h"   // DrainLastErrors for the startup-failure dialog
 #include "backend/backend_mainFrame.h"
 #include "backend/debugger/debugClientBridge.h"
@@ -50,8 +51,8 @@ wxIMPLEMENT_APP(ibAppDesigner);
 
 void ibAppDesigner::OnInitCmdLine(wxCmdLineParser& parser)
 {
-	// Same layout as enterprise.exe — short names legacy, long names match
-	// wenterprise-server so RunApplication emits flags that parse in all bins.
+	// Same layout as enterprise.exe — short names legacy, long names one
+	// set so RunApplication emits flags that parse in all bins.
 	parser.AddOption(wxT("file"),   wxT("file"),     "Database file path",      wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("srv"),    wxT("server"),   "Database server address", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("p"),      wxT("dbport"),   "Database server port",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
@@ -80,6 +81,17 @@ bool ibAppDesigner::OnCmdLineParsed(wxCmdLineParser& parser)
 	// USER  
 	parser.Found(wxT("ib_usr"), &m_strIBUser);
 	parser.Found(wxT("ib_pwd"), &m_strIBPassword);
+
+	ibLaunchSecrets line;
+	line.m_dbUser = m_strUser;
+	line.m_dbPassword = m_strPassword;
+	line.m_ibUser = m_strIBUser;
+	line.m_ibPassword = m_strIBPassword;
+	ibApplyLaunchSecrets(line, parser.Found(wxT("pwd")), parser.Found(wxT("ib_pwd")));
+	m_strUser = line.m_dbUser;
+	m_strPassword = line.m_dbPassword;
+	m_strIBUser = line.m_ibUser;
+	m_strIBPassword = line.m_ibPassword;
 
 	// LOCALE
 	parser.Found(wxT("lc"), &m_strLocale);
@@ -294,12 +306,6 @@ int ibAppDesigner::OnExit()
 	bool success_exit = wxApp::OnExit();
 
 	appDataDestroy();
-
-	// The socket layer goes LAST, after everything that owns a socket — see the note in
-	// enterprise/mainApp.cpp (#155). The designer's debugger CLIENT closes its connections' sockets
-	// with appData, and on macOS Shutdown() nulls the run loop those sockets' sources are removed from.
-	if (wxSocketBase::IsInitialized())
-		wxSocketBase::Shutdown();
 
 	// Why the session was closed from outside, if it was — said once everything is let go: the session,
 	// its heartbeat and the connection pool (appDataDestroy). A box shown while any of them stood held it.

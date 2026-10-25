@@ -13,8 +13,6 @@
 //                             pipeline on top of this guard. Inherited
 //                             by enterprise, designer, codeRunner,
 //                             launcher.
-//   - wfrontend (web): cpp-httplib JSON-500 exception handler bolted on
-//                      top of this guard. Used by wenterprise-server.
 //   - console (daemon-class): this guard alone — no wx UI, just dumps
 //                             and log files.
 //
@@ -55,6 +53,10 @@ CORE_API void Install(const wxString& exeName);
 // On Windows the unhandled filter writes the dump from a helper thread.
 // The guard page is not restored there: that belongs after an unwind.
 CORE_API void ArmCurrentThread();
+
+// The calling thread's id as the system numbers it — what a debugger, a profiler and the dumps show; the journal's
+// lines carry it too. Windows: GetCurrentThreadId; Linux: gettid; macOS: pthread_threadid_np.
+CORE_API unsigned long CurrentTidPortable();
 
 
 // Append `message` to `<exeName>_startup.log` next to the binary. No UI.

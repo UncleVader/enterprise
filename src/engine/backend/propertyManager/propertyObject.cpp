@@ -167,10 +167,11 @@ ibPropertyChoiceMode ibBackendProperty::CreateValueList(ibPropertyChoiceList& li
 		// ⭐ THE NUMBER SAYS WHICH, THE VARIANT IS WHAT TO PLACE. The metaID identifies the candidate
 		// — a wxPGChoices entry carries it and a caller points at it by that. The value is the
 		// METADESCRIPTION, built here while listing, so whoever picked this item places it as it
-		// stands and nothing downstream has to turn a number back into a relationship.
+		// stands and nothing downstream has to turn a number back into a relationship. Drawn as its
+		// class, and its class its data: the kind a window groups it under.
 		list.Add((long)object->GetMetaID(), object->GetName(), object->GetSynonym(),
 			wxVariant(new ibVariantDataOwner(owner, ibMetaDescription(object->GetMetaID()))),
-			object->GetClassType());
+			object->GetClassType(), object->GetClassType());
 	}
 
 	// THE MODE EVEN WHEN THE LIST CAME OUT EMPTY. "There is nothing of that kind in this
@@ -264,6 +265,48 @@ ibDataValue ibBackendProperty::GetNodeValue() const
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// property -> protocol value
+
+#include "protocol/protocol.h"   // ibProtocol::ibSchema::ibProperties — the row's keys
+#include "core/typeName.h"       // ibTypeInfoName — a property's class, named as the client registers it
+
+bool ibBackendProperty::GetProtocolValue(ibDataNode& row, ibReader reader)
+{
+	if (reader != ibReader::Cell)
+		return false;
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Name, GetName());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Title, GetLabel());
+	if (!GetHelp().IsEmpty())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::Help, GetHelp());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Class, ibTypeInfoName(typeid(*this)));
+
+	// …as it is stored: a scalar a field, a composite (a type description) a node of its own.
+	const ibDataValue value = GetNodeValue();
+	if (value.Kind() == ibDataKind::Child)
+		row.SetProperty(ibProtocol::ibSchema::ibProperties::Value, value);
+	else
+		row.AddField(ibProtocol::ibSchema::ibProperties::Value, value);
+	// …and what it reads as — what the client shows where it has no editor of its own for the class.
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Presentation, GetValue().MakeString());
+
+	if (!IsEditable())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::ReadOnly, true);
+	return true;
+}
+
+bool ibEvent::GetProtocolValue(ibDataNode& row, ibReader reader)
+{
+	if (!ibBackendProperty::GetProtocolValue(row, reader))
+		return false;
+	std::vector<ibDataValue> args;
+	for (const wxString& arg : GetArgs())
+		args.push_back(ibDataValue::String(arg));
+	if (!args.empty())
+		row.AddField(ibProtocol::ibSchema::ibProperties::Args, ibDataValue::Array(std::move(args)));
+	return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 #include "backend/backend_mainFrame.h"
 #include "backend/appData.h"
@@ -315,13 +358,13 @@ ibPropertyObject::~ibPropertyObject()
 			notifier->SetOwner(nullptr);
 	m_notifiers.clear();
 
-	wxDELETE(m_category);
+	delete m_category;
 
 	for (auto& property : m_properties)
-		wxDELETE(property.second);
+		delete property.second;
 
 	for (auto& event : m_events)
-		wxDELETE(event.second);
+		delete event.second;
 }
 
 wxString ibPropertyObject::GetIndentString(int indent) const

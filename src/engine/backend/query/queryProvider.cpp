@@ -294,7 +294,7 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, 
 	filter.Pause();
 
 	// The stages after the read, said once whichever return this read leaves by.
-	auto stages = [&](const wxChar* how) {
+	auto stages = [&](const ibChar* how) {
 		ibJournalInfo(wxT("query.road"), wxT("RAM: computed source '%s' %s - exprs %lld ms, filter %lld ms, ")
 			wxT("distinct %lld ms, sort %lld ms, rebuild %lld ms"),
 			spec.m_queryable != nullptr ? spec.m_queryable->GetQueryName() : wxString(wxT("<none>")), how,
@@ -1972,10 +1972,13 @@ ibValue EvalColumnExprRow(const ibQueryColumnExpr* e, const ibQueryRow& row, con
 			const ibValue va = EvalColumnExprRow(e->m_lhs.get(), row, win);
 			const ibValue vb = EvalColumnExprRow(e->m_rhs.get(), row, win);
 			if (RamAnyNull({ &va, &vb })) return RamNullValue();   // strict — see above
+			if (e->m_arith == ibQueryColumnArithOp::Concat)   // before the numbers: a string is not read as one
+				return ibValue(va.GetString() + vb.GetString());
 			const ibNumber a = va.GetNumber();
 			const ibNumber b = vb.GetNumber();
 			switch (e->m_arith) {
 				case ibQueryColumnArithOp::Add: return ibValue(a + b);
+				case ibQueryColumnArithOp::Concat: break;   // answered above
 				case ibQueryColumnArithOp::Sub: return ibValue(a - b);
 				case ibQueryColumnArithOp::Mul: return ibValue(a * b);
 				case ibQueryColumnArithOp::Div: return ibValue(b.IsZero() ? ibNumber() : a / b);   // guard /0 -> 0
@@ -3015,9 +3018,9 @@ struct ibLevelKeyHash
 		// Mixed in 64 bits and folded down at the end: on a 32-bit build std::size_t is half the
 		// width, and mixing IN it silently throws away the upper half of every value's hash.
 		const ibValueHash one;
-		wxULongLong_t h = 0xcbf29ce484222325ull;
+		unsigned long long h = 0xcbf29ce484222325ull;
 		for (const ibValue& value : key) {
-			h ^= static_cast<wxULongLong_t>(one(value));
+			h ^= static_cast<unsigned long long>(one(value));
 			h *= 0x100000001b3ull;
 		}
 		return static_cast<std::size_t>(h ^ (h >> 32));

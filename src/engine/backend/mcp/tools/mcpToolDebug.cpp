@@ -185,7 +185,7 @@ wxString ModuleDocPath(const ibDataNode& params, wxString& moduleName, wxString&
 		return wxEmptyString;
 	}
 
-	const s32 id = (s32)ArgModule().Whole(params);
+	const std::int32_t id = (std::int32_t)ArgModule().Whole(params);
 	if (id <= 0) {
 		refusal = ibMcpText("Pass the module's NodeId - metadata_get on the owning object lists it.");
 		return wxEmptyString;
@@ -246,7 +246,7 @@ public:
 				? ibMcpText("taking the breakpoint off '%s' line %i")
 				: ibMcpText("putting a breakpoint on '%s' line %i"),
 			ibMcpNameOf(params, ArgModule().Name()),
-			(int)(s32)ArgLine().Whole(params));
+			(int)(std::int32_t)ArgLine().Whole(params));
 	}
 
 	wxString GetDescription() const override
@@ -296,7 +296,7 @@ public:
 		if (docPath.IsEmpty())
 			return false;
 
-		const s32 line = (s32)ArgLine().Whole(params);
+		const std::int32_t line = (std::int32_t)ArgLine().Whole(params);
 		if (line <= 0) {
 			refusal = ibMcpText("A line number is 1 or more.");
 			return false;
@@ -324,7 +324,7 @@ public:
 		// that was set look identical from outside unless the answer says which.
 		result.AddField(wxT("done"), ibDataValue::Bool(done));
 		result.SetValue(wxT("module"), moduleName);
-		result.AddField(wxT("line"), ibDataValue::Int((s64)line));
+		result.AddField(wxT("line"), ibDataValue::Int((std::int64_t)line));
 		result.SetValue(wxT("action"), wxString(remove ? wxT("removed") : wxT("set")));
 		if (!remove && !condition.IsEmpty())
 			result.SetValue(wxT("condition"), condition);
@@ -452,7 +452,7 @@ public:
 							}
 
 							node->SetValue(wxT("name"), path);
-							node->AddField(wxT("id"), ibDataValue::Int((s64)id));
+							node->AddField(wxT("id"), ibDataValue::Int((std::int64_t)id));
 						}
 					}
 				}
@@ -460,10 +460,10 @@ public:
 				// From 1, as the editor shows them and as debug_breakpoint takes them (the client keeps them from 0).
 				std::vector<ibDataValue> lines, conditions;
 				for (const auto& line : module.second) {
-					lines.push_back(ibDataValue::Int((s64)line.first + 1));
+					lines.push_back(ibDataValue::Int((std::int64_t)line.first + 1));
 					if (!line.second.IsEmpty()) {
 						std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
-						entry->AddField(wxT("line"), ibDataValue::Int((s64)line.first + 1));
+						entry->AddField(wxT("line"), ibDataValue::Int((std::int64_t)line.first + 1));
 						entry->SetValue(wxT("condition"), line.second);
 						conditions.push_back(ibDataValue::Child(entry));
 					}
@@ -495,13 +495,13 @@ public:
 
 		result.SetValue(wxT("module"),
 			stop.m_where.IsEmpty() ? stop.m_module : stop.m_where);
-		result.AddField(wxT("line"), ibDataValue::Int((s64)stop.m_line));
+		result.AddField(wxT("line"), ibDataValue::Int((std::int64_t)stop.m_line));
 
 		std::vector<ibDataValue> frames;
 		for (const ibMcpDebugBridge::Frame& frame : stop.m_stack) {
 			std::shared_ptr<ibDataNode> node = std::make_shared<ibDataNode>();
 			node->SetValue(wxT("module"), frame.m_module);
-			node->AddField(wxT("line"), ibDataValue::Int((s64)frame.m_line));
+			node->AddField(wxT("line"), ibDataValue::Int((std::int64_t)frame.m_line));
 			frames.push_back(ibDataValue::Child(node));
 		}
 		result.AddField(wxT("stack"), ibDataValue::Array(frames));
@@ -732,7 +732,7 @@ public:
 
 	wxString GetName() const override { return wxT("debug_sessions"); }
 
-	wxString GetActivity(const ibDataNode& WXUNUSED(params)) const override
+	wxString GetActivity(const ibDataNode& /*params*/) const override
 	{
 		return ibMcpText("looking at what can be debugged");
 	}
@@ -752,7 +752,7 @@ public:
 		return s_arguments;
 	}
 
-	bool Call(const ibDataNode& WXUNUSED(params), ibDataNode& result, wxString& refusal) const override
+	bool Call(const ibDataNode& /*params*/, ibDataNode& result, wxString& refusal) const override
 	{
 		if (debugClient == nullptr) {
 			refusal = ibMcpText("There is no debugger in this process.");
@@ -762,39 +762,37 @@ public:
 		std::vector<ibDataValue> sessions;
 		int attached = 0;
 
-		// ⚠ `auto`, NOT THE TYPE'S NAME. GetListConnection is public and hands the list out, but
+		// ⚠ `auto`, NOT THE TYPE'S NAME. ForEachConnection is public and shows each connection, but
 		// the connection class itself is private to ibDebuggerClient - so the name cannot be
 		// written here even though the objects can be read. Deducing the type asks nothing of the
 		// name, and the alternative was widening a debugger header for a spelling.
-		for (const auto* connection : debugClient->GetListConnection()) {
+		//
+		// 🛑 A SESSION IS A RUNTIME THAT ANSWERED, as this configuration's (ibMcpDebugBridge::GetStop): a scanner's
+		// socket dialling a port nobody listens on was listed as one, "seen", with nothing behind it.
+		debugClient->ForEachConnection([&sessions, &attached](const auto& connection) {
 
-			if (connection == nullptr || !connection->IsConnected())
-				continue;
+			if (!connection.IsVerifiedConnection())
+				return;
 
 			std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
 
-			entry->SetValue(wxT("host"), connection->GetHostName());
-			entry->AddField(wxT("port"), ibDataValue::Int((s64)connection->GetPort()));
-			entry->SetValue(wxT("state"), ConnectionWord(connection->GetConnectionType()));
+			entry->SetValue(wxT("host"), connection.GetHostName());
+			entry->AddField(wxT("port"), ibDataValue::Int((std::int64_t)connection.GetPort()));
+			entry->SetValue(wxT("state"), ConnectionWord(connection.GetConnectionType()));
 
 			// WHOSE RUN THIS IS. On one machine it is noise; the moment two developers debug the
 			// same base it is the only thing telling their runtimes apart.
-			entry->SetValue(wxT("computer"), connection->GetComputerName());
-			entry->SetValue(wxT("user"), connection->GetUserName());
+			entry->SetValue(wxT("computer"), connection.GetComputerName());
+			entry->SetValue(wxT("user"), connection.GetUserName());
 
-			// ⚠ VERIFIED is not the same as connected: a socket that answered is not yet a
-			// runtime that proved it speaks this protocol, and only a verified one can be
-			// attached to.
-			entry->AddField(wxT("ready"), ibDataValue::Bool(connection->IsVerifiedConnection()));
-
-			if (connection->GetConnectionType() == ConnectionType_Debugger)
+			if (connection.GetConnectionType() == ConnectionType_Debugger)
 				attached++;
 
 			sessions.push_back(ibDataValue::Child(entry));
-		}
+		});
 
-		result.AddField(wxT("count"), ibDataValue::Int((s64)sessions.size()));
-		result.AddField(wxT("attached"), ibDataValue::Int((s64)attached));
+		result.AddField(wxT("count"), ibDataValue::Int((std::int64_t)sessions.size()));
+		result.AddField(wxT("attached"), ibDataValue::Int((std::int64_t)attached));
 		result.AddField(wxT("sessions"), ibDataValue::Array(sessions));
 
 		if (sessions.empty())
@@ -898,7 +896,7 @@ public:
 			debugClient->AttachConnection(host, port);
 
 		result.SetValue(wxT("host"), host);
-		result.AddField(wxT("port"), ibDataValue::Int((s64)port));
+		result.AddField(wxT("port"), ibDataValue::Int((std::int64_t)port));
 		result.AddField(wxT("attached"), ibDataValue::Bool(!detach));
 
 		if (stop)
@@ -1028,7 +1026,7 @@ public:
 		bool ran = false;
 		wxString answer, json;
 		std::vector<wxString> printed;
-		wxLongLong_t microseconds = 0;
+		long long microseconds = 0;
 
 		if (!bridge->Sandbox(code, ran, answer, json, printed, microseconds)) {
 			refusal = ibMcpNoAnswer(ibMcpText("The runtime did not answer in time. Whatever the code did "
@@ -1047,7 +1045,7 @@ public:
 		//
 		// Microseconds, because single queries and single postings are the things worth timing and
 		// milliseconds report most of them as 0 or 1.
-		result.AddField(wxT("microseconds"), ibDataValue::Int((s64)microseconds));
+		result.AddField(wxT("microseconds"), ibDataValue::Int((std::int64_t)microseconds));
 
 		if (!answer.IsEmpty())
 			result.SetValue(wxT("answer"), answer);

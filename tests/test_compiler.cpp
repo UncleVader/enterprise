@@ -153,13 +153,13 @@ size_t CountOpcodeAnyType(const ibByteCode& bc, short baseOper) {
 } // namespace
 
 // ===========================================================================
-// Lexer (ibTranslateCode::PrepareLexem)
+// Lexer (ibTranslateCode::Translate)
 // ===========================================================================
 
 TEST(LexerTest, EmptySourceProducesEndProgramOnly) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	cc.Load(wxT(""));
-	ASSERT_TRUE(cc.PrepareLexem());
+	ASSERT_TRUE(cc.Translate());
 	// At least the ENDPROGRAM sentinel — exact number depends on lexer
 	// implementation, but it must be non-empty.
 	EXPECT_GE(cc.m_translateCode.GetLexCount(), 1u);
@@ -168,7 +168,7 @@ TEST(LexerTest, EmptySourceProducesEndProgramOnly) {
 TEST(LexerTest, SimpleAssignmentTokenizes) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	cc.Load(wxT("a = 1;"));
-	ASSERT_TRUE(cc.PrepareLexem());
+	ASSERT_TRUE(cc.Translate());
 	// Identifier 'a', '=', number '1', ';', ENDPROGRAM — at least 5.
 	EXPECT_GE(cc.m_translateCode.GetLexCount(), 4u);
 }
@@ -176,7 +176,7 @@ TEST(LexerTest, SimpleAssignmentTokenizes) {
 TEST(LexerTest, StringLiteralLexes) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	cc.Load(wxT("s = \"hello\";"));
-	ASSERT_TRUE(cc.PrepareLexem());
+	ASSERT_TRUE(cc.Translate());
 	EXPECT_GE(cc.m_translateCode.GetLexCount(), 4u);
 }
 
@@ -327,7 +327,7 @@ TEST(CompilerTest, SyntaxErrorReturnsFalse) {
 // Compile + AOT round-trip — checks the AOT layer with real compiler output
 // ===========================================================================
 
-#include "core/fileSystem/fs.h"
+#include "core/memory/memoryStream.h"
 
 TEST(CompilerAOT, RealCompileOutputRoundTrips) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
@@ -346,7 +346,7 @@ TEST(CompilerAOT, RealCompileOutputRoundTrips) {
 
 	ibWriterMemory w;
 	ASSERT_TRUE(src_bc.SerializeAOT(w));
-	wxMemoryBuffer blob = w.buffer();
+	ibMemoryBuffer blob = w.buffer();
 	EXPECT_GT(blob.GetDataLen(), 0u);
 
 	ibReaderMemory r(blob);
@@ -381,7 +381,7 @@ TEST(CompilerAOT, RealCompileOutputRoundTrips) {
 //
 // Verifies:
 //   * Lambda body references outer-fn local — compile succeeds (was
-//     ERROR_VAR_NOT_FOUND pre-Phase-A).
+//     ibScriptError_VarNotFound pre-Phase-A).
 //   * Outer fn's ibByteFunction.m_needsHeapFrame = true after lambda
 //     captures one of its locals.
 //   * Bytecode dump shows OPER_GET inside lambda body reading at
@@ -1141,10 +1141,7 @@ TEST(MetaDataSerialize, TheTreeIS_WhatTravels) {
 	ibWriterMemory writer;
 	ASSERT_TRUE(ibBinaryProvider().Write(written, writer));
 
-	// HELD, NOT BORROWED FROM A TEMPORARY. buffer() hands back a copy by value and
-	// the reader keeps only its pointer, so passing the call directly would leave
-	// the reader on freed bytes (fs.h deletes that overload for this reason).
-	const wxMemoryBuffer blob = writer.buffer();
+	const ibMemoryBuffer blob = writer.buffer();
 	ASSERT_GT(blob.GetDataLen(), 0u);
 
 	ibDataNode read;
@@ -1278,7 +1275,7 @@ TEST(TypedEmpty, ATypeNobodyHasIsTheEmptyValueNotARefusal) {
 #include "backend/system/value/composition/valueComposerField.h"
 #include "backend/backend_composition.h"
 #include "backend/composition/dataComposer.h"
-#include "backend/query/queryRender.h"   // ibRenderQueryExpr — the text IS the expression rendered
+#include "core/query/queryRender.h"   // ibRenderQueryExpr — the text IS the expression rendered
 
 TEST(CompositionField, IsARegisteredType) {
 	EXPECT_TRUE(ibValue::IsRegisterCtor(wxT("CompositionField")));

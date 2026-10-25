@@ -33,7 +33,7 @@
 
 #include "backend/backend_core.h"
 #include "backend/compiler/value.h"        // ibValue — driver rows / parameters
-#include "backend/query/queryAST.h"        // ibQuerySelectPtr — the cached parse
+#include "core/query/queryAST.h"        // ibQuerySelectPtr — the cached parse
 #include "backend/query/queryLowering.h"   // ibQueryLowering::OutputColumn (+ ibBackendQueryColumn)
 #include "backend/query/queryTempStore.h"  // ibQueryTempTableStore — what the preparing statements made
 #include "drivers/compositionDriver.h"             // ibCompositionDriver / ibCompositionOutputInfo — the contract, cut out on 2026-08-28
@@ -1351,7 +1351,7 @@ public:
 	// THE NAME AN AUTHOR'S QUERY ANSWERS TO once the settings are written over it — the alias of the
 	// nested source in `SELECT * FROM (<their query>) AS AuthorQuery WHERE …`. Exposed because a host
 	// that qualifies a filter path has to spell the same word the render does.
-	static const wxChar* AuthorQuerySourceName();
+	static const ibChar* AuthorQuerySourceName();
 
 	bool HasSource() const override { return !m_sourceText.IsEmpty() || !m_sources.empty(); }
 

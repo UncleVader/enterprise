@@ -12,11 +12,8 @@
 #include <wx/wx.h>
 #endif
 
-#include <wx/hashmap.h>
-#include <wx/hashset.h>
-#include <wx/datetime.h>
-
 #include <unordered_map>   // StringToIntMap — the field-name index
+#include <unordered_set>   // MetaDataHashSet
 
 #include "databaseLayerDef.h"
 #include "databaseErrorReporter.h"
@@ -57,7 +54,7 @@ struct ibFieldNameEqual {
 	}
 };
 typedef std::unordered_map<wxString, int, ibFieldNameHash, ibFieldNameEqual> StringToIntMap;
-WX_DECLARE_HASH_SET(ibResultSetMetaData*, wxPointerHash, wxPointerEqual, MetaDataHashSet);
+typedef std::unordered_set<ibResultSetMetaData*> MetaDataHashSet;
 
 // ⭐⭐ WHOEVER KEEPS BOOKS ON A RESULT SET. There are two of them — the layer for a result it produced
 // itself, and the prepared statement for one its own cursor vends — and a result set has to be able to
@@ -116,7 +113,7 @@ public:
 	/// the empty date; IsFieldNull says which of the two it was.
 	virtual ibDateTime GetResultDate(int nField) = 0;
 	/// Retrieve a BLOB from the result set by the 1-based field index
-	virtual void* GetResultBlob(int nField, wxMemoryBuffer& buffer) = 0;
+	virtual void* GetResultBlob(int nField, ibMemoryBuffer& buffer) = 0;
 	/// Retrieve a double from the result set by the 1-based field index
 	virtual double GetResultDouble(int nField) = 0;
 	/// Retrieve a number from the result set by the 1-based field index
@@ -135,7 +132,7 @@ public:
 	/// Retrieve a date from the result set by the result set column name (see the index form)
 	virtual ibDateTime GetResultDate(const wxString& strField);
 	/// Retrieve a BLOB from the result set by the result set column name
-	virtual void* GetResultBlob(const wxString& strField, wxMemoryBuffer& buffer);
+	virtual void* GetResultBlob(const wxString& strField, ibMemoryBuffer& buffer);
 	/// Retrieve a double from the result set by the result set column name
 	virtual double GetResultDouble(const wxString& strField);
 	/// Retrieve a number from the result set by the result set column name

@@ -16,9 +16,14 @@ wxBitmap ibPropertyExternalPicture::GetValueAsBitmap() const
 	return get_cell_variant<ibVariantDataExternalPicture>()->GetPictureBitmap();
 }
 
-ibExternalPictureDescription& ibPropertyExternalPicture::GetValueAsPictureDesc() const
+const ibExternalPictureDescription& ibPropertyExternalPicture::GetValueAsPictureDesc() const
 {
 	return get_cell_variant<ibVariantDataExternalPicture>()->GetExternalPictureDesc();
+}
+
+ibGuid ibPropertyExternalPicture::GetValueAsVersion() const
+{
+	return get_cell_variant<ibVariantDataExternalPicture>()->GetPictureVersion();
 }
 
 void ibPropertyExternalPicture::SetValue(const ibExternalPictureDescription& val)
@@ -49,7 +54,12 @@ bool ibPropertyExternalPicture::GetDataValue(ibValue& pvarPropVal) const
 
 bool ibPropertyExternalPicture::ReadNodeValue(const ibDataValue& value)
 {
-	return ibExternalPictureDescriptionMemory::ReadNode(value, GetValueAsPictureDesc());
+	// Read whole, then set: the cell is a new value, with a version of its own — never written in place.
+	ibExternalPictureDescription read;
+	if (!ibExternalPictureDescriptionMemory::ReadNode(value, read))
+		return false;
+	SetValue(read);
+	return true;
 }
 
 bool ibPropertyExternalPicture::WriteNodeValue(ibDataValue& value) const

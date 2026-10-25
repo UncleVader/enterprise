@@ -41,7 +41,7 @@
 #include "backend/logger/logger.h"
 #include "backend/logger/loggerReader.h"
 #include "backend/metadataConfiguration.h"   // activeMetaData - the door that knows configuration types
-#include "core/programFolder.h"          // the journal lives in the diagnostic folder
+#include "core/fileSystem.h"          // the journal lives in the diagnostic folder
 #include "core/serialize/dataBuilder.h"   // ibDataNode + ibBinaryProvider - the details payload
 
 #include <wx/datetime.h>
@@ -227,7 +227,7 @@ wxString TracePidOfDump(const wxString& fileName)
 
 		wxString digits;
 		const wxString& owner = parts[i - 1];
-		for (size_t c = owner.length(); c > 0 && wxIsdigit(owner[c - 1]); --c)
+		for (size_t c = owner.length(); c > 0 && ibIsDigit(owner[c - 1]); --c)
 			digits.Prepend(owner[c - 1]);
 
 		return digits;
@@ -424,10 +424,10 @@ public:
 
 		ibLogFilter filter;
 
-		const s32 sinceMinutes = (s32)ArgSinceMinutes().Whole(params);
+		const std::int32_t sinceMinutes = (std::int32_t)ArgSinceMinutes().Whole(params);
 		if (sinceMinutes > 0) {
-			const wxLongLong_t now = wxDateTime::UNow().GetValue().GetValue();
-			filter.from_ms = now - (wxLongLong_t)sinceMinutes * 60000;
+			const long long now = wxDateTime::UNow().GetValue().GetValue();
+			filter.from_ms = now - (long long)sinceMinutes * 60000;
 		}
 
 		const wxString level = ArgLevel().Text(params);
@@ -448,7 +448,7 @@ public:
 		filter.event_type = ArgEvent().Text(params);
 		filter.search     = ArgContains().Text(params);
 
-		const s32 limit = (s32)ArgLimit().Whole(params);
+		const std::int32_t limit = (std::int32_t)ArgLimit().Whole(params);
 		filter.limit = (limit > 0) ? (std::size_t)limit : 50;
 
 		ibLoggerReader reader(appData->GetLogger()->GetLogDir());
@@ -524,13 +524,13 @@ public:
 			// the journal navigable rather than merely readable.
 			if (!row.ref_guid.IsEmpty()) {
 				entry->SetValue(wxT("refGuid"), row.ref_guid);
-				entry->AddField(wxT("refMetaId"), ibDataValue::Int((s64)row.ref_meta_id));
+				entry->AddField(wxT("refMetaId"), ibDataValue::Int((std::int64_t)row.ref_meta_id));
 			}
 
 			rows.push_back(ibDataValue::Child(entry));
 		}
 
-		result.AddField(wxT("count"), ibDataValue::Int((s64)rows.size()));
+		result.AddField(wxT("count"), ibDataValue::Int((std::int64_t)rows.size()));
 		result.AddField(wxT("rows"), ibDataValue::Array(rows));
 
 		// "Nothing matched" and "nothing happened" are different answers, and only
@@ -639,7 +639,7 @@ public:
 
 		const wxString wantSource   = ArgTraceSource().Text(params).Lower();
 		const wxString wantContains = ArgContains().Text(params);
-		const s32 sinceMinutes      = (s32)ArgSinceMinutes().Whole(params);
+		const std::int32_t sinceMinutes      = (std::int32_t)ArgSinceMinutes().Whole(params);
 
 		wxDateTime from = wxDefaultDateTime;
 		if (sinceMinutes > 0)
@@ -665,7 +665,7 @@ public:
 			std::shared_ptr<ibDataNode> node = std::make_shared<ibDataNode>();
 			node->SetValue(wxT("app"), entry.first);
 			node->SetValue(wxT("file"), entry.second.GetFullName());
-			node->AddField(wxT("lines"), ibDataValue::Int((s64)(rows.size() - before)));
+			node->AddField(wxT("lines"), ibDataValue::Int((std::int64_t)(rows.size() - before)));
 
 			// Which of these is the process answering right now. Everything else is another run,
 			// and that distinction is the point of reading both.
@@ -687,7 +687,7 @@ public:
 		std::stable_sort(rows.begin(), rows.end(),
 			[](const ibTraceRow& l, const ibTraceRow& r) { return r.m_when.IsEarlierThan(l.m_when); });
 
-		const s32 limitArg = (s32)ArgLimit().Whole(params);
+		const std::int32_t limitArg = (std::int32_t)ArgLimit().Whole(params);
 		const size_t limit = (limitArg > 0) ? (size_t)limitArg : 50;
 
 		std::vector<ibDataValue> out;
@@ -723,8 +723,8 @@ public:
 			out.push_back(ibDataValue::Child(entry));
 		}
 
-		result.AddField(wxT("count"), ibDataValue::Int((s64)out.size()));
-		result.AddField(wxT("matched"), ibDataValue::Int((s64)matched));
+		result.AddField(wxT("count"), ibDataValue::Int((std::int64_t)out.size()));
+		result.AddField(wxT("matched"), ibDataValue::Int((std::int64_t)matched));
 		result.AddField(wxT("rows"), ibDataValue::Array(out));
 		result.AddField(wxT("files"), ibDataValue::Array(read));
 
@@ -891,13 +891,13 @@ public:
 		if (details != nullptr && details->Kind() == ibDataKind::Child) {
 			const std::shared_ptr<ibDataNode> sent = details->AsChild();
 			ibValueStructure* const built = new ibValueStructure();
-			for (const std::pair<wxString, ibDataValue>& field : sent->Fields()) {
+			for (const std::pair<ibString, ibDataValue>& field : sent->Fields()) {
 				// Scalars only, and deliberately: a nested object in a journal line is a report, not
 				// a note, and quietly flattening one would store something the caller did not write.
 				switch (field.second.Kind()) {
-					case ibDataKind::Bool:   built->Insert(field.first, ibValue(field.second.AsBool())); break;
-					case ibDataKind::Number: built->Insert(field.first, ibValue(ibNumber(field.second.AsInt()))); break;
-					case ibDataKind::String: built->Insert(field.first, ibValue(field.second.AsString())); break;
+					case ibDataKind::Bool:   built->Insert(ibValue(field.first), ibValue(field.second.AsBool())); break;
+					case ibDataKind::Number: built->Insert(ibValue(field.first), ibValue(ibNumber(field.second.AsInt()))); break;
+					case ibDataKind::String: built->Insert(ibValue(field.first), ibValue(field.second.AsString())); break;
 					default: break;
 				}
 			}

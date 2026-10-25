@@ -109,13 +109,15 @@ class ibValueGridBox : public ibValueWindowComposite, public ibTypeControlFactor
 	// ⭐ WHAT THE BOX SHOWS NOW — the window's state, and the SHEET'S Version — a number that moves whenever the sheet
 	// on show is replaced, so a client knows the sheet it holds is stale — and what the sheet is to its report
 	// (ComposeState): being composed, which the window draws as its progress, or outdated by a setting changed since,
-	// which it draws as the word to compose again. The sheet itself is too much for a frame: a client asks for it (Fetch).
+	// which it draws as the word to compose again. When the sheet is composed, State may also carry Sheet (and ReadOnly)
+	// once for that Version — the same payload Fetch would give — so the frame that announces the new Version need not
+	// be followed by a fetch. A client that finds no Sheet still asks Fetch, as before.
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// The events this box has: Cell {Row, Col} — a cell clicked, the question "what is this figure made of"
 	// (OnCellLeftClick), Row and Col counted from 1; Change {Sheet} — the sheet edited on the client, whole, in the form
 	// Fetch gives it. Anything else is the composite's.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 	// ⭐ THE SHEET A CLIENT SHOWS, whole (ibFetchSpreadsheet), and the Version it was read at.
 	virtual bool Fetch(const ibDataNode& request, ibDataNode& response) override;
@@ -204,12 +206,14 @@ private:
 	//
 	// The document and its view live as long as the box — held side by side so nothing is cast to find them; the
 	// view is what the form's active control hands on (GetControlView: Save as, the formats it offers).
-	class ibSpreadsheetGridBoxDocument* m_gridDocument = nullptr;
-	class ibSpreadsheetGridBoxView*     m_gridView = nullptr;
+	class ibSheetGridBoxDocument* m_gridDocument = nullptr;
+	class ibSheetGridBoxView*     m_gridView = nullptr;
 
 	// …and its VERSION — moved each time the sheet on show is replaced (the model installed, a compose
 	// delivered). The model keeps no such number, so the box counts what it shows.
-	s32 m_documentVersion = 0;
+	std::int32_t m_documentVersion = 0;
+	// The Version whose Sheet was last written into State — so a composed sheet rides one frame, not every later one.
+	std::int32_t m_sheetSentVersion = -1;
 
 	// Composes handed to the background and not yet delivered — the client's progress indicator. A count
 	// rather than a flag: a second Compose cancels the first, and the first is still delivered after it.
@@ -281,10 +285,10 @@ private:
 	// …and WHICH fields this cell can be broken down by: appends a "Detail by" submenu, one item per
 	// field, ids running from `firstId`, and returns the paths index-aligned with them. Empty = nothing
 	// worth offering, and then nothing is appended.
-	std::vector<wxString> AppendDetailByMenu(std::vector<ibMenuItem>& menu, s32 firstId, int row, int col) const;
+	std::vector<wxString> AppendDetailByMenu(std::vector<ibMenuItem>& menu, std::int32_t firstId, int row, int col) const;
 };
 
-// A SHEET AS A CLIENT DRAWS IT — the box's, and a spreadsheet document's in a tab of its own (ibSpreadsheetEditView):
+// A SHEET AS A CLIENT DRAWS IT — the box's, and a spreadsheet document's in a tab of its own (ibSheetView):
 // the whole of it under Sheet, in the form a template is stored in (ibSpreadsheetDescriptionMemory::WriteNode), each
 // cell's text as the sheet shows it — parameters and templates filled in; ReadOnly when the document takes no edits.
 bool ibFetchSpreadsheet(const ibSpreadsheetObject& document, ibDataNode& response);

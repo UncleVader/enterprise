@@ -9,15 +9,15 @@
 
 void ibSchemaLanguages::Build(const ibSession& session, const ibDataNode& args, ibDataNode& result) const
 {
-	ibDataNode& languages = result.Child(wxT("Languages"));
+	ibDataNode& languages = result.Child(ibProtocol::ibSchema::ibLanguages::Languages);
 
 	// The configuration of the tab the text is edited in (Tab); none named — the session's. An extension's languages
 	// are its owner's.
-	ibProtocolRefusal refusal = ibProtocolRefusal::None;
+	ibProtocol::ibRefusal refusal = ibProtocol::ibRefusal::None;
 	wxString error;
 	const ibMetaData* const metaData = ibSchemaMetaData::FindMetaData(session, args, refusal, error);
 	if (metaData == nullptr) {
-		if (refusal == ibProtocolRefusal::NoSession)
+		if (refusal == ibProtocol::ibRefusal::NoSession)
 			return;
 		ibCoreException::Error(wxT("%s"), error);
 	}
@@ -26,11 +26,16 @@ void ibSchemaLanguages::Build(const ibSession& session, const ibDataNode& args, 
 	metaData->GetOwner(ownerRaw);
 	const ibMetaData* const owner = ownerRaw != nullptr ? ownerRaw : metaData;
 
+	// The configuration's own language (DefaultLanguage) is told by its code, as the desktop's user record finds it
+	// (activeMetaData->GetLangCode()).
+	const wxString defaultCode = owner->GetLangCode();
 	ibMetaID idx = 0;
 	for (const auto object : owner->GetAnyArrayObject<ibValueMetaObjectLanguage>(g_metaLanguageCLSID)) {
 		ibDataNode& row = languages.AddChild(0, idx++);
-		row.SetValue(wxT("Guid"), object->GetDocPath());
-		row.SetValue(wxT("Title"), object->GetSynonym());
-		row.SetValue(wxT("Code"), object->GetLangCode());
+		row.SetValue(ibProtocol::ibSchema::ibLanguages::Guid, object->GetDocPath());
+		row.SetValue(ibProtocol::ibSchema::ibLanguages::Title, object->GetSynonym());
+		row.SetValue(ibProtocol::ibSchema::ibLanguages::Code, object->GetLangCode());
+		if (!defaultCode.IsEmpty() && object->GetLangCode() == defaultCode)
+			row.SetValue(ibProtocol::ibSchema::ibLanguages::Default, true);
 	}
 }

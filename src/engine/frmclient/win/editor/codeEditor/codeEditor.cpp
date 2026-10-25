@@ -36,13 +36,13 @@ wxString ibCodeEditor::MakeProcedureTemplate(const wxString& name, const wxStrin
 // ⚠ THE SYNTAX IS THE TAB'S, and it comes with the tab's view (SetCodeStyle): until then — and for a text with no tab — the
 // stream reads the default a session's compile state starts with (ibCompileState: CES).
 ibCodeEditor::ibCodeEditor()
-	: wxStyledTextCtrl(), m_ac(this), m_ct(this), m_tc(CODE_CES), m_fp(this)
+	: wxStyledTextCtrl(), m_ac(this), m_ct(this), m_tc(CODE_CES)
 {
 }
 
 ibCodeEditor::ibCodeEditor(ibTabDocument* document, wxWindow* parent, wxWindowID id, const wxPoint& pos, const wxSize& size, long style, const wxString& name)
 	: wxStyledTextCtrl(parent, id, pos, size, style, name),
-	  m_document(document), m_ac(this), m_ct(this), m_tc(CODE_CES), m_fp(this)
+	  m_document(document), m_ac(this), m_ct(this), m_tc(CODE_CES)
 {
 	// initialize styles
 	StyleClearAll();
@@ -275,17 +275,7 @@ void ibCodeEditor::SetCurrentLine(int lineBreakpoint, bool setBreakLine)
 void ibCodeEditor::SetEditorSettings(const ibEditorSettings& settings)
 {
 	m_indentationSize = settings.GetIndentSize();
-
-	SetIndent(m_indentationSize);
-	SetTabWidth(m_indentationSize);
-
-	bool useTabs = settings.GetUseTabs();
-	bool showWhiteSpace = settings.GetShowWhiteSpace();
-
-	SetUseTabs(useTabs);
-	SetTabIndents(useTabs);
-	SetBackSpaceUnIndents(useTabs);
-	SetViewWhiteSpace(showWhiteSpace);
+	settings.Apply(*this);
 
 	SetMarginType(DEF_LINENUMBER_ID, wxSTC_MARGIN_NUMBER);
 	SetMarginWidth(DEF_LINENUMBER_ID, 0);
@@ -330,109 +320,10 @@ void ibCodeEditor::SetEditorSettings(const ibEditorSettings& settings)
 	m_enableAutoComplete = settings.GetEnableAutoComplete();
 }
 
-inline wxColour GetInverse(const wxColour& color)
-{
-	unsigned char r = color.Red();
-	unsigned char g = color.Green();
-	unsigned char b = color.Blue();
-
-	return wxColour(r ^ 0xFF, g ^ 0xFF, b ^ 0xFF);
-}
-
 void ibCodeEditor::SetFontColorSettings(const ibFontColorSettings& settings)
 {
-	// For some reason StyleSetFont takes a (non-const) reference, so we need to make
-	// a copy before passing it in.
-	wxFont font = settings.GetFont();
+	settings.Apply(*this);
 
-	// Set STYLE_DEFAULT font + colors BEFORE StyleClearAll so the cascade
-	// propagates the user's font (and point size) to every style index —
-	// otherwise styles we don't touch later (annotations, indent guides,
-	// callTip, etc.) keep the OS-default font and zoom adds +1pt to a
-	// different base, looking out of proportion with the rest of the text.
-	StyleSetFont(wxSTC_STYLE_DEFAULT, font);
-	StyleSetForeground(wxSTC_STYLE_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).foreColor);
-	StyleSetBackground(wxSTC_STYLE_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).backColor);
-	StyleClearAll();
-
-	SetSelForeground(true, settings.GetColors(ibFontColorSettings::DisplayItem_Selection).foreColor);
-	SetSelBackground(true, settings.GetColors(ibFontColorSettings::DisplayItem_Selection).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Default);
-
-	StyleSetFont(wxSTC_C_DEFAULT, font);
-	StyleSetFont(wxSTC_C_IDENTIFIER, font);
-
-	StyleSetForeground(wxSTC_C_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).foreColor);
-	StyleSetBackground(wxSTC_C_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).backColor);
-
-	StyleSetForeground(wxSTC_STYLE_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).foreColor);
-	StyleSetBackground(wxSTC_STYLE_DEFAULT, settings.GetColors(ibFontColorSettings::DisplayItem_Default).backColor);
-
-	StyleSetForeground(wxSTC_C_IDENTIFIER, settings.GetColors(ibFontColorSettings::DisplayItem_Default).foreColor);
-	StyleSetBackground(wxSTC_C_IDENTIFIER, settings.GetColors(ibFontColorSettings::DisplayItem_Default).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Comment);
-
-	StyleSetFont(wxSTC_C_COMMENT, font);
-	StyleSetFont(wxSTC_C_COMMENTLINE, font);
-	StyleSetFont(wxSTC_C_COMMENTDOC, font);
-
-	StyleSetForeground(wxSTC_C_COMMENT, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).foreColor);
-	StyleSetBackground(wxSTC_C_COMMENT, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).backColor);
-
-	StyleSetForeground(wxSTC_C_COMMENTLINE, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).foreColor);
-	StyleSetBackground(wxSTC_C_COMMENTLINE, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).backColor);
-
-	StyleSetForeground(wxSTC_C_COMMENTDOC, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).foreColor);
-	StyleSetBackground(wxSTC_C_COMMENTDOC, settings.GetColors(ibFontColorSettings::DisplayItem_Comment).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Preprocessor);
-
-	StyleSetFont(wxSTC_C_PREPROCESSOR, font);
-	StyleSetForeground(wxSTC_C_PREPROCESSOR, settings.GetColors(ibFontColorSettings::DisplayItem_Preprocessor).foreColor);
-	StyleSetBackground(wxSTC_C_PREPROCESSOR, settings.GetColors(ibFontColorSettings::DisplayItem_Preprocessor).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Keyword);
-
-	StyleSetFont(wxSTC_C_WORD, font);
-	StyleSetForeground(wxSTC_C_WORD, settings.GetColors(ibFontColorSettings::DisplayItem_Keyword).foreColor);
-	StyleSetBackground(wxSTC_C_WORD, settings.GetColors(ibFontColorSettings::DisplayItem_Keyword).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Operator);
-	StyleSetFont(wxSTC_C_OPERATOR, font);
-	StyleSetForeground(wxSTC_C_OPERATOR, settings.GetColors(ibFontColorSettings::DisplayItem_Operator).foreColor);
-	StyleSetBackground(wxSTC_C_OPERATOR, settings.GetColors(ibFontColorSettings::DisplayItem_Operator).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_String);
-
-	StyleSetFont(wxSTC_C_STRING, font);
-	StyleSetForeground(wxSTC_C_STRING, settings.GetColors(ibFontColorSettings::DisplayItem_String).foreColor);
-	StyleSetBackground(wxSTC_C_STRING, settings.GetColors(ibFontColorSettings::DisplayItem_String).backColor);
-
-	StyleSetFont(wxSTC_C_STRINGEOL, font);
-	StyleSetForeground(wxSTC_C_STRINGEOL, settings.GetColors(ibFontColorSettings::DisplayItem_String).foreColor);
-	StyleSetBackground(wxSTC_C_STRINGEOL, settings.GetColors(ibFontColorSettings::DisplayItem_String).backColor);
-
-	StyleSetFont(wxSTC_C_CHARACTER, font);
-	StyleSetForeground(wxSTC_C_CHARACTER, settings.GetColors(ibFontColorSettings::DisplayItem_String).foreColor);
-	StyleSetBackground(wxSTC_C_CHARACTER, settings.GetColors(ibFontColorSettings::DisplayItem_String).backColor);
-
-	StyleSetFont(wxSTC_C_CHARACTER, font);
-	StyleSetForeground(wxSTC_C_CHARACTER, settings.GetColors(ibFontColorSettings::DisplayItem_Selection).foreColor);
-	StyleSetBackground(wxSTC_C_CHARACTER, settings.GetColors(ibFontColorSettings::DisplayItem_Selection).backColor);
-
-	font = settings.GetFont(ibFontColorSettings::DisplayItem_Number);
-
-	StyleSetFont(wxSTC_C_NUMBER, font);
-	StyleSetForeground(wxSTC_C_NUMBER, settings.GetColors(ibFontColorSettings::DisplayItem_Number).foreColor);
-	StyleSetBackground(wxSTC_C_NUMBER, settings.GetColors(ibFontColorSettings::DisplayItem_Number).backColor);
-
-	// Apply the full font to the line-m_number margin, not just its size — otherwise
-	// the margin keeps the default monospace face until a style cascade refresh
-	// (e.g. user opens Settings and saves) happens to pull it through.
-	StyleSetFont(wxSTC_STYLE_LINENUMBER, font);
-	StyleSetSize(wxSTC_STYLE_LINENUMBER, font.GetPointSize());
 	// Soften the gutter — muted gray digits on the darkest gradient step
 	// (line-number margin is leftmost; breakpoint + fold margins step
 	// progressively lighter, see the SetMarginBackground calls in
@@ -440,16 +331,8 @@ void ibCodeEditor::SetFontColorSettings(const ibFontColorSettings& settings)
 	StyleSetForeground(wxSTC_STYLE_LINENUMBER, wxColour(0xA0, 0xA0, 0xA0));
 	StyleSetBackground(wxSTC_STYLE_LINENUMBER, wxColour(0xE8, 0xE8, 0xE8));
 
-	// Set the caret color as the inverse of the background color so it's always visible.
-	SetCaretForeground(GetInverse(settings.GetColors(ibFontColorSettings::DisplayItem_Default).backColor));
-
-	// Reapply brace-highlight styles — StyleClearAll above resets every
-	// style index (incl. BRACELIGHT/BRACEBAD) to the OS default. Without
-	// also pushing the user's font here the brace would visibly shift
-	// (different glyph metrics) when the highlight kicks in.
-	StyleSetFont(wxSTC_STYLE_BRACELIGHT, font);
+	// Matching braces red; their font is the chosen one already, StyleClearAll copied it in.
 	StyleSetForeground(wxSTC_STYLE_BRACELIGHT, *wxRED);
-	StyleSetFont(wxSTC_STYLE_BRACEBAD, font);
 	StyleSetForeground(wxSTC_STYLE_BRACEBAD, *wxRED);
 }
 
@@ -460,7 +343,7 @@ bool ibCodeEditor::LoadModule()
 		return false;
 	}
 
-	// The text the tab's view holds (ibProtocolModuleRequest::Text): what the desktop's read of the metaobject.
+	// The text the tab's view holds (ibProtocol::ibView::ibModule::ibRequest::Text): what the desktop's read of the metaobject.
 	ibProtocolNode answer;
 	if (!m_document->Fetch(ibProtocolNode(), answer)) {
 		ClearAll();
@@ -475,7 +358,7 @@ bool ibCodeEditor::LoadModule(const ibProtocolNode& answer)
 {
 	ClearAll();
 
-	m_moduleText = answer.GetString(ibProtocolName::Text);
+	m_moduleText = answer.GetString(ibProtocol::ibView::ibModule::Text);
 
 	if (IsEditable()) {
 		SetText(m_moduleText); m_initialized = true;
@@ -489,7 +372,7 @@ bool ibCodeEditor::LoadModule(const ibProtocolNode& answer)
 	m_tc.Load(m_moduleText);
 
 	try {
-		m_tc.PrepareLexem();
+		m_tc.Translate();
 	}
 	catch (...) {
 	}
@@ -506,12 +389,14 @@ bool ibCodeEditor::SaveModule()
 	if (m_document != nullptr) {
 
 		// Where the desktop's wrote the metaobject's text — the tab's, as a field hands its text back (Change {Text}); a
-		// text the server already holds is not sent again.
+		// text the server already holds is not sent again. HELD, not a call of its own: what reads the text on the
+		// server — Save, the syntax check, a close, the debugger — is a call, and carries it (Pending) ahead of its work;
+		// the focus leaving the editor asks the server nothing.
 		const wxString text = GetText();
 		if (text != m_moduleText) {
 			ibProtocolNode args;
-			args.SetValue(ibProtocolName::Text, text);
-			m_document->Post(ibProtocolEvent::Change, args);
+			args.SetValue(ibProtocol::ibView::ibModule::Text, text);
+			m_document->Hold(ibProtocol::ibEvent::ibKind::Change, args);
 			m_moduleText = text;
 		}
 		return true;
@@ -530,7 +415,7 @@ void ibCodeEditor::SetCodeStyle(short codeStyle)
 	m_tc.SetCodeStyle(codeStyle);
 	m_tc.Load(GetText());
 	try {
-		m_tc.PrepareLexem();
+		m_tc.Translate();
 	}
 	catch (...) {
 	}
@@ -646,8 +531,8 @@ void ibCodeEditor::SyntaxControl()
 	SaveModule();
 
 	ibProtocolNode args;
-	args.SetValue(ibProtocolName::Id, static_cast<int>(ibProtocolModuleCommand::SyntaxControl));
-	m_document->Post(ibProtocolEvent::Command, args);
+	args.SetValue(ibProtocol::ibView::ibModule::Id, static_cast<int>(ibProtocol::ibView::ibModule::ibCommand::SyntaxControl));
+	m_document->Post(ibProtocol::ibEvent::ibKind::Command, args);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -727,7 +612,7 @@ void ibCodeEditor::HighlightSyntaxAndCalculateFoldLevel(const int fromPos, const
 		}
 	}
 
-	m_fp.UpdateFoldLevel();
+	UpdateFoldLevel();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -842,7 +727,7 @@ void ibCodeEditor::OnTextChange(wxStyledTextEvent& event)
 		// LoadModule) — a patch has no baseline to work from, so bootstrap with a full pass and
 		// let subsequent edits patch it.
 		if (!m_tc.HasLexem()) {
-			m_tc.PrepareLexem();
+			m_tc.Translate();
 		}
 		else if ((modFlags & (wxSTC_MOD_INSERTTEXT | wxSTC_MOD_DELETETEXT)) != 0) {
 
@@ -856,10 +741,10 @@ void ibCodeEditor::OnTextChange(wxStyledTextEvent& event)
 #ifdef UTF8_LEXEM_TRANSLATE
 			edit.m_posOffsetUtf8 = sign * event.GetLength();
 #endif
-			m_tc.PrepareLexem(edit);
+			m_tc.Translate(edit);
 		}
 #else
-		m_tc.PrepareLexem();
+		m_tc.Translate();
 #endif
 	}
 	catch (...)
@@ -995,7 +880,7 @@ ibCodeEditor::StringLiteralSpan ibCodeEditor::GetStringLiteralUnderCursor()
 	stream.SetLexemMode(ibLexemMode::Editing);
 	stream.Load(GetText());
 	try {
-		stream.PrepareLexem();
+		stream.Translate();
 	}
 	catch (...) {
 		return span;
@@ -1128,6 +1013,7 @@ void ibCodeEditor::OnMouseMove(wxMouseEvent& event)
 #include "frmclient/win/dlgs/queryConstructor/queryConstructor.h"   // the constructor, opened on the literal
 #include "frmclient/win/dlgs/translateConstructor/translateConstructor.h"   // …and its sibling for a translated text
 #include "frmclient/win/dlgs/formatConstructor/formatConstructor.h"         // …and for a format string
+#include "frmclient/win/dlgs/linqConstructor/linqConstructor.h"             // …and a LINQ block, at the caret
 #include "frmclient/artProvider/artProvider.h"                      // wxART_QUERY_CONSTRUCTOR — the icon, registered not embedded
 
 void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
@@ -1167,10 +1053,12 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 	// (A module that cannot be changed still opens it, read-only: a query one may not edit is still
 	// one worth reading, and refusing would hide the only view of it there is.)
 	//
-	// ⚠ THE CONFIGURATION IS THE SERVER'S: the client's constructor is asked with none (it is a stub on the client yet).
+	// THE CONFIGURATION IS THE SERVER'S: the constructor asks it of this editor's tab (ibView::ibQueryConstructor). An
+	// editor on no tab (a window's own) has nobody to ask — the desktop's "no configuration open".
 	menu.Bind(wxEVT_MENU, [this, literal, caret](wxCommandEvent&) {
 		wxString text = literal.m_text;
-		if (!ibShowQueryConstructor(this, text, nullptr, !IsEditable()))
+		const ibMetaData metaData = m_document != nullptr ? m_document->GetMetaData() : ibMetaData();
+		if (!ibShowQueryConstructor(this, text, m_document != nullptr ? &metaData : nullptr, !IsEditable()))
 			return;
 		if (literal.Found()) ReplaceStringLiteral(literal, text);
 		else                 InsertStringLiteral(caret, text);
@@ -1211,8 +1099,35 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 		else                 InsertStringLiteral(caret, after.Render());
 	}, miFormat->GetId());
 
-	// ⚠ THE DESKTOP'S LINQ CONSTRUCTOR IS NOT HERE: it reads what the caret's place can see by IntelliSense over the
-	// module (ibDialogLinqConstructor) — the compiler's, the server's; it comes with a request of its own.
+	// ⭐ AND THE LINQ CONSTRUCTOR — which stands on no literal, because a LINQ block is not a string: it
+	// is code, at a place, reading what that place can see. It is asked of IntelliSense at the caret
+	// (the text, the CHARACTER position the compiler measures in, and the module). Standing in a query
+	// it opens that query and replaces it; anywhere else it writes a new block at the caret.
+	//
+	// ⚠ THE MODULE IS THE SERVER'S: the client's constructor is given its tab, which it asks what the compiler says,
+	// and the syntax it is written in (the tab's) — linqConstructor.h.
+	const int caretChars = GetRealPosition();
+	wxMenuItem* miLinq = menu.Append(wxID_ANY, _("LINQ query constructor"));
+	miLinq->SetBitmap(wxArtProvider::GetBitmap(wxART_LINQ_CONSTRUCTOR, wxART_FRONTEND, FromDIP(wxSize(16, 16))));
+	menu.Bind(wxEVT_MENU, [this, caret, caretChars](wxCommandEvent&) {
+		const wxString text = GetText();
+		ibDialogLinqConstructor dialog(this, text, (unsigned int)caretChars, m_document, GetCodeStyle(), !IsEditable());
+		if (dialog.ShowModal() != wxID_OK || !IsEditable())
+			return;
+		wxString refusal;
+		const wxString block = dialog.GetBlock(refusal);
+		if (block.IsEmpty())
+			return;
+		unsigned int from = 0, to = 0;
+		if (dialog.GetReplacedSpan(from, to)) {
+			// Characters to wxSTC positions: the document counts BYTES of UTF-8.
+			SetTargetStart((int)text.Left(from).ToUTF8().length());
+			SetTargetEnd((int)text.Left(to).ToUTF8().length());
+			ReplaceTarget(block);
+		}
+		else
+			InsertText(caret, block);
+	}, miLinq->GetId());
 
 	AppendDebugMenu(menu, menuLine);
 
@@ -1241,4 +1156,14 @@ void ibCodeEditor::OnContextMenu(wxContextMenuEvent& event)
 		pt = ClientToScreen(wxPoint(PointFromPosition(pos).x, PointFromPosition(pos).y));
 	}
 	PopupMenu(&menu, ScreenToClient(pt));
+}
+
+void ibCodeEditor::UpdateFoldLevel()
+{
+	std::vector<int> levels;
+	if (!m_fp.UpdateFoldLevel(m_tc, GetLineCount(), levels))
+		return;
+
+	for (int line = 1; line < static_cast<int>(levels.size()); line++)
+		SetFoldLevel(line, levels[line]);
 }

@@ -18,9 +18,9 @@ public:
 	// The attribute's composition — the configuration's row, under it a group per metatype, under each the objects of
 	// it that may carry one, ticked where this one is carried.
 	virtual void OnDraw(ibDataNode& frame) override;
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::CommonAttribute; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::CommonAttribute; }
 	// An object ticked or not (Toggle {NodeId, Checked}) — the attribute put into it or taken out.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 private:
 
@@ -42,7 +42,8 @@ public:
 
 	ibCommonAttributeCompositionDocument() : ibMetaDocument() {}
 
-	wxDECLARE_NO_COPY_CLASS(ibCommonAttributeCompositionDocument);
+	ibCommonAttributeCompositionDocument(const ibCommonAttributeCompositionDocument&) = delete;
+	ibCommonAttributeCompositionDocument& operator=(const ibCommonAttributeCompositionDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibCommonAttributeCompositionDocument);
 };
 

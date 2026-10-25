@@ -721,13 +721,13 @@ bool ibView::ShowFrame(bool show)
     return m_docChildFrame != nullptr && m_docChildFrame->Show(show);
 }
 
-void ibView::OnActivateView(bool WXUNUSED(activate),
-                            ibView *WXUNUSED(activeView),
-                            ibView *WXUNUSED(deactiveView))
+void ibView::OnActivateView(bool /*activate*/,
+                            ibView */*activeView*/,
+                            ibView */*deactiveView*/)
 {
 }
 
-void ibView::OnUpdate(ibView *WXUNUSED(sender), wxObject *WXUNUSED(hint))
+void ibView::OnUpdate(ibView */*sender*/, wxObject */*hint*/)
 {
 }
 
@@ -767,7 +767,7 @@ void ibView::Activate(bool activate)
     else ibJournalInfo(wxT("docview"), "! <debug> deactivate view %s", GetViewName());
 }
 
-bool ibView::OnClose(bool WXUNUSED(deleteWindow))
+bool ibView::OnClose(bool /*deleteWindow*/)
 {
     return GetDocument() ? GetDocument()->Close() : true;
 }
@@ -964,12 +964,40 @@ ibDocument* ibDocManager::FindDocumentByIdentifier(const wxString& identifier) c
     return nullptr;
 }
 
+ibMetaDataDocument* ibDocManager::FindMetaDataDocument(const ibMetaData* metaData) const
+{
+    if ( metaData == nullptr )
+        return nullptr;
+
+    // ONE NARROWING, and it is the real kind: a heterogeneous list asked for a subtype.
+    for ( ibDocument* doc : GetDocumentsVector() )
+    {
+        ibMetaDataDocument * const metaDoc = dynamic_cast<ibMetaDataDocument*>(doc);
+
+        if ( metaDoc != nullptr && metaDoc->GetMetaData() == metaData )
+            return metaDoc;
+    }
+    return nullptr;
+}
+
+ibDocument* ibDocManager::FindOpenDocument(const wxString& identifier,
+                                           const ibDocument* docParent) const
+{
+    // ⚠ AT THE OWNER, NOT MINE FIRST. The same guid is in every configuration open at once — the session's, the
+    // database's, a file's — and mine first answered the session's editor about the others' objects: Common of the
+    // database's and of an .oap raised the session's Common (2026-10-20). An editor opened from a tree is its
+    // document's child; mine are the session's configuration's, which has no document.
+    return docParent != nullptr ? docParent->FindChildDocument(identifier) : FindDocumentByIdentifier(identifier);
+}
+
 ibMetaDocument* ibDocManager::FindOpenDocument(ibValueMetaObject* metaObject) const
 {
     if ( metaObject == nullptr )
         return nullptr;
 
-    return dynamic_cast<ibMetaDocument*>(FindDocumentByIdentifier(metaObject->GetGuid()));
+    return dynamic_cast<ibMetaDocument*>(
+        FindOpenDocument(metaObject->GetGuid(),
+                         FindMetaDataDocument(metaObject->GetMetaData())));
 }
 
 ibDocument *ibDocManager::CreateDocument(const wxString& path, long flags)
@@ -1081,12 +1109,12 @@ ibView *ibDocManager::CreateView(ibDocument *doc, long flags)
 
 // Not yet implemented
 void
-ibDocManager::DeleteTemplate(ibDocTemplate *WXUNUSED(temp), long WXUNUSED(flags))
+ibDocManager::DeleteTemplate(ibDocTemplate */*temp*/, long /*flags*/)
 {
 }
 
 // Not yet implemented
-bool ibDocManager::FlushDoc(ibDocument *WXUNUSED(doc))
+bool ibDocManager::FlushDoc(ibDocument */*doc*/)
 {
     return false;
 }
@@ -1109,7 +1137,7 @@ wxString ibDocManager::MakeNewDocumentName()
 }
 
 // Not yet implemented
-ibDocTemplate *ibDocManager::MatchTemplate(const wxString& WXUNUSED(path))
+ibDocTemplate *ibDocManager::MatchTemplate(const wxString& /*path*/)
 {
     return nullptr;
 }
@@ -1427,12 +1455,12 @@ ibMetaDocument::ibMetaDocument(ibMetaDocument* docParent) :
 // (ibFormVisualDocument, which overrides DoCreateView) — gets a view + child
 // frame without needing a document template. Replaces the old one-liner that
 // delegated to ibDocTemplate::CreateView.
-bool ibDocument::OnCreate(const wxString& WXUNUSED(path), long flags)
+bool ibDocument::OnCreate(const wxString& /*path*/, long flags)
 {
 	if (ibSession::IsCurrentForceExit())
 		return false;
 
-	wxScopedPtr<ibView> view(DoCreateView());
+	std::unique_ptr<ibView> view(DoCreateView());
 	if (!view)
 		return false;
 

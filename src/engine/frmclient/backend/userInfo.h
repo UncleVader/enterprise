@@ -3,11 +3,11 @@
 
 // ibUserInfo — a user of the base, as the engine's (backend/userInfo.h) holds one: the same record, the same calls, the
 // designer's users dialogs (ibDialogUserList, ibDialogUserItem) copied onto them. Behind them is the server's schema
-// (ibProtocolSchema::UserList), where sys_user is. One thing is not the desktop's: the stored password stays there —
+// (ibProtocol::ibSchema::ibKind::UserList), where sys_user is. One thing is not the desktop's: the stored password stays there —
 // a record read says whether there is one (IsSetPassword), and one saved carries a new one only when it was typed.
 
 #include "frmclient/backend/backend_core.h"
-#include "frmclient/backend/roleHelper.h"   // ibRoleCompositionMode — how a role combines
+#include "core/roleCompositionMode.h"   // ibRoleCompositionMode — how a role combines
 
 #include <vector>
 
@@ -78,6 +78,7 @@ struct FRMCLIENT_API ibUserInfo {
 		wxString m_strLanguageGuid;
 		wxString m_strLanguageTitle;
 		wxString m_strLanguageCode;
+		bool m_default = false;   // the configuration's own language (its DefaultLanguage)
 	};
 
 	// ListAll — every row projected to Brief. A list the server could not read is refused to the person, and comes back

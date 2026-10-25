@@ -61,6 +61,15 @@
     <Filter Include="win\theme">
       <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f5021}</UniqueIdentifier>
     </Filter>
+    <Filter Include="uikit">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f505e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="uikit\ctrl">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f505f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="uikit\theme">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f5060}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="frmclient.cpp" />
@@ -86,6 +95,9 @@
       <Filter>docView\templates</Filter>
     </ClCompile>
     <ClCompile Include="docView\templates\docViewAuditLog.cpp">
+      <Filter>docView\templates</Filter>
+    </ClCompile>
+    <ClCompile Include="docView\templates\docViewHomePage.cpp">
       <Filter>docView\templates</Filter>
     </ClCompile>
     <ClCompile Include="docView\templates\docViewHelp.cpp">
@@ -115,10 +127,7 @@
     <ClCompile Include="mainFrame\settings\fontcolorsettingspanel.cpp">
       <Filter>mainFrame\settings</Filter>
     </ClCompile>
-    <ClCompile Include="mainFrame\settings\keybinderdialog.cpp">
-      <Filter>mainFrame\settings</Filter>
-    </ClCompile>
-    <ClCompile Include="mainFrame\settings\keymonitortextctrl.cpp">
+    <ClCompile Include="mainFrame\settings\keybinderpanel.cpp">
       <Filter>mainFrame\settings</Filter>
     </ClCompile>
     <ClCompile Include="mainFrame\settings\mcpsettingspanel.cpp">
@@ -130,9 +139,6 @@
     <ClCompile Include="mainFrame\settings\showhelpevent.cpp">
       <Filter>mainFrame\settings</Filter>
     </ClCompile>
-    <ClCompile Include="mainFrame\settings\statictextex.cpp">
-      <Filter>mainFrame\settings</Filter>
-    </ClCompile>
     <ClCompile Include="backend\appData.cpp">
       <Filter>backend</Filter>
     </ClCompile>
@@ -142,11 +148,8 @@
     <ClCompile Include="backend\userInfo.cpp">
       <Filter>backend</Filter>
     </ClCompile>
-    <ClCompile Include="mainFrame\settings\stlutility.cpp">
-      <Filter>mainFrame\settings</Filter>
-    </ClCompile>
-    <ClCompile Include="mainFrame\settings\xmlutility.cpp">
-      <Filter>mainFrame\settings</Filter>
+    <ClCompile Include="backend\metaData.cpp">
+      <Filter>backend</Filter>
     </ClCompile>
     <ClCompile Include="win\editor\textEditor\textEditor.cpp">
       <Filter>win\editor\textEditor</Filter>
@@ -219,6 +222,12 @@
     </ClCompile>
     <ClCompile Include="win\dlgs\jobSchedule\jobScheduleSettings.cpp">
       <Filter>win\dlgs\jobSchedule</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\choiceLink\choiceLink.cpp">
+      <Filter>win\dlgs\choiceLink</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\choiceParameters\choiceParameters.cpp">
+      <Filter>win\dlgs\choiceParameters</Filter>
     </ClCompile>
     <ClCompile Include="win\dlgs\settings\savedSettings.cpp">
       <Filter>win\dlgs\settings</Filter>
@@ -361,6 +370,108 @@
     <ClCompile Include="visualView\ctrl\textBox.cpp">
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
+    <ClCompile Include="uikit\theme.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\inputConsumer.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\inputHandler.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\controlRenderer.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\window.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\menu.cpp">
+      <Filter>uikit</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\theme\themeRenderer.cpp">
+      <Filter>uikit\theme</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\theme\lunaTheme.cpp">
+      <Filter>uikit\theme</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\control.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\scrollBar.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\scrollArrow.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\scrollThumb.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\anyButton.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\button.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\staticText.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\staticLine.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\checkBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\radioButton.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\gauge.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\toggleButton.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\textCtrl.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\listBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\choice.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\notebook.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\toolBar.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\comboBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\spinButton.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\slider.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\staticBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\staticBitmap.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\bmpButton.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\checkListBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\radioBox.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="uikit\ctrl\treeCtrl.cpp">
+      <Filter>uikit\ctrl</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="frmclient.h" />
@@ -393,6 +504,9 @@
       <Filter>docView\templates</Filter>
     </ClInclude>
     <ClInclude Include="docView\templates\docViewAuditLog.h">
+      <Filter>docView\templates</Filter>
+    </ClInclude>
+    <ClInclude Include="docView\templates\docViewHomePage.h">
       <Filter>docView\templates</Filter>
     </ClInclude>
     <ClInclude Include="docView\templates\docViewHelp.h">
@@ -458,10 +572,7 @@
     <ClInclude Include="mainFrame\settings\fontcolorsettingspanel.h">
       <Filter>mainFrame\settings</Filter>
     </ClInclude>
-    <ClInclude Include="mainFrame\settings\keybinderdialog.h">
-      <Filter>mainFrame\settings</Filter>
-    </ClInclude>
-    <ClInclude Include="mainFrame\settings\keymonitortextctrl.h">
+    <ClInclude Include="mainFrame\settings\keybinderpanel.h">
       <Filter>mainFrame\settings</Filter>
     </ClInclude>
     <ClInclude Include="mainFrame\settings\mcpsettingspanel.h">
@@ -473,23 +584,14 @@
     <ClInclude Include="mainFrame\settings\showhelpevent.h">
       <Filter>mainFrame\settings</Filter>
     </ClInclude>
-    <ClInclude Include="mainFrame\settings\statictextex.h">
+    <ClInclude Include="mainFrame\settings\settingsxml.h">
       <Filter>mainFrame\settings</Filter>
     </ClInclude>
     <ClInclude Include="backend\mcp\mcpServer.h">
       <Filter>backend\mcp</Filter>
     </ClInclude>
-    <ClInclude Include="backend\roleHelper.h">
-      <Filter>backend</Filter>
-    </ClInclude>
     <ClInclude Include="backend\userInfo.h">
       <Filter>backend</Filter>
-    </ClInclude>
-    <ClInclude Include="mainFrame\settings\stlutility.h">
-      <Filter>mainFrame\settings</Filter>
-    </ClInclude>
-    <ClInclude Include="mainFrame\settings\xmlutility.h">
-      <Filter>mainFrame\settings</Filter>
     </ClInclude>
     <ClInclude Include="win\picture.h">
       <Filter>win</Filter>
@@ -529,6 +631,12 @@
     </ClInclude>
     <ClInclude Include="win\dlgs\jobSchedule\jobScheduleSettings.h">
       <Filter>win\dlgs\jobSchedule</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\choiceLink\choiceLink.h">
+      <Filter>win\dlgs\choiceLink</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\choiceParameters\choiceParameters.h">
+      <Filter>win\dlgs\choiceParameters</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\settings\savedSettings.h">
       <Filter>win\dlgs\settings</Filter>
@@ -620,9 +728,6 @@
     <ClInclude Include="win\ctrls\treelistctrl.h">
       <Filter>win\ctrls</Filter>
     </ClInclude>
-    <ClInclude Include="win\fontcontainer.h">
-      <Filter>win</Filter>
-    </ClInclude>
     <ClInclude Include="win\typeconv.h">
       <Filter>win</Filter>
     </ClInclude>
@@ -659,6 +764,117 @@
     <ClInclude Include="visualView\ctrl\widgets.h">
       <Filter>visualView\ctrl</Filter>
     </ClInclude>
+    <ClInclude Include="uikit\colourScheme.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\inputConsumer.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\inputHandler.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\menu.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\menuItem.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\renderer.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\scrollTimer.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\theme.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\uikit.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\window.h">
+      <Filter>uikit</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\theme\themeRenderer.h">
+      <Filter>uikit\theme</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\anyButton.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\bmpButton.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\button.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\checkBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\checkListBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\choice.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\comboBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\control.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\gauge.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\listBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\notebook.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\radioBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\radioButton.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\scrollArrow.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\scrollBar.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\scrollThumb.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\slider.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\spinButton.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\staticBitmap.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\staticBox.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\staticLine.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\staticText.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\textCtrl.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\toggleButton.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\toolBar.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
+    <ClInclude Include="uikit\ctrl\treeCtrl.h">
+      <Filter>uikit\ctrl</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="backend">
@@ -684,9 +900,6 @@
     </Filter>
     <Filter Include="backend\logger">
       <UniqueIdentifier>{6a1f8b3d-2c4e-4f70-9bac-1d2e3f405164}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="backend\job">
-      <UniqueIdentifier>{6a1f8b3d-2c4e-4f70-9bac-1d2e3f405165}</UniqueIdentifier>
     </Filter>
     <Filter Include="backend\mcp">
       <UniqueIdentifier>{6a1f8b3d-2c4e-4f70-9bac-1d2e3f405167}</UniqueIdentifier>
@@ -742,6 +955,9 @@
     <Filter Include="win\dlgs\formatConstructor">
       <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f503a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="win\dlgs\linqConstructor">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f505b}</UniqueIdentifier>
+    </Filter>
     <Filter Include="win\dlgs\settings">
       <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f503b}</UniqueIdentifier>
     </Filter>
@@ -781,6 +997,12 @@
     <Filter Include="win\dlgs\jobSchedule">
       <UniqueIdentifier>{6a1f8b3d-2c4e-4f70-9bac-1d2e3f405166}</UniqueIdentifier>
     </Filter>
+    <Filter Include="win\dlgs\choiceLink">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f505c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="win\dlgs\choiceParameters">
+      <UniqueIdentifier>{5f0e7a2c-1b3d-4e6f-8a9b-0c1d2e3f505d}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="backend\appData.h">
@@ -810,6 +1032,9 @@
     <ClInclude Include="backend\backend_picture.h">
       <Filter>backend</Filter>
     </ClInclude>
+    <ClCompile Include="backend\backend_picture.cpp">
+      <Filter>backend</Filter>
+    </ClCompile>
     <ClCompile Include="backend\backend_type.cpp">
       <Filter>backend</Filter>
     </ClCompile>
@@ -867,12 +1092,6 @@
     <ClCompile Include="backend\logger\loggerReader.cpp">
       <Filter>backend\logger</Filter>
     </ClCompile>
-    <ClInclude Include="backend\job\jobSchedule.h">
-      <Filter>backend\job</Filter>
-    </ClInclude>
-    <ClCompile Include="backend\job\jobScheduleRules.cpp">
-      <Filter>backend\job</Filter>
-    </ClCompile>
     <ClCompile Include="backend\metaCollection\partial\commonObject.cpp">
       <Filter>backend\metaCollection\partial</Filter>
     </ClCompile>
@@ -909,6 +1128,9 @@
     <ClCompile Include="backend\propertyManager\property\propertySerializable.cpp">
       <Filter>backend\propertyManager\property</Filter>
     </ClCompile>
+    <ClCompile Include="backend\propertyManager\property\propertyChoiceLink.cpp">
+      <Filter>backend\propertyManager\property</Filter>
+    </ClCompile>
     <ClInclude Include="backend\propertyManager\property\propertySerializable.h">
       <Filter>backend\propertyManager\property</Filter>
     </ClInclude>
@@ -936,6 +1158,9 @@
     <ClInclude Include="backend\propertyManager\property\propertyNumber.h">
       <Filter>backend\propertyManager\property</Filter>
     </ClInclude>
+    <ClInclude Include="backend\propertyManager\property\propertyChoiceLink.h">
+      <Filter>backend\propertyManager\property</Filter>
+    </ClInclude>
     <ClCompile Include="backend\propertyManager\property\propertySize.cpp">
       <Filter>backend\propertyManager\property</Filter>
     </ClCompile>
@@ -951,40 +1176,13 @@
     <ClCompile Include="backend\propertyManager\property\propertyStringExt.cpp">
       <Filter>backend\propertyManager\property</Filter>
     </ClCompile>
-    <ClInclude Include="backend\propertyManager\property\variant\variantOwner.h">
+    <ClInclude Include="backend\propertyManager\property\variant\variantSerializable.h">
       <Filter>backend\propertyManager\property\variant</Filter>
     </ClInclude>
-    <ClCompile Include="backend\propertyManager\property\variant\variantSize.cpp">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClCompile>
-    <ClInclude Include="backend\propertyManager\property\variant\variantType.h">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\propertyManager\property\variant\variantSize.h">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClInclude>
-    <ClCompile Include="backend\propertyManager\property\variant\variantAction.cpp">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClCompile>
-    <ClInclude Include="backend\propertyManager\property\variant\variantAction.h">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\propertyManager\property\variant\variantTranslate.h">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\propertyManager\property\variant\variantComposition.h">
-      <Filter>backend\propertyManager\property\variant</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\query\queryAST.h">
+    <ClInclude Include="backend\query\queryConstructorModel.h">
       <Filter>backend\query</Filter>
     </ClInclude>
     <ClInclude Include="backend\query\queryable.h">
-      <Filter>backend\query</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\query\queryLowering.h">
-      <Filter>backend\query</Filter>
-    </ClInclude>
-    <ClInclude Include="backend\query\queryConstructorModel.h">
       <Filter>backend\query</Filter>
     </ClInclude>
     <ClCompile Include="backend\query\queryConstructorModel.cpp">
@@ -1068,6 +1266,9 @@
     <ClCompile Include="propertyManager\property\advprop\advpropFont.cpp">
       <Filter>propertyManager\property\advprop</Filter>
     </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropColour.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
     <ClInclude Include="propertyManager\property\advprop\advpropFont.h">
       <Filter>propertyManager\property\advprop</Filter>
     </ClInclude>
@@ -1086,7 +1287,19 @@
     <ClCompile Include="propertyManager\property\advprop\advpropList.cpp">
       <Filter>propertyManager\property\advprop</Filter>
     </ClCompile>
+    <ClCompile Include="propertyManager\property\advprop\advpropChartBinding.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClCompile Include="propertyManager\property\advprop\advpropSchedule.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
     <ClInclude Include="propertyManager\property\advprop\advpropList.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClInclude Include="propertyManager\property\advprop\advpropChartBinding.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClInclude Include="propertyManager\property\advprop\advpropSchedule.h">
       <Filter>propertyManager\property\advprop</Filter>
     </ClInclude>
     <ClCompile Include="propertyManager\property\advprop\advpropType.cpp">
@@ -1104,7 +1317,76 @@
     <ClInclude Include="propertyManager\property\advprop\advpropHyperLink.h">
       <Filter>propertyManager\property\advprop</Filter>
     </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropDataComposition.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropDataComposition.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
     <ClCompile Include="propertyManager\property\advprop\advpropModule.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClCompile Include="propertyManager\property\advprop\advpropCalcSchedule.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropCalcSchedule.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropChoiceLink.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropChoiceLink.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropCommandSource.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropCommandSource.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropDate.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClCompile Include="propertyManager\property\advprop\advpropForm.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClCompile Include="propertyManager\property\advprop\advpropGeneration.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropGeneration.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropOwner.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropOwner.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropPicture.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropPicture.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropPoint.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropPoint.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropRecord.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropRecord.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropSource.cpp">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClCompile>
+    <ClInclude Include="propertyManager\property\advprop\advpropSource.h">
+      <Filter>propertyManager\property\advprop</Filter>
+    </ClInclude>
+    <ClCompile Include="propertyManager\property\advprop\advpropSpreadsheet.cpp">
       <Filter>propertyManager\property\advprop</Filter>
     </ClCompile>
     <ClCompile Include="propertyManager\propertyEditor.cpp">
@@ -1176,8 +1458,17 @@
     <ClInclude Include="win\dlgs\colHeight.h">
       <Filter>win\dlgs</Filter>
     </ClInclude>
+    <ClCompile Include="win\dlgs\connectionDB.cpp">
+      <Filter>win\dlgs</Filter>
+    </ClCompile>
+    <ClInclude Include="win\dlgs\connectionDB.h">
+      <Filter>win\dlgs</Filter>
+    </ClInclude>
     <ClInclude Include="win\dlgs\formatConstructor\formatConstructor.h">
       <Filter>win\dlgs\formatConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\linqConstructor\linqConstructor.h">
+      <Filter>win\dlgs\linqConstructor</Filter>
     </ClInclude>
     <ClCompile Include="win\dlgs\rowHeight.cpp">
       <Filter>win\dlgs</Filter>
@@ -1191,10 +1482,16 @@
     <ClCompile Include="win\dlgs\selectData.cpp">
       <Filter>win\dlgs</Filter>
     </ClCompile>
+    <ClCompile Include="win\dlgs\selectPredefined.cpp">
+      <Filter>win\dlgs</Filter>
+    </ClCompile>
     <ClCompile Include="win\dlgs\typeSelector.cpp">
       <Filter>win\dlgs</Filter>
     </ClCompile>
     <ClInclude Include="win\dlgs\selectData.h">
+      <Filter>win\dlgs</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\selectPredefined.h">
       <Filter>win\dlgs</Filter>
     </ClInclude>
     <ClCompile Include="win\dlgs\settings\filterTreeModel.cpp">
@@ -1263,8 +1560,53 @@
     <ClCompile Include="win\dlgs\formatConstructor\formatConstructor.cpp">
       <Filter>win\dlgs\formatConstructor</Filter>
     </ClCompile>
+    <ClCompile Include="win\dlgs\linqConstructor\linqConstructor.cpp">
+      <Filter>win\dlgs\linqConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryCaseDialog.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryConditionModel.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryConstructor.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryConstructorEdit.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryConstructorFill.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryConstructorText.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryExpressionDialog.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryJoinDiagram.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryLinkModel.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\querySelectionLinkModel.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryTempTableDialog.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
+    <ClCompile Include="win\dlgs\queryConstructor\queryUnionModel.cpp">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClCompile>
     <ClInclude Include="win\dlgs\translateConstructor\translateConstructor.h">
       <Filter>win\dlgs\translateConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryCaseDialog.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryConditionModel.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\queryConstructor\queryConstructor.h">
       <Filter>win\dlgs\queryConstructor</Filter>
@@ -1273,6 +1615,27 @@
       <Filter>win\dlgs\queryConstructor</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\queryConstructor\queryExpressionDialog.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryFieldTree.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryGridModel.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryJoinDiagram.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryLinkModel.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\querySelectionLinkModel.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryTempTableDialog.h">
+      <Filter>win\dlgs\queryConstructor</Filter>
+    </ClInclude>
+    <ClInclude Include="win\dlgs\queryConstructor\queryUnionModel.h">
       <Filter>win\dlgs\queryConstructor</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\typeSelector.h">
@@ -1298,18 +1661,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Filter Include="res">
-      <UniqueIdentifier>{3e8440b3-9a4c-467e-b4e0-b2a26b4e6e8c}</UniqueIdentifier>
-    </Filter>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="res\resource.h">
-      <Filter>res</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ResourceCompile Include="res\frmclient.rc">
-      <Filter>res</Filter>
-    </ResourceCompile>
+    <ResourceCompile Include="frmclient.rc" />
   </ItemGroup>
 </Project>

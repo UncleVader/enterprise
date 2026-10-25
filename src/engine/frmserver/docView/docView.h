@@ -48,7 +48,7 @@
 
 #include "frmserver/frmserver.h"          // FRMSERVER_API
 #include "frmserver/schema/clientSchema.h"  // the schemas a manager offers
-#include "protocol/protocol.h"  // ibProtocolEvent — what a person did in a view
+#include "protocol/protocol.h"  // ibProtocol::ibEvent::ibKind — what a person did in a view
 #include "backend/backend_form.h"       // ibBackendMetaDocument
 #include "backend/metaCollection/metaObject.h"
 
@@ -102,9 +102,9 @@ enum
     ibDOC_READONLY = ibDOC_SILENT + 1
 };
 
-typedef wxVector<ibDocument*> ibDocVector;
-typedef wxVector<ibView*> ibViewVector;
-typedef wxVector<ibDocTemplate*> ibDocTemplateVector;
+typedef std::vector<ibDocument*> ibDocVector;
+typedef std::vector<ibView*> ibViewVector;
+typedef std::vector<ibDocTemplate*> ibDocTemplateVector;
 
 // Not an event handler, as wx's are: nothing here is a window, and nothing routes commands through the
 // documents — a client's events come in through the form's door (ibValueForm::DispatchEvent).
@@ -186,6 +186,10 @@ public:
 
     virtual bool IsModified() const { return m_documentModified; }
     virtual void Modify(bool mod);
+
+    // Does what it shows take an edit — said to the client with its tab (ibTab::ReadOnly), where the windows opened
+    // from it ask it of their configuration. Nothing restricts a document by itself.
+    virtual bool IsEditable() const { return true; }
 
     virtual bool AddView(ibView *view);
     virtual bool RemoveView(ibView *view);
@@ -309,7 +313,8 @@ protected:
 
 private:
     wxDECLARE_ABSTRACT_CLASS(ibDocument);
-    wxDECLARE_NO_COPY_CLASS(ibDocument);
+    ibDocument(const ibDocument&) = delete;
+    ibDocument& operator=(const ibDocument&) = delete;
 };
 
 class FRMSERVER_API ibView: public wxObject
@@ -339,19 +344,19 @@ public:
 
     // What it shows — the view of its own a client draws it with (the tab's Kind; a form — the default, absent from
     // the wire).
-    virtual ibProtocolViewKind GetViewKind() const { return ibProtocolViewKind::Form; }
+    virtual ibProtocol::ibView::ibKind GetViewKind() const { return ibProtocol::ibView::ibKind::Form; }
     // WHAT A CLIENT READS OF THE VIEW ITSELF, a part at a time — a spreadsheet's cells, as a control of a form is read
     // (ibValueFrame::Fetch). False: this view has nothing to read.
-    virtual bool Fetch(const ibDataNode& WXUNUSED(request), ibDataNode& WXUNUSED(response)) { return false; }
+    virtual bool Fetch(const ibDataNode& /*request*/, ibDataNode& /*response*/) { return false; }
 
     // WHAT THE PERSON DID IN THE VIEW ITSELF, not in a control of a form — a text typed into a text document's view
     // (Change {Text}). False: this view takes no such event.
-    virtual bool OnClientEvent(ibProtocolEvent WXUNUSED(event), const ibDataNode& WXUNUSED(args)) { return false; }
+    virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind /*event*/, const ibDataNode& /*args*/) { return false; }
     virtual void OnUpdate(ibView *sender, wxObject *hint = nullptr);
     virtual void OnClosingDocument() {}
     virtual void OnChangeFilename();
 
-    virtual bool OnCreate(ibDocument *WXUNUSED(doc), long WXUNUSED(flags))
+    virtual bool OnCreate(ibDocument */*doc*/, long /*flags*/)
         { return true; }
 
     virtual bool Close(bool deleteWindow = true);
@@ -381,7 +386,8 @@ protected:
 
 private:
     wxDECLARE_ABSTRACT_CLASS(ibView);
-    wxDECLARE_NO_COPY_CLASS(ibView);
+    ibView(const ibView&) = delete;
+    ibView& operator=(const ibView&) = delete;
 };
 
 // ibDocTemplate / ibMetaDocTemplate — full definitions in
@@ -534,6 +540,8 @@ public:
     ibMetaDocument* OpenForm(ibValueMetaObject* metaObject, long flags = ibDOC_NEW);
 
     ibMetaDocTemplate* FindMetaTemplate(const ibClassID& clsid) const;
+    // The classes a metaobject's editor is registered for — what OpenForm opens; any other's opens nothing.
+    std::vector<ibClassID> GetMetaTemplateClasses() const;
     ibDocTemplate*     FindTemplateByDocClassInfo(const wxClassInfo* classInfo) const;
 
     // Helper: ibDocument* GetCurrentDocument() is the wx-style base accessor;
@@ -560,10 +568,10 @@ public:
     //
     // The schema of that kind — what it shows and what it does are its own. nullptr: this application has no
     // such schema.
-    const ibClientSchema* FindSchema(ibProtocolSchema kind) const;
+    const ibClientSchema* FindSchema(ibProtocol::ibSchema::ibKind kind) const;
 
     // The schemas registered — what a client is told it may ask for.
-    std::vector<ibProtocolSchema> GetSchemaKinds() const;
+    std::vector<ibProtocol::ibSchema::ibKind> GetSchemaKinds() const;
 
     // ⭐ THE COMMANDS THIS APPLICATION'S DOCUMENTS ANSWER TO — registered as the templates and the schemas are: the
     // shared ones by the base's ctor, an application's own by its manager's ctor. What a client is told of each: its
@@ -571,11 +579,11 @@ public:
     const std::map<ibDocCommand, ibDocCommandInfo>& GetCommands() const { return m_commands; }
 
 protected:
-    void RegisterSchema(ibProtocolSchema kind, std::unique_ptr<ibClientSchema> schema);
+    void RegisterSchema(ibProtocol::ibSchema::ibKind kind, std::unique_ptr<ibClientSchema> schema);
     void RegisterCommand(ibDocCommand command, const wxString& title, const wxString& shortcut,
         ibClientStockPicture picture);
 
-    std::map<ibProtocolSchema, std::unique_ptr<ibClientSchema>> m_schemas;
+    std::map<ibProtocol::ibSchema::ibKind, std::unique_ptr<ibClientSchema>> m_schemas;
     std::map<ibDocCommand, ibDocCommandInfo>                       m_commands;
 
     // The manager's own list, by the document's declared identity — what FindOpenDocument(metaObject)
@@ -584,6 +592,14 @@ protected:
     // matches.
     ibDocument* FindDocumentByIdentifier(const wxString& identifier) const;
 
+    // At the owner: its editors, or mine where there is no owner (the desktop's).
+    ibDocument* FindOpenDocument(const wxString& identifier, const ibDocument* docParent) const;
+
+    // WHICH DOCUMENT IS SHOWING THIS CONFIGURATION — null for the session's own, which the frame's tree holds with no
+    // document at all (the desktop's). This is the owner an editor is opened under; getting it wrong puts the editor in
+    // the manager's top level instead of under its tree, and every later "is it open?" then looks in the wrong place.
+    class ibMetaDataDocument* FindMetaDataDocument(const class ibMetaData* metaData) const;
+
     int               m_defaultDocumentNameCounter;
     int               m_maxDocsOpen;
     wxList            m_docs;
@@ -591,7 +607,8 @@ protected:
     ibView*           m_currentView;
 
     wxDECLARE_DYNAMIC_CLASS(ibDocManager);
-    wxDECLARE_NO_COPY_CLASS(ibDocManager);
+    ibDocManager(const ibDocManager&) = delete;
+    ibDocManager& operator=(const ibDocManager&) = delete;
 };
 
 // Shortcut to the current session's doc manager. Previously hosted in
@@ -642,7 +659,7 @@ public:
 
     // Become the tab the client shows (or stop being it). The base has no
     // client to tell and answers false; a tab overrides it.
-    virtual bool Show(bool WXUNUSED(show) = true) { return false; }
+    virtual bool Show(bool /*show*/ = true) { return false; }
 
     // Closing the frame closes the view it shows, once the call that asked has
     // unwound. True when the frame took the close over (a client tab defers it
@@ -659,7 +676,8 @@ protected:
     ibView*           m_childView;
 
 private:
-    wxDECLARE_NO_COPY_CLASS(ibDocChildFrameAnyBase);
+    ibDocChildFrameAnyBase(const ibDocChildFrameAnyBase&) = delete;
+    ibDocChildFrameAnyBase& operator=(const ibDocChildFrameAnyBase&) = delete;
 };
 
 // ----------------------------------------------------------------------------
@@ -680,7 +698,8 @@ public:
 protected:
     ibDocManager *m_docManager;
 
-    wxDECLARE_NO_COPY_CLASS(ibDocParentFrameAnyBase);
+    ibDocParentFrameAnyBase(const ibDocParentFrameAnyBase&) = delete;
+    ibDocParentFrameAnyBase& operator=(const ibDocParentFrameAnyBase&) = delete;
 };
 
 // File-to-stream helpers (preserved for back-compat with existing formats).
@@ -776,6 +795,10 @@ public:
 	virtual void Modify(bool mod) override;
 	virtual bool Save() override;
 	virtual bool SaveAs() override;
+
+	// ITS METAOBJECT'S answer — the configuration's word, an object deleted or switched off (ibValueMetaObject::
+	// IsEditable): what the module and composer views already say with their State. None held: nothing restricts it.
+	virtual bool IsEditable() const override { return m_metaObject == nullptr || m_metaObject->IsEditable(); }
 
 	// Treats every metadata doc as "child" regardless of m_documentParent.
 	// Historical OES semantic — preserved separately from base's parent-based

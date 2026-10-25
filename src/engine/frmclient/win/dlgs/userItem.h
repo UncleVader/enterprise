@@ -23,7 +23,7 @@
 #include <wx/choice.h>
 
 #include "frmclient/backend/backend_core.h"
-#include "frmclient/backend/roleHelper.h"   // ibRoleCompositionMode — the membership carries how the role combines
+#include "core/roleCompositionMode.h"   // ibRoleCompositionMode — the membership carries how the role combines
 
 #include "frmclient/win/ctrls/checktree.h"
 #include "frmclient/win/theme/luna_tabart.h"
@@ -65,6 +65,8 @@ private:
 
 	std::map<wxTreeItemId, ibDataUserRole> m_roleArray;
 	std::map<int, ibDataUserLanguageItem> m_languageArray;
+	// The configuration's own language (the row the server marks Default) — the desktop's activeMetaData->GetLangCode().
+	wxString m_strDefaultLanguageCode;
 
 	wxAuiNotebook* m_mainNotebook;
 	wxPanel* m_main;

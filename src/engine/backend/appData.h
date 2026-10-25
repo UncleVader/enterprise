@@ -73,12 +73,15 @@ enum class ibSessionKind : int;   // defined in backend/session/session.h
 // own settings are not here: they live in its folder, in infobase.conf (the connections to its DBMS), and the
 // process's in backend.conf.
 // THE TYPE SAYS HOW THE PROCESS HOLDS THE BASE — a file base (ibFileInstanceRequest) or a server
-// (ibServerInstanceRequest). What a session works in is said when it is created (CreateSession), not here.
+// (ibServerInstanceRequest). What each session works in is said when it is created (CreateSession).
 struct BACKEND_API ibInstanceRequest {
 	// The base's name in the journal; empty — its folder's (Firebird), its database's (PostgreSQL). A server's:
 	// the base's group in server.conf.
 	wxString  m_name;
 	wxString  m_locale;      // empty — the process's
+
+	// _app_start_* — read as the base's configuration is made, at its opening (the debug server comes up with it).
+	int       m_loadMetadataFlags = _app_start_default_flag;
 };
 
 // WHERE A BASE LIVES — a Firebird base in its folder, or a PostgreSQL one on the server named.
@@ -213,7 +216,7 @@ public:
 	template<class SessionT>
 	ibSessionHolder CreateSession(ibSessionKind kind,
 	                              const wxString& presetGuid,
-	                              const wxString& address);
+	                              const ibString& address);
 
 private:
 	// Register the session-lifecycle event listeners that drive
@@ -261,12 +264,12 @@ public:
 
 #pragma region execute
 	// RunApplication overloads spawn any OES bin (enterprise / designer /
-	// appserver / codeRunner / wenterprise-server). Connection flags are
+	// appserver / codeRunner / webserver). Connection flags are
 	// emitted in unified `--flag=value` form which every bin's parser
 	// accepts.
-	// useManifest=true switches to wenterprise-server's bind-handshake
-	// protocol: --port=0 --manifest=<tempfile>, poll manifest for the
-	// real URL and open the default browser. Returns pid.
+	// useManifest=true starts the web server (ibStartWebServer): it
+	// publishes this file base and the default browser opens its page.
+	// Returns pid.
 	long RunApplication(const wxString& strAppName,
 		bool searchDebug = true,
 		bool useManifest = false) const;
@@ -275,13 +278,6 @@ public:
 		const wxString& strUserPassword,
 		bool searchDebug = true,
 		bool useManifest = false) const;
-
-	// Append `--port=0 --manifest=<tempfile>` to cmd, spawn detached,
-	// poll the manifest for up to 5s and open the default browser at the
-	// reported URL. Returns pid on spawn-ok, 0 on failure. Exposed for
-	// callers that build the cmd from external connection data (e.g.
-	// launcher picks from a saved IB list, not the appData singleton).
-	static long SpawnWebServerWithManifest(wxString cmd, bool searchDebug = false);
 #pragma endregion
 
 	ibRunMode GetAppMode() const { return m_runMode; }
@@ -433,8 +429,8 @@ private:
 	// Buffer-level user-table export / import. Per-record serialization
 	// lives on ibUserInfo (Serialize / Deserialize); these methods just
 	// drive the iteration over the sys_user table.
-	bool LoadUserInfoFromBuffer(wxMemoryBuffer& buffer);
-	bool SaveUserInfoToBuffer(wxMemoryBuffer& buffer) const;
+	bool LoadUserInfoFromBuffer(ibMemoryBuffer& buffer);
+	bool SaveUserInfoToBuffer(ibMemoryBuffer& buffer) const;
 
 	wxString ComputeMd5() const;
 	wxString ComputeMd5(const wxString& userPassword) const;
@@ -568,12 +564,10 @@ private:
 	// works in that one for its whole life, so an update that puts another one here leaves every working session
 	// in the configuration it came in with; the old one goes with the last of them. A shared_ptr, swapped under the
 	// process's lock (ReplaceActiveMetaData).
-	// Polymorphic — concrete subclass (`ibMetaDataConfiguration` for the application,
-	// `ibMetaDataConfigurationStorage` for a designer's process) chosen by the
-	// fabric `CreateActiveMetaData` by the process's own session. nullptr in
-	// launcher / codeRunner (no DB-backed metadata). Declared last so
-	// reverse-order destruction lets it go first — OnDestroy ran already
-	// in the dtor above.
+	// The application's — `ibMetaDataConfiguration`, loaded and run as the base opens (CreateActiveMetaData),
+	// before anybody comes in. A designer's session works in a configuration of its own, held by it alone
+	// (ibSession::AcquireMetaData). nullptr in launcher / codeRunner (no DB-backed metadata). Declared last so
+	// reverse-order destruction lets it go first — OnDestroy ran already in the dtor above.
 	std::shared_ptr<class ibMetaDataConfigurationBase> m_activeMetaData;
 
 public:
@@ -607,7 +601,7 @@ public:
 
 	// Active configuration metadata accessor — the configuration this thread works in: its session's own, else the
 	// one its scope holds, else the base's active one (held for the sessions to come). nullptr in launcher /
-	// codeRunner; nullptr before CreateActiveMetaData fires for the first time. The legacy `activeMetaData` macro
+	// codeRunner; nullptr while the base is still opening. The legacy `activeMetaData` macro
 	// redirects to `appEnv::ActiveMetaData()` which calls this. Whoever works in it holds `shared_from_this()`.
 	static class ibMetaDataConfigurationBase* GetActiveMetaData() { return GetActiveMetaData(Get()); }
 	static class ibMetaDataConfigurationBase* GetActiveMetaData(const ibApplicationInstance* applicationInstance);
@@ -616,14 +610,11 @@ public:
 	// publishes. The sessions working in the old one keep it; it goes with the last of them.
 	void ReplaceActiveMetaData(std::shared_ptr<class ibMetaDataConfigurationBase> metaData);
 
-	// Fabric — pick subclass by the kind of the base's first session (a designer's: the
-	// configuration to edit; anyone else's: the one the application runs) and
-	// stash it in m_activeMetaData. Returns false if construction or
-	// OnInitialize failed; the launcher returns true with no-op so callers can
-	// branch uniformly.
+	// Fabric — the configuration the application runs, put in m_activeMetaData, loaded and run: the base's opening
+	// makes it, before any session is let in. Returns false if OnInitialize or the run failed.
 	// Replaces the historical `ibMetaDataConfigurationBase::Initialize` static.
-	static bool CreateActiveMetaData(ibApplicationInstance* applicationInstance, ibSessionKind kind, int flags);
-	// (Its tear-down is the base's own Close: OnDestroy, then the field released.)
+	static bool CreateActiveMetaData(ibApplicationInstance* applicationInstance, int flags);
+	// (Its tear-down is the base's own Close: OnDestroy, then the base's reference let go — the last holder closes it.)
 
 	// Audit + trace logger. Created during CreateFile/Server AppDataEnv
 	// once the DB is open + the connection pool is initialised; destroyed
@@ -686,17 +677,10 @@ private:
 	void CreateLogger();
 
 	bool m_connected_to_db = false;
-	bool m_created_metadata = false;
-	bool m_run_metadata = false;
 
-public:
-	// Flags stashed before Authenticate fires the OnFirstConnect
-	// listener — listener can't take a flags argument (callback shape is
-	// fixed) so the flags ride here instead. Apps that need non-default
-	// flags (Enterprise's debug-server flag) write directly before
-	// CreateSession + Authenticate.
+	// The flags the base was opened with (ibInstanceRequest) — its configuration was made by them, and with the
+	// debug server up every session let in is debuggable.
 	int  m_loadMetadataFlags = _app_start_default_flag;
-private:
 
 	// A FIREBIRD BASE — its folder
 	wxString m_strFile;

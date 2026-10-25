@@ -3,18 +3,18 @@
 #include "crashGuard.h"          // the journal lives beside the dumps — same directory decision
 #include "core/diagnostics/debugTrace.h"   // ibDebugTraceEnabled — the house env-var switch
 #include "core/build.h"                    // GetBuildId, version_oes_last — what is running, said first
-#include "core/programFolder.h"            // journal/ sits with the dumps, in the diagnostic folder
+#include "core/fileSystem.h"               // journal/ sits with the dumps, in the diagnostic folder
 
 #include <wx/datetime.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/log.h>
 #include <wx/stdpaths.h>
-#include <wx/thread.h>
 #include <wx/utils.h>
 
 #include <atomic>
 #include <cstdarg>
+#include <mutex>
 
 #ifdef __WXMSW__
 #include <windows.h>
@@ -27,8 +27,11 @@ namespace {
 //
 // ⚠ The file is opened by Open() and stays open for the life of the process, so a line written
 // during teardown — after wx has torn its own logging down — still lands.
+//
+// ⚠ THE LOCK IS RECURSIVE: a write the file refuses is said by wx (wxLogSysError), and on the main thread wx's
+// line comes back here at once through the chain (ibJournalLogTarget) — under the lock this thread holds.
 wxFFile            s_file;
-wxCriticalSection  s_lock;
+std::recursive_mutex s_lock;
 wxString           s_path;
 wxString           s_program;   // the name the program opened the journal with — its own lines carry it as their source
 
@@ -38,6 +41,9 @@ std::atomic<bool>  s_open{ false };
 
 // Asked by the program itself to echo every line on standard error (EchoToStderr) — the variable's twin.
 std::atomic<bool>  s_echoToStderr{ false };
+
+// The first error's dump is taken — by this run, or by the one before it (SkipErrorDump).
+std::atomic<bool>  s_errorDumped{ false };
 
 // The chain Open makes — kept, so a program whose console the journal writes can take the previous target off it
 // (EchoToStderr).
@@ -55,11 +61,6 @@ std::atomic<ibTechJournal::ContextFn> s_context{ nullptr };
 // wx buffers it.
 const char* const kEchoKey = "oes.journal.echo";
 
-unsigned long CurrentTid()
-{
-	return static_cast<unsigned long>(wxThread::GetCurrentId());
-}
-
 // (The build number is NOT computed here. `GetBuildId()` in backend_core already derives it from
 // __DATE__, and the About box prints that one — a journal with a second, independently correct
 // number would be two truths about one binary, which is the failure this file exists to prevent.)
@@ -75,7 +76,7 @@ protected:
 		if (info.GetNumValue(kEchoKey, &echoed))
 			return;                   // the journal's own line, on its way to the debugger
 
-		const wxChar* kind =
+		const ibChar* kind =
 			  level == wxLOG_FatalError ? wxT("wx.fatal")
 			: level == wxLOG_Error      ? wxT("wx.error")
 			: level == wxLOG_Warning    ? wxT("wx.warn")
@@ -118,6 +119,16 @@ ibTechJournal& ibTechJournal::Instance()
 
 void ibTechJournal::Open(const wxString& exeName)
 {
+	{
+		std::lock_guard<std::recursive_mutex> lock(s_lock);
+		s_program = exeName;
+	}
+#ifdef NDEBUG
+	// ⭐ A DEBUG BUILD IS THE CONSENT to the file (ibCrashGuard::Install has why): a Release build opens none. The
+	// program's name is kept all the same — a program that narrates in its console says there what it says (Write).
+	return;
+#endif
+
 	// BESIDE THE DUMPS. `journal/` next to `crashdumps/`, so the two halves of one incident live in
 	// one place: the dump says where it stopped, the journal says what it was doing. Inside an
 	// installed bundle that place is ~/Library/Logs/OES — /Applications is not writable — and
@@ -129,8 +140,7 @@ void ibTechJournal::Open(const wxString& exeName)
 	// exactly the run a person is reporting the moment they restart to try again.
 	const wxString stamp = wxDateTime::Now().Format(wxT("%Y%m%dT%H%M%S"));
 	{
-		wxCriticalSectionLocker lock(s_lock);
-		s_program = exeName;
+		std::lock_guard<std::recursive_mutex> lock(s_lock);
 		s_path = dir + wxFILE_SEP_PATH
 			+ wxString::Format(wxT("%s_%s_%u.log"), exeName, stamp,
 				static_cast<unsigned>(wxGetProcessId()));
@@ -183,7 +193,7 @@ void ibTechJournal::Open(const wxString& exeName)
 		wxDateTime::Now().Format(wxT("%Y-%m-%d %H:%M:%S")),
 		wxLocale::GetLanguageCanonicalName(wxLocale::GetSystemLanguage())));
 	Write(ibJournalMark::Info, wxT("start"), wxString::Format(wxT("user %s@%s, %s"),
-		wxGetUserId(), wxGetHostName(), wxGetCwd()));
+		wxGetUserId(), wxGetHostName(), ibGetCwd()));
 	Write(ibJournalMark::Info, wxT("start"), wxString::Format(wxT("binary: %s"),
 		wxStandardPaths::Get().GetExecutablePath()));
 	Write(ibJournalMark::Info, wxT("start"), wxString::Format(wxT("journal: %s"), s_path));
@@ -206,7 +216,7 @@ void ibTechJournal::Open(const wxString& exeName)
 
 void ibTechJournal::Close()
 {
-	wxCriticalSectionLocker lock(s_lock);
+	std::lock_guard<std::recursive_mutex> lock(s_lock);
 	s_open.store(false, std::memory_order_relaxed);
 	if (s_file.IsOpened()) {
 		s_file.Flush();
@@ -250,7 +260,7 @@ bool ibTechJournal::IsOpen()
 
 wxString ibTechJournal::Path()
 {
-	wxCriticalSectionLocker lock(s_lock);
+	std::lock_guard<std::recursive_mutex> lock(s_lock);
 	return s_path;
 }
 
@@ -262,11 +272,20 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 	const ContextFn context = s_context.load(std::memory_order_acquire);
 	const wxString about = context != nullptr ? context() : wxString();
 
+	static const bool s_toStderr = ibDebugTraceEnabled("OES_JOURNAL_STDERR");   // see the console's echo below
+
 	wxString line;
 	bool forConsole = false;   // what a program that narrates (EchoToStderr) shows in its console — see below
+	bool kept = false;         // the file has it — and only then the debugger's echo and the error's dump, below
 	{
-		wxCriticalSectionLocker lock(s_lock);
-		if (!s_file.IsOpened())
+		std::lock_guard<std::recursive_mutex> lock(s_lock);
+		kept = s_file.IsOpened();
+		forConsole = s_toStderr
+			|| ((mark != ibJournalMark::Info || source == s_program) && s_echoToStderr.load(std::memory_order_relaxed));
+		// ⭐ NO FILE IS NOT NO CONSOLE. A Release build keeps no file (Open), and the console went with it: a Release
+		// application server refused at its start said nothing and left with code 1 (2026-10-23). A line nobody
+		// keeps and nobody watches goes nowhere.
+		if (!kept && !forConsole)
 			return;
 
 		// THE LINE: kind, time, thread, event source, detail.
@@ -281,7 +300,7 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 		//
 		// Padded to one width so the columns line up down the page: a reader's eye follows a column,
 		// and a ragged left edge costs more than the three spaces it saves.
-		const wxChar* kind =
+		const ibChar* kind =
 			  mark == ibJournalMark::Error   ? wxT("[error]  ")
 			: mark == ibJournalMark::Warning ? wxT("[warning]")
 			                                 : wxT("[info]   ");
@@ -289,13 +308,14 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 		line = wxString::Format(wxT("%s %s  t%-5lu  %-14s  %s\n"),
 			kind,
 			wxDateTime::UNow().Format(wxT("%H:%M:%S.%l")),
-			CurrentTid(),
+			ibCrashGuard::CurrentTidPortable(),
 			about.IsEmpty() ? source : wxT("(") + about + wxT(") ") + source,
 			message);
 
-		s_file.Write(line);
-		s_file.Flush();               // a crash must not cost the lines that explain it
-		forConsole = mark != ibJournalMark::Info || source == s_program;
+		if (kept) {
+			s_file.Write(line);
+			s_file.Flush();           // a crash must not cost the lines that explain it
+		}
 	}
 
 	// ⭐ AND TO STANDARD ERROR, ON REQUEST — for a machine with no debugger to attach to: a console
@@ -317,8 +337,7 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 	// lock: four sessions of an application server stood in a queue to the console window, 43 of 45 threads caught
 	// in the journal were in this echo (2026-10-06, crawlers ×4: 130 s with the window, 99 s with stderr in a file).
 	// Max chose: the console only what matters. Hundreds of lines a second are not read there anyway.
-	static const bool s_toStderr = ibDebugTraceEnabled("OES_JOURNAL_STDERR");
-	if (s_toStderr || (forConsole && s_echoToStderr.load(std::memory_order_relaxed))) {
+	if (forConsole) {
 #ifdef __WXMSW__
 		// ⚠ A WINDOWS CONSOLE IS TOLD IN ITS OWN CHARACTERS. Bytes reach it read in its code page (866, 1251), so
 		// UTF-8 came out as `????N'N?N` for every Cyrillic word (the application server's console, 2026-10-06); a
@@ -351,7 +370,7 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 	// the echo reaches only our own target, which lets it pass — nobody. And from any thread but the main one wx does
 	// not deliver it: it keeps the record in a buffer, under a lock of its own, until the main thread flushes — which
 	// an application server's never does, so every line of every session was held in memory until exit (2026-10-06).
-	if (!s_echoToStderr.load(std::memory_order_relaxed)) {
+	if (kept && !s_echoToStderr.load(std::memory_order_relaxed)) {
 		// ⭐⭐ THE ECHO SPEAKS IN THE SEVERITY IT WAS GIVEN — and this is what makes migrating a
 		// `wxLogError` callsite to `ibJournalError` safe. wx's verbs are not interchangeable: in a
 		// GUI application wxLogError puts a dialog in front of the user, wxLogMessage shows a
@@ -411,9 +430,8 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 	// ⚠ AND IT DOES NOT END THE PROCESS. A log verb that can terminate is a trap — someone will put
 	// it inside a loop, or on a path that recovers perfectly well. Deliberate abort stays a
 	// deliberate call (ibCrashGuard::TerminateProcessFast), written where the decision is made.
-	if (mark == ibJournalMark::Error) {
-		static std::atomic<bool> s_dumped{ false };
-		if (!s_dumped.exchange(true, std::memory_order_acq_rel)) {
+	if (kept && mark == ibJournalMark::Error) {
+		if (!s_errorDumped.exchange(true, std::memory_order_acq_rel)) {
 			ibCrashGuard::WriteDumpNow(wxT("_error"));
 			Write(ibJournalMark::Info, wxT("journal"),
 				wxString::Format(wxT("first error - dump written to %s"), ibCrashGuard::GetCrashDir()));
@@ -421,12 +439,53 @@ void ibTechJournal::Write(ibJournalMark mark, const wxString& source, const wxSt
 	}
 }
 
-// The vararg door. The GATE IS TESTED FIRST, before FormatV runs: with the journal off the call is a
-// load, a branch and a return, and the string is never built.
-#if !wxUSE_UTF8_LOCALE_ONLY
-void ibTechJournal::DoPrintWchar(ibJournalMark mark, const wxString& source, const wxChar* format, ...)
+bool ibTechJournal::Read(const wxString& line, ibJournalMark& mark, wxString& source, wxString& message)
 {
-	if (!IsOpen())
+	// The line as Write lays it out: the kind (9), a space, the time (12), two spaces, `t` and the thread, two spaces,
+	// the source — `(base) source` for a line about a base — padded to 14, two spaces, the message.
+	if (line.StartsWith(wxT("[error]")))
+		mark = ibJournalMark::Error;
+	else if (line.StartsWith(wxT("[warning]")))
+		mark = ibJournalMark::Warning;
+	else if (line.StartsWith(wxT("[info]")))
+		mark = ibJournalMark::Info;
+	else
+		return false;
+
+	constexpr size_t kThreadAt = 9 + 1 + 12 + 2;
+	if (line.length() <= kThreadAt || line[kThreadAt] != wxT('t'))
+		return false;
+	const size_t sourceAt = line.find_first_not_of(wxT(' '), line.find(wxT("  "), kThreadAt));
+	if (sourceAt == wxString::npos)
+		return false;
+	const size_t sourceEnd = line.find(wxT("  "), sourceAt);
+	if (sourceEnd == wxString::npos)
+		return false;
+	const size_t messageAt = line.find_first_not_of(wxT(' '), sourceEnd);
+	source = line.Mid(sourceAt, sourceEnd - sourceAt);
+	message = messageAt == wxString::npos ? wxString() : line.Mid(messageAt);
+	return true;
+}
+
+void ibTechJournal::SkipErrorDump()
+{
+	s_errorDumped.store(true, std::memory_order_release);
+}
+
+// The vararg door. The GATE IS TESTED FIRST, before FormatV runs: with the journal off the call is a
+// load, a branch and a return, and the string is never built. A program that narrates in its console
+// is listened to without the file too (Write).
+namespace {
+bool Listened()
+{
+	return ibTechJournal::IsOpen() || s_echoToStderr.load(std::memory_order_relaxed);
+}
+} // namespace
+
+#if !wxUSE_UTF8_LOCALE_ONLY
+void ibTechJournal::DoPrintWchar(ibJournalMark mark, const wxString& source, const ibChar* format, ...)
+{
+	if (!Listened())
 		return;
 	va_list args;
 	va_start(args, format);
@@ -439,7 +498,7 @@ void ibTechJournal::DoPrintWchar(ibJournalMark mark, const wxString& source, con
 #if wxUSE_UNICODE_UTF8
 void ibTechJournal::DoPrintUtf8(ibJournalMark mark, const wxString& source, const char* format, ...)
 {
-	if (!IsOpen())
+	if (!Listened())
 		return;
 	va_list args;
 	va_start(args, format);

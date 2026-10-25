@@ -5,8 +5,8 @@
 // (listFetchDriver.h / session.h(ses_query) / modelView.h(s_constIgnoreParent) includes removed — they were
 //  only for the deleted RunPage/ibDynamicListProvider; the fetch lives in the base RunComposerPage now.)
 #include "backend/query/queryColumn.h"               // ibBackendQueryColumn::GetColumnId
-#include "backend/query/queryParser.h"               // the arbitrary query is READ by the engine's own parser
-#include "backend/query/queryRender.h"               // ibRenderQuery / ibQueryColumnFromPath — the seed query, written out
+#include "core/query/queryParser.h"               // the arbitrary query is READ by the engine's own parser
+#include "core/query/queryRender.h"               // ibRenderQuery / ibQueryColumnFromPath — the seed query, written out
 #include "backend/backend_exception.h"               // the engine's verdict on a query that will not resolve
 #include "backend/srcDataObject.h"                      // ibSourceExplorer
 #include "backend/metaCollection/partial/reference/reference.h"   // ibValueReferenceDataObject — GetItemKey row guid
@@ -817,12 +817,12 @@ bool ibValueDynamicList::ReadProperty(const ibDataNode& node)
 	m_propertySource->SetTableId(GetCompositionDesc().m_mainTable);
 
 	// Default view — a hidden intrinsic field (absent on an old blob → Normal, forward-compatible).
-	m_view = (ibDynamicListView)node.GetValue<s32>(wxT("View"));
+	m_view = (ibDynamicListView)node.GetValue<std::int32_t>(wxT("View"));
 	m_sourceExplorer.Clear();   // read anew — its source and its view with it
 
 	// DynamicRead — stored INVERTED (DynamicReadOff: 1 = static/RAM-snapshot, absent/0 = the default dynamic read), so
 	// a list blob written before this field loads as dynamic. (SetValue does not fire OnPropertyChanged.)
-	m_propertyDynamicRead->SetValue(node.GetValue<s32>(wxT("DynamicReadOff")) == 0);
+	m_propertyDynamicRead->SetValue(node.GetValue<std::int32_t>(wxT("DynamicReadOff")) == 0);
 	return true;
 }
 
@@ -862,10 +862,10 @@ bool ibValueDynamicList::WriteProperty(ibDataNode& node) const
 	//  answers to the same question.)
 
 	// Default view — written implicitly as a hidden intrinsic field (see ibDynamicListView).
-	node.SetValue<s32>(wxT("View"), (s32)m_view);
+	node.SetValue<std::int32_t>(wxT("View"), (std::int32_t)m_view);
 
 	// DynamicRead — record only the DEVIATION from the default (1 = static/RAM snapshot; 0/absent = dynamic). See ReadProperty.
-	node.SetValue<s32>(wxT("DynamicReadOff"), IsDynamicRead() ? 0 : 1);
+	node.SetValue<std::int32_t>(wxT("DynamicReadOff"), IsDynamicRead() ? 0 : 1);
 	return true;
 }
 

@@ -105,7 +105,7 @@ public:
 	// `microseconds` comes back with the rest: how long the code itself took, timed in the process
 	// that ran it. Measuring from this side would be measuring the socket and the wait.
 	bool Sandbox(const wxString& code, bool& ran, wxString& answer, wxString& json,
-		std::vector<wxString>& printed, wxLongLong_t& microseconds, int timeoutMs = 30000);
+		std::vector<wxString>& printed, long long& microseconds, int timeoutMs = 30000);
 
 	// ⭐⭐ PUTTING DATA IN, over there. What comes back for all three requests is the state of one
 	// run — starting one, asking after one and stopping one are the same question about the same
@@ -146,17 +146,17 @@ public:
 	// draws itself while the application runs, which is exactly the moment somebody is looking at
 	// the wrong list. Longer default than an evaluation: a person has to read the question first.
 	bool Screenshot(const wxString& reason, const wxString& area, const wxString& format, bool& allowed,
-		wxMemoryBuffer& bytes, wxString& focus, int timeoutMs = 60000);
+		ibMemoryBuffer& bytes, wxString& focus, int timeoutMs = 60000);
 
 	// Forgets the stop. Called when the runtime is told to continue, so a stale
 	// stack cannot be read back as the current one.
 	void Running();
 
 	// ibDebuggerClientBridge
-	void OnSessionStart(wxSocketClient* sock) override;
-	void OnSessionEnd(wxSocketClient* sock) override;
-	void OnEnterLoop(wxSocketClient* sock, const ibDebugLineData& data) override;
-	void OnLeaveLoop(wxSocketClient* sock, const ibDebugLineData& data) override;
+	void OnSessionStart() override;
+	void OnSessionEnd() override;
+	void OnEnterLoop(const ibDebugLineData& data) override;
+	void OnLeaveLoop(const ibDebugLineData& data) override;
 	void OnAutoComplete(const ibDebugAutoCompleteData& data) override;
 	void OnMessageFromServer(const ibDebugLineData& data, const wxString& message) override;
 	void OnSetToolTip(const ibDebugExpressionData& data, const wxString& resultStr) override;
@@ -165,10 +165,10 @@ public:
 	void OnSetVariable(const ibWatchWindowData& watchData) override;
 	void OnSetExpanded(const ibWatchWindowData& watchData) override;
 	void OnEvalMessage(const wxString& message, MessageType type) override;
-	void OnScreenshot(const wxMemoryBuffer& png, const wxString& focus) override;
-	void OnSandboxResult(bool ran, const wxString& answer, const wxString& json, wxLongLong_t microseconds) override;
+	void OnScreenshot(const ibMemoryBuffer& png, const wxString& focus) override;
+	void OnSandboxResult(bool ran, const wxString& answer, const wxString& json, long long microseconds) override;
 	void OnJobState(unsigned int which, const struct ibJobRunByteCodeState& state) override;
-	void OnComposed(bool answered, const wxString& refusal, const wxMemoryBuffer& result) override;
+	void OnComposed(bool answered, const wxString& refusal, const ibMemoryBuffer& result) override;
 
 private:
 
@@ -207,7 +207,7 @@ private:
 	wxString                m_answer;
 	bool                    m_sandboxRan = false;   // …and whether the sandbox got as far as running
 	wxString                m_sandboxJson;          // …and its result AS A VALUE, when it could travel
-	wxLongLong_t            m_sandboxMicroseconds = 0;  // …and how long it took, measured where it ran
+	long long            m_sandboxMicroseconds = 0;  // …and how long it took, measured where it ran
 	std::vector<wxString>   m_sandboxPrinted;       // …and every line it printed while it ran
 
 	// What the RUN printed outside any sandbox — the application talking, kept for whoever asked
@@ -220,13 +220,13 @@ private:
 	unsigned int            m_jobWhich = 0;
 
 	// The composition last asked for: the tables still serialised, or the reason there are none.
-	wxMemoryBuffer          m_composed;
+	ibMemoryBuffer          m_composed;
 	bool                    m_composeAnswered = false;
 	wxString                m_composeRefusal;
 
 	// The picture asked for, and whether its owner allowed it at all — empty bytes with allowed
 	// true would be a broken transfer, which is a different answer from "they said no".
-	wxMemoryBuffer          m_picture;
+	ibMemoryBuffer          m_picture;
 	bool                    m_pictureAllowed = false;
 	wxString                m_pictureFocus;   // …and what had the focus when it was taken
 	std::vector<Local>      m_members;

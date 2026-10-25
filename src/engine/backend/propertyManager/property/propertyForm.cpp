@@ -20,7 +20,7 @@ wxString ibPropertyForm::GetValueAsString() const
 	return get_cell_variant<ibVariantDataForm>()->GetModuleText();
 }
 
-wxMemoryBuffer& ibPropertyForm::GetValueAsMemoryBuffer() const
+ibMemoryBuffer& ibPropertyForm::GetValueAsMemoryBuffer() const
 {
 	return get_cell_variant<ibVariantDataForm>()->GetFormData();
 }
@@ -30,7 +30,7 @@ void ibPropertyForm::SetValue(const wxString& val)
 	get_cell_variant<ibVariantDataForm>()->SetModuleText(val);
 }
 
-void ibPropertyForm::SetValue(const wxMemoryBuffer& val)
+void ibPropertyForm::SetValue(const ibMemoryBuffer& val)
 {
 	get_cell_variant<ibVariantDataForm>()->SetFormData(val);
 }
@@ -96,6 +96,16 @@ bool ibPropertyForm::PasteNodeValue(const ibDataValue& value)
 		ibPropertyForm::SetValue(root->GetValue<wxString>(wxT("Module")));
 	}
 	return metaForm->PasteFormData();
+}
+
+#include "protocol/protocol.h"   // ibProtocol::ibSchema::ibProperties::Object — what the link opens
+
+bool ibPropertyForm::GetProtocolValue(ibDataNode& row, ibReader reader)
+{
+	if (!ibProperty::GetProtocolValue(row, reader))
+		return false;
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Object, static_cast<std::int32_t>(static_cast<const ibValueMetaObject*>(m_owner)->GetMetaID()));
+	return true;
 }
 
 //////////////////////////////////////////////////////////

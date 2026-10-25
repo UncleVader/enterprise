@@ -22,6 +22,8 @@
 #include "backend/mcp/mcpTool.h"
 
 #include "backend/metadataConfiguration.h"
+#include "backend/compiler/scriptCheck.h"   // a common module, compiled the way config_check asks
+#include "backend/metaCollection/metaModuleObject.h"
 #include "backend/restructureInfo.h"
 #include "backend/metaCollection/metaDiff.h"
 #include "backend/metaCollection/metaObject.h"
@@ -314,7 +316,7 @@ public:
 				sawErrors = true;
 		}
 
-		result.AddField(wxT("changes"), ibDataValue::Int((s64)ledger.size()));
+		result.AddField(wxT("changes"), ibDataValue::Int((std::int64_t)ledger.size()));
 		result.AddField(wxT("ledger"), ibDataValue::Array(ledger));
 		result.AddField(wxT("applied"), ibDataValue::Bool(applied));
 
@@ -495,7 +497,7 @@ public:
 
 		const bool withProperties = ArgProperties().Flag(params);
 
-		s32 limit = (s32)ArgLimit().Whole(params);
+		std::int32_t limit = (std::int32_t)ArgLimit().Whole(params);
 		if (limit <= 0)
 			limit = 200;
 
@@ -543,12 +545,12 @@ public:
 				ibMcpSayObject(object, *entry);
 			}
 
-			entry->AddField(wxT("depth"), ibDataValue::Int((s64)record.m_depth));
+			entry->AddField(wxT("depth"), ibDataValue::Int((std::int64_t)record.m_depth));
 
 			entries.push_back(ibDataValue::Child(entry));
 		}
 
-		result.AddField(wxT("differences"), ibDataValue::Int((s64)differing));
+		result.AddField(wxT("differences"), ibDataValue::Int((std::int64_t)differing));
 
 		// ⭐ WOULD IT TOUCH THE DATABASE AT ALL — the question that decides everything else, and
 		// the platform already answers it: IsDynamicUpdateAvailable is what the apply flow asks
@@ -569,7 +571,7 @@ public:
 		result.AddField(wxT("entries"), ibDataValue::Array(entries));
 
 		if ((int)entries.size() < differing) {
-			result.AddField(wxT("shown"), ibDataValue::Int((s64)entries.size()));
+			result.AddField(wxT("shown"), ibDataValue::Int((std::int64_t)entries.size()));
 			result.SetValue(wxT("note"),
 				ibMcpText("More than the limit. Raise `limit` to see the rest."));
 		}
@@ -653,7 +655,9 @@ public:
 		// and a fault with no address is a fault nobody can find (measured the same day: a refused
 		// save said "MainComposer: variant 1 has no name" of a configuration holding three
 		// composers called MainComposer).
-		const auto complain = [&problems](const ibValueMetaObject* about, const wxString& says) {
+		// What the audit keeps beside the sentence (a module's diagnostics) goes into the entry as fields.
+		const ibMcpAudit::ibComplain complain(
+			[&problems](const ibValueMetaObject* about, const wxString& says, const ibDataValue& extra) {
 
 			std::shared_ptr<ibDataNode> entry = std::make_shared<ibDataNode>();
 			ibMcpSayObject(about, *entry);
@@ -662,8 +666,11 @@ public:
 				entry->SetValue(wxT("in"), owner->GetName());
 
 			entry->SetValue(wxT("says"), says);
+			if (extra.Kind() == ibDataKind::Child && extra.AsChild())
+				for (const std::pair<wxString, ibDataValue>& field : extra.AsChild()->Fields())
+					entry->AddField(field.first, field.second);
 			problems.push_back(ibDataValue::Child(entry));
-		};
+		});
 
 		// EVERY CHECK THAT REGISTERED ITSELF, whichever DLL it came from. The backend's own are one
 		// of them (below); the form world adds its own from frontend.dll, and a host that links
@@ -673,7 +680,7 @@ public:
 				audit->Check(metaData, complain);
 		}
 
-		result.AddField(wxT("checks"), ibDataValue::Int((s64)ibMcpAudits().size()));
+		result.AddField(wxT("checks"), ibDataValue::Int((std::int64_t)ibMcpAudits().size()));
 		result.AddField(wxT("problems"), ibDataValue::Array(problems));
 
 		result.SetValue(wxT("note"), problems.empty()
@@ -821,3 +828,50 @@ public:
 };
 
 MCP_AUDIT_REGISTER(ibMcpAuditMetadata);
+
+// Compiling the common modules is one more question config_check asks, beside
+// the ones already registered. A module with no compile unit stays in the
+// answer: nothing was checked, which is not a pass - an empty diagnostics list
+// is a clean module only when the compile actually ran.
+class ibMcpAuditCommonModules : public ibMcpAudit {
+public:
+	void Check(ibMetaData* metaData, const ibComplain& complain) const override
+	{
+		if (metaData == nullptr || !metaData->IsConfigOpen())
+			return;
+
+		for (ibValueMetaObjectCommonModule* module :
+			metaData->GetAnyArrayObject<ibValueMetaObjectCommonModule>(true)) {
+
+			if (module == nullptr || module->IsDeleted())
+				continue;
+
+			const ibScriptCheckAnswer answer = ibCheckModule(module);
+			if (answer.IsClean())
+				continue;
+
+			std::shared_ptr<ibDataNode> extra = std::make_shared<ibDataNode>();
+			const bool checked = answer.m_outcome == ibScriptCheckOutcome::Checked;
+			extra->AddField(wxT("checked"), ibDataValue::Bool(checked));
+
+			std::vector<ibDataValue> diagnostics;
+			for (const ibDiagnostic& diagnostic : answer.m_diagnostics) {
+				std::shared_ptr<ibDataNode> line = std::make_shared<ibDataNode>();
+				line->AddField(wxT("line"), ibDataValue::Int(static_cast<std::int64_t>(diagnostic.m_line)));
+				line->SetValue(wxT("message"), diagnostic.m_message);
+				if (!diagnostic.m_codeLine.IsEmpty())
+					line->SetValue(wxT("codeLine"), diagnostic.m_codeLine);
+				diagnostics.push_back(ibDataValue::Child(line));
+			}
+			extra->AddField(wxT("diagnostics"), ibDataValue::Array(std::move(diagnostics)));
+
+			complain(module,
+				checked
+					? ibMcpText("does not compile")
+					: ibMcpText("nothing was compiled, so an empty diagnostics list is not a clean module"),
+				ibDataValue::Child(extra));
+		}
+	}
+};
+
+MCP_AUDIT_REGISTER(ibMcpAuditCommonModules);

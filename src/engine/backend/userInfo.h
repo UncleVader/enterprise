@@ -12,12 +12,12 @@
 
 #include "backend/backend.h"
 #include "backend/backend_core.h"
-#include "backend/roleHelper.h"   // ibRoleCompositionMode — how a role combines (the role layer owns it)
+#include "backend/roleHelper.h"   // ibRoleCompositionMode — how a role combines (core/roleCompositionMode.h)
 
 #include <vector>
 
 #include <wx/string.h>
-#include <wx/buffer.h>
+#include "core/memory/memoryBuffer.h"
 
 class ibGuid;
 class ibReaderMemory;

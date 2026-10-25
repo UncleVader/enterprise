@@ -6,7 +6,7 @@
 #include "backend/metaCollection/genericData.h"            // ibValueMetaObjectGenericData — the report a detail is named after
 #include "frmserver/visualView/ctrl/form.h"                 // ibValueForm::GetMetaObject — …reached through the grid's form
 #include "backend/backend_localization.h"                  // a title read in the reader's language
-#include "backend/query/queryable.h"                       // ibReadPeriodUnit — the word a period grouping says
+#include "core/query/queryPeriodUnits.h"                   // ibReadPeriodUnit — the word a period grouping says
 #include "backend/backend_composition.h"                   // ibStoreValue — a context value packed into its condition
 #include "frmserver/visualView/choiceRequest.h"            // ibMenuItem — the fields offered, as the click's submenu
 
@@ -270,7 +270,7 @@ void ibOpenReportOver(const ibCompositionDescription& desc, const ibValueMetaObj
 // ⭐ AND IT IS READ BY A PERSON, so the items say the TITLE — the same words that stand over the
 // column in the report. The technical name travels into the query and is not something a reader
 // should ever be shown.
-std::vector<wxString> ibValueGridBox::AppendDetailByMenu(std::vector<ibMenuItem>& menu, s32 firstId, int row, int col) const
+std::vector<wxString> ibValueGridBox::AppendDetailByMenu(std::vector<ibMenuItem>& menu, std::int32_t firstId, int row, int col) const
 {
 	std::vector<wxString> paths;
 
@@ -298,7 +298,7 @@ std::vector<wxString> ibValueGridBox::AppendDetailByMenu(std::vector<ibMenuItem>
 		wxString title = ibLocalization::GetTranslateGetRawLocText(ibBackendLocalization::GetUserLanguage(), desc.TitleForPath(field.m_name));
 		if (title.IsEmpty())
 			title = ibTitleFromName(field.m_name);
-		byMenu.items.push_back(ibMenuItem{ firstId + static_cast<s32>(paths.size()), title });
+		byMenu.items.push_back(ibMenuItem{ firstId + static_cast<std::int32_t>(paths.size()), title });
 		paths.push_back(field.m_name);
 	}
 

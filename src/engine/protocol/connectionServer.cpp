@@ -1,57 +1,23 @@
 #include "connectionServer.h"
 
+#include <chrono>
 #include <string>
 
+#include <wx/ffile.h>
 #include <wx/intl.h>   // _() — what a refusal says to a person
-#include <wx/mstream.h>
-#include <wx/zstream.h>
+#include <wx/log.h>
 
-// After wx, with the guard already set: wx aliases ssize_t and so does cpp-httplib (backend/mcp/mcpServer.cpp).
-#if defined(_WIN32) && !defined(_SSIZE_T_DEFINED)
-#	define _SSIZE_T_DEFINED
-#endif
-
-// ⚠ PLAIN ws:// ONLY, so no TLS context is made here. The day oess:// (wss) is spoken, backend/tls/
-// oes_mbedtls_threading.h belongs in this file: Mbed TLS is a static library, and this module's copy needs its
-// mutexes handed over as the engine's does (the header says why).
-#include <cpp-httplib/httplib.h>
-
-#include "protocolNode.h"   // a short message read, to tell a notification from an answer
+#include "core/net/httpClient.h"   // ws:// — and wss://, the client's TLS (ibTlsClientContext)
+#include "core/net/ioThreads.h"
+#include "core/net/ports.h"        // ibPort::Clients — the port an address leaves out
 
 namespace {
 
-// How long the reader waits at a time before it asks whether the socket is closing.
-constexpr std::chrono::seconds kReadPoll(1);
+// How long Close waits for the server to be told the socket is closing, before its thread is stopped under it.
+constexpr std::chrono::seconds kCloseWithin(1);
 
-// The longest a notification of the server's is — a line; anything longer is an answer.
-constexpr std::size_t kNotificationMax = 1024;
-
-// `oes://server[:port]/<base>` — the address the server prints for every base it serves.
-bool ParseAddress(const wxString& address, wxString& host, int& port, wxString& base)
-{
-	wxString rest;
-	if (!address.StartsWith(wxT("oes://"), &rest))
-		return false;
-	const int slash = rest.Find(wxT('/'));
-	if (slash == wxNOT_FOUND)
-		return false;
-	wxString authority = rest.Left(slash);
-	base = rest.Mid(slash + 1);
-	if (base.EndsWith(wxT("/")))
-		base.RemoveLast();
-
-	port = ibProtocolConnectionServer::kDefaultPort;
-	const int colon = authority.Find(wxT(':'), true);
-	if (colon != wxNOT_FOUND && !authority.EndsWith(wxT("]"))) {
-		long number = 0;
-		if (!authority.Mid(colon + 1).ToLong(&number) || number <= 0 || number > 65535)
-			return false;
-		port = static_cast<int>(number);
-		authority = authority.Left(colon);
-	}
-	host = authority;
-	return !host.IsEmpty() && !base.IsEmpty() && base.Find(wxT('/')) == wxNOT_FOUND;
-}
+// How a notification of the server's begins — the method first, where an answer has its id.
+const ibString kNotificationHead(wxT("{\"jsonrpc\":\"2.0\",\"method\":"));
 
 // A base's name in the path — its UTF-8 bytes, every one but the unreserved escaped.
 std::string EscapeSegment(const wxString& segment)
@@ -74,88 +40,175 @@ std::string EscapeSegment(const wxString& segment)
 	return escaped;
 }
 
-// A binary message is the answer deflated — raw, RFC 1951, as the server packs it (appserver/clientListener).
-bool Inflate(std::string& message)
+} // namespace
+
+bool ibProtocolConnectionServer::ParseAddress(const wxString& address, wxString& host, int& port, wxString& base,
+	bool& secure)
 {
-	wxMemoryInputStream packed(message.data(), message.size());
-	wxZlibInputStream unzip(packed, wxZLIB_NO_HEADER);
-	std::string text;
-	char chunk[16384];
-	for (;;) {
-		unzip.Read(chunk, sizeof(chunk));
-		const std::size_t got = unzip.LastRead();
-		if (got == 0)
-			break;
-		text.append(chunk, got);
-	}
-	if (unzip.GetLastError() != wxSTREAM_NO_ERROR && unzip.GetLastError() != wxSTREAM_EOF)
+	wxString rest;
+	secure = address.StartsWith(wxT("oess://"), &rest);
+	if (!secure && !address.StartsWith(wxT("oes://"), &rest))
 		return false;
-	message.swap(text);
+	const int slash = rest.Find(wxT('/'));
+	if (slash == wxNOT_FOUND)
+		return false;
+	wxString authority = rest.Left(slash);
+	base = rest.Mid(slash + 1);
+	if (base.EndsWith(wxT("/")))
+		base.RemoveLast();
+
+	port = ibPort::Clients.m_first;
+	const int colon = authority.Find(wxT(':'), true);
+	if (colon != wxNOT_FOUND && !authority.EndsWith(wxT("]"))) {
+		long number = 0;
+		if (!authority.Mid(colon + 1).ToLong(&number) || number <= 0 || number > 65535)
+			return false;
+		port = static_cast<int>(number);
+		authority = authority.Left(colon);
+	}
+	host = authority;
+	return !host.IsEmpty() && !base.IsEmpty() && base.Find(wxT('/')) == wxNOT_FOUND;
+}
+
+std::string ibProtocolConnectionServer::ClientPath(const wxString& base)
+{
+	return "/" + EscapeSegment(base) + "/client";
+}
+
+bool ibProtocolConnectionServer::ClientTls(const wxString& trusted, std::shared_ptr<const ibTlsContext>& tls,
+	wxString& error)
+{
+	std::string pem, refused;
+	if (!trusted.IsEmpty()) {
+		// wxFFile reports a file it cannot open through wxLog — a box in a window's process; the refusal below says it.
+		wxLogNull quiet;
+		wxFFile in(trusted, wxT("rb"));
+		wxString text;
+		if (!in.IsOpened() || !in.ReadAll(&text, wxConvUTF8)) {
+			error = wxString::Format(_("the trusted certificates %s could not be read"), trusted);
+			return false;
+		}
+		pem = std::string(text.utf8_str());
+	}
+	if (ibTlsClientContext(pem, std::string(), std::string(), /*verify*/ true, tls, refused) != ibHttpClientError::None) {
+		error = wxString::FromUTF8(refused);
+		return false;
+	}
 	return true;
 }
 
-} // namespace
-
 ibProtocolConnectionServer::ibProtocolConnectionServer() = default;
 
-bool ibProtocolConnectionServer::Open(const wxString& address, wxString& error)
+bool ibProtocolConnectionServer::Open(const wxString& address, const wxString& trusted, wxString& error)
 {
 	Close();
 
 	wxString host, base;
-	int port = kDefaultPort;
-	if (!ParseAddress(address, host, port, base)) {
-		error = wxString::Format(_("'%s' is not the address of a base: oes://server[:port]/<base>"), address);
+	int port = 0;
+	bool secure = false;
+	if (!ParseAddress(address, host, port, base, secure)) {
+		error = wxString::Format(_("'%s' is not the address of a base: oes://server[:port]/<base> or oess://…"), address);
 		return false;
 	}
 
-	// Compressed, as the protocol offers it: an answer of some size comes as a binary message.
-	const std::string url = "ws://" + std::string(host.utf8_str()) + ":" + std::to_string(port) + "/"
-		+ EscapeSegment(base) + "/client?compress=deflate";
-	auto socket = std::make_unique<httplib::ws::WebSocketClient>(url);
-	if (!socket->is_valid()) {
-		error = wxString::Format(_("'%s' is not the address of a base: oes://server[:port]/<base>"), address);
-		return false;
-	}
-	// A request goes out at once, as the server's answers do (appserver's listener): with Nagle's wait on, a small
-	// message behind one not yet acknowledged was held for the server's delayed ACK — up to 200 ms on Windows, per click.
-	socket->set_tcp_nodelay(true);
-	const auto connected = socket->connect();
-	if (!connected) {
-		error = connected.status() > 0
-			? wxString::Format(_("The server at %s:%d did not take the connection (%d)."), host, port, connected.status())
-			: wxString::Format(_("The server at %s:%d is not reached: %s."), host, port,
-				wxString::FromUTF8(httplib::to_string(connected.error())));
+	// OVER TLS — whom the client trusts (ClientTls).
+	std::shared_ptr<const ibTlsContext> tls;
+	wxString refused;
+	if (secure && !ClientTls(trusted, tls, refused)) {
+		error = wxString::Format(_("The connection to the server at %s:%d is not prepared: %s."), host, port, refused);
 		return false;
 	}
 
-	// Read with a bound — a read that waits out the library's own default is a failure that closes the socket, and a
-	// socket nobody asks anything of waits long: the reader's wait ends every second, and goes on unless it is closing.
-	socket->set_read_timeout(kReadPoll);
-
-	m_socket = std::move(socket);
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
+		m_opened = false;
 		m_closed = false;
+		m_reason.clear();
 		m_answer.reset();
 	}
-	m_stopping = false;
-	m_reader = std::thread(&ibProtocolConnectionServer::ReadMessages, this);
-	m_address = address;
-	return true;
+
+	m_ioThreads = std::make_unique<ibIoThreads>();
+	m_socketClient = std::make_shared<ibWebSocketClient>(m_ioThreads->GetContext(),
+		[this]() {
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				m_opened = true;
+			}
+			m_answered.notify_all();
+		},
+		[this](const ibString& text) {
+			Receive(text);
+		},
+		// A binary message is a text deflated, as the server packs one of some size (ibWebSocket::Send) — one that does
+		// not inflate: the two ends no longer agree, and the socket counts as gone.
+		[this](std::string packed) {
+			ibString text;
+			if (ibInflate(packed, text)) {
+				Receive(text);
+				return;
+			}
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				m_closed = true;
+				m_reason = "an answer that does not inflate";
+			}
+			m_answered.notify_all();
+		},
+		[this](const std::string& reason) {
+			// The socket gone: a request waiting is answered with that.
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				m_closed = true;
+				m_reason = reason;
+			}
+			m_answered.notify_all();
+		});
+	// The host as a resolver takes it — an IPv6 literal without the brackets the address wraps it in.
+	std::string name(host.utf8_str());
+	if (name.size() > 2 && name.front() == '[' && name.back() == ']')
+		name = name.substr(1, name.size() - 2);
+	if (tls)
+		m_socketClient->Secure(std::move(tls));
+	// Compressed, as the protocol offers it: an answer of some size comes as a binary message.
+	m_socketClient->Open(name, static_cast<std::uint16_t>(port), ClientPath(base) + "?compress=deflate");
+
+	// OPEN, OR WHY NOT — before the window, as a socket connected in place used to answer. The opening's own deadline
+	// bounds the wait (core/net/httpClient.cpp).
+	std::string reason;
+	{
+		std::unique_lock<std::mutex> lock(m_mutex);
+		m_answered.wait(lock, [this]() { return m_opened || m_closed; });
+		if (!m_closed) {
+			m_address = address;
+			m_trusted = trusted;
+			return true;
+		}
+		reason = m_reason;
+	}
+	Close();
+	error = wxString::Format(_("The connection to the server at %s:%d did not open: %s."), host, port,
+		wxString::FromUTF8(reason));
+	return false;
 }
 
 void ibProtocolConnectionServer::Close()
 {
-	if (!m_socket)
+	if (!m_socketClient)
 		return;
 
-	// The reader stops at its next wait, the socket closed under it; then the socket goes.
-	m_stopping = true;
-	m_socket->close();
-	if (m_reader.joinable())
-		m_reader.join();
-	m_socket.reset();
+	// The server told the socket is closing, and given a moment to hear it; then the thread stops, and nothing of the
+	// socket is called after.
+	m_socketClient->Close();
+	{
+		std::unique_lock<std::mutex> lock(m_mutex);
+		m_answered.wait_for(lock, kCloseWithin, [this]() { return m_closed; });
+	}
+	m_socketClient.reset();
+	m_ioThreads.reset();
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_closed = true;
+	}
 }
 
 ibProtocolConnectionServer::~ibProtocolConnectionServer()
@@ -165,41 +218,50 @@ ibProtocolConnectionServer::~ibProtocolConnectionServer()
 
 bool ibProtocolConnectionServer::Reconnect(wxString& error)
 {
-	// A copy: Open closes the socket first, and the address it parses must not be the member it may clear.
-	const wxString address = m_address;
+	// Copies: Open closes the socket first, and what it parses must not be the members it may clear.
+	const wxString address = m_address, trusted = m_trusted;
 	if (address.IsEmpty()) {
 		error = wxT("no server to return to");
 		return false;
 	}
-	return Open(address, error);
+	return Open(address, trusted, error);
 }
 
-bool ibProtocolConnectionServer::Exchange(const std::string& request, std::string& answer,
-	ibProtocolRefusal& refusal, wxString& error)
+std::unique_ptr<ibProtocolConnection> ibProtocolConnectionServer::OpenChannel(wxString& error)
+{
+	if (m_address.IsEmpty()) {
+		error = wxT("no server to open a second connection to");
+		return nullptr;
+	}
+	auto channel = std::make_unique<ibProtocolConnectionServer>();
+	if (!channel->Open(m_address, m_trusted, error))
+		return nullptr;
+	return channel;
+}
+
+bool ibProtocolConnectionServer::Exchange(const ibString& request, ibString& answer,
+	ibProtocol::ibRefusal& refusal, wxString& error)
 {
 	std::lock_guard<std::mutex> exchanging(m_exchanging);
 
 	// A socket gone took the clients logged in through it: log in anew.
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
-		if (!m_socket || m_closed) {
-			refusal = ibProtocolRefusal::NoSession;
+		if (!m_socketClient || m_closed) {
+			refusal = ibProtocol::ibRefusal::NoSession;
 			error = wxT("the connection to the server is closed");
 			return false;
 		}
 		m_answer.reset();
 	}
-	if (!m_socket->send(request)) {
-		refusal = ibProtocolRefusal::NoSession;
-		error = wxT("the request could not be sent");
-		return false;
-	}
+	// Queued, and sent in order; a socket that cannot take it goes, and the wait below hears that.
+	m_socketClient->Send(request);
 
-	// Its answer is the next answer the reader is handed: one request is in flight at a time.
+	// Its answer is the next answer the socket hands over: one request is in flight at a time.
 	std::unique_lock<std::mutex> lock(m_mutex);
 	m_answered.wait(lock, [this]() { return m_answer.has_value() || m_closed; });
 	if (!m_answer.has_value()) {
-		refusal = ibProtocolRefusal::NoSession;
+		refusal = ibProtocol::ibRefusal::NoSession;
 		error = wxT("the server closed the connection");
 		return false;
 	}
@@ -208,55 +270,32 @@ bool ibProtocolConnectionServer::Exchange(const std::string& request, std::strin
 	return true;
 }
 
-void ibProtocolConnectionServer::Listen(std::function<void(const std::string& text)> notified)
+void ibProtocolConnectionServer::Receive(const ibString& text)
+{
+	// A NOTIFICATION — a method and no id, said unasked: to whoever listens, here. Told by how it begins: the server
+	// writes a notification's method where an answer's id stands (ibClientHost::NotifyChanged, NotifyDebug), so an
+	// answer of a frame is never parsed twice, and the debugger's news, of any length, is never an answer.
+	if (text.StartsWith(kNotificationHead)) {
+		std::function<void(const ibString&)> notified;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			notified = m_notified;
+		}
+		if (notified)
+			notified(text);
+		return;
+	}
+
+	// …else the answer to the request waiting.
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_answer = text;
+	}
+	m_answered.notify_all();
+}
+
+void ibProtocolConnectionServer::Listen(std::function<void(const ibString& text)> notified)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	m_notified = std::move(notified);
-}
-
-void ibProtocolConnectionServer::ReadMessages()
-{
-	std::string message;
-	for (;;) {
-		const httplib::ws::ReadResult read = m_socket->read(message);
-		if (read == httplib::ws::Timeout) {
-			if (m_stopping)
-				break;
-			continue;
-		}
-		const bool binary = read == httplib::ws::Binary;
-		if ((binary && !Inflate(message)) || (!binary && read != httplib::ws::Text))
-			break;   // closed — by the server, or by Close
-
-		// A NOTIFICATION — a method and no id, said unasked: to whoever listens, here. Only a short message can be one
-		// (the server's notifications are a line), so an answer of a frame is never parsed twice.
-		if (message.size() <= kNotificationMax) {
-			ibProtocolNode node;
-			if (ibProtocolNode::Read(message, node) && node.Has(ibProtocolName::RpcMethod) && !node.Has(ibProtocolName::RpcId)) {
-				std::function<void(const std::string&)> notified;
-				{
-					std::lock_guard<std::mutex> lock(m_mutex);
-					notified = m_notified;
-				}
-				if (notified)
-					notified(message);
-				continue;
-			}
-		}
-
-		// …else the answer to the request waiting.
-		{
-			std::lock_guard<std::mutex> lock(m_mutex);
-			m_answer = std::move(message);
-		}
-		m_answered.notify_all();
-		message.clear();
-	}
-
-	// The socket gone: a request waiting is answered with that.
-	{
-		std::lock_guard<std::mutex> lock(m_mutex);
-		m_closed = true;
-	}
-	m_answered.notify_all();
 }

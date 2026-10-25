@@ -1198,6 +1198,8 @@ public:
 	// a document is looked up by number and ordered by date, and both are indexed for that reason.
 	ibValueMetaObjectAttributePredefined* GetDocumentNumber() const { return m_propertyAttributeNumber->GetMetaObject(); }
 	ibValueMetaObjectAttributePredefined* GetDocumentDate() const { return m_propertyAttributeDate->GetMetaObject(); }
+	// A document says which period its numbers restart in. Anything else that records a fact has one series.
+	virtual ibNumberPeriodicity GetNumberPeriodicity() const { return ibNumberPeriodicity::ibNumberPeriodicity_Nonperiodical; }
 	bool IsDocumentDate(const ibMetaID& id) const { return id == (*m_propertyAttributeDate)->GetMetaID(); }
 
 	// ⚠ IT REACHES THE QUERY AND NOTHING ELSE. Deliberately absent from
@@ -2088,6 +2090,7 @@ class BACKEND_API ibValueManagerDataObject : public ibValueManagerObject {
 
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray);//method call
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);//method call
+	virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 	//Get ref class
 	virtual ibClassID GetClassType() const;
@@ -2225,6 +2228,7 @@ public:
 
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
+	virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 	//check is empty
 	virtual bool IsEmpty() const override { return ibValue::IsEmpty(); }
@@ -2386,6 +2390,17 @@ protected:
 class BACKEND_API ibValueRecordDataObjectRef : public ibValueRecordDataObject {
 	public:
 protected:
+
+	// Which series the next number comes from, and — when the series is a period — the date
+	// column and the half-open range the bootstrap scan must stay inside. The default is the
+	// one series a catalog uses, and a document that is not periodic.
+	struct ibNumberSeriesKey {
+		int      m_interval = ibNumberSeriesNonperiodical;
+		wxString m_dateField;
+		long long m_from = 0;
+		long long m_to = 0;
+	};
+	virtual ibNumberSeriesKey NumberSeriesKey() const { return {}; }
 
 	// Code generator. Allocates the next per-(meta_guid, prefix) sequence
 	// number from sys_sequence and formats it per the attribute's type.
@@ -2629,7 +2644,7 @@ protected:
 
 	bool m_objModified;
 	const ibValueMetaObjectRecordDataMutableRef* m_metaObject;
-	ibReference* m_reference_impl;
+	std::unique_ptr<ibReference> m_reference_impl;
 
 	// Captured at successful ReadData; compared against the row's
 	// current DataVersion at Write/Delete time. Empty for new objects.

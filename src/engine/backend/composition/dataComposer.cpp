@@ -3,8 +3,9 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "dataComposerInternal.h"
+#include "backend/query/queryException.h"   // ibBackendQuerySyntaxException::Raise — the engine's door for the core parser
 
-#include "backend/query/queryParser.h"        // ibQueryParser — text -> AST
+#include "core/query/queryParser.h"        // ibQueryParser — text -> AST
 #include "backend/query/queryable.h"          // ibBackendQueryable / ibBackendQueryColumn
 #include "backend/query/queryableFactory.h"   // the source factory — the column dictionary
 #include "backend/query/dataQueryBuilder.h"   // ibDataQueryResult / ibSelectKind
@@ -13,9 +14,9 @@
 #include "backend/metaData.h"                 // ibMetaData::GetSourceFactory — resolve by-name sources per-config
 #include "backend/backend_exception.h"        // ibBackendCoreException
 #include "backend/query/queryReadState.h"  // ibQueryReadState — one build, one state of the data
-#include "backend/query/queryRender.h"        // ibQueryColumnFromPath — a dotted path becomes a column, once
+#include "core/query/queryRender.h"        // ibQueryColumnFromPath — a dotted path becomes a column, once
 #include "core/query/queryKeywords.h"         // ibQueryKeywordText — a grouping line is written in the query's own words
-#include "backend/query/queryLexer.h"         // ibQueryLexer::IsIdentifier — what a NAME is, asked of the tier that defines it
+#include "core/query/queryLexer.h"         // ibQueryLexer::IsIdentifier — what a NAME is, asked of the tier that defines it
 #include "backend/query/queryConstructorModel.h"   // ibQueryFieldsOfText / WalkPath — the author's fields and a path's walk, as the pickers read them
 #include "backend/functionalOption/functionalOptionGate.h"   // AnyUnavailable, AsApplication — a run shows what the base uses
 #include "backend/system/value/valueType.h"   // ibValueTypeDescription::AdjustValue — the empty value of a type, for «filled»
@@ -28,7 +29,7 @@
 // metaobject kind — the factory never resolves it; the auxiliary registry (ibTempSourceScope) catches
 // the name first and returns the registered queryable directly. Kept opaque on purpose: the value is
 // irrelevant to resolution (ResolveSource keys on the name alone), it only has to parse as <ns>.<name>.
-static const wxChar* const s_tempSourceNamespace = wxT("Temp");
+static const ibChar* const s_tempSourceNamespace = wxT("Temp");
 
 ibDataDBComposer& ibDataDBComposer::FromSource(const wxString& ns, const wxString& name)
 {
@@ -562,9 +563,9 @@ ibDataComposer& ibDataComposer::ClearSettings()
 
 // The nested source's alias when the settings are written over an author's query. ASCII, a legal
 // identifier, and unlikely to collide with anything a person names a table.
-static const wxChar* kAuthorQuerySource = wxT("AuthorQuery");
+static const ibChar* kAuthorQuerySource = wxT("AuthorQuery");
 
-const wxChar* ibDataDBComposer::AuthorQuerySourceName() { return kAuthorQuerySource; }
+const ibChar* ibDataDBComposer::AuthorQuerySourceName() { return kAuthorQuerySource; }
 
 // ⭐⭐ WHAT THE SELECT LIST IS WHEN NOBODY HAS CHOSEN A FIELD — and the answer is not one answer,
 // because it is not one question (see ibDataComposer::ReadsEveryField).
@@ -1841,7 +1842,9 @@ void ibDataDBComposer::EnsureTempTables() const
 ibQuerySelectPtr ibDataDBComposer::ParseComposed(const wxString& text, ibQueryPackage& package,
 	std::map<wxString, const ibQuerySelect*>& named) const
 {
-	package = ibQueryParser().ParsePackage(text);
+	// The engine's door: the core parser's refusal is raised as the engine's (ibBackendQuerySyntaxException).
+	try { package = ibQueryParser().ParsePackage(text); }
+	catch (const ibQueryRefusal& refusal) { ibBackendQuerySyntaxException::Raise(refusal); }
 	named.clear();
 	if (package.m_statements.empty())
 		return nullptr;

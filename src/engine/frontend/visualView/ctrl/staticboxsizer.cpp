@@ -67,7 +67,7 @@ void ibValueStaticBoxSizer::Update(wxObject* wxobject, ibVisualHost* visualHost)
 	target->SetMinSize(typeConv::SizeToWxSize(m_propertyMinSize->GetValueAsSize()));
 	// A group's caption is a HEADING: without a font of its own it is the system font in bold, so it reads as
 	// the title of what is inside it rather than as one more small label on the grey.
-	if (m_propertyFont->IsOk()) {
+	if (!m_propertyFont->IsEmptyProperty()) {
 		target->SetFont(typeConv::FontToWxFont(m_propertyFont->GetValueAsFont()));
 	}
 	else {

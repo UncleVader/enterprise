@@ -253,7 +253,7 @@ int ibValueSystemFunction::StrLineCount(const ibValue& cSource)
 
 	int lines = 1;   // text always has a first line, empty included
 	for (size_t pos = 0; pos < src.length(); ++pos) {
-		const wxChar ch = src[pos];
+		const ibChar ch = src[pos];
 		if (ch == wxT('\r')) {
 			if (pos + 1 < src.length() && src[pos + 1] == wxT('\n'))
 				++pos;   // CRLF is a single break
@@ -410,14 +410,16 @@ int ibValueSystemFunction::GetQuartOfYear(const ibValue& cData)  { return static
 
 #include <wx/filename.h>
 
+#include "core/fileSystem.h"   // ibCopyFile, ibRemoveFile
+
 bool ibValueSystemFunction::CopyFile(const wxString& src, const wxString& dst)
 {
-	return wxCopyFile(src, dst);
+	return ibCopyFile(src, dst);
 }
 
 bool ibValueSystemFunction::DeleteFile(const wxString& file)
 {
-	return wxRemoveFile(file);
+	return ibRemoveFile(file);
 }
 
 wxString ibValueSystemFunction::GetTempDir()
@@ -755,15 +757,13 @@ ibValue ibValueSystemFunction::DeserializeValue(const wxString& strJson)
 		ibBackendCoreException::Error(_("There is no open configuration to read this value against"));
 
 	ibJsonProvider provider;
-	provider.SetTypeLookup([](const wxString& name) -> ibClassID {
+	provider.SetTypeLookup([](const ibString& name) -> ibClassID {
 		return activeMetaData != nullptr
 			? activeMetaData->GetIDObjectFromString(name) : ibClassID(0); });
 
-	// ⚠ THE BUFFER OUTLIVES THE READER, deliberately — a reader BORROWS its bytes (fs.h), and
-	// handing it a temporary leaves it reading freed memory.
 	const wxScopedCharBuffer utf8 = strJson.utf8_str();
 
-	wxMemoryBuffer bytes;
+	ibMemoryBuffer bytes;
 	bytes.AppendData(utf8.data(), utf8.length());
 
 	ibReaderMemory reader(bytes);
@@ -855,11 +855,13 @@ wxString ibValueSystemFunction::ComputerName()//ComputerName
 	return wxGetHostName();
 }
 
+#include "core/startProcess.h"   // a script on the server runs on a fiber, where wxExecute asserts
+
 void ibValueSystemFunction::RunApp(const wxString& sCommand)//RunApp
 {
 	if (ibBackendException::IsEvalMode())
 		return;
-	wxExecute(sCommand);
+	ibStartProcess(sCommand);
 }
 
 void ibValueSystemFunction::SetAppTitle(const wxString& sTitle)//SetAppTitle
@@ -1024,8 +1026,6 @@ void ibValueSystemFunction::RollBackTransaction()
 //****************************************************************************
 //*                                  Jobs                                    *
 //****************************************************************************
-
-#include "backend/job/jobManager.h"
 
 int ibValueSystemFunction::RunScheduledJobs()
 {

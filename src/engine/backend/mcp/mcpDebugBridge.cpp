@@ -7,7 +7,7 @@
 #include "backend/appData.h"
 #include "backend/debugger/debugClient.h"
 #include "backend/mcp/mcpServer.h"
-#include "core/fileSystem/fs.h"   // ibWriterMemory / ibReaderMemory - the node on the wire
+#include "core/memory/memoryStream.h"   // ibWriterMemory / ibReaderMemory - the node on the wire
 
 #include <chrono>
 
@@ -77,15 +77,17 @@ ibMcpDebugBridge::Stop ibMcpDebugBridge::GetStop() const
 	// connections — went on answering "1 attached, ready" in the same breath, and `compose_run`
 	// refused with "no application is running" against an application that was running perfectly
 	// well (measured 2026-09-07 with two clients on one base).
+	//
+	// 🛑 AND A RUNTIME IS ONE THAT ANSWERED. IsConnected is a socket in the slot, which a scanner holds while
+	// it dials a port nobody listens on — about four seconds a try on Windows — so the runtime just stopped
+	// was still "connected" seconds after its process had gone (2026-10-21).
 	answer.m_connected = false;
 
 	if (debugClient != nullptr) {
-		for (const auto* connection : debugClient->GetListConnection()) {
-			if (connection != nullptr && connection->IsConnected()) {
+		debugClient->ForEachConnection([&answer](const auto& connection) {
+			if (connection.IsVerifiedConnection())
 				answer.m_connected = true;
-				break;
-			}
-		}
+		});
 	}
 
 	return answer;
@@ -144,7 +146,7 @@ bool ibMcpDebugBridge::Evaluate(const wxString& expression, wxString& answer, in
 }
 
 bool ibMcpDebugBridge::Sandbox(const wxString& code, bool& ran, wxString& answer, wxString& json,
-	std::vector<wxString>& printed, wxLongLong_t& microseconds, int timeoutMs)
+	std::vector<wxString>& printed, long long& microseconds, int timeoutMs)
 {
 	const std::lock_guard<std::mutex> one(m_oneQuestion);
 	ran = false;
@@ -191,7 +193,7 @@ bool ibMcpDebugBridge::Sandbox(const wxString& code, bool& ran, wxString& answer
 }
 
 bool ibMcpDebugBridge::Screenshot(const wxString& reason, const wxString& area, const wxString& format,
-	bool& allowed, wxMemoryBuffer& png, wxString& focus, int timeoutMs)
+	bool& allowed, ibMemoryBuffer& png, wxString& focus, int timeoutMs)
 {
 	const std::lock_guard<std::mutex> one(m_oneQuestion);
 	allowed = false;
@@ -237,7 +239,7 @@ bool ibMcpDebugBridge::Screenshot(const wxString& reason, const wxString& area, 
 	return arrived;
 }
 
-void ibMcpDebugBridge::OnScreenshot(const wxMemoryBuffer& png, const wxString& focus)
+void ibMcpDebugBridge::OnScreenshot(const ibMemoryBuffer& png, const wxString& focus)
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -381,8 +383,6 @@ bool ibMcpDebugBridge::Compose(const ibDataNode& request, ibDataNode& result, bo
 		answered = m_composeAnswered;
 		refusal  = m_composeRefusal;
 		if (answered && m_composed.GetDataLen() > 0) {
-			// ⚠ A NAMED LOCAL, because a reader BORROWS its bytes: handing it a temporary leaves it
-			// reading freed memory, which is why fs.h deletes that overload outright.
 			ibReaderMemory reader(m_composed);
 			ibBinaryProvider().Read(reader, result);
 		}
@@ -392,7 +392,7 @@ bool ibMcpDebugBridge::Compose(const ibDataNode& request, ibDataNode& result, bo
 	return arrived;
 }
 
-void ibMcpDebugBridge::OnComposed(bool answered, const wxString& refusal, const wxMemoryBuffer& result)
+void ibMcpDebugBridge::OnComposed(bool answered, const wxString& refusal, const ibMemoryBuffer& result)
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -475,7 +475,7 @@ void ibMcpDebugBridge::Announce(const wxString& text) const
 // events
 //---------------------------------------------------------------------------
 
-void ibMcpDebugBridge::OnSessionStart(wxSocketClient* sock)
+void ibMcpDebugBridge::OnSessionStart()
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -484,7 +484,7 @@ void ibMcpDebugBridge::OnSessionStart(wxSocketClient* sock)
 	Announce(wxT("debugger: a runtime connected"));
 }
 
-void ibMcpDebugBridge::OnSessionEnd(wxSocketClient* sock)
+void ibMcpDebugBridge::OnSessionEnd()
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -499,7 +499,7 @@ void ibMcpDebugBridge::OnSessionEnd(wxSocketClient* sock)
 	Announce(wxT("debugger: the runtime disconnected"));
 }
 
-void ibMcpDebugBridge::OnEnterLoop(wxSocketClient* sock, const ibDebugLineData& data)
+void ibMcpDebugBridge::OnEnterLoop(const ibDebugLineData& data)
 {
 	wxString where;
 	{
@@ -528,7 +528,7 @@ void ibMcpDebugBridge::OnEnterLoop(wxSocketClient* sock, const ibDebugLineData& 
 		where, data.m_line));
 }
 
-void ibMcpDebugBridge::OnLeaveLoop(wxSocketClient* sock, const ibDebugLineData& data)
+void ibMcpDebugBridge::OnLeaveLoop(const ibDebugLineData& data)
 {
 	Running();
 }
@@ -618,7 +618,7 @@ std::vector<ibMcpDebugBridge::Printed> ibMcpDebugBridge::TakeOutput(bool clear)
 }
 
 void ibMcpDebugBridge::OnSandboxResult(bool ran, const wxString& answer, const wxString& json,
-	wxLongLong_t microseconds)
+	long long microseconds)
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -640,7 +640,7 @@ void ibMcpDebugBridge::OnSetStack(const ibStackData& stackData)
 	m_stop.m_stack.clear();
 	for (const ibStackData::ibStackRow& row : stackData.m_stackData) {
 		Frame frame;
-		frame.m_module = row.m_moduleName;
+		frame.m_module = row.m_fullName;
 		frame.m_line = row.m_moduleLine;
 		m_stop.m_stack.push_back(frame);
 	}

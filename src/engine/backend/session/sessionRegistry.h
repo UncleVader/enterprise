@@ -36,6 +36,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -47,6 +48,7 @@
 #include <vector>
 
 class ibSessionSnapshot;
+struct ibQueryExpr;   // InsertedRowIds — the ids as the query builder takes them
 
 // Connection-holder identity for ibSessionRegistry's pool checkouts.
 // Empty subclass — exists purely so the type itself names the owner,
@@ -68,6 +70,7 @@ enum class ibRegistryRequestKind {
 	Detach,        // drop user identity, session stays Anonymous
 	Remove,        // teardown — DELETE row, release lock, drop from m_own
 	SetActivity,   // update currentActivity column (scripts / handlers)
+	SetTokenHash,  // update tokenHash column — a thin client's resume token, its digest (ibSession::SetTokenHash)
 	SetExclusive,  // acquire/release process-wide exclusive (monopoly) mode
 };
 
@@ -83,6 +86,10 @@ struct BACKEND_API ibRegistryRequest {
 	// SetActivity payload.
 	wxString activity;
 
+	// SetTokenHash payload — the digest, and the caller's wait for the verdict: true — written, or no row to write.
+	wxString                            tokenHash;
+	std::shared_ptr<std::promise<bool>> written;
+
 	// SetExclusive payload — true acquires, false releases.
 	bool     exclusiveOn = false;
 };
@@ -97,7 +104,7 @@ struct BACKEND_API ibRegistryRequest {
 // -------------------------------------------------------------------
 struct BACKEND_API ibConnectRequest {
 	wxString  m_computer;
-	wxString  m_address;           // "host:port" for web; "" for desktop
+	ibString  m_address;           // "host:port" for web; "" for desktop
 	// Process-level run mode — how the process holds the base, the same
 	// for every session in it.
 	ibRunMode m_appMode = eUNKNOWN_MODE;
@@ -207,7 +214,7 @@ public:
 	static constexpr int kActivityWidth = 128;
 
 	// ---- Session factory facade ----
-	// Wraps the EnsureStartedForCreateSession + Connect(req) handshake.
+	// Wraps the Connect(req) handshake — the registry is up already, started by its base as it opened.
 	// `appData->CreateSession*` forward here; per-tab web flow and the
 	// clients of the protocol use the (presetGuid, address) overload to
 	// inject their own identity.
@@ -229,7 +236,7 @@ public:
 	                                         const wxString& computer,
 	                                         ibSessionKind kind,
 	                                         const wxString& presetGuid,
-	                                         const wxString& address,
+	                                         const ibString& address,
 	                                         ibConnectRequest::SessionFactory factory);
 
 	// UNLISTED — a session the registry never takes in: no sys_session row, no cluster
@@ -243,25 +250,28 @@ public:
 	// connection timeout per session — around 30 seconds each in the GUI harness — for a row
 	// nobody reads. Imitating the session is the right answer there, not creating the table.
 	//
+	// Unlisted, and this base's all the same: the registry owns it and the base's pool gives its
+	// connection, as for a listed one (Connect). A session of no base makes a configuration of none.
+	//
 	// Ownership: the caller hands over a freshly built session and gets the only holder for
 	// it back, exactly as the registered factories do.
-	static ibSessionHolder MintUnlisted(std::shared_ptr<ibSession> session);
+	ibSessionHolder MintUnlisted(std::shared_ptr<ibSession> session);
 
 	// ---- Thread + queue ----
 	// Set whether the registry owns sys_session row I/O. Default false —
 	// handlers only drive in-memory state transitions (useful for tests
 	// or embedding scenarios where a different actor keeps the table).
-	// CreateSessionWithFactory flips this to true before Start() so the
+	// Start flips this to true before its thread runs, so the
 	// handlers take over INSERT / UPDATE / DELETE and `HoldRowLocks`
-	// takes real pessimistic locks. Must be set BEFORE Start() — Start
-	// decides whether to check out pool connections based on this flag.
+	// takes real pessimistic locks — Start decides whether to check out
+	// pool connections based on this flag.
 	void EnableSysSessionOwnership(bool enabled) { m_ownsSysSession = enabled; }
 	bool OwnsSysSession() const { return m_ownsSysSession; }
 
-	// Start the consumer thread. No-op if already running. Invariant:
-	// must be called once — and only once — before any Submit(). Typically
-	// called via EnsureStartedForCreateSession from CreateSessionWithFactory
-	// right after the DB is open.
+	// Start the consumer thread — sys_session ownership on and the policies
+	// added first. No-op if already running. Invariant: must be called
+	// once — and only once — before any Submit(): by its base as it opens
+	// (ibApplicationInstance::Open), after the configuration, before the jobs.
 	void Start();
 
 	// Signal stop, wake the thread, join it. The kill-switch — submits
@@ -434,11 +444,10 @@ public:
 
 	// ---- Session-state mutators (single-authority entry points) ----
 	// Registry is the only mutator of ibSession internals. Auth flow
-	// (appData / login dialog) and debug bring-up route through here
-	// instead of poking the session directly — keeps SetUserInfo /
-	// SetSessionRawPassword / EnableDebug under one friend declaration
-	// (friend class ibSessionRegistry) and out of the public ibSession
-	// surface.
+	// (appData / login dialog) routes through here instead of poking the
+	// session directly — keeps SetUserInfo / SetSessionRawPassword under
+	// one friend declaration (friend class ibSessionRegistry) and out of
+	// the public ibSession surface.
 
 	// Install authenticated user identity on a session. Writes the user
 	// info struct + caches the plain-text password for Designer "Start
@@ -448,11 +457,6 @@ public:
 	void InstallUser(ibSession* s,
 	                 const ibUserInfo& info,
 	                 const wxString& rawPassword);
-
-	// Allocate the per-session debug slot. Called from appData's
-	// OnAuthenticated listener when the process started with --debug.
-	// Idempotent — second call is a no-op.
-	void EnableDebugForSession(ibSession* s);
 
 	// ---- Fallback session ----
 	// Returned by Current() when the calling thread is unbound. The
@@ -517,12 +521,6 @@ public:
 
 private:
 
-	// Idempotent registry bring-up driven from CreateSessionWithFactory.
-	// First call enables sys_session ownership, registers the
-	// DesignerExclusive and ServiceExclusive policies, and starts the
-	// consumer thread. Subsequent calls are no-ops.
-	void EnsureStartedForCreateSession();
-
 	void ThreadBody() noexcept;
 
 	// Drain queue: pop snapshot from each bin top-down (Urgent first),
@@ -537,6 +535,7 @@ private:
 	void ProcessDetach(ibRegistryRequest& req);
 	void ProcessRemove(ibRegistryRequest& req);
 	void ProcessSetActivity(ibRegistryRequest& req);
+	void ProcessSetTokenHash(ibRegistryRequest& req);
 	void ProcessSetExclusive(ibRegistryRequest& req);
 
 	// Drains m_pendingExclusive — called from ProcessSetExclusive(off)
@@ -552,6 +551,10 @@ private:
 	// stale sweep every 3 s (kRefreshInterval / kSweepInterval).
 	void JobSweepStale();
 	void JobRefreshSnapshot();
+
+	// The ids of the rows this process inserted, in parts of one statement each: the beat and the signal check
+	// name a part in one IN list (sessionRegistry.cpp, kRowsInAStatement).
+	std::vector<std::vector<std::shared_ptr<ibQueryExpr>>> InsertedRowIds() const;
 
 	// Refresh lastActive on every own row. Companion to JobSweepStale's
 	// fallback-cutoff path — peers use lastActive staleness to detect
@@ -700,8 +703,8 @@ private:
 	std::deque<ibRegistryRequest>                                m_pendingExclusive;
 
 	// --- sys_session ownership ----
-	// Off by default — handlers only drive state transitions. Flip to
-	// true (via EnableSysSessionOwnership) before Start() to take over
+	// Off by default — handlers only drive state transitions. Start turns
+	// it on (EnableSysSessionOwnership) before its thread runs, taking over
 	// sys_session row I/O + pessimistic row locks.
 	bool                                                         m_ownsSysSession = false;
 
@@ -869,7 +872,7 @@ ibSessionHolder ibApplicationInstance::CreateSession(ibSessionKind kind)
 template<class SessionT>
 ibSessionHolder ibApplicationInstance::CreateSession(ibSessionKind kind,
                                                  const wxString& presetGuid,
-                                                 const wxString& address)
+                                                 const ibString& address)
 {
 	static_assert(std::is_base_of<ibSession, SessionT>::value,
 		"CreateSession<T>: T must derive from ibSession");

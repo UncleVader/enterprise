@@ -265,6 +265,18 @@ protected:
 		return false;
 	}
 
+	// The declared default of a parameter of the module's function — the answer a derived class's
+	// GetParamDefValue gives for a method it calls through ExecAsProc / ExecAsFunc, when a call left
+	// that argument out. False for a parameter without one, or a name that is not the module's.
+	bool GetParamDefValue(const ibString& strMethodName, const long lParamNum, ibValue& pvarParamDefValue) const
+	{
+		if (auto pu = GetProcUnit()) {
+			const ibByteCode* const bc = pu->GetByteCode();
+			return bc != nullptr && bc->GetParamDefValue(bc->FindMethod(strMethodName), lParamNum, pvarParamDefValue);
+		}
+		return false;
+	}
+
 	// The event's array form — see the variadic above. Out of line: it asks the configuration for its
 	// event handlers, and this header is included nearly everywhere.
 	void ExecAsEvent(const ibString& strEventName, ibValue** paParams, const long lSizeArray) const;
@@ -323,6 +335,11 @@ protected:
 	// Designer and runtime, so it resolves ThisForm.Controls / ThisObject.
 	// RegisterRecords without a ProcUnit. Returns nullptr if not a bound name.
 	ibValue* GetBoundValue(const wxString& name) const;
+
+	// The same binding, copied into `out`. A cell that already holds a reference
+	// hands that reference over, so a mutable one stays mutable. A read-only
+	// `out` is a failed read: true must not leave the previous value standing.
+	bool GetBoundValue(const wxString& name, ibValue& out) const;
 
 	// Lazy-create m_compileModule from the descriptor's meta-object (shared by
 	// all Bind* entry points). Propagates the parent's compile scope chain.

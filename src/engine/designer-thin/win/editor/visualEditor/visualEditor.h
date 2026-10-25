@@ -1,6 +1,10 @@
 ﻿#ifndef __VISUAL_EDITOR_H__
 #define __VISUAL_EDITOR_H__
 
+#include <wx/wx.h>
+#include <wx/aui/aui.h>
+
+#include "frmclient/backend/metaData.h"   // ibFormAttributeValue — its form's tab
 #include "innerFrame.h"
 #include "designer-thin/win/editor/codeEditor/codeEditorDesigner.h"
 
@@ -8,6 +12,7 @@
 
 #include "core/description/commandDescription.h"  // ibCommandDescription — a command row's path
 #include "core/description/sourceDescription.h"   // ibSourceHop — an attribute row's path
+#include "protocol/protocol.h"                     // ibProtocol::ibSchema::ibProperties::ibSourceDataType
 
 #include <wx/aui/auibook.h>
 #include <wx/splitter.h>
@@ -18,11 +23,10 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <stack>
+#include <set>
 #include <vector>
 
 class ibModuleEditDocument;
-class ibPropertySerializable;
 
 class ibFormAttributeValue;
 class ibFormCommandValue;
@@ -42,13 +46,6 @@ class ibValueCommandBarItem;
 
 #define wxNOTEBOOK_PAGE_DESIGNER 0
 #define wxNOTEBOOK_PAGE_CODE_EDITOR 1
-
-#define oes_clipboard_frame		wxT("oes_clipboard_frame")
-#define oes_clipboard_attribute	wxT("oes_clipboard_attribute")
-#define oes_clipboard_command	wxT("oes_clipboard_command")
-// A command of a control's command bar — on the system's clipboard as the others are: the desktop held it in its process
-// (commandBar.cpp's s_commandClipboard), out of reach of another window.
-#define oes_clipboard_command_bar_item	wxT("oes_clipboard_command_bar_item")
 
 // wxDropTarget for a node dragged from a form-editor tree — the desktop's (designer visualEditor.h). Shared by the form
 // CANVAS and the OBJECT TREE. It holds the registered draggable KINDS (ibFormDragItem — a source path, a command
@@ -73,101 +70,66 @@ private:
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-// ibDesignerWindow - Extends the ibInnerFrame to show the object highlight
+// ibDesignerWindow
 ///////////////////////////////////////////////////////////////////////////////
 
-// THE DESKTOP'S CARD — the form's frame on the canvas, and the box around the selected control. The desktop pushed its
-// paint handler onto every panel a control can sit in as the panel was made (GetHighlightPaintHandler); the client
-// builds those panels itself, so the panel a box is drawn on is bound as it is selected (SetSelectedPanel) — bound, not
-// pushed: a window that goes takes a binding with it.
+// THE FORM'S CARD on the canvas, with the selected control boxed: a dashed box, red round a window and blue round a
+// sizer, out to the border its sizer item lays it out with. The box is painted over the panel the control sits in; the
+// client builds those panels itself, so the panel is bound as it is selected — bound, not pushed: a window that goes
+// takes a binding with it.
 class ibDesignerWindow : public ibInnerFrame {
-	wxDECLARE_CLASS(ibDesignerWindow);
-private:
-
-	void DrawRectangle(wxDC& dc, const wxPoint& point, const wxSize& size, ibValueFrame* object);
-
 public:
 
-	ibDesignerWindow(wxWindow* parent, int id, const wxPoint& pos, const wxSize& size = wxDefaultSize,
-		long style = 0, const wxString& name = wxT("designer_win"));
-	virtual ~ibDesignerWindow();
+	ibDesignerWindow(wxWindow* parent, wxWindowID id, const wxPoint& pos);
 
-	void SetGrid(int x, int y);
-	void SetSelectedSizer(wxSizer* sizer) { m_selSizer = sizer; }
-	void SetSelectedItem(wxObject* item) { m_selItem = item; }
-	void SetSelectedObject(ibValueFrame* object) { m_selObj = object; }
-	void SetSelectedPanel(wxWindow* actPanel);
+	// The control boxed — drawn as its window, or else as its sizer — on the panel it sits in.
+	void SetSelection(ibValueFrame* object, wxWindow* window, wxSizer* sizer, wxWindow* panel);
 
-	// Clear the selection — the four pointers go together, none is meaningful without the others. The editor clears it
-	// before every draw of the form: a frame of another shape builds the controls anew, and the canvas never paints from
-	// a control that is gone.
-	void ClearSelection() { m_selSizer = nullptr; m_selItem = nullptr; m_selObj = nullptr; m_actPanel = nullptr; }
-
-	wxSizer* GetSelectedSizer() const { return m_selSizer; }
-	wxObject* GetSelectedItem() const { return m_selItem; }
-	ibValueFrame* GetSelectedObject() const { return m_selObj; }
-	wxWindow* GetActivePanel() const { return m_actPanel; }
-
-	void HighlightSelection(wxDC& dc);
-	void OnPaint(wxPaintEvent& event);
+	// Nothing boxed. The editor clears it before every draw of the form: a frame of another shape builds the controls
+	// anew, and the canvas never paints from a control that is gone.
+	void ClearSelection() { SetSelection(nullptr, nullptr, nullptr, nullptr); }
 
 private:
 
-	// The panel the box is drawn on, painted — its own paint first, the box over it.
+	// The box in the panel's coordinates; false when there is none to draw.
+	bool GetSelectionRect(wxRect& rect) const;
+	void DrawSelection(wxDC& dc) const;
+
+	// The card painted, and the box with it when the box is on the content panel: there it may stick out of the panel.
+	void OnPaint(wxPaintEvent& event);
+	// The panel the box is drawn on, painted with the box over it.
 	void OnPanelPaint(wxPaintEvent& event);
 
-	int m_x;
-	int m_y;
-	wxSizer* m_selSizer = nullptr;
-	wxObject* m_selItem = nullptr;
-	ibValueFrame* m_selObj = nullptr;
-	wxWindow* m_actPanel = nullptr;
-
-	wxDECLARE_EVENT_TABLE();
+	ibValueFrame* m_selectedObject = nullptr;
+	wxWindow* m_selectedWindow = nullptr;
+	wxSizer* m_selectedSizer = nullptr;
+	wxWindow* m_selectedPanel = nullptr;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 // ibVisualEditorCmd
 ///////////////////////////////////////////////////////////////////////////////
 
-// THE DESKTOP'S COMMAND — done, and undone to what was before it.
+// THE DESKTOP'S COMMAND — a change of the form, done, and undone to what was before it.
 class ibVisualEditorCmd {
-protected:
-
-	/**
-	 * Executes the command.
-	 */
-	virtual void DoExecute() = 0;
-
-	/**
-	 * Restores the state prior to the command's execution.
-	 */
-	virtual void DoRestore() = 0;
-
 public:
 
-	ibVisualEditorCmd() : m_executed(false) {}
-
-	// Virtual: the processor deletes commands through this type.
+	// Virtual: the history deletes commands through this type.
 	virtual ~ibVisualEditorCmd() = default;
 
-	void Execute() {
-		if (!m_executed) {
-			DoExecute();
-			m_executed = true;
-		}
-	}
-
-	void Restore() {
-		if (m_executed) {
-			DoRestore();
-			m_executed = false;
-		}
-	}
+	// Done once, undone once: a second call in a row changes nothing.
+	void Execute() { if (!m_done) { DoExecute(); m_done = true; } }
+	void Restore() { if (m_done) { DoRestore(); m_done = false; } }
 
 protected:
 
-	bool m_executed;
+	// The change made, and the form put back as it was before it.
+	virtual void DoExecute() = 0;
+	virtual void DoRestore() = 0;
+
+private:
+
+	bool m_done = false;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -179,77 +141,51 @@ class ibVisualEditorNotebook : public wxAuiNotebook {
 public: class ibVisualEditor :
 	public wxPanel {
 
-	// THE DESKTOP'S COMMAND PROCESSOR — the commands done and undone, and where the form was last handed back (its save
-	// point).
+	// THE DESKTOP'S COMMAND PROCESSOR — the history of the form's commands: those before the cursor done, those after it
+	// undone; and where the form was last handed back (its save point).
 	class ibCommandProcessor {
 	public:
 
-		ibCommandProcessor() : m_savePoint(0) {}
-
-		~ibCommandProcessor() { Reset(); }
-
+		// Done, and the undone ones after the cursor dropped: a new command starts another branch. A save point among
+		// them goes with them — the form can no longer come back to what was handed. The cursor moves first, as an
+		// undo's and a redo's does: the form a command draws is handed as it is drawn (ibVisualEditor::Draw), and is
+		// past the save point then.
 		void Execute(ibVisualEditorCmd* command) {
+			if (m_savePoint > m_done)
+				m_savePoint = kNoSavePoint;
+			m_history.resize(m_done);
+			m_history.emplace_back(command);
+			++m_done;
 			command->Execute();
-			m_undoStack.push(command);
-			// A new command kills the redo branch — and the stack owns what it drops.
-			while (!m_redoStack.empty()) {
-				wxDELETE(m_redoStack.top());
-				m_redoStack.pop();
-			}
+		}
+		// …A COMMAND THE SERVER DID (a door's answer): done as Execute does, the save point moved with it — the server
+		// holds the form it leaves, so its drawing hands nothing; a redo of it does (the server may have gone on since).
+		void Receive(ibVisualEditorCmd* command) {
+			m_history.resize(m_done);
+			m_history.emplace_back(command);
+			m_savePoint = ++m_done;
+			command->Execute();
 		}
 
-		bool Undo() {
-			if (!m_undoStack.empty()) {
-				ibVisualEditorCmd* command = m_undoStack.top();
-				m_undoStack.pop();
-				command->Restore();
-				m_redoStack.push(command);
-			}
-			return true;
-		}
+		void Undo() { if (m_done > 0) m_history[--m_done]->Restore(); }
+		void Redo() { if (m_done < m_history.size()) m_history[m_done++]->Execute(); }
 
-		bool Redo() {
-			if (!m_redoStack.empty()) {
-				ibVisualEditorCmd* command = m_redoStack.top();
-				m_redoStack.pop();
-				command->Execute();
-				m_undoStack.push(command);
-			}
-			return true;
-		}
+		// The whole history destroyed, not forgotten.
+		void Reset() { m_history.clear(); m_done = 0; m_savePoint = 0; }
 
-		// Drop the whole history — destroying it, not forgetting it.
-		void Reset() {
-			while (!m_redoStack.empty()) {
-				wxDELETE(m_redoStack.top());
-				m_redoStack.pop();
-			}
-			while (!m_undoStack.empty()) {
-				wxDELETE(m_undoStack.top());
-				m_undoStack.pop();
-			}
-			m_savePoint = 0;
-		}
+		bool CanUndo() const { return m_done > 0; }
+		bool CanRedo() const { return m_done < m_history.size(); }
 
-		bool CanUndo() const {
-			return (!m_undoStack.empty());
-		}
-
-		bool CanRedo() const {
-			return (!m_redoStack.empty());
-		}
-
-		void SetSavePoint() {
-			m_savePoint = m_undoStack.size();
-		}
-
-		bool IsAtSavePoint() const {
-			return m_savePoint == m_undoStack.size();
-		}
+		void SetSavePoint() { m_savePoint = m_done; }
+		bool IsAtSavePoint() const { return m_savePoint == m_done; }
 
 	private:
-		std::stack<ibVisualEditorCmd*> m_undoStack, m_redoStack;
-		size_t m_savePoint;
+
+		static constexpr size_t kNoSavePoint = static_cast<size_t>(-1);
+
+		std::vector<std::unique_ptr<ibVisualEditorCmd>> m_history;
+		size_t m_done = 0;        // the commands done — the cursor in the history
+		size_t m_savePoint = 0;   // the cursor when the form was handed back
 	};
 
 public:
@@ -266,6 +202,13 @@ public:
 		virtual wxWindow* GetBackgroundWindow() const override;
 		virtual void OnClickFromApp(wxWindow* currentWindow, wxMouseEvent& event) override;
 		virtual void SelectControl(ibValueFrame* control) override { m_formHandler->SelectObject(control); }
+		// Its rows held or asked of the server, received with its values as its node has them.
+		virtual bool Fetch(ibValueFrame* control) override {
+			if (!m_formHandler->FetchRows(control->GetControlID()))
+				return false;
+			m_formHandler->Receive(m_formHandler->m_formNode);
+			return true;
+		}
 		virtual void ModifyProperty(ibProperty* prop, const wxVariant& oldValue, const wxVariant& newValue) override {
 			m_formHandler->ModifyProperty(prop, oldValue, newValue);
 		}
@@ -292,6 +235,14 @@ public:
 
 	protected:
 
+		// A control reads its node — the editor's, its rows first (they make its properties), then its values and whether
+		// it is open in the tree.
+		virtual void ReadControl(ibValueFrame* control, const ibProtocolNode& node) override {
+			ibVisualHostClient::ReadControl(control, node);
+			m_formHandler->Receive(control);
+			ibVisualEditor::Receive(control, node);
+			control->SetExpanded(node.GetBool(ibProtocol::ibForm::Expanded, true));
+		}
 		// The card sized to the form it holds, and the canvas to the card.
 		virtual void UpdateVirtualSize() override;
 
@@ -304,6 +255,8 @@ public:
 	};
 
 	//////////////////////////////////////////////////////////////////////////////////////////
+
+	class ibVisualEditorObjectTreeItemData;
 
 	class ibVisualEditorObjectTree : public wxPanel {
 	public:
@@ -331,69 +284,45 @@ public:
 		void SelectCommandItem(const ibValueLayerObject* layer);
 		void SelectCommandItem(long long controlId, unsigned int index);
 
-	protected:
-
-		void OnSelChanged(wxTreeEvent& event);
-		void OnRightClick(wxTreeEvent& event);
-		void OnBeginDrag(wxTreeEvent& event);
-		void OnEndDrag(wxTreeEvent& event);
-		void OnExpansionChange(wxTreeEvent& event);
-		void OnKeyDown(wxTreeEvent& event);
-
 	private:
 
-		/**
-		 * Builds the tree completely.
-		 */
+		// The tree drawn anew from the form: the selected command bar's row kept, the rows opened as the form has them.
 		void RebuildTree();
-		void AddChildren(ibValueFrame* child, const wxTreeItemId& parent, bool is_root = false);
-		// The desktop's "Command interface" node under a control with a command bar — its commands under it, as its
-		// node has them (Layers, CommandBar).
-		void AddCommandBar(ibValueFrame* obj, const wxTreeItemId& parent);
+		// A control's row under the parent's (none: the root), its command bar's rows and its children's — its node beside
+		// it, its children the control's in their order (the host lays each in at its place). A sizer item is no row: its
+		// control stands in its place.
+		void AddControl(ibValueFrame* control, const ibProtocolNode& node, const wxTreeItemId& parent);
+		// The desktop's "Command interface" node under a control with a command bar (its node's state carries it) — its
+		// commands under it, as its node has them (Layers, CommandBar).
+		void AddCommandBar(ibValueFrame* obj, const ibProtocolNode& node, const wxTreeItemId& parent);
 
-		int GetImageIndex(const wxString& name) {
-			int index = wxNOT_FOUND; //default icon
+		// The row says the control's name and class; the selected control's row is selected.
+		void UpdateItem(const wxTreeItemId& row, ibValueFrame* control);
 
-			std::map<wxString, int>::iterator it = m_iconIdx.find(name);
-			if (it != m_iconIdx.end()) { index = it->second; }
-			return index;
-		}
+		// The picture of a class among the tree's (CreateTree) — none: wxNOT_FOUND.
+		int GetPictureIndex(const wxString& className) const;
 
-		void UpdateItem(const wxTreeItemId& id, ibValueFrame* obj) {
-
-			// show the name
-			wxString class_name(obj->GetClassName());
-			wxString obj_name(obj->GetControlName());
-
-			wxString text = obj_name + wxT(" : ") + class_name;
-
-			// update the item
-			m_tcObjects->SetItemText(id, text);
-
-			if (m_formHandler != nullptr &&
-				obj == m_formHandler->GetSelectedObject()) {
-				m_notifySelecting = true;
-				m_tcObjects->EnsureVisible(id);
-				m_tcObjects->SelectItem(id);
-				m_tcObjects->SetItemBold(id);
-				m_notifySelecting = false;
-			}
-		}
-
-		void RestoreItemStatus(ibValueFrame* obj);
+		// What a row stands for — none for no row.
+		ibVisualEditorObjectTreeItemData* GetItemData(const wxTreeItemId& row) const;
+		// …the control of it — none for a command bar's row.
+		ibValueFrame* GetControl(const wxTreeItemId& row) const;
 
 		// A tree item's payload selected — a control node to the visual editor (which also scrolls to it), a layer's to
 		// the inspector.
-		void SelectItemData(wxTreeItemData* item_data);
+		void SelectItemData(ibVisualEditorObjectTreeItemData* data);
 
-		ibValueFrame* GetObjectFromTreeItem(const wxTreeItemId& item);
+		void OnSelChanged(wxTreeEvent& event);
+		void OnRightClick(wxTreeEvent& event);
+		void OnKeyDown(wxTreeEvent& event);
+		void OnBeginDrag(wxTreeEvent& event);
+		void OnEndDrag(wxTreeEvent& event);
+		void OnExpansionChange(wxTreeEvent& event);
 
 		ibVisualEditor* m_formHandler = nullptr;
+		wxTreeCtrl* m_tree = nullptr;
 
-		wxImageList* m_iconList = nullptr;
-
-		std::map<ibValueFrame*, wxTreeItemId> m_listItem;
-		std::map<wxString, int> m_iconIdx;
+		std::map<ibValueFrame*, wxTreeItemId> m_controlItems;
+		std::map<wxString, int> m_pictureIndex;
 
 		// THE LAYERS' HOLDERS — a control's command bar by the control's id, a command of it by the id and its place:
 		// made as the tree is built, kept by those while it is built anew, gone with the node.
@@ -401,29 +330,25 @@ public:
 		std::map<std::pair<long long, unsigned int>, std::unique_ptr<ibValueCommandBarItem>> m_commandBarItems;
 		std::map<const ibValueLayerObject*, wxTreeItemId> m_layerItemMap;
 
-		wxTreeCtrl* m_tcObjects = nullptr;
-		wxTreeItemId m_draggedItem;
-
 		// The form as the tree last showed it — each control, its class and name in order, nested as they are: a draw
 		// that changes none of them leaves the tree alone.
 		wxString m_shape;
 
-		bool m_notifySelecting = false;
+		wxTreeItemId m_dragged;   // the row taken in a drag, until it is dropped
 
-		wxDECLARE_EVENT_TABLE();
+		// THE TREE FOLLOWING THE EDITOR, not the person: a row it selects is not selected in the editor again, a row it
+		// opens or closes is not the form's expansion changed.
+		bool m_selecting = false;
+		bool m_expanding = false;
 	};
 
-	/**
-	 * Since we can associate an object with each item, this class makes it
-	 * easy to get the object (ibValueFrame) associated with an item so it
-	 * can be selected by clicking on the item.
-	 */
+	// What a row of the object tree stands for: a control, or a layer of one (a command bar, a command of it).
 	class ibVisualEditorObjectTreeItemData : public wxTreeItemData {
 	public:
-		ibVisualEditorObjectTreeItemData(ibValueFrame* obj) : m_object(obj) {}
-		ibVisualEditorObjectTreeItemData(ibValueLayerObject* layerObject) : m_layerObject(layerObject) {}
-		ibValueFrame* GetObject() { return m_object; }
-		ibValueLayerObject* GetLayerObject() { return m_layerObject; }
+		explicit ibVisualEditorObjectTreeItemData(ibValueFrame* object) : m_object(object) {}
+		explicit ibVisualEditorObjectTreeItemData(ibValueLayerObject* layerObject) : m_layerObject(layerObject) {}
+		ibValueFrame* GetObject() const { return m_object; }
+		ibValueLayerObject* GetLayerObject() const { return m_layerObject; }
 	private:
 		ibValueFrame* m_object = nullptr;
 		ibValueLayerObject* m_layerObject = nullptr;
@@ -436,6 +361,8 @@ public:
 	// root row carries is the client's (ibFormAttributeValue): its properties the server's inspector's rows. Every action
 	// is the server's editor's door (`Attribute`), the form as it stands asked with.
 	//////////////////////////////////////////////////////////////////////////////////////////
+
+	class ibVisualEditorAttributeTreeItemData;   // a row's data — below
 
 	class ibVisualEditorAttributeTree : public wxPanel {
 	public:
@@ -450,13 +377,23 @@ public:
 
 		// The holder whose property that is — none: no attribute's.
 		ibFormAttributeValue* FindEntry(const ibPropertyObject* owner) const;
+		// THE ATTRIBUTE A DOOR SHOWS (its answer's Attribute, Column) — its row lit (a column's: the attribute opened, the
+		// column's row), its holder the editor's current element, shown in the inspector. False: no such row.
+		bool SelectAttribute(long long attributeId, long long columnId);
+
+		// ⭐ THE SOURCE WINDOW — the desktop's (frontend advpropSource.cpp): the tree the selected control's Source of
+		// that `name` offers (the server's, asked as the window opens — Editor), a reference opened as the tree opens it
+		// (Composition) and filtered by what the control may be bound to (`filter`), the binding's own row selected; OK —
+		// `binding` the row's path. False: cancelled, or nothing.
+		bool PickSource(wxWindow* parent, const wxString& name, ibProtocol::ibSchema::ibProperties::ibSourceDataType filter,
+			ibSourceDescription& binding);
 
 	protected:
 
 		void OnSelChanged(wxTreeEvent& event);
 		void OnContextMenu(wxContextMenuEvent& event);        // right-click anywhere (incl. empty)
 		void OnActivated(wxTreeEvent& event);                 // double-click → activate properties
-		void OnItemExpanding(wxTreeEvent& event);             // lazy: the node's composition asked on first expand
+		void OnItemExpanding(wxTreeEvent& event);             // the node's composition asked each time it opens
 		void OnBeginDrag(wxTreeEvent& event);                 // drag a node onto the form → a bound control
 		void OnAdd(wxCommandEvent& event);
 		void OnAddColumn(wxCommandEvent& event);              // add a column to a value-table attribute
@@ -474,6 +411,8 @@ public:
 		// The rows under one, as the server wrote them — each with its item data; one with a composition of its own not yet
 		// asked gets the desktop's dummy [+].
 		void AppendRows(const wxTreeItemId& parent, const ibProtocolNode& rows);
+		// …and the rows under a row with a composition of its own, asked of the server (Composition): false — refused.
+		bool FetchComposition(const ibVisualEditorAttributeTreeItemData* data, ibProtocolNode& rows) const;
 
 		// The holder the tree item carries — what the inspector selects.
 		ibFormAttributeValue* GetEntryFromItem(const wxTreeItemId& item) const;
@@ -502,7 +441,8 @@ public:
 
 		// The rows and the attributes as the tree last showed them — a draw that says the same leaves the tree alone
 		// (expanded rows stay so).
-		wxString m_shape;
+		wxString       m_shape;
+		ibProtocolNode m_attributes;
 		// The attribute selected, by its id.
 		long long m_selectedId = 0;
 
@@ -517,7 +457,8 @@ public:
 		// A ROOT node carries the attribute HOLDER — the selectable; a COMPOSITION node (a field / table section /
 		// reference target, asked on expand) passes entry == nullptr and carries the binding PATH (head = attribute id)
 		// + view flags, as the server wrote them — what it is asked with again. A non-empty refTypes list means "expand me
-		// through a reference-as-source"; m_loaded guards the one-time ask.
+		// through a reference-as-source"; m_loaded — its rows are there and not asked: written inline, or asked once by the
+		// source window, which lives for one choice.
 		ibVisualEditorAttributeTreeItemData(ibFormAttributeValue* entry, const std::vector<ibSourceHop>& path,
 			const std::vector<ibMetaID>& refTypes = {}, bool tableSection = false, ibClassID dropControl = 0,
 			bool underList = false)
@@ -618,23 +559,17 @@ public:
 
 		ibVisualEditorItemPopupMenu(ibVisualEditor* owner, wxWindow* parent, ibValueFrame* obj);
 
-		bool HasDeleteObject();
-		int GetSelectedID() const { return m_selID; }
+	private:
 
-		void OnUpdateEvent(wxUpdateUIEvent& e);
 		void OnMenuEvent(wxCommandEvent& event);
-
-	protected:
+		void OnUpdateEvent(wxUpdateUIEvent& event);
 
 		ibValueFrame* m_object = nullptr;
 		ibVisualEditor* m_formHandler = nullptr;
-		int m_selID;
 
 		// The classes the control adds in itself (its class's Menu — the desktop's PrepareDefaultMenu), by their items'
 		// place from the first id.
 		std::vector<wxString> m_classNames;
-
-		wxDECLARE_EVENT_TABLE();
 	};
 
 public:
@@ -710,17 +645,17 @@ public:
 	void ModifyProperty(ibProperty* prop, const wxVariant& oldValue, const wxVariant& newValue);
 
 	// …and the attribute tree's, by the attribute's id (`Attribute`) — the server's editor's doors of the same names:
-	// a new one (String, uniquely named) and a pasted one — its id, the tree lands on it (0: refused) —, its name given
-	// (false: refused — empty, or another's), the main one (none: null).
-	long long CreateAttribute();
+	// a new one (String, uniquely named) and a pasted one, its name given (false: refused — empty, or another's), the main
+	// one (none: null); the tree lands on what the answer shows (Execute).
+	void CreateAttribute();
 	void RemoveAttribute(ibFormAttributeValue* entry);
 	void CutAttribute(ibFormAttributeValue* entry);
 	void CopyAttribute(ibFormAttributeValue* entry);
-	long long PasteAttribute();
+	void PasteAttribute();
 	bool RenameAttribute(ibFormAttributeValue* entry, const wxString& newName);
 	void SetMainAttribute(ibFormAttributeValue* entry);
-	// …a value table's column (the desktop's OnAddColumn) — the new one's id, the tree lands on it (0: refused).
-	long long AddColumn(ibFormAttributeValue* entry);
+	// …a value table's column (the desktop's OnAddColumn) — the tree lands on the new one.
+	void AddColumn(ibFormAttributeValue* entry);
 
 	// …and the command tree's, by the form command's id (`FormCommand`): a new one (uniquely named, its Action empty) and
 	// a pasted one — its id, the tree lands on it (0: refused).
@@ -764,27 +699,35 @@ public:
 
 	// SHOW the current element in the inspector — the explicit "Properties": the inspector raised.
 	void ShowCurrentElement(bool forceOpen = true);
+	// …and REFRESH it, the desktop's: what it shows read anew after a command.
+	void RefreshCurrentElement();
 
 	void RefreshEditor() { NotifyEditorRefresh(); }
 
 	// THE FORM AS A COMMAND LEAVES IT — drawn (by what `patch` changed; none: whole), each control built anew reading
 	// its rows and every one its values from its node, the selection the control with that id; its attributes' and its
-	// commands' trees as the server's last answer about it wrote them (`trees`: AttributeTree, CommandTree).
+	// commands' trees as the server's last answer about it wrote them (`trees`: AttributeTree, CommandTree). Handed to
+	// the server as it is drawn (SaveForm) — a command's, an undo's, a redo's alike.
 	void Draw(const ibProtocolNode& form, const ibProtocolNode& trees, const ibProtocolNode& patch, long long selected);
+	// …and a control drawn as its properties say, the desktop's (ibVisualHost::UpdateControl): what of them its node does
+	// not hold put in it.
+	void UpdateControl(ibValueFrame* control);
 
-	// ⭐ THE FORM FROM THE TAB'S ANSWER — drawn (Form), each control reading its rows (Controls), the tree's icons and the
-	// classes a control is made of (Classes); the desktop's LoadForm read the metaobject in its own process.
+	// ⭐ THE FORM FROM THE TAB'S ANSWER — drawn (Form), the tree's icons and the classes a control is made of (Classes); a
+	// control's rows asked as it is shown (FetchRows). The desktop's LoadForm read the metaobject in its own process.
 	bool LoadForm(const ibProtocolNode& answer);
-	// …and handed back whole when it has changed since (Change with Form): the server loads it over the one it holds.
+	// …and handed back whole when it has changed since (Change with Form): the server loads it over the one it holds,
+	// and every request after it is asked about that one — none carries the form it is about.
 	bool SaveForm();
 
 private:
 
 	void Execute(ibVisualEditorCmd* cmd);
-	// ⭐ A DOOR OF THE SERVER'S EDITOR — asked with the form as it stands (Form, unless the request carries another), its
-	// answer the command's form: drawn, its controls' rows kept, its trees, the selection it names (Selected; none: as
-	// it was). False — refused: nothing done.
-	bool Execute(ibProtocolNode request, ibProtocolNode& answer);
+	// ⭐ A DOOR OF THE SERVER'S EDITOR — over the form the server holds (the one last handed), or over another the request
+	// carries (Form — a layer's edit), its answer the command's form: drawn, its controls' rows kept, its trees, the
+	// selection it names (Selected; none: as it was) — a command the server did, its form not handed back (Receive).
+	// False — refused: nothing done.
+	bool Execute(const ibProtocolNode& request, ibProtocolNode& answer);
 
 	// The node of the attribute (`owner` Attributes) or command (FormCommands) with that id put on the clipboard in that
 	// format — what Paste hands to the server's editor.
@@ -796,8 +739,18 @@ private:
 
 	void DoRemoveObject(ibValueFrame* obj, bool cutObject);
 
-	// Each control of the node drawn receives what it holds: its rows (the answers', m_rows) when it was built anew, its
-	// values from the node.
+	// ⭐ A CONTROL'S ROWS ARE ASKED AS IT IS SHOWN — held (m_rows), else the server's editor's Rows of that control: a
+	// door's answer carries none, the inspector fetches them (ibVisualEditorHost::Fetch), a layer of the control too.
+	// Every new control's rode each answer before, the inspector shown or not (2026-10-22). False: no answer.
+	bool FetchRows(long long controlId);
+	// AN ANSWER RECEIVED — all of it but its form: its controls' rows held by their ids (m_rows), those it changed marked
+	// (m_rowsChanged); its attributes' and its commands' trees given in `trees`.
+	void Receive(const ibProtocolNode& answer, ibProtocolNode& trees);
+	// A control receives its rows — the answers' (m_rows) — when it has none (the client's controls declare none) or an
+	// answer changed them (m_rowsChanged): as the host reads its node (ibVisualEditorHost::ReadControl), its values after.
+	void Receive(ibValueFrame* control);
+	// …and each control of the node whose rows an answer changed while its node stayed as it was, which the host does not
+	// read again — the one the inspector shows, its rows just fetched (ibVisualEditorHost::Fetch).
 	void Receive(const ibProtocolNode& node);
 
 	// A SOURCE PATH as the attribute tree's rows write it (Path — its hops, items {Id, Type}): what a row is asked
@@ -825,8 +778,11 @@ private:
 	ibProtocolNode m_trees;
 	// The classes a control may be made of, as the tab's answer had them (Name, Picture, Type, Menu).
 	ibProtocolNode m_classes;
-	// Each control's rows, by its id — the tab's answer's, and each door's that made one.
+	// Each control's rows, by its id — asked (FetchRows), or the edited control's that its edit's answer brought: an answer
+	// about the form changed lets the others go, they are of the form before it.
 	std::map<long long, ibProtocolNode> m_rows;
+	// …and the controls whose rows an answer changed, until each receives them as it is drawn: the rest keep theirs.
+	std::set<long long> m_rowsChanged;
 
 	ibCommandProcessor m_cmdProc;
 
@@ -893,7 +849,7 @@ public:
 
 	// THE DESKTOP'S ModifyEvent — an event given a handler: its procedure in the module renamed, deleted, found or
 	// written from the template with the event's parameters, and the Code page shown on it.
-	void ModifyEvent(ibPropertySerializable* event, const wxVariant& oldValue, const wxVariant& newValue);
+	void ModifyEvent(ibProperty* event, const wxVariant& oldValue, const wxVariant& newValue);
 
 	// The form opened as the runtime shows it (the Form menu's Test form).
 	void TestForm() { m_visualEditor->TestForm(); }
@@ -1022,9 +978,13 @@ public:
 	virtual wxString GetObjectTypeName() const override { return m_name; }
 	virtual bool IsEditable() const override;
 
+	// ITS CONFIGURATION IS ITS FORM'S TAB — what a window its rows open asks the configuration (a composition's fields:
+	// fetch {Tab, Request: {Kind: Fields, Text}}) the form's tab answers.
+	virtual const ibMetaData* GetMetaData() const override { return &m_metaData; }
+
 	// What the server says of it, asked as it is shown — the server's editor's Properties, with the form as it stands: the
 	// attribute's rows, or its column's.
-	virtual bool Receive() override;
+	virtual bool Fetch() override;
 	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
 
 	long long GetId() const { return m_attributeId; }
@@ -1039,9 +999,13 @@ public:
 
 private:
 
+	// …each of its rows, the server's property (ibPropertySerializable).
+	virtual ibProperty* CreateProperty(ibPropertyCategory* cat, ibDataNode&& row) override;
+
 	ibVisualEditorNotebook::ibVisualEditor* m_formHandler;
 	const long long m_attributeId;
 	const long long m_columnId;
+	const ibMetaData m_metaData;   // the form's tab
 	wxString m_name;
 	bool m_main = false;
 	ibProtocolNode m_menu;
@@ -1064,7 +1028,7 @@ public:
 	virtual bool IsEditable() const override;
 
 	// What the server says of it, asked as it is shown — as an attribute's is.
-	virtual bool Receive() override;
+	virtual bool Fetch() override;
 	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
 
 	long long GetId() const { return m_commandId; }
@@ -1074,6 +1038,9 @@ public:
 	void ReadRow(const ibProtocolNode& row);
 
 private:
+
+	// …each of its rows, the server's property (ibPropertySerializable).
+	virtual ibProperty* CreateProperty(ibPropertyCategory* cat, ibDataNode&& row) override;
 
 	ibVisualEditorNotebook::ibVisualEditor* m_formHandler;
 	const long long m_commandId;
@@ -1095,10 +1062,10 @@ public:
 
 	virtual bool IsEditable() const override;
 
-	// What it holds, received as it is shown: its rows as the last answer brought them with its control's (Controls), in
-	// place of what it had — a command's presentations (what its command is called, its picture) are its own and the
-	// server's to say — and its values as its node has them now.
-	virtual bool Receive() override;
+	// What it holds, fetched as it is shown: its rows with its control's (Controls — asked when none are held), in place
+	// of what it had — a command's presentations (what its command is called, its picture) are its own and the server's
+	// to say — and its values as its node has them now.
+	virtual bool Fetch() override;
 	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
 
 	// Its node in the control's node — none: an empty node.
@@ -1120,6 +1087,9 @@ public:
 
 protected:
 
+	// …each of its rows, the server's property (ibPropertySerializable).
+	virtual ibProperty* CreateProperty(ibPropertyCategory* cat, ibDataNode&& row) override;
+
 	// The form as it stands with the command bar of this control given those commands — drawn by the server, a command
 	// the editor's; then the one at `selected` shown (wxNOT_FOUND: none).
 	void SetCommandItems(const std::vector<ibProtocolNode>& items, int selected) const;
@@ -1136,8 +1106,8 @@ public:
 		ibValueLayerObject(formHandler, controlId) {
 	}
 
-	virtual wxString GetClassName() const override { return ibProtocolName::CommandBar; }
-	virtual wxString GetObjectTypeName() const override { return ibProtocolName::CommandBar; }
+	virtual wxString GetClassName() const override { return ibProtocol::ibView::ibFormDesigner::CommandBar; }
+	virtual wxString GetObjectTypeName() const override { return ibProtocol::ibView::ibFormDesigner::CommandBar; }
 
 	virtual ibProtocolNode FindNode(const ibProtocolNode& control) const override;
 	virtual ibProtocolNode FindRows(const ibProtocolNode& control) const override;
@@ -1161,8 +1131,8 @@ public:
 		ibValueLayerObject(formHandler, controlId), m_index(index) {
 	}
 
-	virtual wxString GetClassName() const override { return ibProtocolName::CommandBarItem; }
-	virtual wxString GetObjectTypeName() const override { return ibProtocolName::CommandBarItem; }
+	virtual wxString GetClassName() const override { return ibProtocol::ibView::ibFormDesigner::CommandBarItem; }
+	virtual wxString GetObjectTypeName() const override { return ibProtocol::ibView::ibFormDesigner::CommandBarItem; }
 
 	// Its name stays unique among the bar's commands (the desktop's).
 	virtual bool OnPropertyChanging(ibProperty* property, const wxVariant& newValue) override;

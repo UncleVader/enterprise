@@ -29,11 +29,13 @@ public:
 		return _("Notebook");
 	}
 
+	// Just made by the designer with no page: its first page goes on with it (the desktop's).
+	virtual void OnCreated(ibVisualHost* host, bool firstCreated) override;
 	// The window's state, and the page selected now (ActivePage, by its control id; 0 while no page is shown).
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// Page — a page picked (Page: its control id); Move — the active page's tab dragged (Position).
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 	//methods
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;       //method call
@@ -51,6 +53,9 @@ public:
 	// with two rules, a script read null for a page the person was plainly looking at.
 	ibValueNotebookPage* GetActivePage() const;
 
+	// A new page at the end of the notebook, built on the host as a control the designer has just made.
+	void AddNotebookPage(ibVisualHost* host);
+
 	void FillControlMembers(ibMemberTable& helper) const;   // bound in ctor (was PrepareNames)
 
 private:
@@ -67,8 +72,8 @@ private:
 
 	ibPropertyCategory* m_categoryNotebook = ibPropertyObject::CreatePropertyCategory(wxT("Notebook"), _("Notebook"));
 	ibPropertyEnum<ibValueEnumOrientNotebookPage>* m_propertyOrient = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumOrientNotebookPage>>(m_categoryNotebook, wxT("OrientPage"), _("Orient page"),
-		_("Where the page tabs are drawn: above the pages (the default) or below them."),
-		wxAUI_NB_TOP);
+		_("Where the page tabs are drawn: above the pages (the default), below them, or nowhere - then the notebook is a panel: only the active page shows, and code switches it (ActivePage)."),
+		ibTabLocation_Top);
 	ibPropertyCategory* m_categoryEvent = ibPropertyObject::CreatePropertyCategory(wxT("Event"), _("Event"));
 	ibEventControl* m_eventOnPageChanged = ibPropertyObject::CreateEvent<ibEventControl>(m_categoryEvent, wxT("OnPageChanged"), _("Page changed"), wxArrayString{ wxT("Page") });
 

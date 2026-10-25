@@ -12,13 +12,13 @@
 #include <wx/wx.h>
 #endif
 
-#include <wx/hashset.h>
 #include <wx/arrstr.h>
 #include <wx/variant.h>
 
 #include <atomic>
 #include <map>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 #include "databaseLayerDef.h"
@@ -713,8 +713,8 @@ struct ibMaterializationDialect
 	wxString m_dropViewTemplate   = wxT("DROP VIEW {name}");
 };
 
-WX_DECLARE_HASH_SET(ibDatabaseResultSet*, wxPointerHash, wxPointerEqual, DatabaseResultSetHashSet);
-WX_DECLARE_HASH_SET(ibPreparedStatement*, wxPointerHash, wxPointerEqual, DatabaseStatementHashSet);
+typedef std::unordered_set<ibDatabaseResultSet*> DatabaseResultSetHashSet;
+typedef std::unordered_set<ibPreparedStatement*> DatabaseStatementHashSet;
 
 class ibDatabaseConnectionHolder;
 class ibConnectionPool;
@@ -981,8 +981,8 @@ public:
 	/// Retrieve a single Blob value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
 	///  is thrown unless bRequireUniqueResult is false
-	virtual void* GetSingleResultBlob(const wxString& strSQL, int nField, wxMemoryBuffer& buffer, bool bRequireUniqueResult = true);
-	virtual void* GetSingleResultBlob(const wxString& strSQL, const wxString& strField, wxMemoryBuffer& buffer, bool bRequireUniqueResult = true);
+	virtual void* GetSingleResultBlob(const wxString& strSQL, int nField, ibMemoryBuffer& buffer, bool bRequireUniqueResult = true);
+	virtual void* GetSingleResultBlob(const wxString& strSQL, const wxString& strField, ibMemoryBuffer& buffer, bool bRequireUniqueResult = true);
 
 	/// Retrieve a single double value from a query
 	/// If multiple records are returned from the query, a DATABASE_LAYER_NON_UNIQUE_RESULTSET exception
@@ -997,19 +997,17 @@ public:
 	virtual ibNumber GetSingleResultNumber(const wxString& strSQL, const wxString& strField, bool bRequireUniqueResult = true);
 
 	/// Retrieve all the values of one field in a result set
-	virtual wxArrayInt GetResultsArrayInt(const wxString& strSQL, int nField);
-	virtual wxArrayInt GetResultsArrayInt(const wxString& strSQL, const wxString& Field);
+	virtual std::vector<int> GetResultsArrayInt(const wxString& strSQL, int nField);
+	virtual std::vector<int> GetResultsArrayInt(const wxString& strSQL, const wxString& Field);
 
 	virtual wxArrayString GetResultsArrayString(const wxString& strSQL, int nField);
 	virtual wxArrayString GetResultsArrayString(const wxString& strSQL, const wxString& Field);
 
-	virtual wxArrayLong GetResultsArrayLong(const wxString& strSQL, int nField);
-	virtual wxArrayLong GetResultsArrayLong(const wxString& strSQL, const wxString& Field);
+	virtual std::vector<long> GetResultsArrayLong(const wxString& strSQL, int nField);
+	virtual std::vector<long> GetResultsArrayLong(const wxString& strSQL, const wxString& Field);
 
-#if wxCHECK_VERSION(2, 7, 0)
-	virtual wxArrayDouble GetResultsArrayDouble(const wxString& strSQL, int nField);
-	virtual wxArrayDouble GetResultsArrayDouble(const wxString& strSQL, const wxString& Field);
-#endif
+	virtual std::vector<double> GetResultsArrayDouble(const wxString& strSQL, int nField);
+	virtual std::vector<double> GetResultsArrayDouble(const wxString& strSQL, const wxString& Field);
 
 	virtual int GetDatabaseLayerType() const = 0;
 
@@ -1204,33 +1202,28 @@ private:
 	long GetSingleResultLong(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	bool GetSingleResultBool(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	ibDateTime GetSingleResultDate(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
-	void* GetSingleResultBlob(const wxString& strSQL, const wxVariant* field, wxMemoryBuffer& buffer, bool bRequireUniqueResult = true);
+	void* GetSingleResultBlob(const wxString& strSQL, const wxVariant* field, ibMemoryBuffer& buffer, bool bRequireUniqueResult = true);
 	double GetSingleResultDouble(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
 	ibNumber GetSingleResultNumber(const wxString& strSQL, const wxVariant* field, bool bRequireUniqueResult = true);
-	wxArrayInt GetResultsArrayInt(const wxString& strSQL, const wxVariant* field);
+	std::vector<int> GetResultsArrayInt(const wxString& strSQL, const wxVariant* field);
 	wxArrayString GetResultsArrayString(const wxString& strSQL, const wxVariant* field);
-	wxArrayLong GetResultsArrayLong(const wxString& strSQL, const wxVariant* field);
-
-#if wxCHECK_VERSION(2, 7, 0)
-	wxArrayDouble GetResultsArrayDouble(const wxString& strSQL, const wxVariant* field);
-#endif
+	std::vector<long> GetResultsArrayLong(const wxString& strSQL, const wxVariant* field);
+	std::vector<double> GetResultsArrayDouble(const wxString& strSQL, const wxVariant* field);
 
 	DatabaseResultSetHashSet m_ResultSets;
 	DatabaseStatementHashSet m_Statements;
 
 #if !wxUSE_UTF8_LOCALE_ONLY
-	int DoRunQueryWchar(const wxChar* format, ...);
-	ibDatabaseResultSet* DoRunQueryWithResultsWchar(const wxChar* format, ...);
-	ibPreparedStatement* DoPrepareStatementWchar(const wxChar* format, ...);
+	int DoRunQueryWchar(const ibChar* format, ...);
+	ibDatabaseResultSet* DoRunQueryWithResultsWchar(const ibChar* format, ...);
+	ibPreparedStatement* DoPrepareStatementWchar(const ibChar* format, ...);
 #endif
 #if wxUSE_UNICODE_UTF8
-	int DoRunQueryUtf8(const wxChar* format, ...);
-	ibDatabaseResultSet* DoRunQueryWithResultsUtf8(const wxChar* format, ...);
-	ibPreparedStatement* DoPrepareStatementUtf8(const wxChar* format, ...);
+	int DoRunQueryUtf8(const ibChar* format, ...);
+	ibDatabaseResultSet* DoRunQueryWithResultsUtf8(const ibChar* format, ...);
+	ibPreparedStatement* DoPrepareStatementUtf8(const ibChar* format, ...);
 #endif
 };
-
-#include <memory>
 
 // RAII guard for an ibDatabaseResultSet* obtained from ibDatabaseLayer::RunQueryWithResults
 // or ibPreparedStatement::RunQueryWithResults. Calls rs->Close() and db->CloseResultSet(rs)

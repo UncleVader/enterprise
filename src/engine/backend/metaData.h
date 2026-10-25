@@ -390,6 +390,26 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
+// What ibMetaData::GetNewName is asked with, held by value — the parent it is asked under goes beside it,
+// as it does to CreateMetaObject and PasteMetaObject.
+struct ibNameRequest {
+
+	// The kind whose names are compared.
+	ibClassID m_clsid = 0;
+
+	// The name's stem; empty = "newItem".
+	wxString m_prefix;
+
+	// The bare prefix is the first candidate; otherwise numbering starts at 1.
+	bool m_forConstructor = false;
+
+	// Whom the name is for: its own entry under the parent is no collision (BuildNewName keeps an
+	// object's name through a paste or a merge while nobody else carries it). 0 — nobody.
+	ibMetaID m_metaId = 0;
+};
+
+///////////////////////////////////////////////////////////////////////////////
+
 // ⭐ EVERY METADATA IS HELD BY A shared_ptr (Max, 2026-10-06: *"implement shared_from_this in the metadata, and hold
 // the reference properly, as a shared_ptr — all the metadata"*): a configuration, an external report or data
 // processor, a configuration file, both sides of a comparison. It is handed around as a plain pointer; whoever
@@ -872,8 +892,7 @@ public:
 	ibMetaID GenerateNewID() const;
 
 	//generate new name
-	wxString GetNewName(const ibClassID& clsid,
-		ibValueMetaObject* parent, const wxString& strPrefix = wxEmptyString, bool forConstructor = false);
+	wxString GetNewName(ibValueMetaObject* parent, const ibNameRequest& request);
 
 #pragma region serialization
 
@@ -951,10 +970,7 @@ protected:
 	_T3* FindObjectByFilter(
 		const _T1& id,
 		const std::initializer_list<ibClassID> filter) const {
-		const auto commonObject = GetCommonMetaObject();
-		if (commonObject != nullptr)
-			return commonObject->FindObjectByFilter<_T3>(id, filter, false);
-		return nullptr;
+		return FindObjectByFilter<_T1, _T2, _T3>(id, filter, false);
 	}
 
 	template<typename _T1, typename _T2 = ibValueMetaObject, typename _T3 = ibValueMetaObject>
@@ -963,8 +979,19 @@ protected:
 		const std::initializer_list<ibClassID> filter,
 		const bool use_child_filter) const {
 		const auto commonObject = GetCommonMetaObject();
-		if (commonObject != nullptr)
-			return commonObject->FindObjectByFilter<_T3>(id, filter, use_child_filter);
+		if (commonObject != nullptr) {
+			if (_T3* const found = commonObject->FindObjectByFilter<_T3>(id, filter, use_child_filter))
+				return found;
+		}
+		// ⭐ …AND NOT FOUND HERE, IN THE OWNER'S COMMON OBJECT, its root only: an external processor or report declares no
+		// catalog and no document, and what its fields' types name is its configuration's (GetTypeCtor answers there
+		// already) — asked of its own tree only, a reference attribute of its form opened empty (2026-10-19).
+		ibMetaData* owner = nullptr;
+		if (GetOwner(owner) && owner != nullptr && owner != this) {
+			const auto ownerObject = owner->GetCommonMetaObject();
+			if (ownerObject != nullptr)
+				return ownerObject->FindObjectByFilter<_T3>(id, filter, false);
+		}
 		return nullptr;
 	}
 

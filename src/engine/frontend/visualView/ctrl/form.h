@@ -178,6 +178,7 @@ public:
 
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray);
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
+	virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 	//****************************************************************************
 	//*                              Support form context                        *
@@ -436,8 +437,8 @@ public:
 
 public:
 
-	virtual bool LoadForm(const wxMemoryBuffer& data);
-	virtual bool SaveForm(wxMemoryBuffer &data) const;
+	virtual bool LoadForm(const ibMemoryBuffer& data);
+	virtual bool SaveForm(ibMemoryBuffer &data) const;
 
 	//notify
 	virtual void NotifyCreate(const ibValue& vCreated);
@@ -521,6 +522,9 @@ public:
 	virtual bool PasteData(const ibDataNode& node);
 
 	virtual int GetComponentType() const { return COMPONENT_TYPE_FRAME; }
+
+	// The form's controls lie in one sizer, which the host keeps as the form's own object (its GetWxObject).
+	virtual ibFrontendSizer* GetSizer(wxObject* wxobject) const override;
 
 private:
 

@@ -37,8 +37,8 @@
 // file writes into a packed node — an enumeration writes its member from the template that
 // defines it — and a value written under one spelling and read under another is a value lost.
 namespace {
-const wxChar* const kFieldClsid = kValueFieldClsid;
-const wxChar* const kFieldData  = kValueFieldData;
+const ibChar* const kFieldClsid = kValueFieldClsid;
+const ibChar* const kFieldData  = kValueFieldData;
 } // namespace
 
 //////////////////////////////////////////////////////////////////////
@@ -101,7 +101,7 @@ bool ibValue::Serialize(ibDataNode& node) const
 	if (!IsTransferable())
 		return false;
 
-	// THE TYPE AS TEXT. The node has codecs for wxString / bool / s32 / ibNumber /
+	// THE TYPE AS TEXT. The node has codecs for wxString / bool / std::int32_t / ibNumber /
 	// wxDateTime / guid / blob — and none for a 64-bit id. Text costs a few bytes
 	// in the binary provider and makes the JSON dump readable, which is half the
 	// reason the JSON provider exists.
@@ -129,7 +129,7 @@ bool ibValue::DoSerialize(ibDataNode& node) const
 		// Nothing to write: the type in the header is the whole value.
 		return true;
 	case ibValueTypes::TYPE_BOOLEAN:
-		node.SetValue(kFieldData, m_bData);
+		node.SetValue<bool>(kFieldData, m_bData);
 		return true;
 	case ibValueTypes::TYPE_NUMBER:
 		// Through the node's ibNumber codec — exact decimal, no double anywhere

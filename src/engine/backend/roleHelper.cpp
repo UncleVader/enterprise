@@ -16,7 +16,7 @@ void ibRole::InitRole(ibAccessObject* obj, const bool& value)
 
 ibAccessObject::~ibAccessObject()
 {
-	for (auto& role : m_roles) { wxDELETE(role.second); }
+	for (auto& role : m_roles) { delete role.second; }
 	m_roles.clear();
 }
 
@@ -127,7 +127,7 @@ ibRole* ibAccessObject::GetRole(unsigned int idx) const
 
 bool ibAccessObject::LoadRole(ibReaderMemory& dataReader)
 {
-	wxMemoryBuffer buf;
+	ibMemoryBuffer buf;
 	if (dataReader.r_chunk(roleBlock, buf)) {
 		std::shared_ptr<ibReaderMemory> dataRoleReader(new ibReaderMemory(buf));
 		unsigned int countRole = dataRoleReader->r_u32(); m_valRoles.clear();

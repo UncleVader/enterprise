@@ -5,6 +5,7 @@
 
 #include "mainApp.h"
 #include "backend/appData.h"
+#include "core/launchTicket.h"
 #include "backend/backend_exception.h"   // DrainLastErrors for the startup-failure dialog
 #include "backend/backend_mainFrame.h"
 #include "frontend/session/guiSession.h"   // transitively pulls backend/session/session.h
@@ -47,8 +48,8 @@ wxIMPLEMENT_APP(ibAppEnterprise);
 void ibAppEnterprise::OnInitCmdLine(wxCmdLineParser& parser)
 {
 	// Short names are legacy (matched what the /flag-style spawner used);
-	// long names match wenterprise-server so one builder emits flags that
-	// parse identically across enterprise/designer/appserver/wes.
+	// long names are one set, so one builder emits flags that
+	// parse identically across enterprise/designer/appserver.
 	parser.AddOption(wxT("file"),   wxT("file"),     "Database file path",      wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("srv"),    wxT("server"),   "Database server address", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("p"),      wxT("dbport"),   "Database server port",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
@@ -78,6 +79,17 @@ bool ibAppEnterprise::OnCmdLineParsed(wxCmdLineParser& parser)
 	// USER 
 	parser.Found(wxT("ib_usr"), &m_strIBUser);
 	parser.Found(wxT("ib_pwd"), &m_strIBPassword);
+
+	ibLaunchSecrets line;
+	line.m_dbUser = m_strUser;
+	line.m_dbPassword = m_strPassword;
+	line.m_ibUser = m_strIBUser;
+	line.m_ibPassword = m_strIBPassword;
+	ibApplyLaunchSecrets(line, parser.Found(wxT("pwd")), parser.Found(wxT("ib_pwd")));
+	m_strUser = line.m_dbUser;
+	m_strPassword = line.m_dbPassword;
+	m_strIBUser = line.m_ibUser;
+	m_strIBPassword = line.m_ibPassword;
 
 	// LOCALE
 	parser.Found(wxT("lc"), &m_strLocale);
@@ -121,6 +133,8 @@ int ibAppEnterprise::DoOnRun()
 	auto bringUp = [&]() -> bool {
 		ibFileInstanceRequest request;
 		request.m_locale = m_strLocale;
+		// `--debug`: the debug server comes up with the base's configuration, and every session is debuggable.
+		request.m_loadMetadataFlags = m_debugEnable ? _app_start_create_debug_server_flag : _app_start_default_flag;
 		if (!m_strFile.IsEmpty())
 			request.m_directory = m_strFile;
 		else {
@@ -156,7 +170,7 @@ int ibAppEnterprise::DoOnRun()
 			_("Cannot start enterprise.exe - no infobase specified.\n\n"
 			  "Provide one of:\n"
 			  "  --file=<path>          (Firebird embedded / SQLite file)\n"
-			  "  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]\n\n"
+			  "  --server=<host> --db=<name> [--dbport=...] [--user=...]\n\n"
 			  "Or launch through launcher.exe to pick a saved infobase."),
 			_("OES Enterprise"),
 			wxOK | wxICON_ERROR
@@ -248,15 +262,9 @@ int ibAppEnterprise::DoOnRun()
 	//      window takes ownership; from here it IS the session's life.
 	//   4. Show — EnsureRuntime creates root + ProcUnits, AllowRun fires
 	//      BeforeStart.
-	// Stash flags so OnFirstConnect listener picks them up when
-	// LoadMetadata fires from the registry event chain.
-	appData->m_loadMetadataFlags = m_debugEnable
-		? _app_start_create_debug_server_flag
-		: _app_start_default_flag;
-
 	// Registry listeners (wired in appData ctor) handle BindSessionToThread,
-	// LoadMetadata, CreateRoot + CompileRoot + AttachRuntime
-	// through OnFirstConnect / OnAuthenticated.
+	// CreateRoot + CompileRoot + AttachRuntime through OnAuthenticated; the
+	// configuration ran as the base opened.
 	// The holder lives on this stack frame until it is handed to the main
 	// form. Every failure path below simply lets it go — dropping the
 	// holder IS closing the session (anonymous sys_session row removed,
@@ -325,23 +333,6 @@ int ibAppEnterprise::OnExit()
 	bool success_exit = wxApp::OnExit();
 
 	appDataDestroy();
-
-	// ⭐⭐ THE SOCKET LAYER GOES LAST, AFTER EVERYTHING THAT OWNS A SOCKET.
-	//
-	// 🛑 IT WAS THE FIRST THING THIS FUNCTION DID, and the debugger's server lives in appData: its
-	// listening and connection sockets are closed by ~ibDebuggerServer, inside appDataDestroy() a few
-	// lines up. wxSocketBase::Shutdown() releases wx's socket manager, and on macOS that manager holds
-	// the run loop every socket's source is removed from — set to null by Shutdown, and read by the
-	// next Close():
-	//
-	//   CFRunLoopRemoveSource(NULL, source, mode)   -> EXC_BAD_ACCESS at 0x8
-	//
-	// So an application with the debugger attached could die on its way out — on the main thread
-	// (ShutdownServer -> wxSocketBase::Destroy) or on the debugger's own thread while the main one
-	// waited for it. Windows and Linux close a descriptor after the manager is gone without noticing,
-	// which is why it was only ever seen on macOS (#155).
-	if (wxSocketBase::IsInitialized())
-		wxSocketBase::Shutdown();
 
 	// Why the session was closed from outside, if it was — said once everything is let go: the session,
 	// its heartbeat and the connection pool (appDataDestroy). A box shown while any of them stood held it.

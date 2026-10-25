@@ -15,10 +15,10 @@
 
 #include <wx/string.h>
 
-#include "core/fileSystem/types.h"   // s32
+#include <cstdint>   // std::int32_t
 
 #include "frmserver/frmserver.h"
-#include "protocol/protocol.h"   // ibProtocolSchema, ibProtocolRefusal
+#include "protocol/protocol.h"   // ibProtocol::ibSchema::ibKind, ibProtocol::ibRefusal
 
 class ibDataNode;
 class ibSession;
@@ -34,7 +34,7 @@ public:
 	// does: a client asks for a schema by its number, past any menu that would have hidden it. The menu asks the
 	// same question (ibClientFrame), so it offers what the schema would let through. A schema without a right of
 	// its own is everybody's.
-	virtual bool AccessRight(const ibSession& WXUNUSED(session)) const { return true; }
+	virtual bool AccessRight(const ibSession& /*session*/) const { return true; }
 
 	// What the schema shows, into `result` — of the client's session, handed in: the configuration it works in, the
 	// base it works in — and of what its arguments name (the predefined items of that object), as Command takes them.
@@ -47,8 +47,8 @@ public:
 	// the WORK that does it, which the client's work then runs: what it opens the frame shows, and what it asks the
 	// person waits for the response. Empty with a refusal — why, and its text: the schema takes no such command, or
 	// not with these arguments — a schema acts only on what it offered; nothing is done then.
-	virtual std::function<void()> Command(const ibSession& session, s32 command,
-		const ibDataNode& args, ibProtocolRefusal& refusal, wxString& error) const;
+	virtual std::function<void()> Command(const ibSession& session, std::int32_t command,
+		const ibDataNode& args, ibProtocol::ibRefusal& refusal, wxString& error) const;
 
 protected:
 

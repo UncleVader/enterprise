@@ -43,7 +43,7 @@ class FRONTEND_API ibVisualHostClient;
 #define wxDefaultStypeFGColour wxColour(0x3F, 0x5C, 0x77)  // #3F5C77 deep dusty blue
 #define wxDefaultStypeBGColour wxColour(0xFA, 0xF7, 0xF0)  // #FAF7F0 cream content
 
-#include "core/fileSystem/fs.h"
+#include "core/memory/memoryStream.h"
 
 class FRONTEND_API ibFormVisualDocument;
 
@@ -321,6 +321,10 @@ public:
 	 * Cleanup (do the reverse of Create)
 	 */
 	virtual void Cleanup(wxObject* obj, ibVisualHost* visualHost) {};
+
+	// What its children are laid out in, `wxobject` being what Create built for it (the host keeps it): a sizer itself,
+	// a page's own, the form's controls' (the thin client's GetSizer). None — a control that lays nothing out.
+	virtual ibFrontendSizer* GetSizer(wxObject* wxobject) const { return nullptr; }
 
 public:
 

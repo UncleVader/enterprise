@@ -16,9 +16,9 @@ public:
 	virtual bool OnCreate(ibDocument* doc, long flags) override;
 	virtual void OnDraw(ibDataNode& frame) override;
 
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::Text; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::Text; }
 	// The text the person typed on the client, handed over (Change {Text}) — the document's text from then on.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 protected:
 
@@ -59,7 +59,8 @@ protected:
 
 	wxString m_text;
 
-	wxDECLARE_NO_COPY_CLASS(ibTextDocument);
+	ibTextDocument(const ibTextDocument&) = delete;
+	ibTextDocument& operator=(const ibTextDocument&) = delete;
 	wxDECLARE_ABSTRACT_CLASS(ibTextDocument);
 };
 
@@ -103,7 +104,8 @@ protected:
 	virtual bool DoSaveDocument(const wxString& filename) override;
 	virtual bool DoOpenDocument(const wxString& filename) override;
 
-	wxDECLARE_NO_COPY_CLASS(ibTextFileDocument);
+	ibTextFileDocument(const ibTextFileDocument&) = delete;
+	ibTextFileDocument& operator=(const ibTextFileDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibTextFileDocument);
 };
 

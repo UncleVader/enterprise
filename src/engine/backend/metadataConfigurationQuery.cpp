@@ -4,14 +4,11 @@
 #include "backend/databaseLayer/databaseErrorCodes.h"
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door: dialect-neutral DDL/DML + typed row reads (kills the PG/FB forks below)
 
-#include "backend/utils/md5.hpp"
+#include "core/utils/base64.h"   // ibBase64 — the configuration's bytes as the text its digest is taken of
+#include "core/utils/md5.hpp"
 #include "backend/appData.h"
 #include "backend/logger/logger.h"
 #include "backend/backend_exception.h"
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////
-#include <wx/base64.h>
-//////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // The restructure ledger lives on the CONFIGURATION; this static pulls the ACTIVE config's instance, so
 // this-less callers (static scaffold methods, the apply dialog) reach it without a metadata handle.
@@ -70,9 +67,9 @@ bool ibMetaDataConfiguration::LoadDatabase(int flags)
 			return false;
 		}
 
-		wxMemoryBuffer binaryData;
+		ibMemoryBuffer binaryData;
 		result.GetResultBlob(wxT("binary_data"), binaryData);
-		ibReaderMemory metaReader(binaryData.GetData(), binaryData.GetBufSize());
+		ibReaderMemory metaReader(binaryData);
 
 		//check is file empty
 		if (metaReader.eof())
@@ -85,7 +82,9 @@ bool ibMetaDataConfiguration::LoadDatabase(int flags)
 		m_configNew = false;
 
 		m_metaGuid = ibGuid(result.GetResultString(wxT("file_guid")));
-		m_md5Hash = ibMD5::ComputeMd5(wxBase64Encode(binaryData.GetData(), binaryData.GetDataLen()));
+		std::string text;
+		ibBase64::Append(text, binaryData.GetData(), binaryData.GetDataLen());
+		m_md5Hash = ibMD5::ComputeMd5(text.data(), text.size());
 	}
 
 	return true;
@@ -248,9 +247,9 @@ bool ibMetaDataConfigurationStorage::OnSaveDatabase(int flags)
 	// about TEXT, not about the database: Modify() compares the edited configuration against the
 	// saved baseline, and the debugger verifies a connection by the configuration GUID and merely
 	// carries this along. What "the base has not got yet" is answered by database_diff.
-	m_md5Hash = ibMD5::ComputeMd5(
-		wxBase64Encode(writerData.pointer(), writerData.size())
-	);
+	std::string text;
+	ibBase64::Append(text, writerData.pointer(), writerData.size());
+	m_md5Hash = ibMD5::ComputeMd5(text.data(), text.size());
 
 	// ⭐⭐ THE ACTIVE CONFIGURATION IS *NOT* PUBLISHED HERE ANY MORE — see PublishConfiguration(),
 	// called after the schema is finished.
@@ -358,7 +357,7 @@ bool ibMetaDataConfigurationStorage::OnAfterSaveDatabase(bool roolback, int flag
 
 		for (const ibRestructureInfo::Entry& entry : ledger) {
 
-			const wxChar* level =
+			const ibChar* level =
 				  entry.type == ibRestructure::error   ? wxT("error")
 				: entry.type == ibRestructure::warning ? wxT("warning")
 				                                       : wxT("info");
@@ -640,7 +639,7 @@ bool ibMetaDataConfigurationStorage::LoadSequenceFromBuffer(const ibReaderMemory
 	if (!db_query->TableExists(sequence_table))
 		return false;
 
-	u64 seq_idx = 0;
+	std::uint64_t seq_idx = 0;
 	ibReaderMemory* seqReaderPrev = nullptr;
 
 	while (true) {

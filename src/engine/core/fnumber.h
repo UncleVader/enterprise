@@ -7,12 +7,13 @@
 #include <string>
 #include <vector>
 #include <wx/string.h>
-#include <wx/buffer.h>
+#include "core/memory/memoryBuffer.h"
 
 #include "core/core.h"  // CORE_API
 
-class ibReaderMemory; // core/fileSystem/fs.h
-class ibWriterMemory; // core/fileSystem/fs.h
+class ibReaderMemory; // core/memory/memoryStream.h
+class ibWriterMemory; // core/memory/memoryStream.h
+class ibString;       // core/fstring.h
 
 // ibNumber — exact-decimal number, 8 bytes total.
 //
@@ -229,6 +230,8 @@ public:
 
 	wxString     ToString()  const;
 	std::wstring ToWString() const;
+	// …the same text, written into the engine's string — no wxString on the way.
+	void ToString(ibString& out) const;
 
 	// Formatted decimal output. Pass field-by-field; defaults give the same
 	// result as the bare ToString() above. Defined below the class.
@@ -265,7 +268,7 @@ public:
 	// Parses a decimal string ("123", "-1.5", "1.2e3"). Returns false if the
 	// input has no digits or is otherwise unparseable; on failure value is
 	// reset to zero.
-	bool FromString(const wxString& s);
+	bool FromString(const ibString& s);
 
 	// 128-bit raw integer extraction / loading. Bytes are little-endian
 	// two's-complement. Used by DB layers (e.g. Firebird SQL_INT128). Caller is
@@ -295,13 +298,13 @@ public:
 	//         writer.w_chunk(chunkNumber, value.GetBuffer());
 	//   - Out-parameter overload — reuses caller's buffer capacity, clears it
 	//     first, then writes. For tight loops over many numbers:
-	//         wxMemoryBuffer buf;
+	//         ibMemoryBuffer buf;
 	//         for (...) { n.GetBuffer(buf); writer.w_chunk(id, buf); }
-	wxMemoryBuffer GetBuffer() const;
-	void           GetBuffer(wxMemoryBuffer& out) const;
+	ibMemoryBuffer GetBuffer() const;
+	void           GetBuffer(ibMemoryBuffer& out) const;
 	bool           GetBuffer(ibWriterMemory& writer) const; // chunked stream write
 
-	bool SetBuffer(const wxMemoryBuffer& in);
+	bool SetBuffer(const ibMemoryBuffer& in);
 	bool SetBuffer(const void* data, size_t len);
 	bool SetBuffer(const ibReaderMemory& reader); // chunked stream read
 
@@ -447,6 +450,9 @@ private:
 	// copied — one allocation fewer for every result that does not fit the immediate tier.
 	void StoreBig(BigImpl&& src);
 
+	// The plain text, appended to `out` — every ToString without a format writes through it, whichever string it fills.
+	template<class Text> void AppendText(Text& out) const;
+
 	uint64_t m_payload;
 };
 
@@ -454,8 +460,8 @@ struct ibNumber::Format
 {
 	int    fracDigits   = -1;        // round to N decimal places (-1 = no rounding)
 	int    precision    = -1;        // cap total significant digits, trim trailing zeros (-1 = off)
-	wxChar decimalSep   = wxT('.');  // decimal separator
-	wxChar groupSep     = 0;         // thousand-group separator (0 = no grouping)
+	ibChar decimalSep   = wxT('.');  // decimal separator
+	ibChar groupSep     = 0;         // thousand-group separator (0 = no grouping)
 	int    groupSize    = 0;         // digits per group (0 = no grouping)
 	int    minIntDigits = 0;         // pad integer part with leading '0' to this width (0 = off)
 	                                 //   sign sits OUTSIDE the padding: -5 with width 4 → "-0005",

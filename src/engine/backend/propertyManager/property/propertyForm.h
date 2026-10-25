@@ -9,9 +9,9 @@ class BACKEND_API ibPropertyForm : public ibProperty {
 public:
 
 	wxString GetValueAsString() const;
-	wxMemoryBuffer& GetValueAsMemoryBuffer() const;
+	ibMemoryBuffer& GetValueAsMemoryBuffer() const;
 	void SetValue(const wxString& val);
-	void SetValue(const wxMemoryBuffer& val);
+	void SetValue(const ibMemoryBuffer& val);
 
 	ibPropertyForm(ibPropertyCategory* cat, const wxString& name)
 		: ibProperty(cat, name, CreateVariantData())
@@ -39,6 +39,9 @@ public:
 	//copy & paste — pulls the LIVE form data (not the stored buffer)
 	virtual bool CopyNodeValue(ibDataValue& value) const override;
 	virtual bool PasteNodeValue(const ibDataValue& value) override;
+
+	// …and what its link opens: the form it is the data of (Object).
+	virtual bool GetProtocolValue(ibDataNode& row, ibReader reader) override;
 
 	// 🛑 AND THE VALUE IS NEVER TAKEN OFF A BARE VARIANT HERE. This cell holds TWO things — the
 	// module text AND the form data — so "the value" has no single reading: taken as a string it

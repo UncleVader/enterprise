@@ -21,11 +21,13 @@ the three jobs first agreed, **1166** on 2026-08-07 (1197 `TEST` cases live in `
 jobs of their own — the GUI suite is 38). Locally, with nothing excluded, `ctest` reports 1208.
 Read the current figure off the last run rather than from here.
 
-Two boundaries, so the claim is not read wider than it is: the **web** targets
-(`wenterprise-server`, `wfrontend`) build under CMake only with `-DOES_BUILD_WEB=ON`, which CI does
-not set — so a break in the web keeps CI green; and of the five drivers, all compile everywhere but
-only **SQLite executes** in CI — Firebird and PostgreSQL load their clients at run time, which
-the runners do not have. Details and the day's findings: [docs/portability.md](docs/portability.md).
+Two boundaries, so the claim is not read wider than it is: the old **web** frontend
+(`wfrontend`) builds under CMake only with `-DOES_BUILD_WEB=ON`, which CI does
+not set — so a break in it keeps CI green; and of the five drivers, all compile everywhere and
+**SQLite executes** in every job — Firebird and PostgreSQL load their clients at run time, which the
+general runners do not have, so each executes in a job of its own: `tests-firebird` (the pinned
+Firebird 5 kit laid out as `_fb/`, the embedded engine) and `tests-postgres` (a live PostgreSQL 16).
+Details and the day's findings: [docs/portability.md](docs/portability.md).
 
 The runtime executes compiled bytecode, renders forms through wxWidgets, and stores all application data in a relational database (Firebird by default).
 
@@ -37,7 +39,7 @@ The runtime executes compiled bytecode, renders forms through wxWidgets, and sto
 |---|---|
 | Language | C++17 |
 | GUI | wxWidgets 3.3.2 (git submodule at `src/3rdparty/wxWidgets`) |
-| Build (Windows) | MSBuild — `enterprise.sln` (Visual Studio 2019/2022) |
+| Build (Windows) | MSBuild — `enterprise.sln` (Visual Studio 2022, toolset v143) |
 | Build (cross-platform) | CMake — `CMakeLists.txt` at repo root; macOS / Linux build supported, Windows uses MSBuild |
 | Primary database | Firebird (embedded) |
 | Other databases | PostgreSQL (production), ODBC (CMake `OES_USE_*` opt-in, and the base an MSSQL layer derives from); SQLite is always embedded but is for **tests and logging only, never production** |
@@ -56,6 +58,7 @@ enterprise/
 ├── docs/                     # PUBLIC documentation — start with README.md
 │   ├── README.md             # map of the public documents
 │   ├── development.md        # HOW WE WORK — pull requests, commits, code and design rules, tests
+│   ├── writing-code.md       # HOW WE WRITE CODE — names, classes, holders, refusals, the diff
 │   ├── ai-context.md         # READ FIRST if you are an AI generating metadata / scripts
 │   ├── ARCHITECTURE.md
 │   ├── BUILD.md
@@ -134,11 +137,13 @@ enterprise/
         ├── fileserver/      # fileserver.dll — a file base loaded into the thin client's process
         ├── enterprise-thin/ # enterprise-thin.exe (thin client)
         ├── enterprise/      # enterprise.exe (thick client)
-        ├── wenterprise-server/ # web server (wes process)
+        ├── webserver/       # webserver.exe (the bases' transport for browsers: the site + the client protocol)
         ├── designer-thin/   # designer-thin.exe (thin designer)
         ├── designer/        # designer.exe  (IDE)
         ├── launcher/        # launcher.exe  (connection chooser)
         ├── appserver/       # appserver.exe (the application server)
+        ├── appcluster/      # appcluster.exe (servers per base, the port and routing, restarts; console or a service)
+        ├── appcluster-tray/ # appcluster-tray.exe (the cluster's tray: its servers, its verbs, starting it)
         ├── codeRunner/      # codeRunner.exe
         └── simplePlugin/    # simplePlugin.dll (example)
 ```
@@ -403,7 +408,7 @@ under the debugger as well as for the designer itself.
 | `master` | Release-tagged commits; stable |
 | `develop` | Active development; target branch for all PRs |
 
-All feature work happens on branches cut from `develop`. Pull requests target `develop`. Releases are merged from `develop` to `master` and tagged. How a pull request is taken, and the rules a change is reviewed against: [docs/development.md](docs/development.md).
+All feature work happens on branches cut from `develop`. Pull requests target `develop`. Releases are merged from `develop` to `master` and tagged. How a pull request is taken, and the rules a change is reviewed against: [docs/development.md](docs/development.md); how the code itself is written: [docs/writing-code.md](docs/writing-code.md).
 
 ---
 

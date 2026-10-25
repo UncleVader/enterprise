@@ -39,6 +39,7 @@ add_executable(oes_tests
     test_driverDates.cpp
     test_formatString.cpp
     test_blockSyntaxLINQ.cpp
+    test_scriptFoldCode.cpp
     test_byteCodeAOT.cpp
     test_byteCodeFormat.cpp
     test_compiler.cpp
@@ -54,6 +55,7 @@ add_executable(oes_tests
     test_session.cpp
     test_jobManager.cpp
     test_jobSchedule.cpp
+    test_choiceLinkDescription.cpp
     test_module_manager_split.cpp
     # test_pagingRamTable.cpp  # API-rotted (ibValueModelTableBase renamed) — excluded until updated
     test_blobCompression.cpp
@@ -68,6 +70,8 @@ add_executable(oes_tests
     test_metadataPasteIdentity.cpp
     test_propertySerialized.cpp
     test_metadataTree.cpp
+    test_numberPeriodicity.cpp
+    test_pictureVersion.cpp
     test_commonAttribute.cpp
     test_roleComposition.cpp
     test_rolePolicyFold.cpp
@@ -77,6 +81,7 @@ add_executable(oes_tests
     test_jsonProvider.cpp
     test_valueJson.cpp
     test_queryRenderer.cpp
+    test_queryStringConcat.cpp
     test_queryLifecycle.cpp
     test_queryBuilderShowcase.cpp
     test_queryTotals.cpp
@@ -96,7 +101,9 @@ add_executable(oes_tests
     test_queryL3Vocab.cpp
     test_queryL4Lexer.cpp
     test_queryL4Parser.cpp
+    test_queryCoreData.cpp
     test_queryConstructor.cpp
+    test_queryConstructorRequest.cpp
     test_queryNaming.cpp
     test_queryRoundTrip.cpp
     test_jsonRoundTrip.cpp
@@ -162,6 +169,7 @@ add_executable(oes_tests
     test_readerWriterMemory.cpp
     test_openAccess.cpp
     test_passwordHash.cpp
+    test_launchTicket.cpp
     test_loginName.cpp
     test_programFolder.cpp
     test_md5.cpp
@@ -188,7 +196,8 @@ add_executable(oes_tests
     test_functionalOption.cpp
     test_metadataMove.cpp
     test_sectionInterfaceItems.cpp
-    test_socketLock.cpp
+    test_debugServer.cpp
+    test_commonModuleCheck.cpp
     test_lockRace.cpp
     test_clientListener.cpp
 )
@@ -214,6 +223,19 @@ target_compile_definitions(oes_tests PRIVATE OES_TESTING)
 # The cmake that configured this tree: test_byteCodeFormat runs the engine fingerprint script with it, the way the
 # build does, and a machine need not have one on PATH.
 target_compile_definitions(oes_tests PRIVATE OES_CMAKE_COMMAND="${CMAKE_COMMAND}")
+
+# THE REFERENCE SERVERS ARE cpp-httplib's, TLS among them (test_valueHttpSecure, test_listener): another library than
+# the core's client and server they are put against. So this binary is a user of Mbed TLS in its own right, with a copy
+# of its own (core/tls/oes_mbedtls_threading.h) - the one module besides the core. The trust stores httplib reads by
+# itself: the Windows store, the macOS keychain.
+target_compile_definitions(oes_tests PRIVATE CPPHTTPLIB_MBEDTLS_SUPPORT)
+target_link_libraries(oes_tests PRIVATE mbedtls mbedx509 mbedcrypto)
+if(WIN32)
+    target_link_libraries(oes_tests PRIVATE crypt32)
+endif()
+if(APPLE)
+    target_link_libraries(oes_tests PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
 
 target_include_directories(oes_tests PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
@@ -293,8 +315,9 @@ set_tests_properties(oes_cross_zone_read PROPERTIES
 # Lightweight string-layer tests — ibString/fstring only.
 #
 # fstring.h is the facade and fstring.cpp the module behind it; both depend on
-# nothing but wxBase, so this target compiles the module IN (as if it were
-# core, CORE_EXPORTS) and does NOT link (or recompile) core.dll. Use it
+# nothing but wxBase and the pool a text's block is made in (memoryPool.cpp),
+# so this target compiles the two IN (as if they were core, CORE_EXPORTS) and
+# does NOT link (or recompile) core.dll. Use it
 # for fast iteration on the string type — it builds in seconds even after
 # touching core backend headers:
 #
@@ -307,6 +330,7 @@ add_executable(oes_string_tests
     test_string.cpp
     bench_string.cpp
     "${CMAKE_SOURCE_DIR}/src/engine/core/fstring.cpp"
+    "${CMAKE_SOURCE_DIR}/src/engine/core/memory/memoryPool.cpp"
 )
 target_compile_definitions(oes_string_tests PRIVATE CORE_EXPORTS)
 
@@ -607,7 +631,7 @@ target_link_libraries(oes_frontend_runtime_test
         backend
         frontend
         wx::core wx::aui wx::html wx::propgrid wx::adv
-        wx::stc  wx::xrc wx::qa  wx::base wx::net wx::xml
+        wx::stc  wx::xrc wx::qa  wx::base wx::xml
         GTest::gtest
         GTest::gtest_main
 )

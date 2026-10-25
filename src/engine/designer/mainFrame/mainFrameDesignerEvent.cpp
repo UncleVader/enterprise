@@ -109,7 +109,7 @@ int CountOtherLiveSessions()
 #include "frontend/window_ptr.h"
 
 #include "frontend/mainFrame/settings/settingsdialog.h"
-#include "frontend/mainFrame/settings/keybinderdialog.h" 
+#include "frontend/mainFrame/settings/keybinderpanel.h"
 #include "frontend/mainFrame/settings/fontcolorsettingspanel.h"
 #include "frontend/mainFrame/settings/editorsettingspanel.h"
 #include "frontend/mainFrame/settings/mcpsettingspanel.h"
@@ -124,7 +124,7 @@ int CountOtherLiveSessions()
 #include "backend/metadataConfiguration.h"
 
 // Common shape for the three places that save the configuration before
-// kicking off a child process (enterprise.exe / wenterprise-server.exe
+// kicking off a child process (enterprise.exe / webserver.exe
 // for debug). Returns true when the configuration is in a state safe to
 // launch — either no save was needed, the user declined to save, or the
 // save succeeded. Returns false only when a save was attempted and it
@@ -214,16 +214,15 @@ static bool SaveIfModifiedBeforeWebDebug(wxWindow* parent)
 
 static void LaunchWebDebug(wxWindow* parent, bool withDebug)
 {
-	// URL prefix and port are derived by wes itself (from --file/--db
-	// basename and OS-picked ephemeral port). Manifest handshake reports
-	// the real URL back and opens the browser — no guessing here.
-	// withDebug=true -> wes spawns with --debug so its debugServer comes
-	// up; the designer's debugClient then attaches via the manifest's
-	// pid/host (out-of-band of the manifest itself — debug-server still
-	// listens on defaultDebuggerPort+offset).
-	if (appData->RunApplication(wxT("wenterprise-server"),
+	// The publication's name and the port are the web server's own (the
+	// base's folder, a port the system picks); the manifest reports the
+	// page's address back and the browser opens it — no guessing here.
+	// withDebug=true -> the server starts with --debug so its debugServer
+	// comes up; the designer's debugClient then finds it on one of
+	// ibPort::Debugger, out-of-band of the manifest.
+	if (appData->RunApplication(wxT("webserver"),
 			/*searchDebug=*/withDebug, /*useManifest=*/true) == 0) {
-		wxMessageBox(_("Failed to start wenterprise-server"),
+		wxMessageBox(_("Failed to start webserver"),
 			wxTheApp->GetAppDisplayName(), wxOK | wxICON_ERROR, parent);
 	}
 }
@@ -769,20 +768,11 @@ void ibFrontendMainFrameDesigner::OnUpdateDebugCommand(wxUpdateUIEvent& event)
 
 void ibFrontendMainFrameDesigner::OnToolsSettings(wxCommandEvent& event)
 {
+	// The pages edit copies; the frame takes them back only on OK.
 	ibDialogSettings dialog(this);
-
-	ibDialogKeyBinder* keyBinder = dialog.GetKeyBinderDialog();
-
-	for (unsigned int i = 0; i < m_keyBinder.GetNumCommands(); ++i)
-	{
-		keyBinder->AddCommand(m_keyBinder.GetCommand(i));
-	}
-
-	ibPanelFontColorSettings* fontColorSettings = dialog.GetFontColorSettingsPanel();
-	fontColorSettings->SetSettings(m_fontColorSettings);
-
-	ibPanelEditorSettings* editorSettings = dialog.GetEditorSettingsPanel();
-	editorSettings->SetSettings(m_editorSettings);
+	dialog.GetKeyBinderPanel()->SetSettings(m_keyBinder);
+	dialog.GetFontColorSettingsPanel()->SetSettings(m_fontColorSettings);
+	dialog.GetEditorSettingsPanel()->SetSettings(m_editorSettings);
 
 	// ASSISTANT ACCESS. Unlike the pages above, this one is not the frame's own
 	// state kept in an options file — it belongs to the PERSON in this base, so
@@ -806,24 +796,16 @@ void ibFrontendMainFrameDesigner::OnToolsSettings(wxCommandEvent& event)
 			mcpServer->SaveSettings(ibSession::Current());
 		}
 
-		m_keyBinder.ClearCommands();
-
-		for (unsigned int i = 0; i < keyBinder->GetNumCommands(); ++i) {
-			m_keyBinder.AddCommand(keyBinder->GetCommand(i));
-		}
-
+		m_keyBinder = dialog.GetKeyBinderPanel()->GetSettings();
 		m_keyBinder.UpdateWindow(this);
-
 #if wxUSE_MENUBAR
 		if (m_pMyMenuBar != nullptr)
 			m_keyBinder.UpdateMenuBar(m_pMyMenuBar);
-
 		m_keyBinder.UpdateMenuBar(GetMenuBar());
 #endif
 
-		m_fontColorSettings = fontColorSettings->GetSettings();
-		m_editorSettings = editorSettings->GetSettings();
-
+		m_fontColorSettings = dialog.GetFontColorSettingsPanel()->GetSettings();
+		m_editorSettings = dialog.GetEditorSettingsPanel()->GetSettings();
 		UpdateEditorOptions();
 	}
 

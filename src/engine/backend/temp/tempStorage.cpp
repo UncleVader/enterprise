@@ -117,7 +117,7 @@ bool ibTempStorage::WritePart(const ibGuid& session, const wxString& id, int ind
 	}
 }
 
-bool ibTempStorage::ReadPart(const ibGuid& session, const wxString& id, int index, wxMemoryBuffer& data) const
+bool ibTempStorage::ReadPart(const ibGuid& session, const wxString& id, int index, ibMemoryBuffer& data) const
 {
 	std::lock_guard<std::recursive_mutex> serialised(m_mtx);
 
@@ -186,8 +186,15 @@ void ibTempStorage::OnSessionEnd(const ibGuid& session)
 
 	try {
 		ibDatabaseQueryBuilder q(&m_holder);
+		if (!q.IsOpen())
+			return;
+		// Called from the registry thread. A waiting delete sits in front of Add.
+		ibDbTxOptions opts;
+		opts.noWait = true;
+		q.BeginTransaction(opts);
 		q.Execute(ibDelete(file_table,
 			ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("sessionGuid")), ibConst(ibValue(session.str())))));
+		q.Commit();
 	}
 	catch (...) {
 		// Left for the sweep, which hands over who is alive and takes the rest.
@@ -206,18 +213,27 @@ void ibTempStorage::SweepOrphans(const std::vector<ibGuid>& liveSessionGuids)
 	std::set<wxString> orphans;
 	try {
 		ibDatabaseQueryBuilder q(&m_holder);
-		ibQueryResult rs = q.From(file_table)
-			.Select({ wxT("sessionGuid") })
-			.Where(ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("partIndex")), ibParam(0)))
-			.Execute({ ibValue(kHeaderPart) });
-		while (rs.Next()) {
-			const wxString owner = rs.GetResultString(wxT("sessionGuid"));
-			if (!owner.IsEmpty() && live.find(owner) == live.end())
-				orphans.insert(owner);
+		if (!q.IsOpen())
+			return;
+		// The read is on the registry thread. noWait so it cannot sit out a metadata lock.
+		ibDbTxOptions opts;
+		opts.noWait = true;
+		q.BeginTransaction(opts);
+		{
+			ibQueryResult rs = q.From(file_table)
+				.Select({ wxT("sessionGuid") })
+				.Where(ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("partIndex")), ibParam(0)))
+				.Execute({ ibValue(kHeaderPart) });
+			while (rs.Next()) {
+				const wxString owner = rs.GetResultString(wxT("sessionGuid"));
+				if (!owner.IsEmpty() && live.find(owner) == live.end())
+					orphans.insert(owner);
+			}
 		}
+		q.Commit();
 	}
 	catch (...) {
-		return;   // transient DB error — the next sweep retries
+		return;   // transient DB error, or the table is locked — the next sweep retries
 	}
 
 	for (const wxString& owner : orphans)
@@ -264,7 +280,7 @@ wxString ibTempFile::GetName() const
 	return m_storage != nullptr ? m_storage->GetName(m_session, m_id) : wxString();
 }
 
-bool ibTempFile::ReadPart(int index, wxMemoryBuffer& data) const
+bool ibTempFile::ReadPart(int index, ibMemoryBuffer& data) const
 {
 	return m_storage != nullptr && m_storage->ReadPart(m_session, m_id, index, data);
 }
@@ -274,7 +290,7 @@ bool ibTempFile::ReadAll(wxString* str, const wxMBConv& conv)
 	if (m_storage == nullptr || str == nullptr)
 		return false;
 
-	wxMemoryBuffer content, part;
+	ibMemoryBuffer content, part;
 	for (int index = 0; ReadPart(index, part); ++index)
 		content.AppendData(part.GetData(), part.GetDataLen());
 

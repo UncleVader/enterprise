@@ -12,13 +12,18 @@ class ibMetaData;
 // answer is the server's (a window is handed what it needs, or asks).
 class FRMCLIENT_API ibApplicationData {
 public:
-	// The designer — the frame logged in as one (ibProtocolMode::Designer): the thin designer is.
+	// The designer — the frame logged in as one (ibProtocol::ibLogin::ibMode::Designer): the thin designer is.
 	bool DesignerMode() const;
 
 	// A client of the same base started beside this one, on this computer — `strAppName` the binary next to this one,
-	// given the base this one opened (the fields below; `--debug` when `searchDebug`). Its pid; 0 — not started. ⚠ The
-	// debugger's search for it, and the web server's manifest (`useManifest`), are not ported: the second answers 0.
+	// given the base this one opened (the fields below; `--debug` when `searchDebug`). Its pid; 0 — not started.
+	// `useManifest` — the web server (ibStartWebServer) publishing this base, its page opened in the browser. ⚠ The
+	// debugger's search for it is the caller's.
 	long RunApplication(const wxString& strAppName, bool searchDebug = true, bool useManifest = false) const;
+
+	// The file base's folder this client opened (the engine's: a Firebird base's — the VCS working copy root); empty: a
+	// base on a server, or on a DBMS.
+	const wxString& GetFile() const { return m_strFile; }
 
 private:
 
@@ -26,8 +31,10 @@ private:
 	// had the person pick (designer-thin/mainApp.cpp, the one that fills them).
 	friend class ibAppDesigner;
 
-	// APPLICATION SERVER ENTRY — oes://server[:port]/<base>
+	// APPLICATION SERVER ENTRY — oes://server[:port]/<base>, or oess:// over TLS; the authorities it trusts, a PEM file
+	// (empty — the platform's store)
 	wxString m_strAddress;
+	wxString m_strTrusted;
 
 	// FILE ENTRY
 	wxString m_strFile;
@@ -53,6 +60,8 @@ class FRMCLIENT_API ibApplicationInstance {
 public:
 	// The person's assistant access (frmclient/backend/mcp/mcpServer.h) — none when they may not ask for it.
 	static class ibMcpServer* GetMcpServer();
+	// …as its schema's answer already at hand shows it (a menu item's) — received from it, not asked again.
+	static class ibMcpServer* GetMcpServer(const class ibProtocolNode& shown);
 };
 
 inline ibApplicationData s_appData;

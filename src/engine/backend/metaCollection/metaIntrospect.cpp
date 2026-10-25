@@ -4,7 +4,7 @@
 
 #include "backend/metaCollection/metaIntrospect.h"
 
-#include "core/fileSystem/fs.h"            // ibWriterMemory — the JSON sink
+#include "core/memory/memoryStream.h"            // ibWriterMemory — the JSON sink
 #include "backend/metaData.h"
 #include "backend/metaCollection/metaObject.h"
 #include "backend/metaCollection/metaObjectMetadata.h"   // GetCompileSyntax — the configuration's dialect
@@ -135,9 +135,9 @@ bool ibConfigurationWritesInWords(const ibMetaData* metaData)
 	return configuration->GetCompileSyntax() == ibProgramSyntax::syntax_ves;
 }
 
-std::function<wxString(ibClassID)> ibMetaTypeResolver(const ibMetaData* metaData)
+std::function<ibString(ibClassID)> ibMetaTypeResolver(const ibMetaData* metaData)
 {
-	return [metaData](ibClassID clsid) -> wxString {
+	return [metaData](ibClassID clsid) -> ibString {
 
 		const ibCtorMetaValueType* typeCtor = metaData != nullptr
 			? metaData->GetTypeCtor(clsid) : nullptr;

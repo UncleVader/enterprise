@@ -35,6 +35,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cwchar>        // std::swprintf — ibString::Format
+#include <cwctype>       // std::iswdigit, std::towlower… — a character's class and case
 #include <string>
 #include <string_view>   // std::hash<ibString> hashes a view of the buffer
 #include <tuple>         // std::apply — ibString::Format holds its arguments for the call
@@ -42,6 +43,17 @@
 #include <wx/string.h>   // ONLY for the boundary conversion (operator wxString / ctor)
 
 #include "core/core.h"   // CORE_API
+
+// --- a character: its class and its case ------------------------------------
+// The C library's wide answers — what wxIsdigit, wxTolower and the rest gave, without wx.
+
+inline bool ibIsDigit(ibChar c) { return std::iswdigit(c) != 0; }
+inline bool ibIsSpace(ibChar c) { return std::iswspace(c) != 0; }
+inline bool ibIsAlpha(ibChar c) { return std::iswalpha(c) != 0; }
+inline bool ibIsAlnum(ibChar c) { return std::iswalnum(c) != 0; }
+
+inline ibChar ibToLower(ibChar c) { return static_cast<ibChar>(std::towlower(c)); }
+inline ibChar ibToUpper(ibChar c) { return static_cast<ibChar>(std::towupper(c)); }
 
 // --- ibString ---------------------------------------------------------------
 
@@ -232,7 +244,7 @@ public:
 	// would otherwise loop forever). Nothing found leaves a shared text shared.
 	size_t Replace(const ibString& from, const ibString& to, bool replaceAll = true);
 
-	// --- comparison (native; case-insensitive folds per-char via wxTolower) ---
+	// --- comparison (native; case-insensitive folds per-char via ibToLower) ---
 	bool operator==(const ibString& o) const noexcept { return m_impl == o.m_impl || View() == o.View(); }
 	bool operator!=(const ibString& o) const noexcept { return !(*this == o); }
 	bool operator<(const ibString& o)  const noexcept { return View() < o.View(); }
@@ -245,6 +257,12 @@ public:
 	bool operator!=(const wxString& s) const { return !(*this == s); }
 	friend bool operator==(const wxString& a, const ibString& b) { return b == a; }
 	friend bool operator!=(const wxString& a, const ibString& b) { return !(b == a); }
+	// …and against UTF-8 — a protocol's word, a narrow literal: the bytes decoded as they are compared, no text made of
+	// them (either string would make one, and the two of them made the comparison ambiguous).
+	bool operator==(const char* utf8) const noexcept;
+	bool operator!=(const char* utf8) const noexcept { return !(*this == utf8); }
+	friend bool operator==(const char* a, const ibString& b) { return b == a; }
+	friend bool operator!=(const char* a, const ibString& b) { return !(b == a); }
 	bool IsSameAs(const ibString& o, bool caseSensitive = true) const;
 	// …and exact for a literal and for wx's own string (a bytecode's names), read where they lie —
 	// the trio operator== has, and for the same reason.
@@ -366,13 +384,6 @@ struct wxArgNormalizerUtf8<ibString> : public wxArgNormalizerUtf8<const ibString
 		: wxArgNormalizerUtf8<const ibString&>(s, fmt, index) {}
 };
 #endif // wxUSE_UNICODE_UTF8
-
-// --- the string pool (fstring.cpp) --------------------------------------------
-
-namespace ibFStringPool {
-// Hands this thread's cached blocks back to the CRT — see the note at the definition.
-CORE_API void Drain() noexcept;
-} // namespace ibFStringPool
 
 // --- ibString::Format -------------------------------------------------------
 

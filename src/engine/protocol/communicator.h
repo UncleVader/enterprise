@@ -5,7 +5,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <vector>
 
 #include "connection.h"
@@ -32,18 +31,20 @@ public:
 	// login {User, Password, Mode, Protocol} — the client's id and the protocol both speak taken, the token when the
 	// server offers one, and the first frame; the answer given back as it came, for its events (a start may say
 	// something, or ask).
-	bool Login(const wxString& user, const wxString& password, ibProtocolMode mode, ibProtocolNode& result,
-		ibProtocolRefusal& refusal, wxString& error);
+	// `schemas` — those the client would read right after it (Read): answered beside the frame, each with its Schema; one
+	// the person may not read is left out, and the client asks for it.
+	bool Login(const wxString& user, const wxString& password, ibProtocol::ibLogin::ibMode mode, ibProtocolNode& result,
+		ibProtocol::ibRefusal& refusal, wxString& error, const std::vector<ibProtocol::ibSchema::ibKind>& schemas = {});
 	// users {} — the names the login window offers, asked before the login.
-	bool Users(std::vector<wxString>& names, ibProtocolRefusal& refusal, wxString& error);
+	bool Users(std::vector<wxString>& names, ibProtocol::ibRefusal& refusal, wxString& error);
 	void Logout();
 
 	// Any other call, the client and the frame held named for it (Client, Since). An answer that is a frame (it
 	// carries its number, Frame) is taken into the one kept; the answer is given back as it came — the events of a
 	// frame are read from it, and so are a fetch's rows, a schema's tree, a file's part.
-	bool Call(ibProtocolMethod method, const ibProtocolNode& params, ibProtocolNode& result,
-		ibProtocolRefusal& refusal, wxString& error);
-	// ⭐ A STATE EVENT LEFT FOR THE NEXT CALL — an event's params (protocol 3, ibProtocolIsStateEvent): kept, the latest of
+	bool Call(ibProtocol::ibMethod method, const ibProtocolNode& params, ibProtocolNode& result,
+		ibProtocol::ibRefusal& refusal, wxString& error);
+	// ⭐ A STATE EVENT LEFT FOR THE NEXT CALL — an event's params (protocol 3, ibProtocol::ibEvent::IsStateEvent): kept, the latest of
 	// its kind per control in place of the one before, and carried by the next call, whatever it is, as Pending, in the
 	// order done. False — the server speaks no protocol that carries it: the caller sends it as its own call.
 	bool Hold(const ibProtocolNode& event);
@@ -52,8 +53,18 @@ public:
 	// called on the connection's thread, never the window's, and the client asks for its frame. Empty — told nothing.
 	void Listen(std::function<void()> changed);
 
+	// ⭐ THE DEBUGGER, ON A CONNECTION OF ITS OWN (protocol 6) — a second one opened to the same place
+	// (ibProtocolConnection::OpenChannel) and bound to this client by the key debug {Channel} asks for on this one; `told`
+	// is handed the params of each `debug` notification of this client, on that connection's thread. Asked right after
+	// the login: the key is asked on this connection, and a call in flight would hold it up. False with why — a server
+	// below 6, a client with no debugger. Empty `told` — that connection closed, nothing more told.
+	bool ListenDebug(std::function<void(const ibProtocolNode& news)> told, ibProtocol::ibRefusal& refusal, wxString& error);
+	// debug {Command, …} on that connection — answered at once, beside this one's calls, never with a frame. False — none
+	// is bound, or refused.
+	bool Debug(const ibProtocolNode& params, ibProtocolNode& result, ibProtocol::ibRefusal& refusal, wxString& error);
+
 	bool            IsLoggedIn() const { return !m_client.IsEmpty(); }
-	const wxString& GetClient() const { return m_client; }
+	const ibString& GetClient() const { return m_client; }
 	int             GetProtocol() const { return m_protocol; }
 
 	// The frame drawn now, and its number — the last answer's.
@@ -62,15 +73,18 @@ public:
 
 private:
 
-	bool CallLocked(ibProtocolMethod method, const ibProtocolNode& params, ibProtocolNode& result,
-		ibProtocolRefusal& refusal, wxString& error);
+	bool CallLocked(ibProtocol::ibMethod method, const ibProtocolNode& params, ibProtocolNode& result,
+		ibProtocol::ibRefusal& refusal, wxString& error);
 	// The socket dropped and the server offered to resume: open it again, login {Token} under a new id, and send
 	// `sent` again under the id it already carries. False — the session is gone, or this connection cannot return.
-	bool Resume(const std::string& sent, std::string& answer, ibProtocolRefusal& refusal, wxString& error);
-	// The answer's frame, whole or as a patch, taken into the one kept; an answer that is no frame leaves it.
-	void Take(const ibProtocolNode& answer);
+	bool Resume(const ibString& sent, ibString& answer, ibProtocol::ibRefusal& refusal, wxString& error);
+	// The answer's frame, whole or as a patch, taken into the one kept; an answer that is no frame leaves it. A whole one
+	// is taken OUT of the answer — what it carries beside the frame stays in it.
+	void Take(ibProtocolNode& answer);
 	// The client is gone (logged out, or its session is): nothing of it is kept.
 	void Forget();
+	// debug {…} on the debugger's connection, under m_debugMutex.
+	bool DebugLocked(const ibProtocolNode& params, ibProtocolNode& result, ibProtocol::ibRefusal& refusal, wxString& error);
 
 	std::unique_ptr<ibProtocolConnection> m_connection;
 	std::mutex                            m_mutex;
@@ -78,10 +92,10 @@ private:
 	// id already used, including across the login {Token} that brings the session back.
 	long long                             m_lastId = 0;
 
-	wxString       m_client;
-	wxString       m_token;    // the bearer, kept here. The server stores only its hash.
+	ibString       m_client;
+	ibString       m_token;    // the bearer, kept here. The server stores only its hash.
 	bool           m_resume = false;   // the server listed `resume` — a dropped socket is asked for again
-	ibProtocolMode m_mode = ibProtocolMode::Runtime;
+	ibProtocol::ibLogin::ibMode m_mode = ibProtocol::ibLogin::ibMode::Runtime;
 	std::atomic<int> m_protocol{ 1 };   // read by Hold on the window's thread while a fetch may be in a call
 	long long      m_number = 0;
 	ibProtocolNode m_frame;
@@ -93,6 +107,14 @@ private:
 	// window's, and must not wait for a fetch's exchange.
 	std::mutex                  m_pendingMutex;
 	std::vector<ibProtocolNode> m_pending;
+
+	// (protocol 6) THE DEBUGGER'S CONNECTION (ListenDebug), the client it is bound for, and its calls' ids — a lock of
+	// their own: a step does not wait for this connection's call. Taken after m_mutex, never before it. Last: it goes
+	// before the connection it was opened beside.
+	std::mutex                            m_debugMutex;
+	ibString                              m_debugClient;
+	long long                             m_debugLastId = 0;
+	std::unique_ptr<ibProtocolConnection> m_debugConnection;
 };
 
 #endif

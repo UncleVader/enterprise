@@ -88,6 +88,7 @@ public:
 		//method call
 		virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 		virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
+		virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 		virtual ibString GetString() const override {
 			return m_moduleObject->GetName();
@@ -244,6 +245,7 @@ public:
 	//method call
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray);
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
+	virtual bool GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const override;
 
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);        //setting attribute
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
@@ -291,6 +293,10 @@ protected:
 
 	// global data manager — the "Data" queryable-source root (L4-2)
 	ibValuePtr<ibValueDataUnit> m_dataManager;
+
+	// the context types' objects (EnumManager / SystemManager) — made for this manager as its main module comes up,
+	// held while it is up: the compile module's context binds only reference them
+	std::vector<ibValue> m_listContextManager;
 
 	friend class ibMetaDataConfiguration;
 	friend class ibMetaDataDataProcessor;

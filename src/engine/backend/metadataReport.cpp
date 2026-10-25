@@ -17,9 +17,10 @@ m_version(version_oes_last)
 
 	//create main metaObject
 	m_commonObject = new ibValueMetaObjectExternalReport();
-	m_commonObject->SetName(
-		ibMetaData::GetNewName(g_metaExternalReportCLSID, nullptr, m_commonObject->GetClassName())
-	);
+	ibNameRequest request;
+	request.m_clsid = g_metaExternalReportCLSID;
+	request.m_prefix = m_commonObject->GetClassName();
+	m_commonObject->SetName(ibMetaData::GetNewName(nullptr, request));
 
 	if (m_commonObject->OnCreateMetaObject(this, newObjectFlag)) {
 		if (!m_commonObject->OnLoadMetaObject(this)) {
@@ -49,9 +50,10 @@ m_version(version_oes_last)
 		wxASSERT(commonMetaObject);
 		//create main metaObject
 		m_commonObject = new ibValueMetaObjectReport();
-		m_commonObject->SetName(
-			ibMetaData::GetNewName(g_metaReportCLSID, nullptr, m_commonObject->GetClassName())
-		);
+		ibNameRequest request;
+		request.m_clsid = g_metaReportCLSID;
+		request.m_prefix = m_commonObject->GetClassName();
+		m_commonObject->SetName(ibMetaData::GetNewName(nullptr, request));
 		if (commonMetaObject != nullptr) {
 			m_commonObject->SetParent(commonMetaObject);
 			commonMetaObject->AddChild(m_commonObject);
@@ -246,6 +248,7 @@ bool ibMetaDataReport::CloseDatabase(int flags)
 #include <fstream>
 #include <filesystem>
 
+#include "core/fileSystem.h"             // ibPathOf
 #include "backend/backend_exception.h"   // catch ibBackendException at the LoadCommonTree boundary
 #include "core/serialize/dataBuilder.h"  // ibDataBuilder / ibBinaryProvider — top-level structure builder
 #include "backend/temp/tempStorage.h"       // ibTempFile — LoadFromTempFile
@@ -256,7 +259,10 @@ ibValueMetaObjectReport* ibMetaDataReport::BuildFreshRoot()
 	// (CreateObjectExtValue / CreateMainModule), not touched by LoadSubtree, built by
 	// the run after the swap. Returned at refcount 0 — the caller's ibValuePtr adopts it.
 	auto* root = new ibValueMetaObjectExternalReport();
-	root->SetName(ibMetaData::GetNewName(g_metaExternalReportCLSID, nullptr, root->GetClassName()));
+	ibNameRequest request;
+	request.m_clsid = g_metaExternalReportCLSID;
+	request.m_prefix = root->GetClassName();
+	root->SetName(ibMetaData::GetNewName(nullptr, request));
 	if (!root->OnCreateMetaObject(this, newObjectFlag)) {
 		// ⚠ RELEASED BY THE RUNTIME, not by `delete`. It IS at refcount 0 and nobody adopted it —
 		// but a runtime value is destroyed THROUGH the count that owns it, never past it, and that
@@ -282,7 +288,7 @@ bool ibMetaDataReport::LoadFromFile(const wxString& strFileName)
 	in.seekg(0, in.end);
 	std::streamsize fsize = in.tellg();
 	in.seekg(0, in.beg);
-	wxMemoryBuffer tempBuffer(fsize);
+	ibMemoryBuffer tempBuffer(fsize);
 	in.read((char*)tempBuffer.GetWriteBuf(fsize), fsize);
 	tempBuffer.UngetWriteBuf(fsize);
 	in.close();
@@ -297,15 +303,15 @@ bool ibMetaDataReport::LoadFromTempFile(const wxString& id)
 	if (!file.IsOpened())
 		return false;
 
-	wxMemoryBuffer tempBuffer;
-	wxMemoryBuffer part;
+	ibMemoryBuffer tempBuffer;
+	ibMemoryBuffer part;
 	for (int index = 0; file.ReadPart(index, part); ++index)
 		tempBuffer.AppendData(part.GetData(), part.GetDataLen());
 
 	return LoadFromBuffer(tempBuffer, file.GetName());
 }
 
-bool ibMetaDataReport::LoadFromBuffer(const wxMemoryBuffer& buffer, const wxString& fullPath)
+bool ibMetaDataReport::LoadFromBuffer(const ibMemoryBuffer& buffer, const wxString& fullPath)
 {
 	ibReaderMemory readerData(buffer.GetData(), buffer.GetDataLen());
 	if (readerData.eof())
@@ -367,7 +373,7 @@ bool ibMetaDataReport::SaveToFile(const wxString& strFileName)
 	// (single commit point — a partial/failed write never replaces a good file).
 	// std::filesystem (C++17), no wx.
 	namespace fs = std::filesystem;
-	const fs::path dstPath(strFileName.ToStdWstring());
+	const fs::path dstPath = ibPathOf(strFileName);
 	fs::path tmpPath = dstPath;
 	tmpPath += L".tmp";
 
@@ -458,7 +464,7 @@ bool ibMetaDataReport::LoadCommonTree(ibValueMetaObjectReport* root, const ibCla
 	if (!readerMemory)
 		return false;
 
-	u64 meta_id = 0;
+	std::uint64_t meta_id = 0;
 	std::shared_ptr<ibReaderMemory> readerMetaMemory(readerMemory->open_chunk_iterator(meta_id));
 
 	if (!readerMetaMemory)
@@ -518,8 +524,8 @@ bool ibMetaDataReport::SaveCommonTree(const ibClassID& clsid, ibWriterMemory& wr
 		return false;
 
 	ibWriterMemory metaWriter;
-	metaWriter.w_chunk((u64)builder.Root().GetMetaId(), innerWriter.pointer(), innerWriter.size());
-	writerData.w_chunk((u64)clsid, metaWriter.pointer(), metaWriter.size());
+	metaWriter.w_chunk((std::uint64_t)builder.Root().GetMetaId(), innerWriter.pointer(), innerWriter.size());
+	writerData.w_chunk((std::uint64_t)clsid, metaWriter.pointer(), metaWriter.size());
 
 	// ⭐ …and that it has been written out. A watcher shows this as "no longer modified"; nothing
 	// in the tree changed, which is why this is a stage of its own and not MetaDataChanged.

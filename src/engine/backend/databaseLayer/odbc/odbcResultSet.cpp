@@ -50,9 +50,9 @@ ibDatabaseResultSetODBC::ibDatabaseResultSetODBC(ibInterfaceODBC* pInterface, ib
 		}
 
 #if wxUSE_UNICODE
-		wxString strField = ConvertFromUnicodeStream((const char*)(wxChar*)field_name);
+		wxString strField = ConvertFromUnicodeStream((const char*)(ibChar*)field_name);
 #else
-		wxString strField((wxChar*)field_name);
+		wxString strField((ibChar*)field_name);
 #endif
 		m_FieldLookupMap[strField] = i;   // as written: the map is case-blind (StringToIntMap)
 	}
@@ -82,7 +82,8 @@ void ibDatabaseResultSetODBC::Close()
 		if (m_pStatement != nullptr)
 		{
 			//m_pStatement->Close();
-			wxDELETE(m_pStatement);
+			delete m_pStatement;
+			m_pStatement = nullptr;
 		}
 	}
 }
@@ -128,7 +129,7 @@ bool ibDatabaseResultSetODBC::IsFieldNull(int nField)
 		{
 			if (IsBlob(ctr))
 			{
-				wxMemoryBuffer buffer;
+				ibMemoryBuffer buffer;
 				GetResultBlob(ctr, buffer);
 			}
 			else
@@ -147,7 +148,7 @@ bool ibDatabaseResultSetODBC::IsFieldNull(int nField)
 	}
 	else
 	{
-		wxMemoryBuffer buffer;
+		ibMemoryBuffer buffer;
 		void* pBlob = GetResultBlob(nField, buffer);
 		if (pBlob == nullptr)
 			m_NullValues.insert(nField);
@@ -169,7 +170,7 @@ int ibDatabaseResultSetODBC::GetFieldLength(int nField)
 			}
 			else
 			{
-				wxMemoryBuffer buffer;
+				ibMemoryBuffer buffer;
 				GetResultBlob(ctr, buffer);
 			}
 		}
@@ -411,7 +412,7 @@ ibNumber ibDatabaseResultSetODBC::GetResultNumber(int nField)
 	return m_fieldValues[nField - 1].GetDouble();
 }
 
-void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
+void* ibDatabaseResultSetODBC::GetResultBlob(int nField, ibMemoryBuffer& buffer)
 {
 	if (m_BlobMap.find(nField) == m_BlobMap.end())
 	{
@@ -454,7 +455,7 @@ void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
 		// nullptr data
 		if (iSize < 0)
 		{
-			wxMemoryBuffer tempBuffer(0);
+			ibMemoryBuffer tempBuffer(0);
 			tempBuffer.SetDataLen(0);
 			tempBuffer.SetBufSize(0);
 			buffer = tempBuffer;
@@ -466,7 +467,7 @@ void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
 
 		unsigned int dataLength = (iLength < iSize) ? iLength : iSize;
 		unsigned int bufferSize = dataLength;
-		wxMemoryBuffer tempBuffer(dataLength);
+		ibMemoryBuffer tempBuffer(dataLength);
 
 		tempBuffer.AppendData(buff, dataLength);
 
@@ -485,7 +486,7 @@ void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
 			bufferSize += dataLength;
 		}
 
-		wxMemoryBuffer tempBufferExactSize(bufferSize);
+		ibMemoryBuffer tempBufferExactSize(bufferSize);
 		void* pData = tempBufferExactSize.GetWriteBuf(bufferSize);
 		memcpy(pData, tempBuffer.GetData(), bufferSize);
 		tempBufferExactSize.UngetWriteBuf(bufferSize);
@@ -493,7 +494,7 @@ void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
 		tempBufferExactSize.SetBufSize(bufferSize);
 		buffer = tempBufferExactSize;
 
-		wxMemoryBuffer localCopy(buffer);
+		ibMemoryBuffer localCopy(buffer);
 		m_BlobMap[nField] = localCopy;
 
 		return buffer.GetData();
@@ -503,7 +504,7 @@ void* ibDatabaseResultSetODBC::GetResultBlob(int nField, wxMemoryBuffer& buffer)
 		BlobMap::iterator it = m_BlobMap.find(nField);
 		if (it == m_BlobMap.end())
 		{
-			wxMemoryBuffer tempBuffer(0);
+			ibMemoryBuffer tempBuffer(0);
 			tempBuffer.SetDataLen(0);
 			tempBuffer.SetBufSize(0);
 			buffer = tempBuffer;
@@ -565,7 +566,7 @@ void ibDatabaseResultSetODBC::InterpretErrorCodes(long nCode, SQLHSTMT stmth_ptr
 		SetErrorCode(ibDatabaseLayerODBC::TranslateErrorCode((int)iNativeCode, strSqlState),
 			ibDatabaseLayerODBC::ClassifySqlState(strSqlState, (int)iNativeCode));
 		//SetErrorMessage(ConvertFromUnicodeStream((char*)strBuffer));
-		SetErrorMessage(wxString((wxChar*)strBuffer));
+		SetErrorMessage(wxString((ibChar*)strBuffer));
 	}
 }
 

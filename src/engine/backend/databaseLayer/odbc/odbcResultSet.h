@@ -13,9 +13,10 @@
 #endif
 
 #include <wx/variant.h>
-#include <wx/hashset.h>
-#include <wx/hashmap.h>
 #include <wx/dynarray.h>
+
+#include <unordered_map>
+#include <unordered_set>
 
 #include "backend/databaseLayer/databaseResultSet.h"
 #include "odbcInterface.h"
@@ -26,8 +27,8 @@ class ibPreparedStatementODBC;
 class ibDatabaseLayerODBC;
 
 WX_DECLARE_OBJARRAY(wxVariant, ValuesArray);
-WX_DECLARE_HASH_SET(int, wxIntegerHash, wxIntegerEqual, IntegerSet);
-WX_DECLARE_HASH_MAP(int, wxMemoryBuffer, wxIntegerHash, wxIntegerEqual, BlobMap);
+typedef std::unordered_set<int> IntegerSet;
+typedef std::unordered_map<int, ibMemoryBuffer> BlobMap;
 
 class ibDatabaseResultSetODBC : public ibDatabaseResultSet
 {
@@ -48,7 +49,7 @@ public:
 	virtual long long GetResultLong(int nField);
 	virtual bool GetResultBool(int nField);
 	virtual ibDateTime GetResultDate(int nField);
-	virtual void* GetResultBlob(int nField, wxMemoryBuffer& buffer);
+	virtual void* GetResultBlob(int nField, ibMemoryBuffer& buffer);
 	virtual double GetResultDouble(int nField);
 	virtual ibNumber GetResultNumber(int nField);
 	virtual bool IsFieldNull(int nField);

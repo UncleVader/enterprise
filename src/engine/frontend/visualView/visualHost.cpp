@@ -1,5 +1,5 @@
 ////////////////////////////////////////////////////////////////////////////
-//	Author		: Maxim Kornienko, wxFormBuilder
+//	Author		: Maxim Kornienko
 //	Description : visual editor
 ////////////////////////////////////////////////////////////////////////////
 
@@ -351,8 +351,7 @@ void ibVisualHost::SetOrientation(int orient)
 #include "frontend/win/theme/luna_toolbarart.h"
 #include "backend/backend_picture.h"           // ibBackendPicture / ibPictureDescription
 
-#include "pageWindow.h"
-
+#include <wx/sizer.h>   // wxStaticBoxSizer — a framed group's box is its children's parent
 #include <wx/collpane.h>
 #include <wx/wupdlock.h>   // wxWindowUpdateLocker — RAII Freeze/Thaw
 
@@ -757,14 +756,9 @@ void ibVisualHost::ibContentWindow::GenerateControl(ibValueFrame* obj, wxWindow*
 	switch (obj->GetComponentType())
 	{
 	case COMPONENT_TYPE_WINDOW:
-		// Component-type + classname discriminators already narrowed
-		// the type at compile time — Create for a COMPONENT_TYPE_WINDOW
-		// always returns a wxWindow-derived object, and the NotebookPage
-		// class specifically returns ibPanelPage. static_cast is safe.
-		if (obj->GetClassName() == wxT("NotebookPage"))
-			createdWindow = static_cast<ibPanelPage*>(createdObject);
-		else
-			createdWindow = static_cast<wxWindow*>(createdObject);
+		// The component type already narrowed it — Create for a COMPONENT_TYPE_WINDOW always returns a wxWindow-derived
+		// object (a page's ibPanelPage among them). static_cast is safe.
+		createdWindow = static_cast<wxWindow*>(createdObject);
 		break;
 
 	case COMPONENT_TYPE_SIZER:
@@ -952,6 +946,7 @@ void ibVisualHost::ibContentWindow::RemoveControl(ibValueFrame* obj, ibValueFram
 }
 
 #include "frontend/win/ctrls/dynamicBorder.h"
+#include "frontend/visualView/pageWindow.h"   // ibPanelPage — a notebook page / panel: a column of its own
 
 void ibVisualHost::ibContentWindow::ClearControl(ibValueFrame* control, bool force)
 {
@@ -999,15 +994,8 @@ void ibVisualHost::ibContentWindow::ClearControl(ibValueFrame* control, bool for
 			controlParent = controlParent->GetParent();
 		}
 
-		wxSizer* controlParentSizer = nullptr;
-		if (controlParent != nullptr && controlParent->GetClassName() == wxT("NotebookPage")) {
-			ibPanelPage* pageWnd = dynamic_cast<ibPanelPage*>(GetWxObject(controlParent));
-			wxASSERT(pageWnd);
-			controlParentSizer = pageWnd->GetSizer();
-		}
-		else {
-			controlParentSizer = dynamic_cast<wxSizer*>(GetWxObject(controlParent));
-		}
+		// The sizer it lay in — the parent's to say (a sizer itself, a page's own, the form's controls').
+		wxSizer* const controlParentSizer = controlParent != nullptr ? controlParent->GetSizer(GetWxObject(controlParent)) : nullptr;
 
 		if (controlParentSizer != nullptr)
 			controlParentSizer->Detach(controlSizer);
@@ -1080,6 +1068,13 @@ bool ibVisualHost::ibContentWindow::CalculateLabelSize(ibValueFrame* control)
 			if (parentSizer->GetOrientation() == wxHORIZONTAL)
 				return;
 
+			// A PAGE stops it too: a notebook page (or a panel) lays its controls out in a sizer of
+			// its own, beside or instead of its siblings, so its labels are a column of their own —
+			// Apply measures them when it reaches the page. Walked on, every page of a notebook was
+			// one column with the form, and the widest caption anywhere set every label's width.
+			if (dynamic_cast<ibPanelPage*>(wxObj) != nullptr)
+				return;
+
 			wxBoxSizer* childSizer = dynamic_cast<wxBoxSizer*>(wxObj);
 			wxBoxSizer* nextParent = childSizer != nullptr ? childSizer : parentSizer;
 			for (unsigned int i = 0; i < node->GetChildCount(); ++i)
@@ -1098,6 +1093,21 @@ bool ibVisualHost::ibContentWindow::CalculateLabelSize(ibValueFrame* control)
 			wxBoxSizer* childSizer = dynamic_cast<wxBoxSizer*>(wxObj);
 			ibControlDynamicBorder* label =
 				dynamic_cast<ibControlDynamicBorder*>(wxObj);
+
+			// A page starts a column of its own (see Calculate): measured from its own sizer, from zero.
+			if (ibPanelPage* page = dynamic_cast<ibPanelPage*>(wxObj)) {
+				wxBoxSizer* pageSizer = page->GetSizer();
+				if (pageSizer != nullptr) {
+					int pageMax = 0;
+					if (pageSizer->GetOrientation() == wxVERTICAL) {
+						for (unsigned int i = 0; i < node->GetChildCount(); ++i)
+							Calculate(node->GetChild(i), pageSizer, pageMax);
+					}
+					for (unsigned int i = 0; i < node->GetChildCount(); ++i)
+						Apply(node->GetChild(i), pageSizer, pageMax);
+					return;
+				}
+			}
 
 			// Children see a snapshot of our current max; any adjustments
 			// they make stay local to their subtree.

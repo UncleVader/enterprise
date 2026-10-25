@@ -3,13 +3,6 @@ cmake_minimum_required(VERSION 3.16)
 # CONFIGURE_DEPENDS — see the note in backend/CMakeLists.txt.
 file(GLOB_RECURSE DESIGNER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
-# Exclude stale root-level files superseded by mainFrame/ versions
-list(REMOVE_ITEM DESIGNER_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/mainFrameDesignerCmd.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mainFrameDesignerEvent.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/mainFrameDesignerMenu.cpp"
-)
-
 add_executable(designer ${DESIGNER_SOURCES})
 
 set_target_properties(designer PROPERTIES
@@ -43,5 +36,5 @@ target_include_directories(designer PRIVATE
 target_link_libraries(designer PRIVATE
     backend
     frontend
-    wx::core wx::aui wx::html wx::propgrid wx::adv wx::stc wx::xrc wx::qa wx::base wx::net wx::xml
+    wx::core wx::aui wx::stc wx::xrc wx::qa wx::base wx::xml
 )

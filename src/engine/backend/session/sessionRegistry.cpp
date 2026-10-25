@@ -9,6 +9,7 @@
 #include "backend/backend_exception.h"
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseLayer.h"
+#include "backend/databaseLayer/databaseLayerException.h"   // a missing column is Syntax; a lock is not
 #include "backend/databaseLayer/databaseQueryBuilder.h"   // L2 door — q(&m_writeHolder) resolves to the holder's bound conn (write helpers); snapshot reads still raw
 #include "workerPool.h"
 #include "workerPoolHeadless.h"
@@ -131,12 +132,6 @@ void ibSessionRegistry::InstallUser(ibSession* s,
 	s->SetSessionRawPassword(rawPassword);
 }
 
-void ibSessionRegistry::EnableDebugForSession(ibSession* s)
-{
-	if (s == nullptr) return;
-	s->EnableDebug();
-}
-
 ibSessionRegistry::~ibSessionRegistry()
 {
 	// Best-effort — in normal shutdown Stop() should have been called via
@@ -209,36 +204,11 @@ bool ibSessionRegistry::HasClients() const
 
 // --- Session factory facade ----------------------------------------------
 
-void ibSessionRegistry::EnsureStartedForCreateSession()
-{
-	if (m_threadAlive.load(std::memory_order_acquire)) return;
-
-	// Own sys_session row I/O: registry handles INSERT / UPDATE / DELETE
-	// via its write connection and holds pessimistic row locks that peers
-	// use to detect liveness. Replaces the pre-2026-04-20 1 Hz heartbeat
-	// UPDATE path. EnableSysSessionOwnership is idempotent; only effective
-	// before the first Start().
-	EnableSysSessionOwnership(true);
-
-	// Designer-exclusive policy — one designer per IB at a time, in EVERY process: a designer is a session's kind,
-	// and a file base's designer and a thin designer in a server are the same question. It lets everyone else
-	// through. AddPolicy must happen BEFORE Start so the chain is immutable once the consumer thread is running.
-	AddPolicy(std::make_unique<ibDesignerExclusivePolicy>(this));
-
-	// …and a base served by an application server is that server's — in EVERY process, because the refusal has to happen
-	// in the one trying to come in (docs/private/multi-base-process.md § 5.2).
-	AddPolicy(std::make_unique<ibServiceExclusivePolicy>(this));
-
-	Start();
-}
-
 ibSessionHolder ibSessionRegistry::CreateSessionOfKind(ibRunMode runMode,
                                                        const wxString& computer,
                                                        ibSessionKind kind,
                                                        ibConnectRequest::SessionFactory factory)
 {
-	EnsureStartedForCreateSession();
-
 	// Anonymous-phase Connect — registry INSERTs a row with userName=''
 	// immediately so peers (Active Users UI, designer-exclusive policy)
 	// see "someone is logging in", and a job is visible from the moment it
@@ -275,6 +245,8 @@ ibSessionHolder ibSessionRegistry::MintUnlisted(std::shared_ptr<ibSession> sessi
 	if (!session)
 		return ibSessionHolder();
 	session->SetUnlisted();
+	session->m_registry = this;
+	session->m_dbHolder.SetPool(ibApplicationInstance::GetConnectionPool(m_applicationInstance));
 	return ibSessionHolder(std::move(session));
 }
 
@@ -282,16 +254,10 @@ ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
                                                             const wxString& computer,
                                                             ibSessionKind kind,
                                                             const wxString& presetGuid,
-                                                            const wxString& address,
+                                                            const ibString& address,
                                                             ibConnectRequest::SessionFactory factory)
 {
-	// Per-tab variant — registry is normally already running by the time
-	// per-tab logins arrive (wes process bring-up created its WebServer
-	// system session at startup). EnsureStartedForCreateSession is
-	// idempotent so calling it here is safe in either order. The kind is the
-	// caller's: a web tab's, a client of the protocol's.
-	EnsureStartedForCreateSession();
-
+	// Per-tab variant. The kind is the caller's: a web tab's, a client of the protocol's.
 	ibConnectRequest req;
 	req.m_computer       = computer;
 	req.m_appMode        = runMode;
@@ -311,10 +277,28 @@ ibSessionHolder ibSessionRegistry::CreateSessionWithFactory(ibRunMode runMode,
 
 // --- Thread lifecycle ----------------------------------------------------
 
+// ⭐ STARTED ONCE, BY ITS BASE AS IT OPENS (ibApplicationInstance::Open), before anybody comes in. It used to start
+// with the base's first session, unguarded — and two hundred first logins at once each added the policies below and
+// started it (the web server's load test, 2026-10-20: the policy vector torn under a push_back).
 void ibSessionRegistry::Start()
 {
 	if (m_threadAlive.load(std::memory_order_acquire)) return;
 	if (m_fatal.load(std::memory_order_acquire))       return;
+
+	// Own sys_session row I/O: registry handles INSERT / UPDATE / DELETE
+	// via its write connection and holds pessimistic row locks that peers
+	// use to detect liveness. Replaces the pre-2026-04-20 1 Hz heartbeat
+	// UPDATE path.
+	EnableSysSessionOwnership(true);
+
+	// Designer-exclusive policy — one designer per IB at a time, in EVERY process: a designer is a session's kind,
+	// and a file base's designer and a thin designer in a server are the same question. It lets everyone else
+	// through. Added BEFORE the thread so the chain is immutable once the consumer thread is running.
+	AddPolicy(std::make_unique<ibDesignerExclusivePolicy>(this));
+
+	// …and a base served by an application server is that server's — in EVERY process, because the refusal has to happen
+	// in the one trying to come in (docs/private/multi-base-process.md § 5.2).
+	AddPolicy(std::make_unique<ibServiceExclusivePolicy>(this));
 
 	// When we own sys_session, grab ONE dedicated pool connection for
 	// INSERT/UPDATE/DELETE + JobRefreshSnapshot's SELECT. (The NOWAIT-probe
@@ -354,7 +338,7 @@ void ibSessionRegistry::Start()
 
 void ibSessionRegistry::Stop()
 {
-	// No registry thread — no session was ever made here, so nothing of ours is in the worker pool either.
+	// No registry thread — the base never came up (Open starts it), so nothing of ours is in the worker pool either.
 	if (!m_thread.joinable())
 		return;
 
@@ -770,12 +754,11 @@ void ibSessionRegistry::NotifyAuthenticated(ibSession* s)
 		for (const auto& cb : firsts)
 			if (cb) cb(s);
 	}
-	// Between phases — OnFirstConnect's metadataCreate may have just made the
-	// base's active configuration, and the session acquires its own reference
-	// to it NOW: the one it works in for its whole life, whatever replaces the
-	// active one later. OnAuthenticated's listeners (RunDatabase ->
-	// OnBeforeRunMetaObject) need session->mm to exist. Session creates
-	// its root here so ownership stays in ibSession (see EnsureRoot).
+	// Between phases — the session acquires its own reference to the base's
+	// active configuration NOW (a designer's session: one of its own): the one
+	// it works in for its whole life, whatever replaces the active one later.
+	// OnAuthenticated's listeners (CompileRoot) need session->mm to exist.
+	// Session creates its root here so ownership stays in ibSession (see EnsureRoot).
 	s->AcquireMetaData();
 	s->EnsureRoot();
 	for (const auto& cb : auths)
@@ -916,6 +899,62 @@ ibSessionWatch ibSessionRegistry::GetActiveDebugTarget() const
 
 // --- Handlers ------------------------------------------------------------
 
+// The registry thread is the one Connect waits on. Firebird's ordinary transaction waits up to
+// 30 seconds for a lock, and Connect gives up at 20, so a statement that waits is what the caller
+// hears as "registry did not answer to Add". A configuration apply holds its transaction open for
+// the whole restructuring, and that lock — a row of sys_session, or the metadata a statement has
+// to prepare against — is what these statements meet on the second apply. Ask, and if somebody
+// else still holds it, leave the work for the next tick.
+struct ibRegistryNoWait {
+	ibDatabaseQueryBuilder m_query;
+	bool                   m_opened = false;
+
+	explicit ibRegistryNoWait(ibDatabaseConnectionHolder& holder)
+		: m_query(&holder)
+	{
+		if (!m_query.IsOpen() || m_query.IsActiveTransaction())
+			return;
+		ibDbTxOptions opts;
+		opts.noWait = true;
+		m_query.BeginTransaction(opts);
+		m_opened = true;
+	}
+
+	ibDatabaseQueryBuilder& Query() { return m_query; }
+
+	void Commit()
+	{
+		if (!m_opened)
+			return;
+		m_opened = false;
+		try {
+			m_query.Commit();
+		}
+		catch (...) {
+			try {
+				if (m_query.IsActiveTransaction())
+					m_query.RollBack();
+			}
+			catch (...) { /* the row stays; the next tick asks again */ }
+			throw;
+		}
+	}
+
+	~ibRegistryNoWait()
+	{
+		if (!m_opened)
+			return;
+		try {
+			if (m_query.IsActiveTransaction())
+				m_query.RollBack();
+		}
+		catch (...) { /* a destructor must not throw; the next tick retries */ }
+	}
+
+	ibRegistryNoWait(const ibRegistryNoWait&) = delete;
+	ibRegistryNoWait& operator=(const ibRegistryNoWait&) = delete;
+};
+
 static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession& s, const wxString& userName)
 {
 	const ibSessionIdentity& id = s.Identity();
@@ -928,9 +967,9 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 	// INSERT would throw on unknown column and leave the session
 	// unregistered, which breaks Active Users listings across the
 	// cluster).
-	ibDatabaseQueryBuilder q(&holder);   // resolves to the holder's bound conn (= m_writeConn) via GetScopeConn
 	try {
-		q.Execute(ibInsert(session_table, {
+		ibRegistryNoWait tx(holder);   // the holder's bound conn (= m_writeConn); a locked table comes back at once
+		tx.Query().Execute(ibInsert(session_table, {
 			{ wxT("session"),     ibConst(ibValue(s.GetId())) },
 			{ wxT("userName"),    ibConst(ibValue(userName)) },
 			{ wxT("application"), ibConst(ibValue(int(id.m_appMode))) },
@@ -938,6 +977,7 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 			{ wxT("lastActive"),  ibConst(ibValue(id.m_started)) },
 			{ wxT("computer"),    ibConst(ibValue(id.m_computer)) },
 		}));
+		tx.Commit();
 		SESSION_LOG("[session INSERT] ok guid=" << s.GetId()
 		          << " user='" << (const char*)userName.ToUTF8().data() << "'"
 		          << " mode=" << int(id.m_appMode));
@@ -955,8 +995,13 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 	// Best-effort population of extension columns — silently skipped
 	// when the schema pre-dates them. MigrateTableSession tries to
 	// add the columns on startup; this is the follow-up writer.
+	//
+	// IN A TRANSACTION OF ITS OWN, after the row is committed. On PostgreSQL a failed statement aborts
+	// the transaction it runs in, and the COMMIT of an aborted one is a rollback: an UPDATE refused by
+	// a legacy schema took the INSERT above down with it, while this function answered true.
 	try {
-		q.Execute(ibUpdate(session_table, {
+		ibRegistryNoWait tx(holder);
+		tx.Query().Execute(ibUpdate(session_table, {
 			{ wxT("pid"),     ibConst(ibValue(id.m_pid)) },
 			{ wxT("address"), ibConst(ibValue(id.m_address)) },
 			{ wxT("kind"),    ibConst(ibValue(int(s.GetKind()))) },
@@ -968,6 +1013,7 @@ static bool InsertSessionRow(ibDatabaseConnectionHolder& holder, const ibSession
 			// says it from birth instead of acquiring the answer later.
 			{ wxT("exclusive"), ibConst(ibValue(0)) },
 		}, ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(s.GetId())))));
+		tx.Commit();
 	} catch (...) { /* legacy schema — fine */ }
 
 	return true;
@@ -977,10 +1023,11 @@ static bool UpdateSessionUser(ibDatabaseConnectionHolder& holder, const wxString
 {
 	(void)userGuid;   // schema currently has no userGuid column — placeholder for when we add it
 	try {
-		ibDatabaseQueryBuilder q(&holder);
-		q.Execute(ibUpdate(session_table,
+		ibRegistryNoWait tx(holder);
+		tx.Query().Execute(ibUpdate(session_table,
 			{ { wxT("userName"), ibConst(ibValue(userName)) } },
 			ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(guidStr)))));
+		tx.Commit();
 		return true;
 	} catch (...) { return false; }
 }
@@ -988,9 +1035,10 @@ static bool UpdateSessionUser(ibDatabaseConnectionHolder& holder, const wxString
 static bool DeleteSessionRow(ibDatabaseConnectionHolder& holder, const wxString& guidStr)
 {
 	try {
-		ibDatabaseQueryBuilder q(&holder);
-		q.Execute(ibDelete(session_table,
+		ibRegistryNoWait tx(holder);
+		tx.Query().Execute(ibDelete(session_table,
 			ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(guidStr)))));
+		tx.Commit();
 		return true;
 	} catch (...) { return false; }
 }
@@ -1405,6 +1453,10 @@ void ibSessionRegistry::ProcessSetExclusive(ibRegistryRequest& req)
 	// or whose schema predates the column. Best-effort; failure here
 	// doesn't roll back the in-process state since cluster sweep cleans
 	// up zombie rows anyway.
+	//
+	// ⚠ THIS ONE WAITS, unlike the ticks around it. The column is what the other nodes refuse Add by,
+	// and nothing writes it again on a later tick: a write skipped on a lock would grant a monopoly the
+	// cluster cannot see, or leave a released one standing for every node.
 	auto writeExclusiveColumn = [&](int value) {
 		if (!m_ownsSysSession || !m_writeConn || !s.Inserted()) return;
 		try {
@@ -1561,11 +1613,34 @@ void ibSessionRegistry::ProcessSetActivity(ibRegistryRequest& req)
 	// never showed at all, and the journal took a thrown exception per label (2026-09-29).
 	const wxString label = req.activity.Left(kActivityWidth);
 	try {
-		ibDatabaseQueryBuilder q(&m_writeHolder);
-		q.Execute(ibUpdate(session_table,
+		ibRegistryNoWait tx(m_writeHolder);
+		tx.Query().Execute(ibUpdate(session_table,
 			{ { wxT("currentActivity"), ibConst(ibValue(label)) } },
 			ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(guidStr)))));
+		tx.Commit();
 	} catch (...) { /* swallowed: SetActivity is a UI-state hint, not a correctness signal — a failed UPDATE just means peer dialogs show a stale label until the next tick */ }
+}
+
+void ibSessionRegistry::ProcessSetTokenHash(ibRegistryRequest& req)
+{
+	// ⭐ HERE, ON THE ROW'S ONE WRITER. The session's worker wrote it on its own connection while this thread beat the
+	// same rows, and the second of the two was refused — "update conflicts with concurrent update": a login of 1000
+	// at once answered 500 seven times (2026-10-23). Between this thread's own statements there is nobody to meet.
+	bool written = true;   // a session with no row of this registry's has nothing to store
+	if (req.session && m_ownsSysSession && m_writeConn && req.session->Inserted()) {
+		try {
+			ibRegistryNoWait tx(m_writeHolder);
+			tx.Query().Execute(ibUpdate(session_table,
+				{ { wxT("tokenHash"), ibConst(ibValue(req.tokenHash)) } },
+				ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(req.session->GetId())))));
+			tx.Commit();
+		}
+		catch (...) {
+			written = false;   // the row held by somebody else (an apply, an administrator's signal)
+		}
+	}
+	if (req.written)
+		req.written->set_value(written);
 }
 
 // --- Periodic jobs --------------------------------------------------------
@@ -1620,8 +1695,9 @@ void ibSessionRegistry::JobSweepStale()
 	std::vector<wxString> zombies;
 	std::vector<ibGuid>   live;   // everyone that survives this pass — the lock sweep's input
 	try {
-		ibDatabaseQueryBuilder q(&m_writeHolder);
-		ibQueryResult rs = q.ExecuteIR(ibQueryIR(ibProject(ibScan(session_table),
+		ibRegistryNoWait tx(m_writeHolder);
+		{
+		ibQueryResult rs = tx.Query().ExecuteIR(ibQueryIR(ibProject(ibScan(session_table),
 			{ { ibCol(wxT("session")), wxEmptyString }, { ibCol(wxT("lastActive")), wxEmptyString } })));
 
 		while (rs.Next()) {
@@ -1641,9 +1717,11 @@ void ibSessionRegistry::JobSweepStale()
 			else
 				live.emplace_back(guid);
 		}
+		}
+		tx.Commit();
 	}
 	catch (...) {
-		return;  // transient DB error — swallow, try again next tick
+		return;  // transient DB error, or the table is locked by an apply — swallow, try again next tick
 	}
 
 	if (!zombies.empty()) {
@@ -1676,6 +1754,26 @@ void ibSessionRegistry::JobSweepStale()
 	catch (...) { /* swallowed: the next sweep retries */ }
 }
 
+// ⭐ ONE STATEMENT FOR MANY ROWS — the beat and the signal check name this process's rows by their ids, a part at a
+// time. A web server holds hundreds of sessions in one process, and a statement a row on every beat kept the
+// registry thread a tick behind itself: Add and Attach waited out their 20 seconds behind it, and people were
+// refused at the login (2026-10-23, 180 at once: ~1000 statements in 40 s, 20 of them the INSERTs people waited
+// for). A part stays under the 1500 values Firebird takes in an IN list.
+constexpr std::size_t kRowsInAStatement = 1000;
+
+std::vector<std::vector<ibQueryExprPtr>> ibSessionRegistry::InsertedRowIds() const
+{
+	std::vector<std::vector<ibQueryExprPtr>> parts;
+	for (const auto& kv : m_own) {
+		auto s = kv.second.Share();
+		if (!s || !s->Inserted()) continue;
+		if (parts.empty() || parts.back().size() == kRowsInAStatement)
+			parts.emplace_back();
+		parts.back().push_back(ibConst(ibValue(kv.first)));
+	}
+	return parts;
+}
+
 void ibSessionRegistry::JobHeartbeatOwn()
 {
 	if (!m_ownsSysSession || !m_writeConn) return;
@@ -1696,18 +1794,30 @@ void ibSessionRegistry::JobHeartbeatOwn()
 	// m_writeConn would loop forever on the dead TCP socket to the
 	// previous leader's spawned firebird.exe.
 	try {
-		ibDatabaseQueryBuilder q(&m_writeHolder);
 		const ibDateTime now = ibDateTime::Now();
-		for (const auto& kv : m_own) {
-			auto s = kv.second.Share();
-			if (!s || !s->Inserted()) continue;
+		for (const std::vector<ibQueryExprPtr>& ids : InsertedRowIds()) {
+			// The part in one statement…
 			try {
-				q.Execute(ibUpdate(session_table,
+				ibRegistryNoWait tx(m_writeHolder);
+				tx.Query().Execute(ibUpdate(session_table,
 					{ { wxT("lastActive"), ibConst(ibValue(now)) } },
-					ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")),
-					        ibConst(ibValue(wxString::FromUTF8(kv.first.c_str()))))));
+					ibIn(ibCol(wxT("session")), ids)));
+				tx.Commit();
+				continue;
 			}
-			catch (...) { /* transient — next tick retries */ }
+			catch (...) { /* a row of it locked — the part goes a row at a time */ }
+			// …and a row at a time when one of them is locked: a row the apply still holds must not keep the
+			// others, and must not keep this thread: Add is waiting behind it.
+			for (const ibQueryExprPtr& id : ids) {
+				try {
+					ibRegistryNoWait tx(m_writeHolder);
+					tx.Query().Execute(ibUpdate(session_table,
+						{ { wxT("lastActive"), ibConst(ibValue(now)) } },
+						ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), id)));
+					tx.Commit();
+				}
+				catch (...) { /* transient, or the row is locked — next tick retries */ }
+			}
 		}
 	}
 	catch (...) {
@@ -1746,11 +1856,14 @@ size_t ibSessionRegistry::SettleSilentPeers(const std::vector<wxString>& peers)
 	const auto readBeats = [this](std::map<wxString, ibDateTime>& beats) {
 		beats.clear();
 		try {
-			ibDatabaseQueryBuilder q(&m_writeHolder);
-			ibQueryResult rs = q.ExecuteIR(ibQueryIR(ibProject(ibScan(session_table),
-				{ { ibCol(wxT("session")), wxEmptyString }, { ibCol(wxT("lastActive")), wxEmptyString } })));
-			while (rs.Next())
-				beats[rs.GetResultString(wxT("session"))] = rs.GetResultDate(wxT("lastActive"));
+			ibRegistryNoWait tx(m_writeHolder);
+			{
+				ibQueryResult rs = tx.Query().ExecuteIR(ibQueryIR(ibProject(ibScan(session_table),
+					{ { ibCol(wxT("session")), wxEmptyString }, { ibCol(wxT("lastActive")), wxEmptyString } })));
+				while (rs.Next())
+					beats[rs.GetResultString(wxT("session"))] = rs.GetResultDate(wxT("lastActive"));
+			}
+			tx.Commit();
 			return true;
 		}
 		catch (...) { return false; }
@@ -1847,26 +1960,23 @@ void ibSessionRegistry::JobCheckSignal()
 	if (!m_ownsSysSession || !m_writeConn) return;
 	if (m_own.empty()) return;
 
-	// Read-phase: collect (guid, signal) for each own row — one L2 SELECT per own row
-	// (a handful per tick; parameterised IN isn't portable, so per-row stays simplest).
+	// Read-phase: collect (guid, signal) for the own rows — one L2 SELECT a part (InsertedRowIds).
 	struct Pending { wxString guid; wxString signal; };
 	std::vector<Pending> pending;
-	ibDatabaseQueryBuilder q(&m_writeHolder);   // bound conn = m_writeConn; reused by the act-phase clear below
 	try {
-		for (const auto& kv : m_own) {
-			auto s = kv.second.Share();
-			if (!s || !s->Inserted()) continue;
-			const wxString guid = wxString::FromUTF8(kv.first.c_str());
-			ibQueryResult rs = q.ExecuteIR(ibQueryIR(ibProject(
-				ibFilter(ibScan(session_table),
-					ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(guid)))),
-				{ { ibCol(wxT("signal")), wxEmptyString } })));
-			if (!rs.Next()) continue;
-			const wxString sig = rs.GetResultString(wxT("signal"));
-			if (sig.IsEmpty()) continue;
-			pending.push_back({ guid, sig });
+		ibRegistryNoWait tx(m_writeHolder);
+		for (std::vector<ibQueryExprPtr>& ids : InsertedRowIds()) {
+			ibQueryResult rs = tx.Query().ExecuteIR(ibQueryIR(ibProject(
+				ibFilter(ibScan(session_table), ibIn(ibCol(wxT("session")), std::move(ids))),
+				{ { ibCol(wxT("session")), wxEmptyString }, { ibCol(wxT("signal")), wxEmptyString } })));
+			while (rs.Next()) {
+				const wxString sig = rs.GetResultString(wxT("signal"));
+				if (!sig.IsEmpty())
+					pending.push_back({ rs.GetResultString(wxT("session")), sig });
+			}
 		}
-	} catch (...) { /* signal column may be missing on legacy schema */ return; }
+		tx.Commit();
+	} catch (...) { /* signal column may be missing on legacy schema, or the table is locked */ return; }
 
 	if (pending.empty()) return;
 
@@ -1930,10 +2040,12 @@ void ibSessionRegistry::JobCheckSignal()
 		// Future: "refresh" → broadcast SSE prod to client.
 
 		try {
-			q.Execute(ibUpdate(session_table,
+			ibRegistryNoWait clear(m_writeHolder);
+			clear.Query().Execute(ibUpdate(session_table,
 				{ { wxT("signal"), ibConst(ibValue()) } },   // clear (NULL/empty — read-phase treats both as "no signal")
 				ibBinOp(ibQueryBinOp::Eq, ibCol(wxT("session")), ibConst(ibValue(p.guid)))));
-		} catch (...) { /* transient — retries next tick */ }
+			clear.Commit();
+		} catch (...) { /* transient, or the row is locked — retries next tick */ }
 	}
 }
 
@@ -1955,6 +2067,10 @@ void ibSessionRegistry::JobRefreshSnapshot()
 	auto fresh = std::make_unique<ibSessionSnapshot>();
 	unsigned rowCount = 0;
 	try {
+		// One no-wait transaction for the whole read. The builders below join it, so a
+		// metadata lock held by a configuration apply comes back at once instead of the
+		// driver's 30-second wait — longer than Connect is willing to wait for Add.
+		ibRegistryNoWait tx(m_writeHolder);
 		// kind column may be missing on pre-migration schemas — fall back
 		// to reading it via a second pass-tolerant lookup. SELECT itself
 		// stays restricted to core columns so the query parses everywhere;
@@ -1999,8 +2115,12 @@ void ibSessionRegistry::JobRefreshSnapshot()
 						rw.GetResultInt   ("exclusive") != 0 });
 				wideRead = true;
 			}
-			catch (...) {
-				// A column this schema does not have. Said once, then never asked again.
+			catch (const ibBackendDatabaseException& err) {
+				// A column this schema does not have is a syntax error. A lock is not: recording
+				// the schema as legacy because an apply still holds the table would stick for the
+				// life of the process. Said once, then never asked again.
+				if (err.GetKind() != ibBackendDatabaseException::Kind::Syntax)
+					throw;
 				if (m_sessionHasOptionalColumns.exchange(-1, std::memory_order_relaxed) == 0)
 					ibJournalInfo(wxT("session"), wxT("session table has no kind/exclusive ")
 						wxT("- the snapshot refresh falls back to three reads (legacy schema)"));
@@ -2054,7 +2174,11 @@ void ibSessionRegistry::JobRefreshSnapshot()
 					= rsk.GetResultInt("kind");
 			}
 			fresh->SetKindsFromMap(kindBySession);
-		} catch (...) { /* legacy schema — fine, kinds stay 0 */ }
+		} catch (const ibBackendDatabaseException& err) {
+			if (err.GetKind() != ibBackendDatabaseException::Kind::Syntax)
+				throw;
+			/* legacy schema — fine, kinds stay 0 */
+		}
 
 		// Third pass: exclusive flag — same legacy-tolerant pattern as
 		// kind. Pre-migration schemas keep m_exclusive=false everywhere
@@ -2070,7 +2194,11 @@ void ibSessionRegistry::JobRefreshSnapshot()
 					= rsx.GetResultInt("exclusive") != 0;
 			}
 			fresh->SetExclusiveFromMap(exclusiveBySession);
-		} catch (...) { /* legacy schema — fine, exclusive stays false */ }
+		} catch (const ibBackendDatabaseException& err) {
+			if (err.GetKind() != ibBackendDatabaseException::Kind::Syntax)
+				throw;
+			/* legacy schema — fine, exclusive stays false */
+		}
 		}   // !wideRead — the legacy three-pass road
 
 		// currentActivity is optional on a base created before the column. A missing column must not
@@ -2086,6 +2214,7 @@ void ibSessionRegistry::JobRefreshSnapshot()
 					= rsa.GetResultString(wxT("currentActivity"));
 			fresh->SetActivityFromMap(activityBySession);
 		} catch (...) { /* legacy schema — the row shows no activity */ }
+		tx.Commit();   // cursors above are already dead
 	}
 	catch (const ibCoreException& err) {
 		SESSION_LOG("[session REFRESH] SELECT failed: "
@@ -2202,11 +2331,12 @@ void ibSessionRegistry::ThreadBody() noexcept
 					case ibRegistryRequestKind::Detach:       ProcessDetach(req);       break;
 					case ibRegistryRequestKind::Remove:       ProcessRemove(req);       break;
 					case ibRegistryRequestKind::SetActivity:  ProcessSetActivity(req);  break;
+					case ibRegistryRequestKind::SetTokenHash: ProcessSetTokenHash(req); break;
 					case ibRegistryRequestKind::SetExclusive: ProcessSetExclusive(req); break;
 				}
-				// Every request but an activity label may add, sign in, take out or mark a row the snapshot
-				// shows; the label is not in it.
-				if (req.kind != ibRegistryRequestKind::SetActivity)
+				// Every request but an activity label and a token's digest may add, sign in, take out or mark a row
+				// the snapshot shows; those two are not in it.
+				if (req.kind != ibRegistryRequestKind::SetActivity && req.kind != ibRegistryRequestKind::SetTokenHash)
 					rowsWritten = true;
 			}
 

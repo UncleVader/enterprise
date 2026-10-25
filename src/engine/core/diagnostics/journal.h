@@ -62,7 +62,7 @@
 // here is addressed to whoever opens the file, not to whoever is using the program. Only `Error`
 // reaches the screen, because that one says the thing the person asked for did not happen. See the
 // echo in journal.cpp for why the warning's dialog was taken away.
-enum class ibJournalMark : wxChar {
+enum class ibJournalMark : ibChar {
 	Info    = wxT('*'),
 	Warning = wxT('?'),
 	Error   = wxT('!'),
@@ -86,7 +86,8 @@ public:
 	// process's first line and needs no database, no session and no configuration.
 	//
 	// Failures are silent by design: a machine with no writable directory beside the binary must
-	// still run. IsOpen() then answers false and every write is a no-op.
+	// still run. IsOpen() then answers false and every write is a no-op — but for the console's echo
+	// (EchoToStderr), which a Release build, keeping no file, has as well.
 	static void Open(const wxString& exeName);
 
 	// Flush and close. Not required — the process may simply end — but a caller that wants the file
@@ -118,6 +119,14 @@ public:
 	// line. Timestamped, thread-stamped and flushed here; echoed to the debugger by the same call.
 	static void Write(ibJournalMark mark, const wxString& source, const wxString& message);
 
+	// …AND A LINE READ BACK: the mark, the source and the message of a line Write made — another process's, taken off
+	// its console (the cluster reads its servers'). False for a line that is not one: a message's own second line.
+	static bool Read(const wxString& line, ibJournalMark& mark, wxString& source, wxString& message);
+
+	// THE FIRST ERROR'S DUMP IS NOT THIS RUN'S TO TAKE — a process started again after it fell (appserver --again, by
+	// the cluster): the run before it took one, and a dump at every start fills the disk while the fault stays.
+	static void SkipErrorDump();
+
 	// ⭐ A FAILURE THE OPERATING SYSTEM EXPLAINS. A COM HRESULT or a Win32 error code is a number
 	// nobody can read; the platform holds the sentence that goes with it, and this is the one verb
 	// that asks for it. Everything else is an ordinary error: the line is journalled, the dump is
@@ -140,7 +149,7 @@ public:
 
 private:
 #if !wxUSE_UTF8_LOCALE_ONLY
-	static void DoPrintWchar(ibJournalMark mark, const wxString& source, const wxChar* format, ...);
+	static void DoPrintWchar(ibJournalMark mark, const wxString& source, const ibChar* format, ...);
 #endif
 #if wxUSE_UNICODE_UTF8
 	static void DoPrintUtf8(ibJournalMark mark, const wxString& source, const char* format, ...);

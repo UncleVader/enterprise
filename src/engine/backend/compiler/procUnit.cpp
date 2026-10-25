@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////////
-//	Author		: Maxim Kornienko, 2C-team
-//	Description : Processor unit 
+//	Author		: Maxim Kornienko
+//	Description : Processor unit
 ////////////////////////////////////////////////////////////////////////////
 
 #include "procUnit.h"
@@ -325,13 +325,9 @@ void ibProcUnitState::Raise()
 
 void ibProcUnit::Reset()
 {
-	if (m_ppArrayContext != nullptr) {
-		wxDELETEA(m_ppArrayContext);
-	}
-
-	if (m_ppArrayCode != nullptr) {
-		wxDELETEA(m_ppArrayCode);
-	}
+	delete[] m_ppArrayContext;
+	m_ppArrayContext = nullptr;
+	m_ppArrayCode.reset();
 
 	// Clear the active session's currentRunModule pointer if it was us.
 	// Hits the per-session interpreter state directly through GetPUState
@@ -343,8 +339,6 @@ void ibProcUnit::Reset()
 
 	m_numAutoDeleteParent = 0;
 
-	m_ppArrayContext = nullptr;
-	m_ppArrayCode = nullptr;
 	m_pByteCode = nullptr;
 	m_bExecuted = false;
 
@@ -365,7 +359,7 @@ void ibProcUnit::BuildScopeChain(ibRunContext* localScope)
 	// hierarchy being shorter at run time — look at what ELSE adds a rung on the compile side
 	// (an eval's host frame does; see GetVariable step 2).
 
-	m_ppArrayCode = new ibProcUnit * [nParentCount + 1];
+	m_ppArrayCode = std::make_unique<ibProcUnit*[]>(nParentCount + 1);
 	m_ppArrayCode[0] = this;
 
 	// ⭐⭐ ONE ROW MORE THAN THERE ARE FRAMES, AND IT IS NULL — a terminator (Max, 2026-09-01:
@@ -532,7 +526,9 @@ struct ibProcStackGuard {
 	//
 	// ⭐ A CANCEL IS FOR WHAT IS RUNNING (ibProcUnitState::m_runState). The stack at empty is where a run
 	// begins and ends, so the guard says so there: Running as the first frame comes, Idle as the last goes —
-	// which is also where a cancel that stopped the run comes down.
+	// which is also where a cancel that stopped the run comes down. Only the run it began: a script run inside
+	// a wait for the person finds the wait's run (ibWorkerPool::Await) and leaves it to the wait — a cancel it
+	// heard stays up for the wait to hear.
 	ibProcStackGuard(ibRunContext* runContext, ibProcUnitState* state) {
 		// Active state is required — ibProcUnit::Execute is reached only
 		// through a bound session (ibSessionScope / ibSessionThreadBinding).
@@ -561,10 +557,10 @@ struct ibProcStackGuard {
 		state->SetCurrentRunModule(runContext->GetProcUnit());
 
 		// Idle -> Running, and nothing else: a job's session cancelled before its script began stays Cancelled,
-		// and the script hears it at its first poll.
+		// and the script hears it at its first poll — and after it, a cancel this guard did not raise the run for.
 		if (state->GetCountRunContext() == 0) {
 			ibRunState idle = ibRunState::Idle;
-			state->m_runState.compare_exchange_strong(idle, ibRunState::Running);
+			m_raised = state->m_runState.compare_exchange_strong(idle, ibRunState::Running);
 		}
 		BeginByteCode(state, runContext);
 	}
@@ -583,7 +579,7 @@ struct ibProcStackGuard {
 				state->m_errorPlace.Reset();
 		}
 		EndByteCode(m_state);
-		if (m_state != nullptr && m_state->GetCountRunContext() == 0)
+		if (m_state != nullptr && m_raised)
 			m_state->m_runState = ibRunState::Idle;
 	}
 
@@ -593,6 +589,8 @@ private:
 	// Resolved once in the ctor and reused on the way out — the same state must
 	// see both ends of the call.
 	ibProcUnitState* m_state = nullptr;
+	// It made the run Running, and so lowers it — the first frame of a run it began.
+	bool             m_raised = false;
 };
 
 //**************************************************************************************************************
@@ -754,7 +752,7 @@ static inline void MakeBooleanValue(ibValue& dest, bool flag)
 #define NUMBERS_IN_PLACE_DIVISOR(op)                                                                   \
 	if (cValue2.m_typeClass == ibValueTypes::TYPE_NUMBER && cValue3.m_typeClass == ibValueTypes::TYPE_NUMBER) { \
 		if (cValue3.m_fData.IsZero())                                                                      \
-			Raise(ERROR_DIVIDE_BY_ZERO);                                                                   \
+			Raise(ibScriptError_DivideByZero);                                                                   \
 		MakeNumberValue(cValue1, cValue2.m_fData op cValue3.m_fData);                                      \
 		return;                                                                                            \
 	}
@@ -881,7 +879,7 @@ inline void DivValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber flNumber3 = cValue3.GetNumber();
 		if (flNumber3.IsZero())
-			Raise(ERROR_DIVIDE_BY_ZERO);
+			Raise(ibScriptError_DivideByZero);
 		const ibNumber numResult = cValue2.GetNumber() / flNumber3;
 		MakeNumberValue(cValue1, numResult);
 	}
@@ -898,7 +896,7 @@ inline void ModValue(ibValue& cValue1, const ibValue& cValue2, const ibValue& cV
 	if (resultType == ibValueTypes::TYPE_NUMBER) {
 		const ibNumber num3 = cValue3.GetNumber();
 		if (num3.IsZero())
-			Raise(ERROR_DIVIDE_BY_ZERO);
+			Raise(ibScriptError_DivideByZero);
 		const ibNumber num2 = cValue2.GetNumber();
 		MakeNumberValue(cValue1, num2 % num3);
 	}
@@ -1013,7 +1011,7 @@ IB_NOINLINE void RaiseMemberNotFound(const ibValue& variable, const ibString& na
 	const ibValue::ibMemberTable* const globals =
 		ibValue::ibMemberTable::Shared<&ibValueSystemFunction_BindNames>();
 	if (globals != nullptr && globals->FindMethod(name) >= 0) {
-		Raise(ERROR_MEMBER_IS_GLOBAL_FUNCTION, name);
+		Raise(ibScriptError_MemberIsGlobalFunction, name);
 	}
 
 	// The receiver is deliberately NOT named — asking a value what it is means calling into
@@ -1022,7 +1020,7 @@ IB_NOINLINE void RaiseMemberNotFound(const ibValue& variable, const ibString& na
 
 	// Which of the two it is depends on the VALUE, not on the opcode — so the
 	// choice belongs here rather than at each of the three call sites.
-	Raise(variable.IsReference() ? ERROR_MEMBER_NOT_FOUND : ERROR_MEMBER_NOT_AGGREGATE, name);
+	Raise(variable.IsReference() ? ibScriptError_MemberNotFound : ibScriptError_MemberNotAggregate, name);
 }
 
 #define CheckAndError(variable, name) RaiseMemberNotFound(variable, name)
@@ -1527,7 +1525,7 @@ start_label:
 				const ibString& strPropName = m_pByteCode->m_listConst[index2].m_sData;
 				const long lPropNum = variable1.FindProp(strPropName);
 				if (lPropNum < 0) CheckAndError(variable1, strPropName);
-				if (!variable1.IsPropWritable(lPropNum)) Raise(ERROR_PROP_NOT_WRITABLE, strPropName);
+				if (!variable1.IsPropWritable(lPropNum)) Raise(ibScriptError_PropNotWritable, strPropName);
 				variable1.SetPropVal(lPropNum, GetValue(cvariable3));
 			} break;
 			case OPER_GET_A://get attribute
@@ -1537,7 +1535,7 @@ start_label:
 				const ibString& strPropName = m_pByteCode->m_listConst[index3].m_sData;
 				const long lPropNum = variable2.FindProp(strPropName);
 				if (lPropNum < 0) CheckAndError(variable2, strPropName);
-				if (!variable2.IsPropReadable(lPropNum)) Raise(ERROR_PROP_NOT_READABLE, strPropName);
+				if (!variable2.IsPropReadable(lPropNum)) Raise(ibScriptError_PropNotReadable, strPropName);
 				// Scope-local props (ThisObject / ThisForm / RegisterRecords)
 				// are bc-internal: host's own code reaches them through
 				// its own m_listVar (compile-time), not through chain
@@ -1546,7 +1544,7 @@ start_label:
 				// watch should not be able to walk into a foreign
 				// object's "self" handle.
 				if (m_pByteCode->m_bExpressionOnly && variable2.IsPropScoped(lPropNum))
-					Raise(ERROR_PROP_SCOPE_LOCAL, strPropName);
+					Raise(ibScriptError_PropScopeLocal, strPropName);
 				ibValue vRet; bool result = variable2.GetPropVal(lPropNum, vRet);
 				if (result && vRet.IsReference())
 					*pRetValue = vRet;
@@ -1662,9 +1660,9 @@ start_label:
 					// the clause below it, which is the one written for this case,
 					// could never be reached.
 					if (paramCount != wxNOT_FOUND && paramCount < cRunContext.m_lParamCount)
-						Raise(ERROR_MANY_PARAMS, funcName);
+						Raise(ibScriptError_ManyParams, funcName);
 					else if (paramCount == wxNOT_FOUND && cRunContext.m_lParamCount == 0)
-						Raise(ERROR_MANY_PARAMS, funcName);
+						Raise(ibScriptError_ManyParams, funcName);
 				}
 
 				//load parameters
@@ -1692,7 +1690,7 @@ start_label:
 					if (curCode.m_numOper == OPER_SETCONST) {
 						LOAD_ARG_CONST(cRunContext.m_pLocVars[i]);
 					}
-					else if (index1 >= 0 && !pVariable2->GetParamDefValue(lMethodNum, i, *cRunContext.m_pRefLocVars[i])) {
+					else if (index1 >= 0) {
 						if (cvariable1.m_bReadOnly && !cvariable1.IsReference()) {
 							CopyValue(cRunContext.m_pLocVars[i], cvariable1);
 						}
@@ -1700,6 +1698,11 @@ start_label:
 							cRunContext.m_pRefLocVars[i] = &variable1;
 						}
 					}
+					// ⭐ A HOLE ASKS THE VALUE WHOSE METHOD IT IS. The default is the callee's — a script's
+					// function answers from its declaration, a built-in answers nothing and keeps the empty
+					// slot it always got. An argument written as Undefined is an argument, and is not asked.
+					if (index1 < 0)
+						pVariable2->GetParamDefValue(lMethodNum, i, cRunContext.m_pLocVars[i]);
 				}
 
 				if (pVariable2->HasRetVal(lMethodNum)) {
@@ -1731,14 +1734,14 @@ start_label:
 						const ibValue* pNextVariable2 = &cvariable2;
 						lCodeLine--;
 						if (static_cast<const ibValue*>(pRetValue) == pNextVariable2)
-							Raise(ERROR_USE_PROCEDURE_AS_FUNCTION, funcName, funcName);
+							Raise(ibScriptError_UseProcedureAsFunction, funcName, funcName);
 					}
 					else if (m_pByteCode->m_listCode[lCodeLine + 1].m_numOper == OPER_RET) {
 						lCodeLine++;
 						const ibValue* pNextVariable1 = &cvariable1;
 						lCodeLine--;
 						if (static_cast<const ibValue*>(pRetValue) == pNextVariable1)
-							Raise(ERROR_USE_PROCEDURE_AS_FUNCTION, funcName, funcName);
+							Raise(ibScriptError_UseProcedureAsFunction, funcName, funcName);
 					}
 					pVariable2->CallAsProc(lMethodNum, cRunContext.m_pRefLocVars, realParamCount);
 				} break;
@@ -1964,7 +1967,7 @@ start_label:
 			case OPER_SET_ARRAY + TYPE_DELTA3:
 			case OPER_SET_ARRAY + TYPE_DELTA4:
 				if (!SetArrayValue(variable1, cvariable2, GetValue(cvariable3)))
-					Raise(ERROR_ARRAY_SET, cvariable3);
+					Raise(ibScriptError_ArraySet, cvariable3);
 				break; //setting the array value
 			case OPER_GET_ARRAY:
 			case OPER_GET_ARRAY + TYPE_DELTA1:
@@ -1972,7 +1975,7 @@ start_label:
 			case OPER_GET_ARRAY + TYPE_DELTA3:
 			case OPER_GET_ARRAY + TYPE_DELTA4:
 				if (!GetArrayValue(variable1, variable2, cvariable3))
-					Raise(ERROR_ARRAY_GET, cvariable3);
+					Raise(ibScriptError_ArrayGet, cvariable3);
 				break; //getting the array value
 			case OPER_GOTO: case OPER_ENDTRY:
 			{
@@ -2059,13 +2062,16 @@ start_label:
 				// and a function declared after a hundred others paid +31 ns for it (RuntimeBench.CallCost,
 				// 2026-09-28). Taken only when it names THIS entry; a tape without it — written before the
 				// stamp, or a list rearranged since — walks as before, and can never land on another function.
+				//
+				// The frame enters it here, defaults filled, before the cached key is built from the arguments.
 				{
 					const std::vector<ibByteCode::ibByteFunction>& functions = m_pByteCode->m_listFunc;
 					const long entryIndex = (long)index4;
-					pContext->m_currentFunction =
+					pContext->Enter(
 						entryIndex >= 0 && entryIndex < (long)functions.size() && (long)functions[entryIndex] == lCodeLine
 							? &functions[entryIndex]
-							: m_pByteCode->FindFunctionByEntry(lCodeLine);
+							: m_pByteCode->FindFunctionByEntry(lCodeLine),
+						m_pByteCode);
 				}
 
 				// `Cached` — DECIDED HERE, and here only.
@@ -2267,10 +2273,6 @@ start_label:
 				}
 				pNewCtx->m_lStart          = lambdaEntryIp + 1;  // first body opcode
 				pNewCtx->m_lParamCount     = lambdaParamCount;
-				// Stamp the lambda's ibByteFunction so debugger / call-stack
-				// renders "<lambda@N>" with proper params + locals; eval
-				// host detection uses bfn->m_listLocals to resolve names.
-				pNewCtx->m_currentFunction = bfn;
 				// For OPER_LFUNC chain-walks inside this lambda body to
 				// reach the lambda's LEXICAL outer scope (not its dynamic
 				// caller), wire m_parentRunContext to the first captured
@@ -2293,7 +2295,11 @@ start_label:
 				// violations, not user errors.
 				for (long i = 0; i < callerArgCount; i++) {
 					lCodeLine++;
-					if (curCode.m_numOper == OPER_SETCONST) {
+					if (index1 < 0) {
+						// A hole the call was written with — Enter fills it.
+						pNewCtx->m_pRefLocVars[i] = nullptr;
+					}
+					else if (curCode.m_numOper == OPER_SETCONST) {
 						// Phase 1 is CALLER-supplied arguments, so the caller's pool —
 						// this used the LAMBDA's parent bytecode, which is right only for
 						// the DEFAULTS filled in phase 2 below. It was also the one branch
@@ -2316,19 +2322,13 @@ start_label:
 					}
 				}
 
-				// Phase 2 — fill missing tail params from compile-time
-				// defaults on the lambda's m_listParam (same structure
-				// named-function calls read from at PushCallFunction).
-				for (long i = callerArgCount; i < lambdaParamCount; i++) {
-					if (i >= (long)bfn->m_listParam.size())
-						RuntimeError("Lambda call: m_listParam shorter than paramCount at param %ld", i);
-					const ibParamRunUnit& puDef = bfn->m_listParam[i].m_defaultValue;
-					// The parameter's own name: the line above has already refused an index past the list.
-					if (puDef.m_numArray == DEF_VAR_SKIP)
-						RuntimeError("Missing required argument '%s' to function value",
-							bfn->m_listParam[i].m_strName);
-					CopyValue(pNewCtx->m_pLocVars[i], pLocalByteCode->m_listConst[puDef.m_numIndex]);
-				}
+				// Phase 2 — the tail the caller did not write is left out too, and
+				// the frame enters the lambda the way a named body is entered: the
+				// debugger and the call stack read the function from it, and the
+				// defaults come from the lambda's own module.
+				for (long i = callerArgCount; i < lambdaParamCount; i++)
+					pNewCtx->m_pRefLocVars[i] = nullptr;
+				pNewCtx->Enter(bfn, pLocalByteCode);
 
 				fn->Execute(pNewCtx, pRetValue, false);
 				break;
@@ -2385,8 +2385,8 @@ start_label:
 			// making it a number (MakeNumberValue) resets a value that did not say so yet.
 			case OPER_ADD + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData + cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
 			case OPER_SUB + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData - cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
-			case OPER_DIV + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData / cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
-			case OPER_MOD + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ERROR_DIVIDE_BY_ZERO); } const ibNumber r = cvariable2.m_fData.Round() % cvariable3.m_fData.Round(); MakeNumberValue(variable1, r); break; }
+			case OPER_DIV + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ibScriptError_DivideByZero); } const ibNumber r = cvariable2.m_fData / cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
+			case OPER_MOD + TYPE_DELTA1: { if (cvariable3.m_fData.IsZero()) { Raise(ibScriptError_DivideByZero); } const ibNumber r = cvariable2.m_fData.Round() % cvariable3.m_fData.Round(); MakeNumberValue(variable1, r); break; }
 			case OPER_MULT + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData * cvariable3.m_fData; MakeNumberValue(variable1, r); break; }
 			case OPER_LET + TYPE_DELTA1: { const ibNumber r = cvariable2.m_fData; MakeNumberValue(variable1, r); break; }
 			case OPER_INVERT + TYPE_DELTA1: { const ibNumber r = -cvariable2.m_fData; MakeNumberValue(variable1, r); break; }
@@ -2889,6 +2889,9 @@ void ibProcUnit::CallAsProc(const long lCodeLine, ibValue** ppParams, const long
 
 	//load parameters
 	memcpy(&cRunContext.m_pRefLocVars[0], &ppParams[0], std::min(lSizeArray, cRunContext.m_lParamCount) * sizeof(ibValue*));
+	// The tail the caller had nothing for — the entry opcode fills it (ibRunContext::Enter).
+	for (long i = lSizeArray; i < cRunContext.m_lParamCount; i++)
+		cRunContext.m_pRefLocVars[i] = nullptr;
 
 	//execute arbitrary code
 	Execute(&cRunContext, nullptr, false);
@@ -2921,6 +2924,9 @@ void ibProcUnit::CallAsFunc(const long lCodeLine, ibValue& pvarRetValue, ibValue
 
 	//load parameters
 	memcpy(&cRunContext.m_pRefLocVars[0], &ppParams[0], std::min(lSizeArray, cRunContext.m_lParamCount) * sizeof(ibValue*));
+	// The tail the caller had nothing for — the entry opcode fills it (ibRunContext::Enter).
+	for (long i = lSizeArray; i < cRunContext.m_lParamCount; i++)
+		cRunContext.m_pRefLocVars[i] = nullptr;
 
 	// `Cached` needs nothing here: the modifier is applied at the function's
 	// ENTRY OPCODE, which this call reaches like every other road into a body.
@@ -3184,7 +3190,7 @@ bool ibProcUnit::CompileExpression(ibRunContext* pRunContext, ibValue& pvarRetVa
 	// CompileExpression's caller passes a fully-prepared eval module.
 
 	try {
-		if (!cModule.PrepareLexem()) {
+		if (!cModule.Translate()) {
 			return false;
 		}
 	}

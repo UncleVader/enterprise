@@ -57,7 +57,7 @@
 #include "backend/query/dataQueryBuilder.h"                        // L3 door — From(source).Select() / SelectAggregate()
 #include "backend/databaseLayer/databaseMaterializeBuilder.h"       // L2-2 — RenderMaterializedRead: the READ side of the materialised surface
 #include "backend/query/queryRamTable.h"                           // FoldBalancesForward — the running step, shared with the accumulation register
-#include "backend/query/queryAST.h"                                // ibQueryDimUnfold — «in» / «in hierarchy» / «hierarchy only», the language's own three words
+#include "core/query/queryAST.h"                                // ibQueryDimUnfold — «in» / «in hierarchy» / «hierarchy only», the language's own three words
 #include "backend/query/queryHierarchy.h"                          // ibQueryHierarchyScope — the operator that resolves those three words into values
 #include "backend/query/queryException.h"                          // ibBackendQueryNameException — a breakdown field the register does not have
 #include "backend/databaseLayer/databaseLayer.h"                   // ibDateTime::BeginOfPeriod / BeginOfNextPeriod (fdatetime.h) — the GRAIN, in RAM terms
@@ -1864,7 +1864,7 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 	// wxString::Format to get there.
 	wxString key = wxString::Format(wxT("%d|%d|%d|"), static_cast<int>(shape),
 		static_cast<int>(fold.m_kind), static_cast<int>(fold.m_unit));
-	const auto appendKind = [&key](const wxChar side, const ibValue& kind) {
+	const auto appendKind = [&key](const ibChar side, const ibValue& kind) {
 		key += wxString::Format(wxT("%c%llu:%llu|"), side,
 			static_cast<unsigned long long>(kind.GetValueHash()),
 			static_cast<unsigned long long>(kind.GetClassType()));
@@ -2072,7 +2072,7 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 		columns.push_back(ibTempColumn(FigureName(resource, suffix), FigureField(resource, suffix),
 		                               resource->GetTypeDesc(), ibRegDerivedColumnId(resource->GetMetaID(), ++figureNo),
 		                               ibRegColumnCaptionOf(resource->GetSynonym(), ibRegSidedCaption(figure, credit)),
-		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()).StandsFor(resource)
+		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnPicture()).StandsFor(resource)
 		                  .PlaysInBalance(ibRegFigureBalanceRole(figure)));   // the figure's word, not the sided spelling
 	};
 
@@ -2082,7 +2082,7 @@ const ibBackendQueryable* ibValueMetaObjectAccountingRegister::GetShapeQueryable
 		columns.push_back(ibTempColumn(FigureName(resource, figure), FigureField(resource, figure),
 		                               resource->GetTypeDesc(), ibRegDerivedColumnId(resource->GetMetaID(), ++figureNo),
 		                               ibRegColumnCaptionOf(resource->GetSynonym(), ibRegFigureCaption(figure)),
-		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnIcon()).StandsFor(resource)
+		                               ibBackendQueryColumn::Kind::Computed, resource->GetColumnPicture()).StandsFor(resource)
 		                  .PlaysInBalance(ibRegFigureBalanceRole(figure)));
 	};
 

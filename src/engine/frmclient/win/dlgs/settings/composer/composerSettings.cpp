@@ -15,14 +15,13 @@
 #include "frmclient/win/dlgs/typeSelector.h"              // the product.s type picker — a parameter declares its type
 #include "frmclient/win/dlgs/translateConstructor/translateConstructor.h"   // a field's title, every language of it
 #include "frmclient/win/dlgs/queryConstructor/queryConstructorInternal.h" // ibExpressionCellRenderer — the Totals tab's own cell
-#include "frmclient/backend/query/queryable.h"                        // ibPeriodUnits — the engine's own list of period words
-#include "frmclient/backend/query/queryLowering.h"                     // the aggregates a field's type admits (the desktop's, through the constructor)
+#include "core/query/queryPeriodUnits.h"                     // ibPeriodUnits — the engine's own list of period words
+#include "core/query/queryAggregates.h"                      // ibQueryAggregatesFor — the aggregates a field's type admits
 #include "frmclient/backend/system/value/valueDataComposition.h"       // ibSyncParameters — the parameters follow the texts
 #include "frmclient/win/editor/codeEditor/codeEditor.h"  // the script editor behind a parameter expression
 #include "frmclient/mainFrame/mainFrame.h"                // the shared editor / font-colour settings
 #include "frmclient/docView/docView.h"                    // ibMetaDocument — the composer editor's document mode
 #include "frmclient/backend/metaCollection/metaComposerObject.h"   // ibValueMetaObjectComposer — what a composer document was opened ON
-#include "frmclient/backend/propertyManager/property/variant/variantComposition.h"  // the SNAPSHOT a Settings property stores
 #include "frmclient/backend/appData.h"                              // the ACTIVE configuration, when the composition names none
 #include "frmclient/backend/system/value/composition/valueComposerField.h"   // a declaration becomes a value for the reader
 #include "frmclient/backend/metaData.h"                             // the compile cache the parent module comes from
@@ -98,7 +97,7 @@ enum {
 
 // WHICH AGGREGATES FIT THIS FIELD — asked of the ENGINE, never listed here.
 //
-// `ibQueryLowering::AggregatesFor` is the one door: `CheckNames` reads it as a REFUSAL ("SUM
+// `ibQueryAggregatesFor` is the one door: `CheckNames` reads it as a REFUSAL ("SUM
 // cannot be taken over 'Description'") and a window reads it as WHAT TO OFFER. A hand-written
 // list beside it drifts, and the drift is a dropdown offering something the query then refuses —
 // which is exactly what a fixed { SUM, COUNT, MIN, MAX, AVG } did to every string field.
@@ -743,7 +742,7 @@ namespace {
 wxArrayString ibAggregatesForField(const ibQueryConstructorField& field)
 {
 	wxArrayString words;
-	for (const ibQueryKeyword keyword : ibQueryLowering::AggregatesFor(field.m_type))
+	for (const ibQueryKeyword keyword : ibQueryAggregatesFor(field.m_type))
 		words.Add(ibQueryKeywordText(keyword));
 	return words;
 }
@@ -1447,7 +1446,7 @@ public:
 			m_byPeriods = new wxCheckBox(m_periodPane, wxID_ANY, _("By periods"));
 			strip->Add(m_byPeriods, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
 
-			// THE UNITS ARE THE ENGINE'S OWN LIST — `ibPeriodUnits()` (query/queryable.h), the same
+			// THE UNITS ARE THE ENGINE'S OWN LIST — `ibPeriodUnits()` (core/query/queryPeriodUnits.h), the same
 			// vocabulary the lowering reads and the query constructor offers. A list typed out here
 			// would be a second copy of the words, and it would be right until one of them changed.
 			m_periodUnit = new wxChoice(m_periodPane, wxID_ANY);
@@ -1641,20 +1640,6 @@ private:
 	wxTextCtrl*               m_periodTo   = nullptr;
 };
 
-// THE DESCRIPTION INSIDE A CELL, and the refusal when the cell is not one. A window that cannot
-// name what it edits has nothing to draw, so this raises rather than binding to a stand-in that
-// silently saves nowhere.
-static ibCompositionDescription& DescriptionIn(const wxVariant& composition)
-{
-	ibVariantDataComposition* cell =
-		dynamic_cast<ibVariantDataComposition*>(composition.GetRefData());
-
-	if (cell == nullptr)
-		ibBackendCoreException::Error(_("The composition to edit is not a composition"));
-
-	return cell->GetCompositionDesc();
-}
-
 // ⭐ THE SETTINGS ARE A PANEL, AND THE DIALOG IS ONE OF ITS HOSTS. A composer declared in the
 // metadata is edited on a TAB of its own (the designer opens it like a form or a template — see
 // docViewComposer), while a composition held by a form is edited modally from the gridbox. The
@@ -1672,29 +1657,16 @@ ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, ibComposition
 	BuildPanel();
 }
 
-// 🛑⭐⭐ THE DESIGNER'S, HOLDING THE CELL IT EDITS. Same window as above; what differs is the GRIP.
-//
-// A metaobject's composition lives in a property, and a property cell is a VARIANT: storing one
-// swaps in a new cell and lets go of the old (ibPropertyComposition::SetValue). A window binds to
-// it for as long as it is open, which is far longer than the call that opened it - so a bare
-// reference into the cell is freed memory the moment ANYTHING stores a composition. It happened on
-// 2026-09-02: an MCP verb (report_select - every one of those verbs is a read-modify-write) wrote
-// while the settings window stood open, and the designer died later and elsewhere, in
-// ApplyPendingQueryText on a page change, assigning into 0xdddddddd.
-//
-// ⭐ THE VARIANT IS REFERENCE-COUNTED, so holding a COPY of it is the whole fix (Max, 2026-09-02:
-// *"the counter just needs to go up while the form holds it"*). The store swaps in its new cell,
-// this window goes on editing the one it opened - one counter down, still alive - and that cell
-// dies quietly when the window closes. What the window then shows is the composition as it was
-// opened, which is the honest thing for an editor with a Cancel: the new one is picked up when it
-// is reopened.
-ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, const wxVariant& composition,
+// 🛑⭐⭐ THE DESIGNER'S, HOLDING WHAT IT EDITS. Same window as above; what differs is the GRIP: a window
+// stays open far longer than the call that opened it, and what it was handed may go first (see the
+// header's m_heldComposition — on the desktop, the 2026-09-02 crash under an MCP write).
+ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, const ibCompositionDescription& composition,
 	const ibMetaData* metaData)
 	: wxPanel(parent, wxID_ANY),
 	  m_metaData(metaData), m_readerRoad(false),
 	  m_heldComposition(composition),
-	  m_settings(&DescriptionIn(m_heldComposition).m_variants.front().m_settings),
-	  m_edited(DescriptionIn(m_heldComposition)),
+	  m_settings(&m_heldComposition.m_variants.front().m_settings),
+	  m_edited(m_heldComposition),
 	  m_fieldSource(new ibSettingsFieldTree())
 {
 	BuildPanel();
@@ -2072,23 +2044,18 @@ static const ibMetaData* MetaDataOf(ibMetaDocument* document)
 	return metaComposer != nullptr ? metaComposer->GetMetaData() : nullptr;
 }
 
-// …AND THE COMPOSITION IS REACHED THE SAME WAY — AS THE CELL, not as a reference into it. A tab
-// stays open for as long as somebody is looking at it, and the cell under it is replaced by any
-// store (ibPropertyComposition::SetValue swaps in a new one); the panel holds what it was given, so
-// its count is up for as long as the tab lives. Edits still land in the metaobject's own
-// description, which is the shape ibGridEditor has — no copy travels, and the view stores nothing.
+// …AND THE COMPOSITION IS REACHED THE SAME WAY — the composer's description, held by the panel for as
+// long as the tab lives.
 //
 // ⚠ THE STAND-IN. A composer tab with no composer metaobject cannot happen through the document
 // manager — the template is registered against the composer metatype — but the panel has to bind to
-// something, so it binds to an empty cell here. Nothing written into it is ever saved, which is the
-// truth about a tab that is editing nothing.
-static wxVariant CompositionOf(ibMetaDocument* document)
+// something, so it binds to an empty description here. Nothing written into it is ever saved, which is
+// the truth about a tab that is editing nothing.
+static ibCompositionDescription CompositionOf(ibMetaDocument* document)
 {
-	ibValueMetaObjectComposer* metaComposer = ComposerOf(document);
+	const ibValueMetaObjectComposer* metaComposer = ComposerOf(document);
 
-	return metaComposer != nullptr
-		? metaComposer->GetCompositionValue()
-		: wxVariant(new ibVariantDataComposition(nullptr, ibCompositionDescription()));
+	return metaComposer != nullptr ? metaComposer->GetCompositionDesc() : ibCompositionDescription();
 }
 
 // THE DOCUMENT IS THE ONLY INPUT. Both of the other two — which description is edited, and which
@@ -2175,7 +2142,7 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	ibSettingsDescription edited;
 	{
 		ibDataNode settings;
-		ibReadProtocolNode(request.FindChild(ibProtocolName::Settings), settings);
+		ibReadProtocolNode(request.FindChild(ibProtocol::ibRequest::ibListSettings::Settings), settings);
 		ibSettingsDescriptionMemory::ReadNode(settings, edited);
 	}
 
@@ -2195,16 +2162,16 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	ibCompositionDescription shown;
 	{
 		ibDataNode composition;
-		ibReadProtocolNode(request.FindChild(ibProtocolName::Composition), composition);
+		ibReadProtocolNode(request.FindChild(ibProtocol::ibRequest::ibComposerSettings::Composition), composition);
 		ibCompositionDescriptionMemory::ReadNode(composition, shown);
 	}
 
 	// …and which of the fields' types are references, and to what (the [+] a field gets) — the fields themselves the
 	// panel reads as the desktop's does, by its query (ibQueryFieldsOfText answers with the question's Fields).
-	ibValueReferenceDataObject::ReadReferences(request.FindChild(ibProtocolName::References));
+	ibValueReferenceDataObject::ReadReferences(request.FindChild(ibProtocol::ibRequest::ibListSettings::References));
 
 	// A setting the server refused comes back with why — said before the window opens on it again.
-	const wxString error = request.GetString(ibProtocolName::Error);
+	const wxString error = request.GetString(ibProtocol::ibRequest::ibListSettings::Error);
 	if (!error.IsEmpty())
 		wxMessageBox(error, _("Data composer settings"), wxOK | wxICON_WARNING, top);
 
@@ -2226,7 +2193,7 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	// says it is outdated); one it refuses is asked again, with why.
 	ibDataNode settings;
 	ibSettingsDescriptionMemory::WriteNode(settings, edited);
-	ibWriteProtocolNode(settings, response.Child(ibProtocolName::Settings));
+	ibWriteProtocolNode(settings, response.Child(ibProtocol::ibRequest::ibListSettings::Settings));
 	return true;
 }
 
@@ -3469,7 +3436,7 @@ wxWindow* ibComposerSettingsPanel::BuildResourcePage(wxWindow* parent)
 	// side, and neither takes the other away.
 	//
 	// It is the SAME class, not a lookalike: which aggregates fit a type is one answer
-	// (`ibQueryLowering::AggregatesFor`), and a second cell over it would drift from this one.
+	// (`ibQueryAggregatesFor`), and a second cell over it would drift from this one.
 	m_resourceView->GetRootColumnGroup()->AppendColumn(new ibDataViewColumn(_("Expression"),
 		new queryctor::ibExpressionCellRenderer(
 			[this]() -> wxArrayString { return ResourceChoices(); },
@@ -5002,7 +4969,7 @@ wxArrayString ibComposerSettingsPanel::ResourceChoices() const
 		// THE ENGINE COMPOSES THE OFFERS: the calls this type admits over this field, DISTINCT twin
 		// included where it asks a different question. One door, so the constructor and this window
 		// never offer different things about the same field.
-		for (const wxString& call : ibQueryLowering::AggregateCallsFor(field.m_type, path))
+		for (const wxString& call : ibQueryAggregateCallsFor(field.m_type, path))
 			words.Add(call);
 		break;
 	}

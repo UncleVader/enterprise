@@ -31,6 +31,7 @@
 //     Not an error at all.
 
 #include "backend/backend_exception.h"
+#include "core/query/queryRefusal.h"   // ibQueryRefusal — what the core parser gives back
 
 // ibBackendQueryException — the query layer could not do its job.
 //
@@ -125,15 +126,18 @@ public:
 	WX_DEFINE_VARARG_FUNC(static void, ErrorAt, 3, (unsigned int, unsigned int, const wxFormatErrorString&),
 		DoErrorAtWchar, DoErrorAtUtf8);
 
+	// The core parser's refusal (core/query/queryRefusal.h), raised at the engine's door: its span and its words.
+	[[noreturn]] static void Raise(const ibQueryRefusal& refusal);
+
 private:
 	ibBackendQuerySyntaxException(const wxString& msg, unsigned int line, unsigned int col)
 		: ibBackendQuerySourceException(msg, line, col) {}
 
 #if !wxUSE_UTF8_LOCALE_ONLY
-	static void DoErrorAtWchar(unsigned int line, unsigned int col, const wxChar* format, ...);
+	static void DoErrorAtWchar(unsigned int line, unsigned int col, const ibChar* format, ...);
 #endif
 #if wxUSE_UNICODE_UTF8
-	static void DoErrorAtUtf8(unsigned int line, unsigned int col, const wxChar* format, ...);
+	static void DoErrorAtUtf8(unsigned int line, unsigned int col, const ibChar* format, ...);
 #endif
 };
 
@@ -157,12 +161,12 @@ private:
 		: ibBackendQuerySourceException(msg, line, col) {}
 
 #if !wxUSE_UTF8_LOCALE_ONLY
-	static void DoErrorAtWchar(unsigned int line, unsigned int col, const wxChar* format, ...);
-	static void DoErrorWchar(const wxChar* format, ...);
+	static void DoErrorAtWchar(unsigned int line, unsigned int col, const ibChar* format, ...);
+	static void DoErrorWchar(const ibChar* format, ...);
 #endif
 #if wxUSE_UNICODE_UTF8
-	static void DoErrorAtUtf8(unsigned int line, unsigned int col, const wxChar* format, ...);
-	static void DoErrorUtf8(const wxChar* format, ...);
+	static void DoErrorAtUtf8(unsigned int line, unsigned int col, const ibChar* format, ...);
+	static void DoErrorUtf8(const ibChar* format, ...);
 #endif
 };
 
@@ -192,10 +196,10 @@ private:
 		: ibBackendQueryException(Kind::UnsupportedNode, msg) {}
 
 #if !wxUSE_UTF8_LOCALE_ONLY
-	static void DoErrorWchar(const wxChar* format, ...);
+	static void DoErrorWchar(const ibChar* format, ...);
 #endif
 #if wxUSE_UNICODE_UTF8
-	static void DoErrorUtf8(const wxChar* format, ...);
+	static void DoErrorUtf8(const ibChar* format, ...);
 #endif
 };
 

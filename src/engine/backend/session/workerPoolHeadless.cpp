@@ -20,6 +20,18 @@ namespace {
 // to come back as it was when the fiber resumes.
 thread_local ibSession* tl_currentLease = nullptr;
 
+// Saved and put back on every switch, and registered at static initialisation as every other slot is. The first
+// pool's constructor used to register it, and a thread converted to a fiber before any pool existed sealed the set
+// first: the registration aborted the process (the benches, from 2026-10-10).
+struct ibRegisterLeaseLocal {
+	ibRegisterLeaseLocal()
+	{
+		ibFiberLocals::RegisterTrivial<ibSession*>(
+			[](void* dst) { *static_cast<ibSession**>(dst) = tl_currentLease; },
+			[](const void* src) { tl_currentLease = *static_cast<ibSession* const*>(src); });
+	}
+} s_registerLeaseLocal;
+
 // Set when this thread's pool is destroyed out from under WorkerLoop.
 // The rest of the loop must not touch the pool again. A destructor that
 // runs on its own worker detaches that handle; the thread then leaves
@@ -109,23 +121,9 @@ std::vector<ibWorkerPoolHeadless::ibParked>& ibWorkerPoolHeadless::ParkedFibers(
 	return parked;
 }
 
-void ibWorkerPoolHeadless::RegisterFiberLocals()
-{
-	// Once per process, and before any fiber snapshot. The other slots
-	// register themselves at static init, which has already run by the
-	// time a pool exists.
-	static std::once_flag once;
-	std::call_once(once, []() {
-		ibFiberLocals::RegisterTrivial<ibSession*>(
-			[](void* dst) { *static_cast<ibSession**>(dst) = tl_currentLease; },
-			[](const void* src) { tl_currentLease = *static_cast<ibSession* const*>(src); });
-	});
-}
-
 ibWorkerPoolHeadless::ibWorkerPoolHeadless(std::size_t maxWorkers)
 	: m_maxWorkers(maxWorkers)
 {
-	RegisterFiberLocals();
 	// Lazy spawn — no workers at construction. The first Submit kicks
 	// the first worker into existence; load growth spawns more up to
 	// m_maxWorkers (0 — no limit); idle ones eventually self-exit via timeout.
@@ -405,6 +403,15 @@ void ibWorkerPoolHeadless::Await(ibSession* session, const std::function<bool()>
 	// (or lifting the cap because of it) would put a thread back under every open question.
 	++q->waiting;
 
+	// ⭐ THE WAIT IS A RUN — the work that asked is on the stack, there to hear a cancel as a script is. A question
+	// asked by the engine with no script beneath (a report's drill-down menu) found the run Idle, and a cancel, being
+	// for what runs, passed it by: a client's exit then ran its teardown INSIDE the wait, and the frame the question
+	// stood in was gone when the wait woke (2026-10-23). Raised only from Idle — under a script the run is the
+	// script's — and lowered on the way out by the wait that raised it, as ibProcStackGuard lowers its own.
+	std::atomic<ibRunState>& run = ibSession::PUStateOf(session)->m_runState;
+	ibRunState idle = ibRunState::Idle;
+	const bool raised = run.compare_exchange_strong(idle, ibRunState::Running);
+
 	for (;;) {
 		// The cancel BEFORE the next task, and done() under this lock: a flag read, nothing that calls
 		// back into the pool. A teardown cancels, then submits its barrier, and the barrier must run
@@ -412,11 +419,15 @@ void ibWorkerPoolHeadless::Await(ibSession* session, const std::function<bool()>
 		// so a barrier submitted after the cancel cannot slip between them.
 		if (ShouldInterrupt(session)) {
 			--q->waiting;
+			if (raised)
+				run = ibRunState::Idle;
 			lk.unlock();
 			ibBackendInterruptException::Error();
 		}
 		if (done()) {
 			--q->waiting;
+			if (raised)
+				run = ibRunState::Idle;
 			return;
 		}
 		if (q->tasks.empty()) {

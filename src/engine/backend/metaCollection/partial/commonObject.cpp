@@ -132,7 +132,6 @@ ibValueSpreadsheetDocument* ibValueMetaObjectGenericData::GetTemplate(const wxSt
 //*                           ibValueMetaObjectRecordData				*
 //***********************************************************************
 
-#include "core/fileSystem/fs.h"
 
 //***********************************************************************
 //*                           read & save events                        *
@@ -1813,6 +1812,26 @@ bool ibValueManagerDataObject::CallAsFunc(const long lMethodNum, ibValue& pvarRe
 	return false;
 }
 
+bool ibValueManagerDataObject::GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const
+{
+	const ibValueMetaObjectGenericData* valueMetaObject = GetMetaObject();
+	wxASSERT(valueMetaObject);
+
+	const ibMetaData* metaData = valueMetaObject->GetMetaData();
+	wxASSERT(metaData);
+
+	if (m_members.GetMethodAlias(lMethodNum) != g_aliasExport)
+		return false;
+
+	auto* moduleManager = ibSession::EditModuleManagerFor(metaData);
+	auto* pRefData = moduleManager ? moduleManager->FindCommonModule(GetManagerModule()) : nullptr;
+
+	if (pRefData != nullptr)
+		return pRefData->GetParamDefValue(ibModuleMethodNum(*pRefData, m_members.GetMethodName(lMethodNum)), lParamNum, pvarParamDefValue);
+
+	return false;
+}
+
 ibClassID ibValueManagerDataObject::GetClassType() const
 {
 	const ibValueMetaObjectGenericData* valueMetaObject = GetMetaObject();
@@ -2293,6 +2312,17 @@ bool ibValueRecordDataObject::CallAsFunc(const long lMethodNum, ibValue& pvarRet
 	return false;
 }
 
+bool ibValueRecordDataObject::GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const
+{
+	if (m_members.GetMethodAlias(lMethodNum) == eProcUnit) {
+		return ibRuntimeModuleDataObject::GetParamDefValue(
+			GetMethodName(lMethodNum), lParamNum, pvarParamDefValue
+		);
+	}
+
+	return false;
+}
+
 //***********************************************************************
 //*                        ibValueRecordDataObjectExt							*           
 //***********************************************************************
@@ -2350,6 +2380,11 @@ bool ibValueRecordDataObjectExt::InitializeObject()
 		Run();
 
 	InvalidateNames();
+	// ⭐ …AND ITS FIELDS DESCRIBED ANEW. The metaobject's reload is what re-initialises this object (OnReloadMetaObject),
+	// and a field's TYPE changed is one of what it reloads for: the description is stamped by the metadata version,
+	// which a type moves no more than a field's number, so the form's attribute picker kept the type it was first asked
+	// with — on both designers, since the stamp (2026-10-19). Cleared, it is built again when next read.
+	m_sourceExplorer.Clear();
 
 	//is Ok
 	return true;
@@ -2406,7 +2441,7 @@ ibValueRecordDataObjectRef::ibValueRecordDataObjectRef(const ibValueMetaObjectRe
 	m_reference_impl(nullptr)
 {
 	if (m_metaObject != nullptr)
-		m_reference_impl = new ibReference(m_objGuid);   // pure guid; type is the metaObject / _RTRef
+		m_reference_impl = std::make_unique<ibReference>(m_objGuid);   // pure guid; type is the metaObject / _RTRef
 }
 
 ibValueRecordDataObjectRef::ibValueRecordDataObjectRef(const ibValueRecordDataObjectRef& src) :
@@ -2416,12 +2451,11 @@ ibValueRecordDataObjectRef::ibValueRecordDataObjectRef(const ibValueRecordDataOb
 	m_reference_impl(nullptr)
 {
 	if (m_metaObject != nullptr)
-		m_reference_impl = new ibReference(m_objGuid);   // pure guid; type is the metaObject / _RTRef
+		m_reference_impl = std::make_unique<ibReference>(m_objGuid);   // pure guid; type is the metaObject / _RTRef
 }
 
 ibValueRecordDataObjectRef::~ibValueRecordDataObjectRef()
 {
-	wxDELETE(m_reference_impl);
 }
 
 bool ibValueRecordDataObjectRef::InitializeObject(const ibGuid& copyGuid)
@@ -2480,6 +2514,7 @@ bool ibValueRecordDataObjectRef::InitializeObject(const ibGuid& copyGuid)
 	}
 
 	InvalidateNames();
+	m_sourceExplorer.Clear();   // …and its fields described anew, as the external object's (InitializeObject above)
 
 	//is Ok
 	return succes;
@@ -2706,7 +2741,7 @@ void ibValueRecordDataObjectRef::PrepareEmptyObject(const ibValueRecordDataObjec
 		if (tableSection->LoadDataFromTable(source->GetTableByMetaID(object->GetMetaID())))
 			m_listObjectValue.insert_or_assign(object->GetMetaID(), tableSection);
 		else
-			wxDELETE(tableSection);
+			delete tableSection;
 	}
 	m_objModified = true;
 }
@@ -2924,7 +2959,7 @@ void ibValueRecordDataObjectHierarchyRef::PrepareEmptyObject(const ibValueRecord
 		if (tableSection->LoadDataFromTable(source->GetTableByMetaID(object->GetMetaID())))
 			m_listObjectValue.insert_or_assign(object->GetMetaID(), tableSection);
 		else
-			wxDELETE(tableSection);
+			delete tableSection;
 	}
 	m_objModified = true;
 }
@@ -3332,19 +3367,20 @@ bool ibValueRecordDataObjectRecorderRef::WriteObject(ibDocumentWriteMode writeMo
 			SetPosted(writeMode == ibDocumentWriteMode::ibDocumentWriteMode_Posting);
 	}
 
+	// One dating, before the number. The series and the stored date are the same period, for a
+	// periodic document and for one that is not. The date is the recorder's own (its metaobject
+	// declares it beside the number), so no leaf is asked.
+	if (newObject) {
+		ibValueMetaObjectAttributePredefined* const date = GetMetaObject()->GetDocumentDate();
+		if (GetValueByMetaID(*date).IsEmpty())
+			SetValueByMetaID(*date, ibValueSystemFunction::CurrentDate());
+	}
+
 	if (!IsSetUniqueIdentifier()) {
 		ibValue prefix = wxEmptyString, standartProcessing = true;
 		ExecAsEvent(wxT("SetNewNumber"), prefix, standartProcessing);
 		if (standartProcessing.GetBoolean())
 			GenerateUniqueIdentifier(prefix.GetString());
-	}
-
-	// A new recorder written without a date is dated by the write. The date is the recorder's own
-	// (its metaobject declares it beside the number), so no leaf is asked.
-	if (newObject) {
-		ibValueMetaObjectAttributePredefined* const date = GetMetaObject()->GetDocumentDate();
-		if (GetValueByMetaID(*date).IsEmpty())
-			SetValueByMetaID(*date, ibValueSystemFunction::CurrentDate());
 	}
 
 	if (!SaveData())
@@ -3618,6 +3654,7 @@ bool ibValueRecordManagerObject::InitializeObject(const ibValueRecordManagerObje
 	}
 
 	InvalidateNames();
+	m_sourceExplorer.Clear();   // …and its fields described anew, as the external object's (InitializeObject above)
 
 	//is Ok
 	return true;
@@ -3804,10 +3841,8 @@ bool ibValueRecordSetObject::GetPropVal(const long lPropNum, ibValue& pvarPropVa
 	if (m_procUnit != nullptr && m_procUnit->GetPropVal(GetPropName(lPropNum), pvarPropVal))
 		return true;
 
-	if (ibValue* bound = GetBoundValue(GetPropName(lPropNum))) {
-		pvarPropVal = bound;
+	if (GetBoundValue(GetPropName(lPropNum), pvarPropVal))
 		return true;
-	}
 
 	return false;
 }

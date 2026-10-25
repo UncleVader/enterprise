@@ -237,22 +237,25 @@ public:
 	// current row as a handle the client was given (CurrentRow, absent while that row has not been
 	// handed out), the column the cursor stands on (CurrentColumn), the cell whose editor is open
 	// (Edit {Row, Column} — the client opens its editor there, and closes one the table did not take),
-	// ChoiceMode and ViewMode. The model's view is attached here, and a value just created from this
-	// list is looked for among the rows — what the window used to do whenever it was redrawn.
+	// ChoiceMode and ViewMode. When the Version is new, State may also carry Rows once — the first page,
+	// as Fetch would give it — so the frame that names that Version need not be followed by a fetch. A
+	// client that finds no Rows still asks Fetch, as before. The model's view is attached here, and a
+	// value just created from this list is looked for among the rows — what the window used to do
+	// whenever it was redrawn.
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// The table's own: Row — the cursor moved (Row: a handle; Column — across to it); Open without a
 	// Column — a row activated; Sort, Move and Resize — a column's header (Column). A CELL'S are its
 	// column's, the field's events on a row (OnCellEvent). Everything else is the composite's (the
 	// command bar).
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 	// Input always — a cell's editor opens only when the table takes it (Edit in the frame that answers); Row while
 	// the script handles Selection. Nothing on the server reads the current row until the next call, which brings the
 	// held Row first.
-	virtual bool IsSubscribed(ibProtocolEvent event) const override;
+	virtual bool IsSubscribed(ibProtocol::ibEvent::ibKind event) const override;
 
-	// ⭐ THE ROWS A CLIENT SHOWS, written by the table itself. `request`: Direction (s32: 0 reset,
-	// 1 forward, -1 backward), Anchor (s32 row handle; 0 none), Count (s32, 1..500), Parent (s32 handle
+	// ⭐ THE ROWS A CLIENT SHOWS, written by the table itself. `request`: Direction (std::int32_t: 0 reset,
+	// 1 forward, -1 backward), Anchor (std::int32_t row handle; 0 none), Count (std::int32_t, 1..500), Parent (std::int32_t handle
 	// of the container whose children are asked for; 0 the top level). `response`: one child per row
 	// (metaId = its handle) with Container, Group (a group row's caption), ReadOnly (no cell of it can be
 	// edited) and one child per SHOWN column (metaId = the column's control id) carrying the cell (the
@@ -315,11 +318,11 @@ private:
 	// The cursor moved to a row: the script's Selection event, and unless it refuses (standard
 	// processing off), the row becomes the current line. True at once when it already is. False — an
 	// unknown handle, or refused.
-	bool OnCurrentRowChanged(s32 rowHandle);
+	bool OnCurrentRowChanged(std::int32_t rowHandle);
 	// ⭐ A CELL'S EVENT — Input, Change, Select, Open, Clear naming Row and Column: the field's events,
 	// and the column's. Its editor and its buttons work on the current line's value, as the window's
 	// did, so the row named becomes the current line first (unless the script refuses it).
-	bool OnCellEvent(ibProtocolEvent event, const ibDataNode& args);
+	bool OnCellEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args);
 	// …and the column it stands on across — what the by-column verbs and the Edit command read.
 	void OnCurrentColumnChanged(const ibFormID& columnId);
 	// A header clicked: sort by that column's field — flipped when it already is the sole sort — and
@@ -335,9 +338,9 @@ private:
 	// Double-click / Enter on a row, which becomes the current line: choice → the row is returned; a row
 	// with an editable cell → that cell's editor opens (Edit); a read-only row → the model opens the row's
 	// value (a list opens its object form). Then the script's OnActivateRow.
-	void OnRowActivated(s32 rowHandle);
+	void OnRowActivated(std::int32_t rowHandle);
 	// May the client open its inline editor on this cell?
-	bool OnCellEditStarting(s32 rowHandle, const ibFormID& columnId) const;
+	bool OnCellEditStarting(std::int32_t rowHandle, const ibFormID& columnId) const;
 
 	// What the model said happened to its rows — the model's view (ibTableModelView) calls these.
 	// A row appended or inserted becomes the current line and the script hears OnAddRow; a row deleted
@@ -390,19 +393,19 @@ private:
 
 	// THE ROWS HANDED OUT — a handle per row, from a counter, never another row's: a row handed out before a read anew
 	// (`handedBefore`) and read again as the same object takes its own handle again.
-	s32 HandRow(const ibDataViewItem& item, s32 parentHandle, bool& added,
-		const std::map<const ibDataViewObject*, s32>* handedBefore = nullptr);
-	ibDataViewItem FindRow(s32 handle) const;
+	std::int32_t HandRow(const ibDataViewItem& item, std::int32_t parentHandle, bool& added,
+		const std::map<const ibDataViewObject*, std::int32_t>* handedBefore = nullptr);
+	ibDataViewItem FindRow(std::int32_t handle) const;
 	// The handle of a row the client was given — by its object, else by its identity (a row re-read as a
 	// new object, a restore stub). 0 when it was not handed out.
-	s32 FindRowHandle(const ibDataViewItem& item) const;
-	void ForgetRow(s32 handle);           // …the row and the rows handed out under it
-	void ForgetChildRows(s32 handle);
+	std::int32_t FindRowHandle(const ibDataViewItem& item) const;
+	void ForgetRow(std::int32_t handle);           // …the row and the rows handed out under it
+	void ForgetChildRows(std::int32_t handle);
 	void ForgetAllRows();
 	// Over the limit, the rows furthest from where the client is reading go: the end opposite to the
 	// direction just fetched (`fromBack` after a backward fetch). `keep` — the top-level row the fetch was
 	// under, never forgotten by it.
-	void TrimRows(bool fromBack, s32 keep);
+	void TrimRows(bool fromBack, std::int32_t keep);
 
 	// The model's view, defined in tableBox.cpp.
 	class ibTableModelView;
@@ -411,8 +414,8 @@ private:
 	// fetched under it.
 	struct ibFetchedRow {
 		ibDataViewItem m_item;
-		s32 m_parent = 0;
-		std::vector<s32> m_children;
+		std::int32_t m_parent = 0;
+		std::vector<std::int32_t> m_children;
 	};
 
 #pragma region __property_define_h__
@@ -466,10 +469,10 @@ private:
 
 	// THE ROWS HANDED OUT — by handle, by row object (the reverse lookup), and the top-level ones in display
 	// order (the ends a trim takes from). At most s_maxFetchedRows of them.
-	std::map<s32, ibFetchedRow> m_fetchedRows;
-	std::map<const ibDataViewObject*, s32> m_fetchedHandles;
-	std::deque<s32> m_topRows;
-	s32 m_nextRowHandle;
+	std::map<std::int32_t, ibFetchedRow> m_fetchedRows;
+	std::map<const ibDataViewObject*, std::int32_t> m_fetchedHandles;
+	std::deque<std::int32_t> m_topRows;
+	std::int32_t m_nextRowHandle;
 
 	// The folder the client has drilled into in the Hierarchical view (the Parent of its last reset) —
 	// where a new element is created, and what Output list is delimited by. Empty at the top.
@@ -478,11 +481,11 @@ private:
 	ibFormID m_currentColumn;
 	// The row the client's cursor stands on — as it told (OnCurrentRowChanged) or was told (CurrentRow): what the
 	// current row is not said back as. 0 = none yet.
-	s32 m_clientRow;
+	std::int32_t m_clientRow;
 	// ⭐ THE CELL WHOSE EDITOR IS OPEN — what the window's editor was: opened by a row activated, the Edit
 	// command or the client's own Input the table took; over with the text committed (Change) or the cursor
 	// moved off it (Row). 0 = none.
-	s32 m_editRow;
+	std::int32_t m_editRow;
 	ibFormID m_editColumn;
 	// A sort changed the order: the next reset reads from the top instead of around the current row,
 	// whose position was a position in the OLD order.
@@ -491,7 +494,9 @@ private:
 	// THE ROWS' VERSION — up whenever the model says its rows changed (a sort, a filter, a value written, a
 	// row added or deleted), written in the State: a client reads its rows again when it is another than it
 	// read them at. A fetch's own reads leave it as it is (m_fetching).
-	s32 m_rowsVersion = 1;
+	std::int32_t m_rowsVersion = 1;
+	// The Version whose Rows were last written into State — so the first page rides one frame, not every later one.
+	std::int32_t m_rowsSentVersion = -1;
 	bool m_fetching = false;
 	unsigned int m_formUpdates = 0;   // the form's updates this table has had its rows read again for
 

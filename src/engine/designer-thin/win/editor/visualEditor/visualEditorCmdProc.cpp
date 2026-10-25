@@ -1,5 +1,5 @@
 ﻿////////////////////////////////////////////////////////////////////////////
-//	Author		: Maxim Kornienko, wxFormBuilder
+//	Author		: Maxim Kornienko
 //	Description : visual editor
 ////////////////////////////////////////////////////////////////////////////
 
@@ -9,8 +9,8 @@
 #include <set>
 
 #include "designer-thin/docManager/templates/docViewModuleEditor.h"   // ibModuleEditDocument — Modify, Fetch, Post
-#include "frmclient/backend/propertyManager/property/propertySerializable.h"   // ibPropertySerializable — an event's row
-#include "frmclient/backend/serialize/dataProtocol.h"   // ibWriteProtocolNode — a property's value into the control's node
+#include "frmclient/backend/serialize/dataProtocol.h"   // ibReadProtocolValue, ibWriteProtocolNode — a control's values
+#include "frmclient/backend/propertyManager/property/propertySerializable.h"   // a layer's properties — a row's each
 #include "frmclient/mainFrame/objinspect/objinspect.h"
 
 #include <wx/artprov.h>
@@ -29,7 +29,7 @@ namespace {
 bool FindPath(const ibProtocolNode& node, long long controlId, std::vector<ibProtocolNode>& path)
 {
 	path.push_back(node);
-	if (node.GetInt(ibProtocolName::ControlId) == controlId)
+	if (node.GetInt(ibProtocol::ibForm::ControlId) == controlId)
 		return true;
 	for (const ibProtocolNode& child : node.Children()) {
 		if (FindPath(child, controlId, path))
@@ -43,7 +43,7 @@ bool FindPath(const ibProtocolNode& node, long long controlId, std::vector<ibPro
 // false — it is not under it.
 bool FindControlPath(const ibProtocolNode& node, long long controlId, std::vector<long long>& path)
 {
-	if (node.GetInt(ibProtocolName::ControlId) == controlId)
+	if (node.GetInt(ibProtocol::ibForm::ControlId) == controlId)
 		return true;
 	for (const ibProtocolNode& child : node.Children()) {
 		path.push_back(child.GetId());
@@ -58,11 +58,11 @@ bool FindControlPath(const ibProtocolNode& node, long long controlId, std::vecto
 // of the one held (ibFormDesignView::FetchRows).
 void PatchState(const ibProtocolNode& drawn, ibProtocolNode step)
 {
-	step.AddItem(ibProtocolName::NodeRemoved, wxString(ibProtocolName::State));
-	step.SetValue(ibProtocolName::State, drawn.FindChild(ibProtocolName::State));
+	step.AddItem(ibProtocol::ibNode::Removed, wxString(ibProtocol::ibForm::ibState::State));
+	step.SetValue(ibProtocol::ibForm::ibState::State, drawn.FindChild(ibProtocol::ibForm::ibState::State));
 	for (const ibProtocolNode& child : drawn.Children()) {
 		ibProtocolNode childStep = step.AddChild();
-		childStep.SetValue(ibProtocolName::NodeId, child.GetId());
+		childStep.SetValue(ibProtocol::ibNode::Id, child.GetId());
 		PatchState(child, childStep);
 	}
 }
@@ -70,10 +70,10 @@ void PatchState(const ibProtocolNode& drawn, ibProtocolNode step)
 // Where a child is among its parent's — wxNOT_FOUND: not there.
 int IndexOf(const ibProtocolNode& parent, const ibProtocolNode& child)
 {
-	const long long controlId = child.GetInt(ibProtocolName::ControlId);
+	const long long controlId = child.GetInt(ibProtocol::ibForm::ControlId);
 	const std::vector<ibProtocolNode> children = parent.Children();
 	for (size_t idx = 0; idx < children.size(); idx++) {
-		if (children[idx].GetInt(ibProtocolName::ControlId) == controlId)
+		if (children[idx].GetInt(ibProtocol::ibForm::ControlId) == controlId)
 			return static_cast<int>(idx);
 	}
 	return wxNOT_FOUND;
@@ -85,11 +85,11 @@ void SetChildren(ibProtocolNode node, const std::vector<ibProtocolNode>& childre
 	std::vector<ibProtocolNode> copies;
 	for (const ibProtocolNode& child : children)
 		copies.push_back(child.Clone());
-	node.Remove(ibProtocolName::NodeChildren);
+	node.Remove(ibProtocol::ibNode::Children);
 	for (const ibProtocolNode& child : copies) {
 		ibProtocolNode added = node.AddChild();
 		for (const auto& [name, entry] : child.Entries())
-			added.SetValue(name.c_str(), entry);
+			added.SetValue(name, entry);
 	}
 }
 
@@ -97,7 +97,7 @@ void SetChildren(ibProtocolNode node, const std::vector<ibProtocolNode>& childre
 ibProtocolNode Unwrap(const ibProtocolNode& node)
 {
 	ibProtocolNode inner = node;
-	while (inner.GetType() == ibProtocolType::SizerItem) {
+	while (inner.GetType() == ibProtocol::ibForm::ibType::SizerItem) {
 		const std::vector<ibProtocolNode> children = inner.Children();
 		if (children.empty())
 			break;
@@ -111,8 +111,8 @@ long long DetermineObjectToSelect(const ibProtocolNode& parent, unsigned int pos
 {
 	const std::vector<ibProtocolNode> children = parent.Children();
 	if (children.empty())
-		return parent.GetInt(ibProtocolName::ControlId);
-	return Unwrap(children[std::min<size_t>(pos, children.size() - 1)]).GetInt(ibProtocolName::ControlId);
+		return parent.GetInt(ibProtocol::ibForm::ControlId);
+	return Unwrap(children[std::min<size_t>(pos, children.size() - 1)]).GetInt(ibProtocol::ibForm::ControlId);
 }
 
 // A property of a node given that value, as the server's WriteData writes it — in place of what it was: a value that is
@@ -129,21 +129,21 @@ void SetNodeProperty(ibProtocolNode node, const wxString& name, const ibDataValu
 // opened, the desktop's opened its parents instead, the path's steps (ExpandObject).
 void PropagateExpansion(const ibProtocolNode& node, ibProtocolNode step, bool expand)
 {
-	step.SetValue(ibProtocolName::Expanded, expand);
+	step.SetValue(ibProtocol::ibForm::Expanded, expand);
 	for (const ibProtocolNode& child : node.Children()) {
 		ibProtocolNode childStep = step.AddChild();
-		childStep.SetValue(ibProtocolName::NodeId, child.GetId());
+		childStep.SetValue(ibProtocol::ibNode::Id, child.GetId());
 		PropagateExpansion(child, childStep, expand);
 	}
 }
 
 // A door of the server's editor over one of the form's attributes (`owner` Attribute) or commands (FormCommand), or a
 // control's paste in a control (Control) — that one by its id; none: a door of the form's (Create, Paste).
-ibProtocolNode EntryRequest(ibProtocolFormDesignerRequest kind, ibProtocolFormDesignerCommand command, const char* owner, long long id)
+ibProtocolNode EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest kind, ibProtocol::ibView::ibFormDesigner::ibCommand command, const char* owner, long long id)
 {
 	ibProtocolNode request;
-	request.SetValue(ibProtocolName::Kind, static_cast<int>(kind));
-	request.SetValue(ibProtocolName::Command, static_cast<int>(command));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(kind));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Command, static_cast<int>(command));
 	if (id != 0)
 		request.SetValue(owner, id);
 	return request;
@@ -169,8 +169,12 @@ public:
 
 protected:
 
-	virtual void DoExecute() override { m_visualEditor->Draw(m_after, m_treesAfter, m_patch, m_selectedAfter); }
-	virtual void DoRestore() override { m_visualEditor->Draw(m_before, m_treesBefore, ibProtocolNode(), m_selectedBefore); }
+	virtual void DoExecute() override {
+		m_visualEditor->Draw(m_after, m_treesAfter, m_patch, m_selectedAfter);
+	}
+	virtual void DoRestore() override {
+		m_visualEditor->Draw(m_before, m_treesBefore, ibProtocolNode(), m_selectedBefore);
+	}
 
 private:
 
@@ -185,35 +189,100 @@ private:
 	ibProtocolNode m_treesAfter;
 };
 
-void ibVisualEditorNotebook::ibVisualEditor::Execute(ibVisualEditorCmd* cmd)
-{
-	m_cmdProc.Execute(cmd);
-	m_document->Modify(!m_cmdProc.IsAtSavePoint());
+/**
+* Command for modifying a property.
+*/
 
-	// …and the form goes to the server, as the desktop's wrote it into its metaobject after each command
-	// (NotifyEditorSaved → SaveFormData): the configuration saved from elsewhere has it.
-	SaveForm();
+class ibVisualEditorModifyPropertyCmd :
+	public ibVisualEditorCmd {
+public:
+
+	ibVisualEditorModifyPropertyCmd(ibVisualEditorNotebook::ibVisualEditor* visualEditor, ibProperty* prop, const wxVariant& oldValue, const wxVariant& newValue);
+
+protected:
+
+	virtual void DoExecute() override;
+	virtual void DoRestore() override;
+
+private:
+	// The property set to that value, the control drawn as it says — both found again by the control's id and the
+	// property's name: the rows the server answers make the control's properties anew (UpdateControl), and a pointer
+	// kept from the edit before pointed at one gone.
+	void SetValue(const wxVariant& value);
+
+	ibVisualEditorNotebook::ibVisualEditor* m_visualEditor;
+
+	long long m_controlId;
+	wxString m_name;
+	wxVariant m_oldValue, m_newValue;
+};
+
+ibVisualEditorModifyPropertyCmd::ibVisualEditorModifyPropertyCmd(ibVisualEditorNotebook::ibVisualEditor* visualEditor, ibProperty* prop, const wxVariant& oldValue, const wxVariant& newValue) : m_visualEditor(visualEditor),
+m_controlId(dynamic_cast<ibValueFrame*>(prop->GetPropertyObject())->GetControlID()), m_name(prop->GetName()),
+m_oldValue(oldValue), m_newValue(newValue)
+{
 }
 
-bool ibVisualEditorNotebook::ibVisualEditor::Execute(ibProtocolNode request, ibProtocolNode& answer)
+void ibVisualEditorModifyPropertyCmd::DoExecute()
 {
-	if (!request.Has(ibProtocolName::Form))
-		request.SetValue(ibProtocolName::Form, m_formNode);
+	SetValue(m_newValue);
+}
+
+void ibVisualEditorModifyPropertyCmd::DoRestore()
+{
+	SetValue(m_oldValue);
+}
+
+void ibVisualEditorModifyPropertyCmd::SetValue(const wxVariant& value)
+{
+	ibValueForm* const valueForm = m_visualEditor->GetValueForm();
+	ibValueFrame* const control = valueForm == nullptr ? nullptr
+		: m_controlId == valueForm->GetControlID() ? valueForm : valueForm->FindControlByID(m_controlId);
+	ibProperty* const property = control != nullptr ? control->GetProperty(m_name) : nullptr;
+	if (property == nullptr)
+		return;
+
+	property->SetValue(value);
+	m_visualEditor->UpdateControl(control);
+	m_visualEditor->RefreshCurrentElement();
+}
+
+void ibVisualEditorNotebook::ibVisualEditor::Execute(ibVisualEditorCmd* cmd)
+{
+	// The form it leaves went to the server as it was drawn (Draw); the document said modified after it — what that posts
+	// goes behind the form, never the form behind it.
+	m_cmdProc.Execute(cmd);
+	m_document->Modify(true);
+}
+
+bool ibVisualEditorNotebook::ibVisualEditor::Execute(const ibProtocolNode& request, ibProtocolNode& answer)
+{
 	if (!m_document->Fetch(request, answer))
 		return false;
-	const ibProtocolNode form = answer.FindChild(ibProtocolName::Form);
-	if (form.GetType() != ibProtocolType::ClientForm)
+	const ibProtocolNode form = answer.FindChild(ibProtocol::ibView::ibFormDesigner::Form);
+	if (form.GetType() != ibProtocol::ibForm::ibType::ClientForm)
 		return false;
 
-	// Its controls' rows kept by their ids — a control made there reads them as it is built.
-	for (const ibProtocolNode& described : answer.FindChild(ibProtocolName::Controls).Children())
-		m_rows[described.GetInt(ibProtocolName::Control)] = described;
-
+	// The rows held are of the form before it — each asked again as it is shown (FetchRows).
+	m_rows.clear();
 	ibProtocolNode trees;
-	trees.SetValue(ibProtocolName::AttributeTree, answer.FindChild(ibProtocolName::AttributeTree));
-	trees.SetValue(ibProtocolName::CommandTree, answer.FindChild(ibProtocolName::CommandTree));
-	Execute(new ibVisualEditorFormCmd(this, m_formNode, form, ibProtocolNode(), m_selected,
-		answer.GetInt(ibProtocolName::Selected, m_selected), m_trees, trees));
+	Receive(answer, trees);
+
+	// ⭐ WHERE IT LANDS IS THE ANSWER'S — a control it selects (Selected), drawn so; the attribute it shows (Attribute, a
+	// column of it: Column) the current element once drawn, the one current before let go of: drawn, it was shown again
+	// and left at once (the inspector filled twice a paste, 2026-10-22).
+	const bool showsAttribute = answer.Has(ibProtocol::ibView::ibFormDesigner::Attribute);
+	if (showsAttribute)
+		m_element = nullptr;
+
+	// …done by the server, which holds the form it answered and wrote it into its metaobject (ibFormDesignView::Fetch):
+	// drawn, not handed back.
+	m_cmdProc.Receive(new ibVisualEditorFormCmd(this, m_formNode, form, ibProtocolNode(), m_selected,
+		showsAttribute ? wxNOT_FOUND : answer.GetInt(ibProtocol::ibView::ibFormDesigner::Selected, m_selected), m_trees, trees));
+	if (showsAttribute)
+		m_attributeTree->SelectAttribute(answer.GetInt(ibProtocol::ibView::ibFormDesigner::Attribute),
+			answer.GetInt(ibProtocol::ibView::ibFormDesigner::Column));
+	m_document->Modify(true);
 	return true;
 }
 
@@ -227,10 +296,10 @@ void ibVisualEditorNotebook::ibVisualEditor::CreateObject(const wxString& name)
 	// Made by the server's form, as the desktop's made it: under the selected control or the first of its parents that
 	// can hold it, and one that binds to a source bound to a fresh attribute — the answer brings both.
 	ibProtocolNode request;
-	request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::Control));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::Control));
 	if (m_selected != wxNOT_FOUND)
-		request.SetValue(ibProtocolName::Control, m_selected);
-	request.SetValue(ibProtocolName::Class, name);
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Control, m_selected);
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Class, name);
 	ibProtocolNode answer;
 	Execute(request, answer);
 }
@@ -241,9 +310,9 @@ void ibVisualEditorNotebook::ibVisualEditor::CreateBoundControl(ibValueFrame* pa
 		return;
 
 	ibProtocolNode request;
-	request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::BoundControl));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::BoundControl));
 	if (parentHint != nullptr)
-		request.SetValue(ibProtocolName::Control, parentHint->GetControlID());
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Control, parentHint->GetControlID());
 	WritePath(request, desc.GetPath());
 	ibProtocolNode answer;
 	Execute(request, answer);
@@ -260,14 +329,14 @@ void ibVisualEditorNotebook::ibVisualEditor::CreateCommandButton(ibValueFrame* t
 	const long long dropBar = m_pendingDropBar;
 	m_pendingDropBar = 0;
 	ibProtocolNode request;
-	request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::CommandControl));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::CommandControl));
 	if (dropBar != 0) {
-		request.SetValue(ibProtocolName::Control, dropBar);
-		request.SetValue(ibProtocolName::CommandBar, true);
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Control, dropBar);
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::CommandBar, true);
 	}
 	else if (target != nullptr)
-		request.SetValue(ibProtocolName::Control, target->GetControlID());
-	ibProtocolNode command = request.Child(ibProtocolName::Value);
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Control, target->GetControlID());
+	ibProtocolNode command = request.Child(ibProtocol::ibView::ibFormDesigner::Value);
 	WritePath(command, desc);
 	ibProtocolNode answer;
 	Execute(request, answer);
@@ -279,7 +348,7 @@ void ibVisualEditorNotebook::ibVisualEditor::WireTableboxDrops(ibValueFrame* obj
 		return;
 	// Set ONE drop target on the tablebox's window. Re-wired on every editor refresh, since the controls are built anew
 	// and take their drop targets with them.
-	if (obj->GetClassName() == ibProtocolType::Tablebox) {
+	if (obj->GetClassName() == ibProtocol::ibForm::ibType::Tablebox) {
 		ibValueFrame* box = obj;
 		if (wxWindow* const window = obj->GetWindow())
 			// A drop ON the tablebox targets THIS table (fixed target = box, the point is irrelevant): a source path → a
@@ -320,7 +389,7 @@ void ibVisualEditorNotebook::ibVisualEditor::DoRemoveObject(ibValueFrame* obj, b
 
 	// When removing an object it is important that the "item" objects are not left behind — the top item goes.
 	size_t level = path.size() - 1;
-	while (level > 1 && path[level - 1].GetType() == ibProtocolType::SizerItem)
+	while (level > 1 && path[level - 1].GetType() == ibProtocol::ibForm::ibType::SizerItem)
 		level--;
 
 	ibProtocolNode parent = path[level - 1];
@@ -344,7 +413,7 @@ void ibVisualEditorNotebook::ibVisualEditor::CopyObject(ibValueFrame* obj)
 	std::vector<ibProtocolNode> path;
 	if (!FindPath(m_formNode, obj->GetControlID(), path))
 		return;
-	const ibProtocolNode& copied = path.size() > 1 && path[path.size() - 2].GetType() == ibProtocolType::SizerItem ?
+	const ibProtocolNode& copied = path.size() > 1 && path[path.size() - 2].GetType() == ibProtocol::ibForm::ibType::SizerItem ?
 		path[path.size() - 2] : path.back();
 
 	// THE COPY — the node as the form holds it: what the server's Paste reads (its controls' rows come with the answer).
@@ -363,9 +432,9 @@ bool ibVisualEditorNotebook::ibVisualEditor::PasteObject(ibValueFrame* dstObject
 	// ⭐ PUT BY THE SERVER'S FORM, as the desktop's put it — in the control pasted on, else in the first of its parents
 	// that can hold it: its ids given where every control's are (one numbering — two gave two controls one id,
 	// 2026-10-15), its names unique on the form; the answer brings it, and its controls' rows.
-	ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::Control, ibProtocolFormDesignerCommand::Paste,
-		ibProtocolName::Control, dstObject != nullptr ? dstObject->GetControlID() : 0);
-	request.SetValue(ibProtocolName::Value, copied);
+	ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Control, ibProtocol::ibView::ibFormDesigner::ibCommand::Paste,
+		ibProtocol::ibView::ibFormDesigner::Control, dstObject != nullptr ? dstObject->GetControlID() : 0);
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Value, copied);
 	ibProtocolNode answer;
 	return Execute(request, answer);
 }
@@ -384,7 +453,7 @@ void ibVisualEditorNotebook::ibVisualEditor::MovePosition(ibValueFrame* obj, boo
 
 	// If the object is contained within an item, the item must be shifted.
 	size_t level = path.size() - 1;
-	while (level > 1 && path[level - 1].GetType() == ibProtocolType::SizerItem)
+	while (level > 1 && path[level - 1].GetType() == ibProtocol::ibForm::ibType::SizerItem)
 		level--;
 
 	ibProtocolNode parent = path[level - 1];
@@ -421,12 +490,12 @@ void ibVisualEditorNotebook::ibVisualEditor::MovePosition(ibValueFrame* obj, ibV
 
 		// If the object is contained within an item, the item must be moved.
 		size_t level = path.size() - 1;
-		while (level > 1 && path[level - 1].GetType() == ibProtocolType::SizerItem)
+		while (level > 1 && path[level - 1].GetType() == ibProtocol::ibForm::ibType::SizerItem)
 			level--;
 
 		ibProtocolNode from = path[level - 1];
 		const int pos = IndexOf(from, path[level]);
-		if (pos == wxNOT_FOUND || (from.GetInt(ibProtocolName::ControlId) == parentId && static_cast<unsigned int>(pos) == toPos))
+		if (pos == wxNOT_FOUND || (from.GetInt(ibProtocol::ibForm::ControlId) == parentId && static_cast<unsigned int>(pos) == toPos))
 			return;
 		const ibProtocolNode moved = path[level].Clone();
 		std::vector<ibProtocolNode> children = from.Children();
@@ -465,12 +534,12 @@ void ibVisualEditorNotebook::ibVisualEditor::ExpandObject(ibValueFrame* obj, boo
 	ibProtocolNode patch;
 	ibProtocolNode step = patch;
 	if (expand)
-		step.SetValue(ibProtocolName::Expanded, true);
+		step.SetValue(ibProtocol::ibForm::Expanded, true);
 	for (const long long id : path) {
 		step = step.AddChild();
-		step.SetValue(ibProtocolName::NodeId, id);
+		step.SetValue(ibProtocol::ibNode::Id, id);
 		if (expand)
-			step.SetValue(ibProtocolName::Expanded, true);
+			step.SetValue(ibProtocol::ibForm::Expanded, true);
 	}
 	if (!expand)
 		PropagateExpansion(nodes.back(), step, false);
@@ -483,10 +552,10 @@ void ibVisualEditorNotebook::ibVisualEditor::ExpandObject(ibValueFrame* obj, boo
 /////////////////////////////////////////////////////////////////////////////////////
 
 void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, const wxVariant& oldValue,
-	const wxVariant& WXUNUSED(newValue))
+	const wxVariant& newValue)
 {
-	// ⚠ NOT the desktop's `oldValue != newValue`: a control's row is the server's (ibPropertySerializable), and the pair is its
-	// words, the same before and after until rows come back — the value is its node (CopyNodeValue).
+	// The pair is the value before the edit and after it, as the inspector moves them (the desktop's); what goes to the
+	// server, the property's node.
 	ibPropertyObject* const owner = prop->GetPropertyObject();
 	ibDataValue value;
 	if (owner == nullptr || !prop->CopyNodeValue(value))
@@ -495,27 +564,10 @@ void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, co
 
 	// AN EVENT GIVEN A HANDLER — its procedure written in the module first, as the desktop's editor did
 	// (ibVisualEditorNotebook::ModifyEvent): the handler is its node's Value.
-	if (ibPropertySerializable* const event = dynamic_cast<ibPropertySerializable*>(prop)) {
-		const wxString type = event->GetType();
-		const std::shared_ptr<ibDataNode> handler = value.Kind() == ibDataKind::Child ? value.AsChild() : nullptr;
-		if ((type == wxT("ibEventControl") || type == wxT("ibEventAction")) && handler) {
-			// The handler it had is the one the form holds till this edit — the row's words are the server's, the same
-			// until rows come back: a handler renamed or cleared after the first never found its procedure (2026-10-15).
-			wxString previous = oldValue.GetString();
-			std::vector<ibProtocolNode> nodes;
-			if (control != nullptr && FindPath(m_formNode, control->GetControlID(), nodes)) {
-				ibProtocolNode values = nodes.back().Clone();
-				values.Remove(ibProtocolName::NodeChildren);
-				ibDataNode entries;
-				ibReadProtocolNode(values, entries);
-				const ibDataValue* const held = entries.FindProperty(prop->GetName());
-				previous = held != nullptr && held->Kind() == ibDataKind::Child && held->AsChild() != nullptr ?
-					held->AsChild()->GetValue<wxString>(ibProtocolName::Value) : wxString();
-			}
-			m_visualNotebook->ModifyEvent(event, wxVariant(previous),
-				wxVariant(handler->GetValue<wxString>(ibProtocolName::Value)));
-		}
-	}
+	const wxString type = prop->GetType();
+	const std::shared_ptr<ibDataNode> handler = value.Kind() == ibDataKind::Child ? value.AsChild() : nullptr;
+	if ((type == wxT("ibEventControl") || type == wxT("ibEventAction")) && handler)
+		m_visualNotebook->ModifyEvent(prop, oldValue, newValue);
 
 	// The command once the inspector's change is over: what it shows is not drawn again inside its own handler.
 	const wxString name = prop->GetName();
@@ -525,12 +577,12 @@ void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, co
 		const long long id = entry->GetId();
 		const long long column = entry->GetColumnId();
 		CallAfter([this, id, column, name, value]() {
-			ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::Set,
-				ibProtocolName::Attribute, id);
+			ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::Set,
+				ibProtocol::ibView::ibFormDesigner::Attribute, id);
 			if (column != 0)
-				request.SetValue(ibProtocolName::Column, column);
-			request.SetValue(ibProtocolName::Name, name);
-			SetNodeProperty(request, ibProtocolName::Value, value);
+				request.SetValue(ibProtocol::ibView::ibFormDesigner::Column, column);
+			request.SetValue(ibProtocol::ibView::ibFormDesigner::Name, name);
+			SetNodeProperty(request, ibProtocol::ibView::ibFormDesigner::Value, value);
 			ibProtocolNode answer;
 			Execute(request, answer);
 		});
@@ -539,10 +591,10 @@ void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, co
 	if (ibFormCommandValue* const entry = m_commandTree->FindEntry(owner)) {
 		const long long id = entry->GetId();
 		CallAfter([this, id, name, value]() {
-			ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::FormCommand, ibProtocolFormDesignerCommand::Set,
-				ibProtocolName::FormCommand, id);
-			request.SetValue(ibProtocolName::Name, name);
-			SetNodeProperty(request, ibProtocolName::Value, value);
+			ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::FormCommand, ibProtocol::ibView::ibFormDesigner::ibCommand::Set,
+				ibProtocol::ibView::ibFormDesigner::FormCommand, id);
+			request.SetValue(ibProtocol::ibView::ibFormDesigner::Name, name);
+			SetNodeProperty(request, ibProtocol::ibView::ibFormDesigner::Value, value);
 			ibProtocolNode answer;
 			Execute(request, answer);
 		});
@@ -562,8 +614,8 @@ void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, co
 			SetNodeProperty(node, name, value);
 
 			ibProtocolNode request;
-			request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::Form));
-			request.SetValue(ibProtocolName::Form, edited);
+			request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::Form));
+			request.SetValue(ibProtocol::ibView::ibFormDesigner::Form, edited);
 			ibProtocolNode answer;
 			if (Execute(request, answer))
 				m_objectTree->SelectCommandItem(layer);
@@ -571,59 +623,89 @@ void ibVisualEditorNotebook::ibVisualEditor::ModifyProperty(ibProperty* prop, co
 		return;
 	}
 
-	if (control == nullptr)
+	if (control == nullptr || oldValue == newValue)
 		return;
 
-	const long long controlId = control->GetControlID();
-	CallAfter([this, controlId, name, value]() {
-		std::vector<long long> path;
-		if (!FindControlPath(m_formNode, controlId, path))
-			return;
+	// The tree told first: the command makes the control's properties anew from the server's rows (UpdateControl).
+	CallAfter([this, prop, oldValue, newValue]() {
+		NotifyPropertyModified(prop);
+		Execute(new ibVisualEditorModifyPropertyCmd(this, prop, oldValue, newValue));
+	});
+}
 
-		// ⭐ BY A PATCH OF THE FRAME, the road the server's answers take (ibVisualHostClient::Draw): the control is drawn
-		// in place — never built anew. In place of what it was — a value that is a node is not merged into the old one.
-		ibProtocolNode patch;
-		ibProtocolNode step = patch;
-		for (const long long id : path) {
-			step = step.AddChild();
-			step.SetValue(ibProtocolName::NodeId, id);
-		}
-		step.AddItem(ibProtocolName::NodeRemoved, name);
-		ibDataNode entries;
-		entries.SetProperty(name, value);
-		ibWriteProtocolNode(entries, step);
+void ibVisualEditorNotebook::ibVisualEditor::UpdateControl(ibValueFrame* control)
+{
+	// THE DESKTOP'S (ibVisualHost::UpdateControl) — the control drawn as its properties say: what of them its node does
+	// not hold goes into it BY A PATCH OF THE FRAME, the road the server's answers take (ibVisualHostClient::Draw) — the
+	// control drawn in place, never built anew; in place of what it was, a value that is a node not merged into the old
+	// one; none — taken off the node.
+	std::vector<ibProtocolNode> nodes;
+	std::vector<long long> path;
+	if (control == nullptr || !FindPath(m_formNode, control->GetControlID(), nodes) ||
+		!FindControlPath(m_formNode, control->GetControlID(), path))
+		return;
 
-		ibProtocolNode edited = m_formNode.Clone();
+	ibProtocolNode patch;
+	ibProtocolNode step = patch;
+	for (const long long id : path) {
+		step = step.AddChild();
+		step.SetValue(ibProtocol::ibNode::Id, id);
+	}
+	ibDataNode entries;
+	for (unsigned int idx = 0; idx < control->GetPropertyCount(); idx++) {
+		const ibProperty* const property = control->GetPropertyByIndex(idx);
+		ibDataValue value;
+		if (!property->CopyNodeValue(value))
+			continue;
+		ibDataValue held;
+		if (ibReadProtocolValue(nodes.back(), property->GetName(), held) ? held == value : value.IsEmpty())
+			continue;
+		step.AddItem(ibProtocol::ibNode::Removed, property->GetName());
+		if (!value.IsEmpty())
+			entries.SetProperty(property->GetName(), value);
+	}
+	ibWriteProtocolNode(entries, step);
+
+	ibProtocolNode edited = m_formNode.Clone();
+	edited.Apply(patch);
+
+	// ⭐ ITS STATE IS THE SERVER'S — enabled with its form, shown where available and bound: asked of the form so edited
+	// and put in the same patch (a control made not enabled was drawn enabled, 2026-10-15).
+	ibProtocolNode request;
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::Rows));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Control, control->GetControlID());
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Form, edited);
+	ibProtocolNode answer;
+	if (m_document->Fetch(request, answer)) {
+		PatchState(answer.FindChild(ibProtocol::ibView::ibFormDesigner::Node), step);
+		edited = m_formNode.Clone();
 		edited.Apply(patch);
 
-		// ⭐ ITS STATE IS THE SERVER'S — enabled with its form, shown where available and bound: asked of the form so edited
-		// and put in the same patch, so an undo takes it back with the value (a control made not enabled was drawn enabled,
-		// 2026-10-15).
-		ibProtocolNode request;
-		request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::Rows));
-		request.SetValue(ibProtocolName::Control, controlId);
-		request.SetValue(ibProtocolName::Form, edited);
-		ibProtocolNode answer;
-		if (m_document->Fetch(request, answer)) {
-			PatchState(answer.FindChild(ibProtocolName::Node), step);
-			edited = m_formNode.Clone();
-			edited.Apply(patch);
-		}
-		Execute(new ibVisualEditorFormCmd(this, m_formNode, edited, patch, m_selected, m_selected, m_trees, m_trees));
-	});
+		// …and its rows as the server wrote them after the edit: a value's words are the server's to say — a source
+		// picked reads as its name only then (it read "<not selected>", 2026-10-21). Changed, the control receives them
+		// anew as it is drawn; the answer brings no trees — the form's stay. The others held are of the form before the
+		// edit — a column's under its table edited — each asked again as it is shown.
+		m_rows.clear();
+		ibProtocolNode trees;
+		Receive(answer, trees);
+
+		// The request handed the form so edited, and the server holds it (written as a Change writes it): drawn, it is
+		// not handed again.
+		m_cmdProc.SetSavePoint();
+	}
+
+	Draw(edited, m_trees, patch, m_selected);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
 
-long long ibVisualEditorNotebook::ibVisualEditor::CreateAttribute()
+void ibVisualEditorNotebook::ibVisualEditor::CreateAttribute()
 {
 	if (!IsEditable())
-		return 0;
+		return;
 	ibProtocolNode answer;
-	if (!Execute(EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::Create,
-		ibProtocolName::Attribute, 0), answer))
-		return 0;
-	return answer.GetInt(ibProtocolName::Attribute);
+	Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::Create,
+		ibProtocol::ibView::ibFormDesigner::Attribute, 0), answer);
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::RemoveAttribute(ibFormAttributeValue* entry)
@@ -631,8 +713,8 @@ void ibVisualEditorNotebook::ibVisualEditor::RemoveAttribute(ibFormAttributeValu
 	if (entry == nullptr || !IsEditable())
 		return;
 	ibProtocolNode answer;
-	Execute(EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::Remove,
-		ibProtocolName::Attribute, entry->GetId()), answer);
+	Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::Remove,
+		ibProtocol::ibView::ibFormDesigner::Attribute, entry->GetId()), answer);
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::CutAttribute(ibFormAttributeValue* entry)
@@ -644,31 +726,29 @@ void ibVisualEditorNotebook::ibVisualEditor::CutAttribute(ibFormAttributeValue* 
 void ibVisualEditorNotebook::ibVisualEditor::CopyAttribute(ibFormAttributeValue* entry)
 {
 	if (entry != nullptr)
-		CopyEntry(ibProtocolName::Attributes, entry->GetId(), oes_clipboard_attribute, entry->GetName());
+		CopyEntry(ibProtocol::ibView::ibFormDesigner::Attributes, entry->GetId(), oes_clipboard_attribute, entry->GetName());
 }
 
-long long ibVisualEditorNotebook::ibVisualEditor::PasteAttribute()
+void ibVisualEditorNotebook::ibVisualEditor::PasteAttribute()
 {
 	const ibProtocolNode copied = PasteEntry(oes_clipboard_attribute);
 	if (!copied.IsNode() || !IsEditable())
-		return 0;
-	ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::Paste,
-		ibProtocolName::Attribute, 0);
-	request.SetValue(ibProtocolName::Value, copied);
+		return;
+	ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::Paste,
+		ibProtocol::ibView::ibFormDesigner::Attribute, 0);
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Value, copied);
 	ibProtocolNode answer;
-	if (!Execute(request, answer))
-		return 0;
-	return answer.GetInt(ibProtocolName::Attribute);
+	Execute(request, answer);
 }
 
 bool ibVisualEditorNotebook::ibVisualEditor::RenameAttribute(ibFormAttributeValue* entry, const wxString& newName)
 {
 	if (entry == nullptr || !IsEditable())
 		return false;
-	ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::Set,
-		ibProtocolName::Attribute, entry->GetId());
-	request.SetValue(ibProtocolName::Name, wxString(ibProtocolName::Name));
-	request.SetValue(ibProtocolName::Value, newName);
+	ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::Set,
+		ibProtocol::ibView::ibFormDesigner::Attribute, entry->GetId());
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Name, wxString(ibProtocol::ibView::ibFormDesigner::Name));
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Value, newName);
 	ibProtocolNode answer;
 	return Execute(request, answer);
 }
@@ -678,19 +758,17 @@ void ibVisualEditorNotebook::ibVisualEditor::SetMainAttribute(ibFormAttributeVal
 	if (!IsEditable())
 		return;
 	ibProtocolNode answer;
-	Execute(EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::SetMain,
-		ibProtocolName::Attribute, entry != nullptr ? entry->GetId() : 0), answer);
+	Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::SetMain,
+		ibProtocol::ibView::ibFormDesigner::Attribute, entry != nullptr ? entry->GetId() : 0), answer);
 }
 
-long long ibVisualEditorNotebook::ibVisualEditor::AddColumn(ibFormAttributeValue* entry)
+void ibVisualEditorNotebook::ibVisualEditor::AddColumn(ibFormAttributeValue* entry)
 {
 	if (entry == nullptr || !IsEditable())
-		return 0;
+		return;
 	ibProtocolNode answer;
-	if (!Execute(EntryRequest(ibProtocolFormDesignerRequest::Attribute, ibProtocolFormDesignerCommand::AddColumn,
-		ibProtocolName::Attribute, entry->GetId()), answer))
-		return 0;
-	return answer.GetInt(ibProtocolName::Column);
+	Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::Attribute, ibProtocol::ibView::ibFormDesigner::ibCommand::AddColumn,
+		ibProtocol::ibView::ibFormDesigner::Attribute, entry->GetId()), answer);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -700,10 +778,10 @@ long long ibVisualEditorNotebook::ibVisualEditor::CreateFormCommand()
 	if (!IsEditable())
 		return 0;
 	ibProtocolNode answer;
-	if (!Execute(EntryRequest(ibProtocolFormDesignerRequest::FormCommand, ibProtocolFormDesignerCommand::Create,
-			ibProtocolName::FormCommand, 0), answer))
+	if (!Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::FormCommand, ibProtocol::ibView::ibFormDesigner::ibCommand::Create,
+			ibProtocol::ibView::ibFormDesigner::FormCommand, 0), answer))
 		return 0;
-	return answer.GetInt(ibProtocolName::FormCommand);
+	return answer.GetInt(ibProtocol::ibView::ibFormDesigner::FormCommand);
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::RemoveFormCommand(ibFormCommandValue* entry)
@@ -711,8 +789,8 @@ void ibVisualEditorNotebook::ibVisualEditor::RemoveFormCommand(ibFormCommandValu
 	if (entry == nullptr || !IsEditable())
 		return;
 	ibProtocolNode answer;
-	Execute(EntryRequest(ibProtocolFormDesignerRequest::FormCommand, ibProtocolFormDesignerCommand::Remove,
-		ibProtocolName::FormCommand, entry->GetId()), answer);
+	Execute(EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::FormCommand, ibProtocol::ibView::ibFormDesigner::ibCommand::Remove,
+		ibProtocol::ibView::ibFormDesigner::FormCommand, entry->GetId()), answer);
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::CutFormCommand(ibFormCommandValue* entry)
@@ -724,7 +802,7 @@ void ibVisualEditorNotebook::ibVisualEditor::CutFormCommand(ibFormCommandValue* 
 void ibVisualEditorNotebook::ibVisualEditor::CopyFormCommand(ibFormCommandValue* entry)
 {
 	if (entry != nullptr)
-		CopyEntry(ibProtocolName::FormCommands, entry->GetId(), oes_clipboard_command, entry->GetName());
+		CopyEntry(ibProtocol::ibView::ibFormDesigner::FormCommands, entry->GetId(), oes_clipboard_command, entry->GetName());
 }
 
 long long ibVisualEditorNotebook::ibVisualEditor::PasteFormCommand()
@@ -732,13 +810,13 @@ long long ibVisualEditorNotebook::ibVisualEditor::PasteFormCommand()
 	const ibProtocolNode copied = PasteEntry(oes_clipboard_command);
 	if (!copied.IsNode() || !IsEditable())
 		return 0;
-	ibProtocolNode request = EntryRequest(ibProtocolFormDesignerRequest::FormCommand, ibProtocolFormDesignerCommand::Paste,
-		ibProtocolName::FormCommand, 0);
-	request.SetValue(ibProtocolName::Value, copied);
+	ibProtocolNode request = EntryRequest(ibProtocol::ibView::ibFormDesigner::ibRequest::FormCommand, ibProtocol::ibView::ibFormDesigner::ibCommand::Paste,
+		ibProtocol::ibView::ibFormDesigner::FormCommand, 0);
+	request.SetValue(ibProtocol::ibView::ibFormDesigner::Value, copied);
 	ibProtocolNode answer;
 	if (!Execute(request, answer))
 		return 0;
-	return answer.GetInt(ibProtocolName::FormCommand);
+	return answer.GetInt(ibProtocol::ibView::ibFormDesigner::FormCommand);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -758,7 +836,8 @@ void ibVisualEditorNotebook::ibVisualEditor::CopyEntry(const char* owner, long l
 void ibVisualEditorNotebook::ibVisualEditor::CopyEntry(const ibProtocolNode& entry, const wxString& format,
 	const wxString& name)
 {
-	const std::string text = entry.Write();
+	// The clipboard's are bytes — UTF-8, made here once, and read back once in PasteEntry.
+	const std::string text = entry.Write().ToUtf8();
 	if (wxTheClipboard->Open()) {
 		wxDataObjectComposite* const composite = new wxDataObjectComposite;
 		wxCustomDataObject* const data = new wxCustomDataObject(wxDataFormat(format));
@@ -779,7 +858,7 @@ ibProtocolNode ibVisualEditorNotebook::ibVisualEditor::PasteEntry(const wxString
 	if (wxTheClipboard->IsSupported(dataFormat)) {
 		wxCustomDataObject data(dataFormat);
 		if (wxTheClipboard->GetData(data))
-			ibProtocolNode::Read(std::string(static_cast<const char*>(data.GetData()), data.GetSize()), copied);
+			ibProtocolNode::Read(ibString::FromUTF8(static_cast<const char*>(data.GetData()), data.GetSize()), copied);
 	}
 	wxTheClipboard->Close();
 	return copied;
@@ -790,10 +869,10 @@ void ibVisualEditorNotebook::ibVisualEditor::WritePath(ibProtocolNode& node, con
 	// A Path item per hop: its id, and the type it is pinned to — a clsid as the wire carries it, 64 bits as text; none
 	// pinned: no Type (the server's ReadPath, its twin, reads it back).
 	for (const ibSourceHop& hop : path) {
-		ibProtocolNode item = node.AddItem(ibProtocolName::Path);
-		item.SetValue(ibProtocolName::Id, static_cast<long long>(hop.m_id));
+		ibProtocolNode item = node.AddItem(ibProtocol::ibView::ibFormDesigner::Path);
+		item.SetValue(ibProtocol::ibView::ibFormDesigner::Id, static_cast<long long>(hop.m_id));
 		if (hop.m_type != g_valueUndefinedCLSID)
-			item.SetValue(ibProtocolName::Type, wxString::Format(wxT("%llu"), static_cast<unsigned long long>(hop.m_type)));
+			item.SetValue(ibProtocol::ibView::ibFormDesigner::Type, wxString::Format(wxT("%llu"), static_cast<unsigned long long>(hop.m_type)));
 	}
 }
 
@@ -801,16 +880,16 @@ void ibVisualEditorNotebook::ibVisualEditor::WritePath(ibProtocolNode& node, con
 {
 	// A CommandPath item per hop, its id; and the command's kind (the server's ReadPath, its twin, reads it back).
 	for (const ibCommandHop& hop : desc.GetPath())
-		node.AddItem(ibProtocolName::CommandPath).SetValue(ibProtocolName::Id, static_cast<long long>(hop.m_id));
-	node.SetValue(ibProtocolName::Kind, static_cast<long long>(desc.GetCommandType()));
+		node.AddItem(ibProtocol::ibView::ibFormDesigner::CommandPath).SetValue(ibProtocol::ibView::ibFormDesigner::Id, static_cast<long long>(hop.m_id));
+	node.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<long long>(desc.GetCommandType()));
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::TestForm()
 {
 	ibProtocolNode args;
-	args.SetValue(ibProtocolName::Id, static_cast<int>(ibProtocolModuleCommand::TestForm));
-	args.SetValue(ibProtocolName::Form, m_formNode);
-	m_document->Post(ibProtocolEvent::Command, args);
+	args.SetValue(ibProtocol::ibView::ibModule::Id, static_cast<int>(ibProtocol::ibView::ibModule::ibCommand::TestForm));
+	args.SetValue(ibProtocol::ibView::ibFormDesigner::Form, m_formNode);
+	m_document->Post(ibProtocol::ibEvent::ibKind::Command, args);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -876,6 +955,16 @@ void ibVisualEditorNotebook::ibVisualEditor::ShowCurrentElement(bool forceOpen)
 	objectInspector->SelectObject(element != nullptr ? element : GetSelectedObject(), true);
 }
 
+void ibVisualEditorNotebook::ibVisualEditor::RefreshCurrentElement()
+{
+	// The desktop's (ibEditorSelection::Reveal, soft): no panel — nothing to refresh; else the grid rebuilt on the current
+	// element.
+	ibPropertyObject* const element = GetCurrentElement();
+	if (element == nullptr || !objectInspector->IsShownInspector())
+		return;
+	objectInspector->SelectObject(element, true);
+}
+
 void ibVisualEditorNotebook::ibVisualEditor::ScrollToObject(ibValueFrame* obj)
 {
 	m_visualEditor->ScrollToObject(obj);
@@ -885,14 +974,18 @@ void ibVisualEditorNotebook::ibVisualEditor::ScrollToObject(ibValueFrame* obj)
 
 void ibVisualEditorNotebook::ibVisualEditor::Undo()
 {
+	if (!m_cmdProc.CanUndo())
+		return;
 	m_cmdProc.Undo();
-	m_document->Modify(!m_cmdProc.IsAtSavePoint());
+	m_document->Modify(true);
 }
 
 void ibVisualEditorNotebook::ibVisualEditor::Redo()
 {
+	if (!m_cmdProc.CanRedo())
+		return;
 	m_cmdProc.Redo();
-	m_document->Modify(!m_cmdProc.IsAtSavePoint());
+	m_document->Modify(true);
 }
 
 bool ibVisualEditorNotebook::ibVisualEditor::CanPasteObject() const
@@ -944,7 +1037,7 @@ enum {
 // A control's command bar in its node (ibValueWindowComposite::WriteData) — none: an empty node.
 ibProtocolNode FindCommandBar(const ibProtocolNode& control)
 {
-	return control.FindChild(ibProtocolName::Layers).FindChild(ibProtocolName::CommandBar);
+	return control.FindChild(ibProtocol::ibForm::ibCommandBar::Layers).FindChild(ibProtocol::ibForm::ibCommandBar::CommandBar);
 }
 
 } // namespace
@@ -972,14 +1065,21 @@ ibProtocolNode ibValueLayerObject::GetNode() const
 	return FindNode(path.back());
 }
 
-bool ibValueLayerObject::Receive()
+bool ibValueLayerObject::Fetch()
 {
+	if (!m_formHandler->FetchRows(m_controlId))
+		return false;
 	const auto found = m_formHandler->m_rows.find(m_controlId);
 	if (found == m_formHandler->m_rows.end())
 		return false;
 	ibPropertyObject::Receive(FindRows(found->second));
 	ibVisualEditorNotebook::ibVisualEditor::Receive(this, GetNode());
 	return true;
+}
+
+ibProperty* ibValueLayerObject::CreateProperty(ibPropertyCategory* cat, ibDataNode&& row)
+{
+	return ibPropertyObject::CreateProperty<ibPropertySerializable>(cat, std::move(row));
 }
 
 void ibValueLayerObject::SetCommandItems(const std::vector<ibProtocolNode>& items, int selected) const
@@ -1005,18 +1105,18 @@ void ibValueLayerObject::SetCommandItems(const std::vector<ibProtocolNode>& item
 		std::vector<ibProtocolNode> named;
 		for (const ibProtocolNode& item : items) {
 			ibProtocolNode copy = item.Clone();
-			wxString name = copy.GetString(ibProtocolName::Name);
+			wxString name = copy.GetString(ibProtocol::ibView::ibFormDesigner::Name);
 			for (int n = 1; name.IsEmpty() || taken.count(name) > 0; n++)
 				name = wxString::Format(wxT("Command%d"), n);
-			copy.SetValue(ibProtocolName::Name, name);
+			copy.SetValue(ibProtocol::ibView::ibFormDesigner::Name, name);
 			taken.insert(name);
 			named.push_back(copy);
 		}
 		SetChildren(bar, named);
 
 		ibProtocolNode request;
-		request.SetValue(ibProtocolName::Kind, static_cast<int>(ibProtocolFormDesignerRequest::Form));
-		request.SetValue(ibProtocolName::Form, edited);
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Kind, static_cast<int>(ibProtocol::ibView::ibFormDesigner::ibRequest::Form));
+		request.SetValue(ibProtocol::ibView::ibFormDesigner::Form, edited);
 		ibProtocolNode answer;
 		if (formHandler->Execute(request, answer) && selected != wxNOT_FOUND)
 			formHandler->m_objectTree->SelectCommandItem(controlId, static_cast<unsigned int>(selected));
@@ -1032,7 +1132,7 @@ ibProtocolNode ibValueCommandBar::FindNode(const ibProtocolNode& control) const
 
 ibProtocolNode ibValueCommandBar::FindRows(const ibProtocolNode& control) const
 {
-	return control.FindChild(ibProtocolName::CommandBar);
+	return control.FindChild(ibProtocol::ibView::ibFormDesigner::CommandBar);
 }
 
 void ibValueCommandBar::PrepareDefaultMenu(wxMenu* menu) const
@@ -1049,10 +1149,10 @@ void ibValueCommandBar::ExecuteMenu(int menuId)
 	// A new command is the server's (CommandBarItem's Node — the desktop's AddCommandItem), a pasted one the clipboard's;
 	// either is put last, and shown.
 	ibProtocolNode added;
-	if (menuId == kMenuAddCommand) {
+	if (menuId == kMenuAddCommand && m_formHandler->FetchRows(m_controlId)) {
 		const auto found = m_formHandler->m_rows.find(m_controlId);
 		if (found != m_formHandler->m_rows.end())
-			added = found->second.FindChild(ibProtocolName::CommandBarItem).FindChild(ibProtocolName::Node);
+			added = found->second.FindChild(ibProtocol::ibView::ibFormDesigner::CommandBarItem).FindChild(ibProtocol::ibView::ibFormDesigner::Node);
 	}
 	else if (menuId == kMenuPaste) {
 		added = m_formHandler->PasteEntry(oes_clipboard_command_bar_item);
@@ -1069,14 +1169,14 @@ void ibValueCommandBar::ExecuteMenu(int menuId)
 bool ibValueCommandBarItem::OnPropertyChanging(ibProperty* property, const wxVariant& newValue)
 {
 	// Name must stay unique among the bar's items.
-	if (property->GetName() != ibProtocolName::Name)
+	if (property->GetName() != ibProtocol::ibView::ibFormDesigner::Name)
 		return true;
 	std::vector<ibProtocolNode> path;
 	if (!FindPath(m_formHandler->m_formNode, m_controlId, path))
 		return true;
 	const std::vector<ibProtocolNode> items = FindCommandBar(path.back()).Children();
 	for (size_t idx = 0; idx < items.size(); idx++) {
-		if (idx != m_index && items[idx].GetString(ibProtocolName::Name) == newValue.GetString())
+		if (idx != m_index && items[idx].GetString(ibProtocol::ibView::ibFormDesigner::Name) == newValue.GetString())
 			return false;
 	}
 	return true;
@@ -1090,12 +1190,12 @@ ibProtocolNode ibValueCommandBarItem::FindNode(const ibProtocolNode& control) co
 
 ibProtocolNode ibValueCommandBarItem::FindRows(const ibProtocolNode& control) const
 {
-	const wxString name = GetNode().GetString(ibProtocolName::Name);
-	for (const ibProtocolNode& rows : control.FindChild(ibProtocolName::CommandBar).FindChild(ibProtocolName::Items).Children()) {
-		if (rows.GetString(ibProtocolName::Name) == name)
+	const wxString name = GetNode().GetString(ibProtocol::ibView::ibFormDesigner::Name);
+	for (const ibProtocolNode& rows : control.FindChild(ibProtocol::ibView::ibFormDesigner::CommandBar).FindChild(ibProtocol::ibView::ibFormDesigner::Items).Children()) {
+		if (rows.GetString(ibProtocol::ibView::ibFormDesigner::Name) == name)
 			return rows;
 	}
-	return control.FindChild(ibProtocolName::CommandBarItem);
+	return control.FindChild(ibProtocol::ibView::ibFormDesigner::CommandBarItem);
 }
 
 // Same items / icons / hotkeys as the control popup menu (ibVisualEditorItemPopupMenu).
@@ -1126,10 +1226,10 @@ void ibValueCommandBarItem::ExecuteMenu(int menuId)
 
 	switch (menuId) {
 	case kMenuCopy:
-		m_formHandler->CopyEntry(items[m_index], oes_clipboard_command_bar_item, items[m_index].GetString(ibProtocolName::Name));
+		m_formHandler->CopyEntry(items[m_index], oes_clipboard_command_bar_item, items[m_index].GetString(ibProtocol::ibView::ibFormDesigner::Name));
 		break;
 	case kMenuCut:
-		m_formHandler->CopyEntry(items[m_index], oes_clipboard_command_bar_item, items[m_index].GetString(ibProtocolName::Name));
+		m_formHandler->CopyEntry(items[m_index], oes_clipboard_command_bar_item, items[m_index].GetString(ibProtocol::ibView::ibFormDesigner::Name));
 		items.erase(items.begin() + m_index);
 		SetCommandItems(items, wxNOT_FOUND);
 		break;

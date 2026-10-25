@@ -6,14 +6,15 @@
 #include <vector>
 
 #include "core/serialize/dataBuilder.h"
+#include "protocol/protocol.h"   // ibProtocol::ibNode — a patch's own words
 
 namespace {
 
-using ibEntries = std::vector<std::pair<wxString, ibDataValue>>;
+using ibEntries = std::vector<std::pair<ibString, ibDataValue>>;
 
 bool Diff(const ibDataNode& from, const ibDataNode& to, ibDataNode& patch);
 
-const ibDataValue* FindEntry(const ibEntries& entries, const wxString& name)
+const ibDataValue* FindEntry(const ibEntries& entries, const ibString& name)
 {
 	for (const auto& entry : entries) {
 		if (entry.first == name)
@@ -76,7 +77,7 @@ bool DiffChildren(const std::vector<ibDataNode>& from, const std::vector<ibDataN
 		return true;
 
 	if (!Keyed(from) || !Keyed(to)) {
-		patch.AddField(wxT("NodeChildrenWhole"), ibDataValue::Bool(true));
+		patch.AddField(ibProtocol::ibNode::ChildrenWhole, ibDataValue::Bool(true));
 		for (const ibDataNode& child : to)
 			patch.Children().push_back(child);
 		return true;
@@ -114,7 +115,7 @@ bool DiffChildren(const std::vector<ibDataNode>& from, const std::vector<ibDataN
 	}
 
 	if (!removedIds.empty())
-		patch.AddField(wxT("NodeRemovedIds"), ibDataValue::Array(removedIds));
+		patch.AddField(ibProtocol::ibNode::RemovedIds, ibDataValue::Array(removedIds));
 
 	std::vector<ibDataValue> order, previous;
 	for (const ibDataNode& child : to)
@@ -124,7 +125,7 @@ bool DiffChildren(const std::vector<ibDataNode>& from, const std::vector<ibDataN
 			previous.push_back(ibDataValue::Int(child.GetMetaId()));
 	}
 	if (inserted || order != previous)
-		patch.AddField(wxT("NodeOrder"), ibDataValue::Array(order));
+		patch.AddField(ibProtocol::ibNode::Order, ibDataValue::Array(order));
 	return true;
 }
 
@@ -143,7 +144,7 @@ bool Diff(const ibDataNode& from, const ibDataNode& to, ibDataNode& patch)
 		|| !DiffEntries(from.Properties(), to.Properties(), true, patch, removed))
 		return false;
 	if (!removed.empty())
-		patch.AddField(wxT("NodeRemoved"), ibDataValue::Array(removed));
+		patch.AddField(ibProtocol::ibNode::Removed, ibDataValue::Array(removed));
 
 	return DiffChildren(from.Children(), to.Children(), patch);
 }

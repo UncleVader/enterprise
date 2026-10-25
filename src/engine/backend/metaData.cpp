@@ -341,9 +341,10 @@ ibValueMetaObject* ibMetaData::CreateMetaObject(const ibClassID& clsidIn, ibValu
 
 	if (newMetaObject != nullptr) {
 
-		newMetaObject->SetName(
-			GetNewName(clsid, parent, newMetaObject->GetClassName())
-		);
+		ibNameRequest request;
+		request.m_clsid = clsid;
+		request.m_prefix = newMetaObject->GetClassName();
+		newMetaObject->SetName(GetNewName(parent, request));
 
 		//always create meta object
 		bool success = newMetaObject->OnCreateMetaObject(this, runObject ? newObjectFlag : pasteObjectFlag);
@@ -367,6 +368,12 @@ ibValueMetaObject* ibMetaData::CreateMetaObject(const ibClassID& clsidIn, ibValu
 			return nullptr;
 		}
 
+		// ⭐ THE INVALIDATION COUNTER MOVES FOR A CREATION TOO — RemoveMetaObject's twin: a source's explorer lists its
+		// object's fields at the version it was built at, and a FIELD made registers nothing, so the counter stood still
+		// and a form's attribute picker kept the fields it was first asked with (2026-10-19). A shell made for a paste
+		// moves it as well: the paste fills it in the same call, before anything reads it.
+		m_factoryCtorCountChanges++;
+
 		// ⭐ AND EVERYONE WATCHING IS TOLD — last, after every phase that could still undo the
 		// creation, because an object that did not survive its own initialisation was never
 		// created. A watcher may act on this (the designer's tree asks which kind of form it is
@@ -389,10 +396,10 @@ ibValueMetaObject* ibMetaData::CreateMetaObject(const ibClassID& clsidIn, ibValu
 	return newMetaObject;
 }
 
-wxString ibMetaData::GetNewName(const ibClassID& clsid, ibValueMetaObject* parent, const wxString& strPrefix, bool forConstructor)
+wxString ibMetaData::GetNewName(ibValueMetaObject* parent, const ibNameRequest& request)
 {
-	const wxString currPrefix = strPrefix.Length() > 0 ?
-		strPrefix : wxT("newItem");
+	const wxString currPrefix = request.m_prefix.Length() > 0 ?
+		request.m_prefix : wxT("newItem");
 
 	// Normalise to upper case, matching stringUtils::CompareString's
 	// case-insensitive semantics, so set lookups are exact comparisons.
@@ -406,14 +413,17 @@ wxString ibMetaData::GetNewName(const ibClassID& clsid, ibValueMetaObject* paren
 	// once, so each candidate is probed in O(1). The old loop rescanned
 	// every child for each candidate suffix — O(children * candidates)
 	// per call. FilterChild(clsid) is invariant here (every surviving
-	// child has class == clsid), so it is hoisted out of the scan.
+	// child has class == clsid), so it is hoisted out of the scan. The
+	// object the name is for is skipped: its own entry is no collision.
 	std::unordered_set<std::wstring> takenNames;
-	if (parent != nullptr && parent->FilterChild(clsid)) {
+	if (parent != nullptr && parent->FilterChild(request.m_clsid)) {
 
 		for (unsigned int idx = 0; idx < parent->GetChildCount(); idx++) {
 
 			auto child = parent->GetChild(idx);
-			if (clsid != child->GetClassType())
+			if (request.m_metaId != 0 && child->GetMetaID() == request.m_metaId)
+				continue;
+			if (request.m_clsid != child->GetClassType())
 				continue;
 			if (child->IsDeleted())
 				continue;
@@ -424,8 +434,8 @@ wxString ibMetaData::GetNewName(const ibClassID& clsid, ibValueMetaObject* paren
 
 	// forConstructor allows the bare prefix as the first candidate;
 	// otherwise numbering starts at 1.
-	unsigned int countRec = forConstructor ? 0 : 1;
-	wxString newName = forConstructor ?
+	unsigned int countRec = request.m_forConstructor ? 0 : 1;
+	wxString newName = request.m_forConstructor ?
 		currPrefix : wxString::Format(wxT("%s%d"), currPrefix, countRec);
 
 	while (takenNames.count(toKey(newName)) > 0)
@@ -760,6 +770,9 @@ bool ibMetaData::RenameMetaObject(ibValueMetaObject* metaObject, const wxString&
 
 	metaObject->SetName(newName);
 	Modify(true);
+
+	// …and the invalidation counter moves, as for a creation: a source's explorer lists its fields by name.
+	m_factoryCtorCountChanges++;
 
 	// Announced with the new name already in place — unless the object is still being built: a
 	// pasted subtree is announced ONCE, at the end of the paste (Max, 2026-09-01: *"a lot of needless

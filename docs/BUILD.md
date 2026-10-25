@@ -91,14 +91,19 @@ git submodule update --init --recursive
 
 The `--recursive` flag is required because wxWidgets itself contains submodules.
 
-**A CMake configure fetches what is missing.** wxWidgets, cpp-httplib, Mbed TLS and nlohmann/json are
+**A CMake configure fetches what is missing.** wxWidgets, cpp-httplib, Mbed TLS, nlohmann/json, Asio and llhttp are
 each checked before use, and one that is not there is fetched with `git submodule update --init --recursive` for
 that path (three attempts); only a tree with no git, or no network, stops with the command to run. A
 checkout that fetched less than the tree needs - an older workflow, a partial clone - still builds.
 
 **A third-party header is named by its library** — `src/3rdparty` is on every include path:
 `<cpp-httplib/httplib.h>`, `<nlohmann/json.hpp>` (from its `single_include`, also on the path), Mbed TLS's
-`<mbedtls/…>` and wx's `<wx/…>` from their own include folders.
+`<mbedtls/…>` and wx's `<wx/…>` from their own include folders. Mbed TLS is the core's: linked into core only
+(`core/tls` declares it), and into the test binary for its reference TLS servers (cpp-httplib's); every other
+module asks the core for a cipher, a random byte, TLS. The core's network (`core/net`) has two more — Asio
+(`<asio.hpp>`, standalone, release `asio-1-36-0`, compiled once in `core/net/asio.cpp`; private to core — no header of
+`core/net` includes it) and llhttp (`<llhttp.h>`, branch `release/v9.3.0`, which
+carries the generated C sources; built as the static `llhttp` target, linked into core only).
 
 **nlohmann/json is the upstream repository, pinned to a release** (`src/3rdparty/nlohmann`). Updating it is
 moving the pin:
@@ -184,16 +189,25 @@ bin\
       designer.exe
       launcher.exe
       appserver.exe
+      appcluster.exe
+      appcluster-tray.exe
       codeRunner.exe
-      wenterprise-server.exe
+      webserver.exe
   Win64\            (Platform=x64)
     ...
 ```
 
 `core.dll` is the shared layer under `backend.dll` and `frmclient.dll` (wx base only); every
 project that links `backend.lib` also links `core.lib`.
-`wfrontend.dll` + `wenterprise-server.exe` are the web runtime (headless
-server + web frontend). `protocol.dll`, `frmserver.dll`, `frmclient.dll`, `fileserver.dll`, `enterprise-thin.exe` and
+
+**Resources (Windows).** Every program and library has a `<name>.rc` that names itself — description, file name,
+`VFT_APP` or `VFT_DLL`, a program's icon — and includes `core/version.rc2`, the one version resource: company,
+product, copyright, and the version, which is the platform's (`OES_VERSION_MAJOR/MINOR/RELEASE` in `core/build.h`,
+the same three `version_oes_last` is made of). Every program also merges `core/program.manifest` into the manifest
+the linker makes: Windows 10 and later, long paths. The linker adds asInvoker, wx the common controls 6 (its
+`defs.h`); per-monitor DPI awareness is not declared — wx's default. The vcxproj compiles them; CMake does not.
+`webserver.exe` is the web server: the site and the client protocol for browsers. `wfrontend.dll` is the old web
+frontend; no program loads it. `protocol.dll`, `frmserver.dll`, `frmclient.dll`, `fileserver.dll`, `enterprise-thin.exe` and
 `designer-thin.exe` are the thin client and its server side ([thin-client.md](public/thin-client.md)). `simplePlugin.dll` is the plugin example; it builds into
 `bin\<Platform>\<Configuration>\plugins\` — the directory the plugin manager scans at
 startup.
@@ -310,6 +324,8 @@ The root `CMakeLists.txt` adds fifteen engine subdirectories, each with its own
 | fileserver | shared lib (`FILESERVER_EXPORTS`) |
 | frmclient | shared lib (`FRMCLIENT_EXPORTS`, links `core` + `protocol`) |
 | appserver | executable (console) — the application server; `daemon` is kept as an alias target |
+| appcluster | executable (console, or a service) — one or more servers per base of the folder; links `core` alone |
+| appcluster-tray | executable (GUI) — the cluster's tray; links `core` alone |
 | enterprise | executable (GUI) |
 | enterprise-thin | executable (GUI) — the thin client |
 | designer | executable (GUI) |
@@ -318,21 +334,21 @@ The root `CMakeLists.txt` adds fifteen engine subdirectories, each with its own
 | codeRunner | executable (GUI) |
 | simplePlugin | shared lib (plugin example) |
 
-The web runtime targets (`wfrontend`, `wenterprise-server`) build under CMake with
-`-DOES_BUILD_WEB=ON` (default OFF) and under the MSBuild solution. CI does not set the option, so
-the web is not built there.
+The old web frontend (`wfrontend`) builds under CMake with `-DOES_BUILD_WEB=ON` (default OFF) and
+under the MSBuild solution. CI does not set the option, so it is not built there.
 
 ### macOS-specific Notes
 
 - wxWidgets is built from the submodule via `add_subdirectory()` — no system wxWidgets needed
-- Backend links against `wx::base`, `wx::core`, `wx::net`, `wx::xml`, `wx::propgrid`, `wx::aui`, `wx::stc`
+- Backend links against `wx::base`, `wx::core`, `wx::xml`, `wx::propgrid`, `wx::aui`, `wx::stc` — not `wx::net`:
+  every socket is the core's (`core/net`)
 - Firebird embedded is not available via Homebrew; use SQLite for local development
 - App bundles (`designer.app`, `enterprise.app`) are created automatically by CMake, and this
   path is **exercised, not merely declared**: they have been built on a real Mac, with the
   icon placed into `Resources` and `Info.plist` filled in (`CFBundleIdentifier`,
   `CFBundleExecutable`, icon name). Treat the `if(APPLE)` branches in the designer /
   enterprise / launcher CMake files as working code, not scaffolding
-- **Inside a bundle, the program folder is the one that holds the `.app`** (`core/programFolder.h`).
+- **Inside a bundle, the program folder is the one that holds the `.app`** (`core/fileSystem.h`).
   A program running from `X.app/Contents/MacOS/` looks beside the bundle for everything a Windows
   or Linux build keeps beside its executable: `backend.conf`, `lang/`, `help/`, `plugins/`, `_fb/`,
   `web/`, the application server's default `server/`, `libfileserver.dylib`, and the other
@@ -531,7 +547,7 @@ package. The kit's libraries find each other on their own — `$ORIGIN/../lib` o
 answered by the programs' rpath to `_fb` on macOS — and the engine loads `_fb/lib/libfbclient` by its
 full path (`firebirdInterface.cpp`; a POSIX loader has no `SetDllDirectory`, so a bare name found the
 system's alone), with `_fb` looked for in the program folder — beside the executable, or beside the
-`.app` for a program inside a bundle (`firebirdBootstrap.cpp`, `core/programFolder.h`).
+`.app` for a program inside a bundle (`firebirdBootstrap.cpp`, `core/fileSystem.h`).
 Each packing script then **creates a UTF8 base embedded, with a case-insensitive Unicode collation, and
 reads a row back** — Firebird's own `isql` put into the kit for that minute — because resolved libraries
 are not a working engine: the engine plugin, the character sets and ICU are loaded at run time.

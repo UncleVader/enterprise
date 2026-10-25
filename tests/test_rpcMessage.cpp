@@ -147,7 +147,7 @@ TEST(RpcMessage,ParseRequest_NestingAtTheLimit_IsRead)
 	ASSERT_TRUE(ibRpcParseRequest(LoginWithArrays(ibJsonProvider::kMaxNesting - 1), request, error))
 		<< error.ToStdString();
 	EXPECT_EQ(request.m_method, wxT("login"));
-	EXPECT_EQ(request.m_id.AsInt(), (s64)1);
+	EXPECT_EQ(request.m_id.AsInt(), (std::int64_t)1);
 }
 
 // ibClientHost::Call parses before it authenticates, and on a refusal writes a
@@ -275,7 +275,7 @@ TEST(RpcMessage,AnAnswer_IsReadableAsOne)
 	const wxString written = ibRpcWriteResult(ibDataValue::Int(11), result);
 
 	ibDataValue id;
-	wxString payload;
+	ibString payload;
 	bool isError = true;
 
 	ASSERT_TRUE(ibRpcParseResponse(written, id, payload, isError)) << written.ToStdString();
@@ -289,7 +289,7 @@ TEST(RpcMessage,AnAnswer_IsReadableAsOne)
 TEST(RpcMessage,ARequest_IsNotMistakenForAnAnswer)
 {
 	ibDataValue id;
-	wxString payload;
+	ibString payload;
 	bool isError = false;
 
 	EXPECT_FALSE(ibRpcParseResponse(

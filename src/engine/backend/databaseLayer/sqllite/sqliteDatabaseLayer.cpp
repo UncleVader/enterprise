@@ -7,9 +7,7 @@
 
 #include "backend/databaseLayer/databaseErrorCodes.h"
 #include "backend/databaseLayer/databaseLayerException.h"
-
-#include <wx/tokenzr.h>
-#include <wx/filename.h>
+#include "core/fileSystem.h"
 
 // SQLite SQL dialect — owned by the driver (static definition + virtual access).
 const ibDialectDictionary& ibDatabaseLayerSQLite::Dialect()
@@ -253,11 +251,15 @@ ibDatabaseLayerSQLite::~ibDatabaseLayerSQLite()
 	//wxDELETE(m_pDatabase);
 }
 
+// How long a statement waits for the file lock — given at Open, and put back when a noWait
+// transaction ends (DoBeginTransaction).
+static const int kBusyTimeoutMs = 5000;
+
 // open database
 bool ibDatabaseLayerSQLite::Open(const wxString& strDatabase, bool mustExist)
 {
 	if (strDatabase != wxT(":memory:") && // :memory: is a special SQLite in-memory database
-		mustExist && !(wxFileName::FileExists(strDatabase)))
+		mustExist && !(ibFileExists(strDatabase)))
 	{
 		SetErrorCode(DATABASE_LAYER_ERROR);
 		SetErrorMessage(wxT("The specified database file '") + strDatabase + wxT("' does not exist."));
@@ -292,7 +294,7 @@ bool ibDatabaseLayerSQLite::Open(const wxString& strDatabase)
 
 	// Enable WAL mode for concurrent read/write access from multiple threads
 	sqlite3_exec((sqlite3*)m_pDatabase, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
-	sqlite3_exec((sqlite3*)m_pDatabase, "PRAGMA busy_timeout=5000;", nullptr, nullptr, nullptr);
+	sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
 
 	return true;
 }
@@ -340,27 +342,56 @@ void ibDatabaseLayerSQLite::Cancel()
 
 void ibDatabaseLayerSQLite::DoBeginTransaction(const ibTxOptions& opts)
 {
-	// SQLite is single-writer, file-level locked — no per-TX wait/nowait
-	// knob to honour. Options parameter accepted for interface conformance.
+	// SQLite locks the file, and Open() asks it to wait five seconds (kBusyTimeoutMs).
+	// A noWait transaction must not spend that wait: the registry thread's heartbeat, sweep
+	// and snapshot run there, and a locked row has to come back at once so Add can be answered.
+	// Zero disables the busy handler for this transaction; commit and rollback put the five
+	// seconds back.
 	//
-	// `snapshot` needs nothing either, and that is a property rather than an omission: a deferred
+	// `snapshot` needs nothing else, and that is a property rather than an omission: a deferred
 	// transaction takes its read lock at the first read and holds it to the end, so every statement
 	// in it already sees one committed state. SQLite gives for free what the others must be asked for.
-	(void)opts;
+	if (opts.noWait && m_pDatabase != nullptr)
+		sqlite3_busy_timeout((sqlite3*)m_pDatabase, 0);
 	ibJournalInfo(wxT("db.sqlite"),wxT("Beginning transaction"));
-	DoRunQuery(wxT("begin deferred transaction;"), false);
+	try {
+		DoRunQuery(wxT("begin deferred transaction;"), false);
+	}
+	catch (...) {
+		if (opts.noWait && m_pDatabase != nullptr)
+			sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
+		throw;
+	}
 }
 
 void ibDatabaseLayerSQLite::DoCommit()
 {
 	ibJournalInfo(wxT("db.sqlite"),wxT("Commiting transaction"));
-	DoRunQuery(wxT("commit transaction;"), false);
+	try {
+		DoRunQuery(wxT("commit transaction;"), false);
+	}
+	catch (...) {
+		if (m_pDatabase != nullptr)
+			sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
+		throw;
+	}
+	if (m_pDatabase != nullptr)
+		sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
 }
 
 void ibDatabaseLayerSQLite::DoRollBack()
 {
 	ibJournalInfo(wxT("db.sqlite"),wxT("Rolling back transaction"));
-	DoRunQuery(wxT("rollback transaction;"), false);
+	try {
+		DoRunQuery(wxT("rollback transaction;"), false);
+	}
+	catch (...) {
+		if (m_pDatabase != nullptr)
+			sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
+		throw;
+	}
+	if (m_pDatabase != nullptr)
+		sqlite3_busy_timeout((sqlite3*)m_pDatabase, kBusyTimeoutMs);
 }
 
 // IsActiveTransaction inherits the base-class default (m_txDepth > 0).
@@ -484,7 +515,7 @@ ibPreparedStatement* ibDatabaseLayerSQLite::DoPrepareStatement(const wxString& s
 				wxString strSQL;
 				if (szTail != 0)
 				{
-					strSQL = (wxChar*)szTail;
+					strSQL = (ibChar*)szTail;
 				}
 				else
 				{
@@ -503,7 +534,7 @@ ibPreparedStatement* ibDatabaseLayerSQLite::DoPrepareStatement(const wxString& s
 				{
 					SetErrorCode(ibDatabaseLayerSQLite::TranslateErrorCode(nReturn), ClassifyDatabaseError(nReturn));
 					SetErrorMessage(ConvertFromUnicodeStream(sqlite3_errmsg((sqlite3*)m_pDatabase)));
-					wxDELETE(pReturnStatement);
+					delete pReturnStatement;
 					ThrowDatabaseException();
 					return nullptr;
 				}

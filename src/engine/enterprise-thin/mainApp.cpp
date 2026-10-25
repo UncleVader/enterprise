@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <wx/cmdline.h>
+#include "core/launchTicket.h"
 #include <wx/image.h>
 #include <wx/msgdlg.h>
 
@@ -25,7 +26,8 @@ wxIMPLEMENT_APP(ibAppEnterprise);
 
 void ibAppEnterprise::OnInitCmdLine(wxCmdLineParser& parser)
 {
-	parser.AddOption(wxT("address"), wxT("address"), "Application server: oes://server[:port]/<base>", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("address"), wxT("address"), "Application server: oes://server[:port]/<base>, oess:// over TLS", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("trusted"), wxT("trusted"), "oess://: the authorities trusted, a PEM file (default: the system's store)", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("file"),   wxT("file"),     "Database file path",      wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("srv"),    wxT("server"),   "Database server address", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("p"),      wxT("dbport"),   "Database server port",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
@@ -43,6 +45,7 @@ void ibAppEnterprise::OnInitCmdLine(wxCmdLineParser& parser)
 bool ibAppEnterprise::OnCmdLineParsed(wxCmdLineParser& parser)
 {
 	parser.Found(wxT("address"), &m_strAddress);
+	parser.Found(wxT("trusted"), &m_strTrusted);
 
 	parser.Found(wxT("file"), &m_strFile);
 
@@ -54,6 +57,17 @@ bool ibAppEnterprise::OnCmdLineParsed(wxCmdLineParser& parser)
 
 	parser.Found(wxT("ib_usr"), &m_strIBUser);
 	parser.Found(wxT("ib_pwd"), &m_strIBPassword);
+
+	ibLaunchSecrets line;
+	line.m_dbUser = m_strUser;
+	line.m_dbPassword = m_strPassword;
+	line.m_ibUser = m_strIBUser;
+	line.m_ibPassword = m_strIBPassword;
+	ibApplyLaunchSecrets(line, parser.Found(wxT("pwd")), parser.Found(wxT("ib_pwd")));
+	m_strUser = line.m_dbUser;
+	m_strPassword = line.m_dbPassword;
+	m_strIBUser = line.m_ibUser;
+	m_strIBPassword = line.m_ibPassword;
 
 	parser.Found(wxT("lc"), &m_strLocale);
 
@@ -90,7 +104,7 @@ bool ibAppEnterprise::OnInit()
 	if (!m_strAddress.IsEmpty()) {
 		// An application server — over its port.
 		auto server = std::make_unique<ibProtocolConnectionServer>();
-		if (!server->Open(m_strAddress, error)) {
+		if (!server->Open(m_strAddress, m_strTrusted, error)) {
 			splash.reset();
 			wxMessageBox(error, _("OES Enterprise - startup error"), wxOK | wxICON_ERROR);
 			return false;
@@ -100,17 +114,17 @@ bool ibAppEnterprise::OnInit()
 	else if (!m_strFile.IsEmpty() || (!m_strServer.IsEmpty() && !m_strDatabase.IsEmpty())) {
 		// A file base — opened in this process, by the library that brings the server in.
 		ibProtocolNode request;
-		request.SetValue(ibProtocolName::Locale, m_strLocale)
-			.SetValue(ibProtocolName::Debug, m_debugEnable);
+		request.SetValue(ibProtocol::ibFileBase::Locale, m_strLocale)
+			.SetValue(ibProtocol::ibFileBase::Debug, m_debugEnable);
 		if (!m_strFile.IsEmpty()) {
-			request.SetValue(ibProtocolName::Directory, m_strFile);
+			request.SetValue(ibProtocol::ibFileBase::Directory, m_strFile);
 		}
 		else {
-			request.SetValue(ibProtocolName::Server, m_strServer)
-				.SetValue(ibProtocolName::Port, m_strPort)
-				.SetValue(ibProtocolName::User, m_strUser)
-				.SetValue(ibProtocolName::Password, m_strPassword)
-				.SetValue(ibProtocolName::Database, m_strDatabase);
+			request.SetValue(ibProtocol::ibFileBase::Server, m_strServer)
+				.SetValue(ibProtocol::ibFileBase::Port, m_strPort)
+				.SetValue(ibProtocol::ibFileBase::User, m_strUser)
+				.SetValue(ibProtocol::ibFileBase::Password, m_strPassword)
+				.SetValue(ibProtocol::ibFileBase::Database, m_strDatabase);
 		}
 		auto file = std::make_unique<ibProtocolConnectionFile>();
 		if (!file->Open(request.Write(), error)) {
@@ -126,9 +140,9 @@ bool ibAppEnterprise::OnInit()
 		wxMessageBox(
 			_("Cannot start enterprise-thin.exe - no infobase specified.\n\n"
 			  "Provide one of:\n"
-			  "  --address=oes://<server>[:port]/<base>   (an application server)\n"
+			  "  --address=oes://<server>[:port]/<base>   (an application server; oess:// over TLS)\n"
 			  "  --file=<path>          (Firebird embedded / SQLite file)\n"
-			  "  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]"),
+			  "  --server=<host> --db=<name> [--dbport=...] [--user=...]"),
 			_("OES Enterprise"),
 			wxOK | wxICON_ERROR
 		);

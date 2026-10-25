@@ -1152,7 +1152,9 @@ public:
 		// rows THROUGH this (m_valueTable set → the storage IS the displayed row), so the edit lands directly; a
 		// DB-list COPY node (self-contained, m_valueTable null) just mirrors into the copy for the inline editor
 		// (the grid is read-only — a real edit goes via the object form). Out-of-line (non-trivial).
-		virtual bool SetValue(const ibMetaID& id, const ibValue& variant, bool notify = false);
+		// ⚠ EXPORTED BY ITSELF: a class nested in a BACKEND_API class is not exported with it on MSVC, and this one
+		// is defined out of line (tabularModel.cpp) — a caller outside the backend (test_tabularEnumPersist) did not link.
+		BACKEND_API virtual bool SetValue(const ibMetaID& id, const ibValue& variant, bool notify = false);
 
 		bool SetValue(unsigned int col, const wxVariant& variant, bool notify = false) {
 			try {
@@ -1466,8 +1468,8 @@ public:
 	// is converted from, and what the cell's text is read off (GetValue).
 	bool GetCompositionAttrByRow(const ibDataViewItem& row, unsigned int col, ibCompositionAttr& attr) const;
 
-	virtual bool IsEnabledByRow(const ibDataViewItem& WXUNUSED(row),
-		unsigned int WXUNUSED(col)) const {
+	virtual bool IsEnabledByRow(const ibDataViewItem& /*row*/,
+		unsigned int /*col*/) const {
 		return true;
 	}
 
@@ -1918,6 +1920,15 @@ public:
 	// displayed-item → storage: the item IS a live storage node, so its index is its position in the storage.
 	long StorageIndexOf(const ibDataViewItem& item) const { return GetRow(item); }
 	ibComposerNode* StorageRowOf(const ibDataViewItem& item) const { return m_storage.GetNode(StorageIndexOf(item)); }
+
+	// The verbs a value table and a tabular section answer alike — the rows are held here, so the work is too.
+	//
+	// The position of a script's row among THIS model's rows, 0-based (Index(row)); -1 for a value that is not one.
+	long IndexOf(const ibValue& row) const;
+	// ⭐ THE TOTAL OF A COLUMN (Total(column)): its numbers added exactly (ibNumber, not a double), an empty cell adding
+	// nothing. A column that is not there raises - a wrong total that looks right is the worst answer a sum can give -
+	// and so does a cell holding something that is not a number, naming the row. No rows total zero.
+	ibValue TotalOf(const wxString& column) const;
 
 	// (NO GetSourceQueryable override — a RAM model has no queryable; the composer reads m_storage directly.
 	//  The base default returns null.)

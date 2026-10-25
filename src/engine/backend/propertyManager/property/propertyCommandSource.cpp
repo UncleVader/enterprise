@@ -43,12 +43,12 @@ bool ibPropertyCommandSource::IsEmptyProperty() const
 	return get_cell_variant<ibVariantDataCommandSource>()->IsEmptyCommand();
 }
 
-bool ibPropertyCommandSource::SetDataValue(const ibValue& WXUNUSED(varPropVal))
+bool ibPropertyCommandSource::SetDataValue(const ibValue& /*varPropVal*/)
 {
 	return false;   // a command source is bound + run by the button, never assigned as a script value
 }
 
-bool ibPropertyCommandSource::GetDataValue(ibValue& WXUNUSED(pvarPropVal)) const
+bool ibPropertyCommandSource::GetDataValue(ibValue& /*pvarPropVal*/) const
 {
 	return false;
 }
@@ -65,4 +65,15 @@ bool ibPropertyCommandSource::ReadNodeValue(const ibDataValue& value)
 bool ibPropertyCommandSource::WriteNodeValue(ibDataValue& value) const
 {
 	return ibCommandDescriptionMemory::WriteNode(value, GetValueAsCommandDesc());
+}
+
+#include "protocol/protocol.h"   // ibProtocol::ibSchema::ibProperties — the row's keys
+
+bool ibPropertyCommandSource::GetProtocolValue(ibDataNode& row, ibReader reader)
+{
+	if (!ibProperty::GetProtocolValue(row, reader))
+		return false;
+	if (const ibBackendCommandReceiver* const receiver = get_cell_variant<ibVariantDataCommandSource>()->GetOwner())
+		receiver->WriteCommandTree(row.Child(ibProtocol::ibSchema::ibProperties::CommandTree));
+	return true;
 }

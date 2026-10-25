@@ -100,7 +100,8 @@ private:
 	// Raised while the page tears its own children down (see IsClosingChildren).
 	bool m_closingChildren = false;
 
-	wxDECLARE_NO_COPY_CLASS(ibHomePageDocument);
+	ibHomePageDocument(const ibHomePageDocument&) = delete;
+	ibHomePageDocument& operator=(const ibHomePageDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibHomePageDocument);
 };
 
@@ -120,6 +121,8 @@ public:
 	// there, the cell's share of the column, and its form drawn as the form's own view draws it (with the key a
 	// client names that form by — an event to a cell's control carries it). Written whole every time.
 	virtual void OnDraw(ibDataNode& frame) override;
+
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::HomePage; }
 
 private:
 

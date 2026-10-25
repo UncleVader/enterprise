@@ -374,6 +374,7 @@ wxAuiMDIClientWindow* ibFrontendMainFrame::OnCreateClient()
 	return new wxAuiMDIClientWindowImpl(this);
 }
 
+#ifndef __WXOSX__
 // bring window to front
 void ibFrontendMainFrame::Raise()
 {
@@ -385,6 +386,7 @@ void ibFrontendMainFrame::Raise()
 
 	wxAuiMDIParentFrame::Raise();
 }
+#endif
 
 bool ibFrontendMainFrame::Show(bool show)
 {
@@ -595,7 +597,7 @@ void ibFrontendMainFrame::OnCloseWindow(wxCloseEvent& event)
 #include <wx/dcscreen.h>
 
 bool ibFrontendMainFrame::CaptureWindow(const wxString& reason, const wxString& area,
-	const wxString& format, wxMemoryBuffer& bytes, wxString& focus)
+	const wxString& format, ibMemoryBuffer& bytes, wxString& focus)
 {
 	bytes.SetDataLen(0);
 	focus.Clear();

@@ -37,7 +37,8 @@ private:
 
 	ibMcpServer* const m_server;
 
-	wxDECLARE_NO_COPY_CLASS(ibAssistantTranscriptDocument);
+	ibAssistantTranscriptDocument(const ibAssistantTranscriptDocument&) = delete;
+	ibAssistantTranscriptDocument& operator=(const ibAssistantTranscriptDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibAssistantTranscriptDocument);
 };
 
@@ -53,10 +54,10 @@ public:
 	virtual bool OnCreate(ibDocument* doc, long flags) override;
 	// The transcript, an entry a row, and whether the person waits — and on whom (State {Waiting, Pending}).
 	virtual void OnDraw(ibDataNode& frame) override;
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::Assistant; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::Assistant; }
 	// What the person wrote (Change {Text}) — the desktop's OnSend: asked of the connected model if it can be asked,
 	// left for an assistant to collect if not.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 	// Removed from the server before the view goes — the desktop's OnClose.
 	virtual bool OnClose(bool deleteWindow = true) override;
 

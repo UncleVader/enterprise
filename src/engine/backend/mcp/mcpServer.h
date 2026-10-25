@@ -45,36 +45,10 @@
 
 #include <wx/string.h>
 
+#include "core/fstring.h"           // ibString — a call's text and its answer, as the transport holds them
+#include "core/mcp/mcpSettings.h"   // ibMcpSettings — what a person set, the value a settings page hands over
+
 class ibSession;
-
-// WHAT A PERSON SET. Kept apart from the server so the designer's settings page
-// edits a value and hands it over, instead of poking at a running object.
-struct BACKEND_API ibMcpSettings {
-
-	// Off unless somebody turned it on. An open port that describes and edits a
-	// configuration is not something a platform should acquire by upgrading.
-	bool           m_enabled = false;
-
-	// Loopback by default, and a person has to mean it to widen that.
-	wxString       m_address = wxT("127.0.0.1");
-	unsigned short m_port    = 3737;
-
-	// ⭐ WHO IS ALLOWED TO SPEAK. Every request carries it as `Authorization: Bearer <token>`,
-	// and one without is refused before any tool is looked up.
-	//
-	// It exists because the address is not an authorisation. A loopback port is open to every
-	// process on the machine — every other application, every script, anything a browser was
-	// talked into fetching — and this one edits a configuration and runs code AS THE DEVELOPER
-	// WHOSE SESSION IT LIVES IN. "Only local" answers where a caller is, never who.
-	//
-	// ⚠ AND IT IS NOT OPTIONAL. An empty token refuses everything rather than allowing it: a
-	// secret that may be blank is a secret nobody sets, and the failure of that choice is silent
-	// where the failure of this one is a message saying where to copy it from. One is generated
-	// the first time the settings are written, so it is never blank by accident.
-	wxString       m_token;
-
-	bool IsOk() const { return !m_address.IsEmpty() && m_port != 0; }
-};
 
 // WATCHING THE CONVERSATION. The designer shows a window with the exchange in
 // it — what was asked, what the platform answered — so a person can see what is
@@ -246,7 +220,7 @@ public:
 
 private:
 
-	class ibMcpListener;   // the worker thread + its socket, defined in the .cpp
+	class ibMcpListener;   // the HTTP server + its stream, defined in the .cpp
 
 	// WHAT THE HTTP HEADERS SAID, for the parts of the message the transport mirrors
 	// into them. From revision 2025-06-18 a client states the protocol version in a
@@ -255,7 +229,7 @@ private:
 	// load balancer routes on the one and the server executes on the other.
 	//
 	// Carried in a struct of its own rather than by handing Answer an
-	// httplib::Request: the JSON-RPC layer has never known what HTTP is, and the
+	// ibHttpRequest: the JSON-RPC layer has never known what HTTP is, and the
 	// three strings it now needs are not a reason to teach it.
 	struct ibMcpWireHeaders {
 		wxString m_protocolVersion;   // MCP-Protocol-Version, empty when absent
@@ -277,8 +251,8 @@ private:
 	// an HTTP number. It also spares the caller from reading its own output back:
 	// searching the emitted JSON for `"code":-32020` is a guess about the writer's
 	// spacing, and it was wrong the first time it was tried.
-	wxString Answer(const wxString& request) { return Answer(request, ibMcpWireHeaders(), nullptr); }
-	wxString Answer(const wxString& request, const ibMcpWireHeaders& headers, int* outErrorCode);
+	ibString Answer(const ibString& request) { return Answer(request, ibMcpWireHeaders(), nullptr); }
+	ibString Answer(const ibString& request, const ibMcpWireHeaders& headers, int* outErrorCode);
 	friend class ibMcpListener;
 
 	void Publish(const wxString& method, const wxString& request, const wxString& answer);
@@ -323,10 +297,6 @@ private:
 	std::unique_ptr<class ibMcpMetaBridge> m_metaBridge;
 
 	std::atomic<bool>            m_running{ false };
-
-	// Not owned — the debug client's bridge list owns what it holds. Null when
-	// the process has no debugger, or while the server is stopped.
-	class ibMcpDebugBridge*      m_debugBridge = nullptr;
 
 	// WHAT THE CLIENT SAID IT CAN DO, taken from its handshake. Asked before
 	// every outgoing request, because a client that cannot sample must be told
