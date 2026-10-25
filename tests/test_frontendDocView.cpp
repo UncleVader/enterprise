@@ -354,6 +354,29 @@ TEST_F(DocViewFix, UpdateAllViews_ChildDeletedMeanwhile_RestOfChildrenNotified)
 	delete third;
 }
 
+// The only view can delete its document on the final iteration of the view loop.
+TEST_F(DocViewFix, UpdateAllViews_OnlyViewDeletesDocument_WalkStops)
+{
+	if (!ready) GTEST_SKIP();
+
+	int count = 0;
+	ibDocument* doc = new ibDocument();
+	ibCountingView* view = nullptr;
+	std::function<void()> close = [&]() {
+		doc->RemoveView(view);
+		doc = nullptr;
+	};
+	view = new ibCountingView(&count, &close);
+	view->SetDocument(doc);
+
+	doc->UpdateAllViews();
+
+	EXPECT_EQ(count, 1);
+	EXPECT_EQ(doc, nullptr);
+	view->SetDocument(nullptr);
+	delete view;
+}
+
 // The strongest case: an update deletes the document that is being walked (its last view leaves).
 // Nothing after that point may touch the document — not its view list, not its children.
 TEST_F(DocViewFix, UpdateAllViews_DocumentDeletedByItsView_WalkStops)
