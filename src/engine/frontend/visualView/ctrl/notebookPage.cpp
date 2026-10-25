@@ -99,9 +99,6 @@ void ibValueNotebookPage::OnUpdated(wxObject* wxobject, wxWindow* wxparent, ibVi
         wxASSERT(page);
         page->SetOrientation(m_propertyOrient->GetValueAsInteger());
 
-        // DEV HOOK (form-look work) — NOT TO BE COMMITTED.
-        if (const char* devPage = getenv("OES_DEV_PAGE"))
-            if (pos == atoi(devPage)) notebook->CallAfter([notebook, pos]() { notebook->SetSelection(pos); notebook->Refresh(); });
     }
 }
 
