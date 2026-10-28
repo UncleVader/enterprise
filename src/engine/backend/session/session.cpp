@@ -1034,7 +1034,7 @@ void ibSession::AcquireMetaData()
 		// Held BEFORE it loads — a session's own configuration is the first answer `activeMetaData` gives on its
 		// thread (ibApplicationInstance::GetActiveMetaData), and its loading asks for it. The session is bound to the
 		// thread for its bring-up (NotifyAuthenticated), so the rights checked and the language pinned are its user's.
-		m_metaData = ibMetaData::MakeShared<ibMetaDataConfigurationStorage>(ib::AppDataCtorToken{ GetApplicationInstance() });
+		m_metaData = ibMetaData::MakeShared<ibMetaDataConfigurationStorage>(ib::AppDataCtorToken{ GetApplicationInstance(), GetKind() });
 
 		// …and one that did not come up goes with the reference: nobody else holds it.
 		if (!m_metaData->OnInitialize(_app_start_default_flag) || !m_metaData->RunDatabase())
@@ -1085,9 +1085,10 @@ const ibAccessPolicy* ibSession::GetAccessPolicy() const
 {
 	// Inside a trusted window (a role module runs privileged) the door must see
 	// no policy even though m_accessPolicy is real — the handler's own queries
-	// must not re-enter RLS. The bypass is CONSTRUCTIVE (ibAccessTrustScope is
-	// the only thing that sets the flag), so it never masks a forgotten policy.
-	if (m_accessTrusted)
+	// must not re-enter RLS. The same answer when script called SetPrivilegedMode:
+	// that flag starts off, and only that call turns it on. Neither one masks a
+	// forgotten policy by itself.
+	if (m_accessTrusted || m_scriptPrivileged)
 		return nullptr;
 	if (m_accessPolicy)
 		return m_accessPolicy.get();
