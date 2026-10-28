@@ -10,41 +10,44 @@
 // the server's model a second time, and is a thick one again (Max, 2026-10-14).
 //
 // Its owner makes it of the row and holds it till the next rows come (ibPropertyObject::Receive).
+//
+// ⭐ ITS VALUE IS ONE VARIANT, THE SAME FOR EVERY TYPE (ibVariantDataSerializable, Max, 2026-10-20) — the node the server
+// stores it as, named by its class: what is read is held as it comes, what is written is what is held. Whoever sets and
+// gets it moves a variant and knows nothing of the node. The client's own properties (a sheet's cell's) hold theirs so
+// too: each is one of these, made of no row, set by the type it is.
 class FRMCLIENT_API ibPropertySerializable : public ibProperty {
 public:
 
-	ibPropertySerializable(ibPropertyCategory* cat, const ibDataNode& row);
-
-	// The metaobject it opens — a module its owner holds (the row's Object); none: 0.
-	ibMetaID GetObjectId() const { return m_objectId; }
-	// An event's: its procedure's parameters, as the desktop's ibEvent has them (the row's Args); none: empty.
-	const wxArrayString& GetArgs() const { return m_args; }
+	ibPropertySerializable(ibPropertyCategory* cat, ibDataNode&& row);
 
 	// …unless the server says it is not (its own IsEditable — the row's ReadOnly).
 	virtual bool IsEditable() const override { return !m_readOnly && ibProperty::IsEditable(); }
-	// Its type, as the server names it — the key its presentation is registered by.
-	virtual wxString GetType() const override { return m_type; }
+	// Its type, as the server names it — the key its presentation is registered by; the client's own, its class.
+	virtual ibString GetType() const override { return !m_type.IsEmpty() ? m_type : ibProperty::GetType(); }
 	virtual ibPropertyChoiceMode GetValueList(ibPropertyChoiceList& list) override;
 
-	// Not a value of the engine's — the server holds that.
-	virtual bool SetDataValue(const ibValue& WXUNUSED(varPropVal)) override { return false; }
-	virtual bool GetDataValue(ibValue& WXUNUSED(pvarPropVal)) const override { return false; }
+	// The row it was made of, as the server wrote it; the client's own, as it writes one.
+	virtual bool GetProtocolValue(ibDataNode& row) const override;
 
 protected:
 
-	// Its value as the server stores it — read as it is, written back as it is.
+	// The client's own — made of no row (a sheet's cell's).
+	ibPropertySerializable(ibPropertyCategory* cat, const ibString& name, const wxVariant& value) : ibProperty(cat, name, value) {}
+	ibPropertySerializable(ibPropertyCategory* cat, const ibString& name, const ibString& label, const wxVariant& value) : ibProperty(cat, name, label, value) {}
+	ibPropertySerializable(ibPropertyCategory* cat, const ibString& name, const ibString& label, const ibString& helpString, const wxVariant& value) : ibProperty(cat, name, label, helpString, value) {}
+
+	// A node arriving (a typed setter's, the gate's), held as it comes, named by its class. A node has no words: what
+	// reads here is the old ones until the rows come back.
 	virtual bool ReadNodeValue(const ibDataValue& value) override;
 	virtual bool WriteNodeValue(ibDataValue& value) const override;
 
 private:
 
-	wxString m_type;
-	ibDataValue m_value;
+	ibDataNode m_row;
+	ibString m_type;
 	ibPropertyChoiceList m_choices;
 	ibPropertyChoiceMode m_mode = ibPropertyChoiceMode::None;
 	bool m_readOnly = false;
-	ibMetaID m_objectId = 0;
-	wxArrayString m_args;
 };
 
 #endif

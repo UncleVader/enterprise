@@ -21,15 +21,10 @@
 #include "frmclient/mainFrame/settings/editorsettings.h"
 #include "frmclient/mainFrame/settings/fontcolorsettings.h"
 
-// A SCRIPT'S FAILURE — the desktop's dialog (frontend/win/dlgs/errorDialog), asked by the server
-// (ibProtocolRequestKind::Error). ShowModal answers the act chosen (ibProtocolErrorAct); closed — wxID_CANCEL.
+// A SCRIPT'S FAILURE — the old desktop's dialog, asked by the server
+// (ibProtocol::ibRequest::ibKind::Error). ShowModal answers the act chosen (ibProtocol::ibRequest::ibError::ibAct); closed — wxID_CANCEL.
 class FRMCLIENT_API ibDialogError : public wxDialog {
 public:
-
-	//Editor setting
-	void SetEditorSettings(const ibEditorSettings& settings);
-	//Font setting
-	void SetFontColorSettings(const ibFontColorSettings& settings);
 
 	ibDialogError(class ibFrontendMainFrame* parent, wxWindowID id = wxID_ANY,
 		const wxString& title = _("Critical failure"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxDefaultSize, long style = wxCAPTION | wxSYSTEM_MENU | wxCLOSE_BOX | wxSTAY_ON_TOP);

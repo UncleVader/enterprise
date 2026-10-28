@@ -5,8 +5,8 @@
 // The FORMAT STRING CONSTRUCTOR — three tabs over an ibFormatString.
 ////////////////////////////////////////////////////////////////////////////
 //
-// The desktop's (frontend/win/dlgs/formatConstructor), whole: the string is core's (core/formatString.h), and its
-// sample is read off the client's value (ibAnyValue) as the engine's reads it off its own.
+// The old desktop's, whole: the string is core's (core/formatString.h), and its
+// sample is read off the client's value (ibVariant) as the engine's reads it off its own.
 //
 // A tab per kind of value the string formats — numbers, dates, booleans — and a row per code:
 // a box that says whether the code is written at all, and the control for its value. The rows are
@@ -54,7 +54,7 @@ private:
 	struct ibCharRow {
 		wxCheckBox*            m_on = nullptr;
 		wxChoice*              m_value = nullptr;
-		std::vector<wxUniChar> m_chars;   // the character behind each item of m_value
+		std::vector<ibChar>   m_chars;   // the character behind each item of m_value
 	};
 	// A code with a text.
 	struct ibTextRow {
@@ -69,7 +69,7 @@ private:
 	ibNumberRow AddNumberRow(wxWindow* page, wxSizer* grid, const wxString& label, ibFormatCode code,
 		const std::optional<int>& value, int defaultValue, int min, int max);
 	ibCharRow AddCharRow(wxWindow* page, wxSizer* grid, const wxString& label, ibFormatCode code,
-		const std::optional<wxUniChar>& value, const std::vector<std::pair<wxUniChar, wxString>>& chars);
+		const std::optional<ibChar>& value, const std::vector<std::pair<ibChar, wxString>>& chars);
 	ibTextRow AddTextRow(wxWindow* page, wxSizer* grid, const wxString& label, ibFormatCode code,
 		const std::optional<wxString>& value);
 

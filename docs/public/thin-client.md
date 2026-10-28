@@ -9,9 +9,8 @@ routine the desktop window always kept — menus, toolbars, what may be pressed,
 preview — so the server is not asked for it on every move.
 
 **Status.** The thin runtime is done: it does what the desktop runtime does. The thin designer is started: its window
-logs in as the designer and has the document/view skeleton; the designer's own panes and editors come next. Once it
-works, the desktop `frontend` and the thick applications built on it are removed; until then nothing new is built on
-them.
+logs in as the designer and has the document/view skeleton; the designer's own panes and editors come next. The desktop
+`frontend` and the thick applications built on it were removed on 2026-10-27 (branch `oes/thick_client`).
 
 ## Parts
 
@@ -31,7 +30,8 @@ protocol between them; neither half is called a frontend.
 Chain: core → backend → frmserver ⇄ protocol ⇄ frmclient → enterprise-thin; `fileserver` = backend + frmserver in the
 client's process. `protocol` does not link `core` — `protocol.h` stays dependency-free.
 
-A web server will link `protocol` as `frmclient` does, and tell a browser the same names and numbers.
+The web server links `protocol` as `frmclient` does; [the browser client](browser-client.md) draws the same frame
+the same way.
 
 `frmclient/backend/` is a reduced copy of what the engine's `backend` keeps above `core`: the same names and classes, only
 what the client's windows use. Its `backend_core.h`, `backend.h`, `backend_exception.h` just include `core`.

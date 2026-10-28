@@ -1,5 +1,5 @@
 #include "core/description/typeDescription.h"
-#include "core/fileSystem/fs.h"
+#include "core/memory/memoryBuffer.h"
 #include "core/serialize/dataBuilder.h"   // ibDataNode / ibDataValue (Child + Array)
 
 ////////////////////////////////////////////////////////////////////////
@@ -24,10 +24,10 @@ ibDataValue ReadTypeList(const ibDataNode& root)
 	// deliberately and every other tool reads them there (`cells`, `ids`). What is wrong is a READER
 	// of a node that may have come from either side insisting on one - so the reader accepts both,
 	// and the writer keeps saying it the one way storage expects.
-	ibDataValue typesVal = root.GetProperty(wxT("Types"));
+	ibDataValue typesVal = root.GetProperty(ibT("Types"));
 
 	if (typesVal.Kind() != ibDataKind::Array) {
-		if (const ibDataValue* fromField = root.FindField(wxT("Types")))
+		if (auto fromField = root.FindField(ibT("Types")))
 			typesVal = *fromField;
 	}
 	return typesVal;
@@ -38,8 +38,8 @@ ibClassID ReadTypeId(const ibDataNode& entry)
 	// EITHER SPELLING OF THE ID. It is written as text now, so that it survives a trip
 	// through JSON (see WriteNode); a configuration written before that holds a number, and
 	// both mean the same thing.
-	const ibDataValue* tid = entry.FindField(wxT("TypeId"));
-	if (tid == nullptr)
+	auto tid = entry.FindField(ibT("TypeId"));
+	if (!tid)
 		return 0;
 
 	if (tid->Kind() == ibDataKind::String) {
@@ -59,7 +59,7 @@ ibClassID ReadTypeId(const ibDataNode& entry)
 // has none. One source of truth — ibPropertyType and predefined attributes both call.
 bool ibTypeDescriptionMemory::ReadNode(const ibDataValue& value, ibTypeDescription& typeDesc)
 {
-	const std::shared_ptr<ibDataNode>& root = value.AsChild(); // throws on wrong kind; null when absent
+	const auto root = value.AsChild(); // throws on wrong kind; null when absent
 	if (!root)
 		return false;
 
@@ -68,8 +68,8 @@ bool ibTypeDescriptionMemory::ReadNode(const ibDataValue& value, ibTypeDescripti
 	const ibDataValue typesVal = ReadTypeList(*root);
 	if (typesVal.Kind() == ibDataKind::Array) {
 		for (const ibDataValue& item : typesVal.AsArray()) {
-			const std::shared_ptr<ibDataNode>& entry = item.AsChild();
-			if (entry == nullptr)
+			const auto entry = item.AsChild();
+			if (!entry)
 				continue;
 			const ibClassID clsid = ReadTypeId(*entry);
 			if (clsid != 0)
@@ -79,12 +79,12 @@ bool ibTypeDescriptionMemory::ReadNode(const ibDataValue& value, ibTypeDescripti
 
 	// restore the shared qualifier block (overwrites the per-type defaults set above)
 	ibTypeDescription::ibTypeData data;
-	data.SetNumber((unsigned char)root->GetValue<s32>(wxT("Precision")),
-		(unsigned char)root->GetValue<s32>(wxT("Scale")),
-		root->GetValue<bool>(wxT("NonNegative")));
-	data.SetDate((ibDateFractions)root->GetValue<s32>(wxT("DateFraction")));
-	data.SetString((unsigned short)root->GetValue<s32>(wxT("Length")),
-		(ibAllowedLength)root->GetValue<s32>(wxT("AllowedLength")));
+	data.SetNumber((unsigned char)root->GetValue<std::int32_t>(ibT("Precision")),
+		(unsigned char)root->GetValue<std::int32_t>(ibT("Scale")),
+		root->GetValue<bool>(ibT("NonNegative")));
+	data.SetDate((ibDateFractions)root->GetValue<std::int32_t>(ibT("DateFraction")));
+	data.SetString((unsigned short)root->GetValue<std::int32_t>(ibT("Length")),
+		(ibAllowedLength)root->GetValue<std::int32_t>(ibT("AllowedLength")));
 	typeDesc.SetTypeData(data);
 	return true;
 }
@@ -111,20 +111,20 @@ bool ibTypeDescriptionMemory::WriteNode(ibDataValue& value, const ibTypeDescript
 		// No name is written beside it: the id alone is what the schema keeps (Max, 2026-10-12).
 		//
 		// Read back as either — see ReadNode. A configuration written before this holds a number.
-		entry->AddField(wxT("TypeId"),
-			ibDataValue::String(wxString::Format(wxT("%llu"), (unsigned long long)clsid)));
+		entry->AddField(ibT("TypeId"),
+			ibDataValue::String(ibString::Format(ibT("%llu"), (unsigned long long)clsid)));
 		types.push_back(ibDataValue::Child(entry));
 	}
-	root->SetProperty(wxT("Types"), ibDataValue::Array(types));
+	root->SetProperty(ibT("Types"), ibDataValue::Array(types));
 
 	// the qualifier — ONE shared block (ibTypeData holds all three), no per-type branching
 	const ibTypeDescription::ibTypeData& data = typeDesc.GetTypeData();
-	root->SetValue(wxT("Precision"),    (s32)data.GetPrecision());
-	root->SetValue(wxT("Scale"),        (s32)data.GetScale());
-	root->SetValue(wxT("NonNegative"),  data.IsNonNegative());
-	root->SetValue(wxT("DateFraction"), (s32)data.GetDateFraction());
-	root->SetValue(wxT("Length"),       (s32)data.GetLength());
-	root->SetValue(wxT("AllowedLength"),(s32)data.GetAllowedLength());
+	root->SetValue(ibT("Precision"),    (std::int32_t)data.GetPrecision());
+	root->SetValue(ibT("Scale"),        (std::int32_t)data.GetScale());
+	root->SetValue(ibT("NonNegative"),  data.IsNonNegative());
+	root->SetValue(ibT("DateFraction"), (std::int32_t)data.GetDateFraction());
+	root->SetValue(ibT("Length"),       (std::int32_t)data.GetLength());
+	root->SetValue(ibT("AllowedLength"),(std::int32_t)data.GetAllowedLength());
 
 	value = ibDataValue::Child(root);
 	return true;
@@ -160,7 +160,7 @@ namespace {
 
 constexpr unsigned char kTypeDescBufferVersion = 1;
 
-void PutU32(wxMemoryBuffer& out, std::uint32_t v)
+void PutU32(ibMemoryBuffer& out, std::uint32_t v)
 {
 	out.AppendByte(static_cast<char>( v        & 0xFF));
 	out.AppendByte(static_cast<char>((v >>  8) & 0xFF));
@@ -168,7 +168,7 @@ void PutU32(wxMemoryBuffer& out, std::uint32_t v)
 	out.AppendByte(static_cast<char>((v >> 24) & 0xFF));
 }
 
-void PutU64(wxMemoryBuffer& out, std::uint64_t v)
+void PutU64(ibMemoryBuffer& out, std::uint64_t v)
 {
 	PutU32(out, static_cast<std::uint32_t>(v & 0xFFFFFFFFu));
 	PutU32(out, static_cast<std::uint32_t>(v >> 32));
@@ -199,7 +199,7 @@ struct ibTypeDescReader {
 
 } // namespace
 
-void ibTypeDescriptionMemory::WriteBuffer(wxMemoryBuffer& out, const ibTypeDescription& typeDesc)
+void ibTypeDescriptionMemory::WriteBuffer(ibMemoryBuffer& out, const ibTypeDescription& typeDesc)
 {
 	out.SetDataLen(0);
 	out.AppendByte(static_cast<char>(kTypeDescBufferVersion));

@@ -14,7 +14,7 @@
 // session's application data, else the base the thread is bound to).
 
 #include "backend/appData.h"
-#include "backend/server/listener.h"   // ibTlsFiles - the listeners' transport, said in backend.conf
+#include "core/server/listener.h"   // ibTlsFiles - the listeners' transport, said in backend.conf
 
 #include <atomic>
 #include <memory>
@@ -65,8 +65,8 @@ public:
 
 	// How many client connections the application server will hold at once — backend.conf
 	// (ClientConnections). Left out, or 0, that is kDefaultClientConnections, not "no limit".
-	// Above kMostClientConnections the most is used, and the journal says so. Each one keeps a
-	// thread until the network core is asynchronous.
+	// Above kMostClientConnections the most is used, and the journal says so. Each one is a socket's
+	// buffer, not a thread (appserver/clientListener.cpp).
 	static constexpr std::size_t kDefaultClientConnections = 1000;
 	static constexpr std::size_t kMostClientConnections    = 10000;
 	std::size_t      GetClientConnections() const { return m_configClientConnections; }
@@ -79,21 +79,21 @@ public:
 	static std::size_t ResumeSeconds(bool present, long configured);
 
 	// The certificate the listeners speak TLS over — backend.conf (Certificate, PrivateKey); nothing named, they
-	// listen plain on this machine's own addresses only (server/listener.h).
+	// listen plain on this machine's own addresses only (core/server/listener.h).
 	const ibTlsFiles& GetTlsFiles() const     { return m_configTls; }
 
 	ibHelpService*   GetHelpService() const   { return m_helpService.get(); }
-	wxString         GetLocale() const        { return m_locale.GetCanonicalName(); }
-	wxString         GetLocaleName() const    { return m_locale.GetName(); }
+	ibString         GetLocale() const        { return m_locale.GetCanonicalName(); }
+	ibString         GetLocaleName() const    { return m_locale.GetName(); }
 
 	// The platform locale, set once for the process: the first base to ask settles it, and a later base's
 	// wish is not a second locale — wxLocale is process state. False when no catalog could be set at all.
-	bool InitLocale(const wxString& locale);
+	bool InitLocale(const ibString& locale);
 
 	// A count from a settings file — backend.conf, a base's infobase.conf: left out or 0 means the default, and
 	// one below `least` is said in the journal and the default is used. `most` of 0 is no ceiling; a number
 	// above `most` is said and `most` is used.
-	static std::size_t ReadCount(const class wxConfigBase& conf, const wxString& file, const wxString& key, long least,
+	static std::size_t ReadCount(const class wxConfigBase& conf, const ibString& file, const ibString& key, long least,
 		std::size_t byDefault, std::size_t most = 0);
 
 private:
@@ -128,7 +128,7 @@ private:
 	// base the writing thread works for — its session's, else the base it is bound to, else the one whose
 	// service it is — and nothing for a thread that works for none. Never throws, never waits, never writes
 	// to the journal.
-	static wxString GetJournalContext();
+	static ibString GetJournalContext();
 
 	void ReadBackendConf();
 
@@ -143,7 +143,7 @@ private:
 	// the built-in value). ClientConnections is the application server's own ceiling: 0 means
 	// kDefaultClientConnections, and a number above kMostClientConnections is that most. The certificate the
 	// listeners speak TLS over.
-	wxString    m_configLocale;
+	ibString    m_configLocale;
 	std::size_t m_configWorkers            = 0;
 	std::size_t m_configBases              = 0;
 	std::size_t m_configConnections        = 0;

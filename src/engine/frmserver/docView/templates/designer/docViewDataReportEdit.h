@@ -20,7 +20,7 @@ public:
 	// THE ROWS, into the frame's MetaData — the tree as it stands.
 	virtual void OnDraw(ibDataNode& frame) override;
 
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::Report; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::Report; }
 
 	ibDataReportTree* GetMetaTree() const { return m_metaTree.get(); }
 
@@ -44,7 +44,7 @@ public:
 		return m_metaData.get();
 	}
 
-	virtual bool OnCreate(const wxString& path, long flags) override;
+	virtual bool OnCreate(const ibString& path, long flags) override;
 	virtual bool OnNewDocument() override;
 	virtual bool OnCloseDocument() override;
 
@@ -56,10 +56,11 @@ public:
 protected:
 
 	// Its file is the session's temporary one (by its id): what the client uploaded, what it takes down.
-	virtual bool DoOpenDocument(const wxString& filename) override;
-	virtual bool DoSaveDocument(const wxString& filename) override;
+	virtual bool DoOpenDocument(const ibString& filename) override;
+	virtual bool DoSaveDocument(const ibString& filename) override;
 
-	wxDECLARE_NO_COPY_CLASS(ibReportEditDocument);
+	ibReportEditDocument(const ibReportEditDocument&) = delete;
+	ibReportEditDocument& operator=(const ibReportEditDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibReportEditDocument);
 };
 

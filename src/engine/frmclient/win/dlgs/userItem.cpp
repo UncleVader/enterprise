@@ -2,6 +2,7 @@
 
 #include "frmclient/backend/userInfo.h"   // the user — the server's schema behind the desktop's calls
 #include "frmclient/backend/backend_picture.h"
+#include "frmclient/backend/metaCollection/metaObject.h"   // g_metaRoleCLSID - the class whose picture a role shows
 #include "core/picturePredefined.h"
 
 bool ibDialogUserItem::ReadUserData(const ibGuid& userGuid, bool copy)
@@ -20,17 +21,23 @@ bool ibDialogUserItem::ReadUserData(const ibGuid& userGuid, bool copy)
 		// password; it does not inherit the hash.
 		m_bPasswordTouched = false;
 		m_textPassword->SetHint(!copy && userInfo.IsSetPassword()
-			? _("The password is set - type a new one to change it") : wxString());
+			? _("The password is set - type a new one to change it") : ibString());
 
 		if (userInfo.IsSetLanguage()) {
 
 			auto iterator = std::find_if(m_languageArray.begin(), m_languageArray.end(),
 				[userInfo](const auto& pair) { return userInfo.m_strLanguageGuid == pair.second.m_strLanguageGuid; });
 
-			// A language the configuration no longer has: the first one — the desktop's tried the configuration's own
-			// language first, which is the server's to know.
+			// A language the configuration no longer has: the configuration's own language, as the desktop's; none
+			// marked, the first one.
 			if (iterator != m_languageArray.end()) {
 				m_choiceLanguage->SetSelection(iterator->first);
+			}
+			else if (!m_strDefaultLanguageCode.IsEmpty()) {
+				const wxString& strLanguageCode = m_strDefaultLanguageCode;
+				auto iterator_active_metadata = std::find_if(m_languageArray.begin(), m_languageArray.end(),
+					[strLanguageCode](const auto& pair) { return strLanguageCode == pair.second.m_strLanguageCode; });
+				m_choiceLanguage->SetSelection(iterator_active_metadata != m_languageArray.end() ? iterator_active_metadata->first : 0);
 			}
 			else {
 				m_choiceLanguage->SetSelection(0);
@@ -124,14 +131,17 @@ ibDialogUserItem::ibDialogUserItem(wxWindow* parent, wxWindowID id, const wxStri
 	m_choiceLanguage = new wxChoice(m_other, wxID_ANY, wxDefaultPosition, wxDefaultSize);
 
 	// The configuration's roles and languages — the server's, listed beside the users (the desktop's read them off the
-	// active configuration). A role's picture is the server's too, and none is listed: the rows go without one.
+	// active configuration). A role's picture is its class's (ibValueMetaObjectRole::GetIcon is GetIconGroup), asked of
+	// the server by the class id once and kept by the client (ibProtocolPicture). One picture, so one image for all.
+	const wxBitmap picture = ibBackendPicture::GetPicture(g_metaRoleCLSID);
+	const int image = picture.IsOk() ? imageList->Add(picture) : wxNOT_FOUND;
 	for (const ibUserInfo::RoleBrief& role : ibUserInfo::ListRoles()) {
 		ibDataUserRole entry;
 		entry.m_strRoleGuid = role.m_strRoleGuid;
 		entry.m_strRoleName = role.m_strRoleName;
 		entry.m_miRoleId = wxNOT_FOUND;
 		entry.m_mode = role.m_mode;
-		const wxTreeItemId& id = m_choiceRole->AppendItem(root, role.m_strRoleTitle);
+		const wxTreeItemId& id = m_choiceRole->AppendItem(root, role.m_strRoleTitle, image, image);
 		m_choiceRole->SetItemState(id, ibCheckTree::UNCHECKED);
 		m_roleArray.insert_or_assign(id, entry);
 	}
@@ -142,6 +152,8 @@ ibDialogUserItem::ibDialogUserItem(wxWindow* parent, wxWindowID id, const wxStri
 		ibDataUserLanguageItem entry;
 		entry.m_strLanguageGuid = language.m_strLanguageGuid;
 		entry.m_strLanguageCode = language.m_strLanguageCode;
+		if (language.m_default)
+			m_strDefaultLanguageCode = language.m_strLanguageCode;
 
 		const int index = m_choiceLanguage->Append(language.m_strLanguageTitle);
 		m_languageArray.insert_or_assign(index, std::move(entry));

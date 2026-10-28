@@ -20,8 +20,8 @@ public:
 	virtual void Build(const ibSession& session, const ibDataNode& args, ibDataNode& result) const override;
 
 	// Save {Id, HomePage} — the root given that description. Refused, nothing done: no such root, no description.
-	virtual std::function<void()> Command(const ibSession& session, s32 command,
-		const ibDataNode& args, ibProtocolRefusal& refusal, wxString& error) const override;
+	virtual std::function<void()> Command(const ibSession& session, std::int32_t command,
+		const ibDataNode& args, ibProtocol::ibRefusal& refusal, ibString& error) const override;
 };
 
 #endif

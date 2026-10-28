@@ -7,11 +7,12 @@
 #include <mutex>
 #include <vector>
 
-#include <wx/variant.h>
+#include <wx/object.h>      // wxRefCounter — an item's count and the model's
 #include <wx/dynarray.h>
 #include <wx/itemid.h>
 
 #include "core/core.h"              // CORE_API, ibPictureID
+#include "core/variant.h"            // ibVariant — a cell's value, the same on either side
 #include "core/graphics/colour.h"   // ibColour — an item's colours as data; each side converts them to its own
 
 // ⭐ ONE MODEL VIEW FOR BOTH SIDES — the server's tables and the thin client's draw over the same one. The two
@@ -101,7 +102,7 @@ public:
 	// hierarchical render (the front paints it flowing across the columns that have no value of their own).  The
 	// node SELF-describes it (the model is not consulted — the front asks the item directly, like IsContainer);
 	// only a composer GROUP node overrides.  Default: not a group → false.
-	virtual bool GetGroupCaption(wxString& WXUNUSED(caption)) const { return false; }
+	virtual bool GetGroupCaption(ibString& /*caption*/) const { return false; }
 
 	// Item's logical parent inside the data source.  Default: no parent.
 	// Tree-node subclasses override to walk up the live tree; row
@@ -242,7 +243,7 @@ public:
 	}
 	// The GROUP row's caption — asked straight off the held node (like IsContainer), so the model stays out of it.
 	// Empty for a detail / non-group. Guards RawId / fake pointers (never dereferenceable).
-	bool GetGroupCaption(wxString& caption) const {
+	bool GetGroupCaption(ibString& caption) const {
 		return m_mode == Mode::Refcounted && m_id->GetGroupCaption(caption);
 	}
 	ibDataViewItem GetParentItem() const;
@@ -348,7 +349,7 @@ public:
 	// wxALIGN_LEFT, wxALIGN_CENTER_HORIZONTAL or wxALIGN_RIGHT and replaces the column's horizontal one.
 	void SetUnderlined(bool set) { m_underlined = set; }
 	void SetPointSize(int size) { m_pointSize = size; }
-	void SetFaceName(const wxString& face) { m_face = face; }
+	void SetFaceName(const ibString& face) { m_face = face; }
 	void SetAlignment(int alignment) { m_alignment = alignment; }
 
 	// accessors
@@ -363,7 +364,7 @@ public:
 	bool GetStrikethrough() const { return m_strikethrough; }
 	bool GetUnderlined() const { return m_underlined; }
 	int GetPointSize() const { return m_pointSize; }
-	const wxString& GetFaceName() const { return m_face; }
+	const ibString& GetFaceName() const { return m_face; }
 
 	bool HasBackgroundColour() const { return m_bgColour.IsOk(); }
 	const ibColour& GetBackgroundColour() const { return m_bgColour; }
@@ -383,7 +384,7 @@ private:
 	ibColour m_bgColour;
 	bool     m_underlined = false;
 	int      m_pointSize = 0;                 // 0 = the view's own
-	wxString m_face;                          // empty = the view's own
+	ibString m_face;                          // empty = the view's own
 	int      m_alignment = wxALIGN_INVALID;   // wxALIGN_INVALID = the column's own
 };
 
@@ -391,15 +392,15 @@ private:
 // ibDataViewModel
 // ---------------------------------------------------------
 
-typedef wxVector<ibDataViewModelNotifier*> ibDataViewModelNotifiers;
+typedef std::vector<ibDataViewModelNotifier*> ibDataViewModelNotifiers;
 
 class CORE_API ibDataViewModel : public wxRefCounter
 {
 public:
 	ibDataViewModel();
 
-	// get value into a wxVariant
-	virtual void GetValue(wxVariant& variant,
+	// ⭐ A CELL'S VALUE IS A VARIANT — the engine's ibValue is one and goes in as it is, the client's is one too.
+	virtual void GetValue(ibVariant& value,
 		const ibDataViewItem& item, unsigned int col) const = 0;
 
 	// return true if the given item has a value to display in the given
@@ -414,28 +415,28 @@ public:
 	// model to update the control, ChangeValue() does it on its own while
 	// SetValue() does not -- so while you will override SetValue(), you should
 	// be usually calling ChangeValue()
-	virtual bool SetValue(const wxVariant& variant,
+	virtual bool SetValue(const ibVariant& value,
 		const ibDataViewItem& item,
 		unsigned int col) = 0;
 
-	bool ChangeValue(const wxVariant& variant,
+	bool ChangeValue(const ibVariant& value,
 		const ibDataViewItem& item,
 		unsigned int col)
 	{
-		return SetValue(variant, item, col) && ValueChanged(item, col);
+		return SetValue(value, item, col) && ValueChanged(item, col);
 	}
 
 	// Get text attribute, return false of default attributes should be used
-	virtual bool GetAttr(const ibDataViewItem& WXUNUSED(item),
-		unsigned int WXUNUSED(col),
-		ibDataViewItemAttr& WXUNUSED(attr)) const
+	virtual bool GetAttr(const ibDataViewItem& /*item*/,
+		unsigned int /*col*/,
+		ibDataViewItemAttr& /*attr*/) const
 	{
 		return false;
 	}
 
 	// Override this if you want to disable specific items
-	virtual bool IsEnabled(const ibDataViewItem& WXUNUSED(item),
-		unsigned int WXUNUSED(col)) const
+	virtual bool IsEnabled(const ibDataViewItem& /*item*/,
+		unsigned int /*col*/) const
 	{
 		return true;
 	}
@@ -464,7 +465,7 @@ public:
 	}
 
 	// Is the container just a header or an item with all columns
-	virtual bool HasContainerColumns(const ibDataViewItem& WXUNUSED(item)) const
+	virtual bool HasContainerColumns(const ibDataViewItem& /*item*/) const
 	{
 		return false;
 	}
@@ -520,6 +521,22 @@ public:
 		const ibDataViewItem& anchor, int count, ibDataViewItemArray& out) const {
 		(void)parent; (void)anchor; (void)count; (void)out;
 		return 0;
+	}
+	// The first page and up to `before` rows ahead of it, in that order — what a reset that keeps
+	// its row mid-view reads. `above` is how many of `out` stand before the page; the return is the
+	// page's own count, as GetFirstFetch's. Here the two reads it is made of; a model whose source is
+	// across a wire answers both in one.
+	virtual unsigned int GetAroundFetch(const ibDataViewItem& parent,
+		const ibDataViewItem& anchor, int count, int before, ibDataViewItemArray& out,
+		unsigned int& above) const {
+		above = 0;
+		ibDataViewItemArray page;
+		const unsigned int n = GetFirstFetch(parent, anchor, count, page);
+		if (before > 0 && n > 0)
+			above = GetPrevFetch(parent, page[0], before, out);
+		for (unsigned int i = 0; i < page.GetCount(); ++i)
+			out.Add(page[i]);
+		return n;
 	}
 
 	// Is this model paged (has a `Get*Fetch` cursor source backing it)?
@@ -633,7 +650,8 @@ public:
 
 	int GetViewCount() const { return m_notifiers.size(); }
 
-	// default compare function
+	// The default order is the items' own: sorting by a value is the fetch's (the composer's ORDER BY), and the core
+	// reads no value to compare.
 	virtual int Compare(const ibDataViewItem& item1, const ibDataViewItem& item2,
 		unsigned int column, bool ascending) const;
 	virtual bool HasDefaultCompare() const { return false; }
@@ -654,7 +672,7 @@ public:
 	// of its first column, after the tree's expander, the way it draws the expander; the cell renderers never
 	// see it. Asked of a cell instead (the cell's attributes), it was asked once per COLUMN of every row on every
 	// paint, and scrolling a list slowed down (2026-09-22). 0 = the row shows none.
-	virtual ibPictureID GetRowPicture(const ibDataViewItem& WXUNUSED(item)) const { return 0; }
+	virtual ibPictureID GetRowPicture(const ibDataViewItem& /*item*/) const { return 0; }
 
 protected:
 	// Dtor is protected because the objects of this class must not be deleted,
@@ -662,15 +680,6 @@ protected:
 	// outlive the model it is reading.
 	virtual ~ibDataViewModel();
 
-
-	// Helper function used by the default Compare() implementation to compare
-	// values of types it is not aware about. Can be overridden in the derived
-	// classes that use columns of custom types.
-	virtual int DoCompareValues(const wxVariant& WXUNUSED(value1),
-		const wxVariant& WXUNUSED(value2)) const
-	{
-		return 0;
-	}
 
 private:
 	ibDataViewModelNotifiers  m_notifiers;

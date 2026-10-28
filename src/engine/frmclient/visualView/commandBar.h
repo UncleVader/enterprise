@@ -12,8 +12,8 @@
 
 class ibAuiToolBar;
 
-// A COMMAND BAR — the State's CommandBar of a form, a table or a spreadsheet, drawn: the desktop's toolbar of a
-// command bar (frontend/visualView/layers/commandBar.cpp, BuildCommandBarToolBar) over the entries the server wrote,
+// A COMMAND BAR — the State's CommandBar of a form, a table or a spreadsheet, drawn: the old desktop's toolbar of a
+// command bar (BuildCommandBarToolBar) over the entries the server wrote,
 // not the commands it resolves. A press goes back as Command {Id[, Member]} to whoever the bar is — its owner's
 // `sendCommand` sends it.
 //
@@ -45,7 +45,7 @@ private:
 
 	ibAuiToolBar*       m_bar = nullptr;   // the parent's window
 	const ibSendCommand m_sendCommand;
-	std::string         m_shape;           // the entries as last built, less what is enabled
+	ibString            m_shape;           // the entries as last built, less what is enabled
 	ibProtocolNode      m_entries;         // a copy — a group's commands are read from it when it is pressed
 };
 

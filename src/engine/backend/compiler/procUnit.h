@@ -251,7 +251,7 @@ public:
 	// overload — accepting Local and Export and nothing else:
 	//
 	//     for (const auto& v : bc.m_listVar)
-	//         if ((v.IsLocal() || v.IsExport()) && stringUtils::CompareString(name, v.m_strRealName))
+	//         if ((v.IsLocal() || v.IsExport()) && stringUtils::IsSameAs(name, v.m_strRealName))
 	//             unit.GetPropVal((long)v, value);
 	//
 	// (job/jobRunByteCode.cpp does exactly this to carry a run's `Result` back.)
@@ -311,7 +311,7 @@ protected:
 	//    frame's own storage, which is why an out-of-range index read plausible
 	//    rubbish instead of faulting. A frame knows its own width; the copy did not.
 	ibRunContext** m_ppArrayContext = {};
-	ibProcUnit** m_ppArrayCode = {}; //pointers to arrays of executable modules (0 - current module, 1 and higher - parent modules)
+	std::unique_ptr<ibProcUnit*[]> m_ppArrayCode; //pointers to arrays of executable modules (0 - current module, 1 and higher - parent modules)
 	// "Body already executed" flag — set when Execute runs the module body
 	// (bDelta), cleared in Reset(). Marks the frame DIRTY so a repeat Execute on
 	// the same bytecode rebuilds instead of reusing locals left live by the prior

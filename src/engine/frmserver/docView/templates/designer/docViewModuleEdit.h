@@ -18,14 +18,19 @@ public:
 	ibModuleTextView() : ibMetaView() {}
 
 	virtual void OnDraw(ibDataNode& frame) override;
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::Module; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::Module; }
 	// The text as the metaobject keeps it ({Text}); what the desktop's code editor asked the configuration, by the
-	// request's Kind (ibProtocolModuleRequest) — the names at the editor's caret, a call's form, the default procedures.
+	// request's Kind (ibProtocol::ibView::ibModule::ibRequest) — the names at the editor's caret, a call's form, the default procedures.
 	virtual bool Fetch(const ibDataNode& request, ibDataNode& response) override;
 	// Typing started (Input) — the configuration modified, as the desktop's editor marked it on the first key; the
 	// text the person typed, handed over (Change {Text}) — the module's from then on; the module checked (Command
 	// {Id: SyntaxControl}).
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
+
+private:
+
+	// Whether the text rode a frame already (OnDraw) — once, in the frame that opens the tab.
+	bool m_textDrawn = false;
 
 	wxDECLARE_DYNAMIC_CLASS(ibModuleTextView);
 };
@@ -53,7 +58,8 @@ private:
 	// module's close after its gate, so the document goes with it.
 	bool m_closeAllowed = false;
 
-	wxDECLARE_NO_COPY_CLASS(ibModuleTextDocument);
+	ibModuleTextDocument(const ibModuleTextDocument&) = delete;
+	ibModuleTextDocument& operator=(const ibModuleTextDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibModuleTextDocument);
 };
 

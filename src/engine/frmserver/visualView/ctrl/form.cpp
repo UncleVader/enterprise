@@ -56,7 +56,7 @@ ibValueForm::~ibValueForm()
 	// docs/private/record-locks.md Phase B.3.
 }
 
-bool ibValueForm::DispatchEvent(const ibFormID& controlId, ibProtocolEvent event, const ibDataNode& args)
+bool ibValueForm::DispatchEvent(const ibFormID& controlId, ibProtocol::ibEvent::ibKind event, const ibDataNode& args)
 {
 	ibValueFrame* const control = controlId == GetControlID() ? this : FindControlByID(controlId);
 	if (control == nullptr)
@@ -73,14 +73,14 @@ bool ibValueForm::DispatchEvent(const ibFormID& controlId, ibProtocolEvent event
 	for (ibValueFrame* node = control; node != nullptr; node = node->GetParent()) {
 		ibDataNode state;
 		node->OnUpdate(state, host);
-		const ibDataValue* enabled = state.FindField(ibProtocolName::Enabled);
-		const ibDataValue* visible = state.FindField(ibProtocolName::Visible);
-		if ((enabled != nullptr && !enabled->AsBool()) || (visible != nullptr && !visible->AsBool()))
+		auto enabled = state.FindField(ibProtocol::ibForm::ibState::Enabled);
+		auto visible = state.FindField(ibProtocol::ibForm::ibState::Visible);
+		if ((enabled && !enabled->AsBool()) || (visible && !visible->AsBool()))
 			return false;
 	}
 
 	// Picked out — the client's click on it, as the window host's was.
-	if (event == ibProtocolEvent::Focus) {
+	if (event == ibProtocol::ibEvent::ibKind::Focus) {
 		SetActiveControl(control);
 		host->SelectControl(control);
 		return true;
@@ -96,14 +96,14 @@ void ibValueForm::OnUpdate(ibDataNode& state, ibVisualHost* host)
 	// update of the form has its tables read their rows again (UpdateForm), which no frame drawn means.
 	RefreshLockBadge();
 
-	state.SetValue(ibProtocolName::Title, GetControlTitle());
-	state.SetValue(ibProtocolName::Enabled, IsFormEnabled());
-	state.SetValue(wxT("ViewOnly"), IsViewOnly());
-	state.SetValue(ibProtocolName::Modified, IsModified());
+	state.SetValue(ibProtocol::ibForm::ibState::Title, GetControlTitle());
+	state.SetValue(ibProtocol::ibForm::ibState::Enabled, IsFormEnabled());
+	state.SetValue(ibProtocol::ibForm::ibState::ViewOnly, IsViewOnly());
+	state.SetValue(ibProtocol::ibForm::ibState::Modified, IsModified());
 	if (!m_lockBadgeHolder.IsEmpty())
-		state.SetValue(wxT("LockedBy"), m_lockBadgeHolder);
+		state.SetValue(ibProtocol::ibForm::ibState::LockedBy, m_lockBadgeHolder);
 	if (HasCommandBar())
-		GetCommandBar()->Update(state.Child(ibProtocolName::CommandBar));
+		GetCommandBar()->Update(state.Child(ibProtocol::ibForm::ibCommandBar::CommandBar));
 }
 
 //**********************************************************************************
@@ -124,8 +124,8 @@ bool ibValueForm::ReadData(const ibDataNode& node)
 	// Its command bar — the "Layers" block a composite control keeps it in (ibValueWindowComposite::ReadData); a form
 	// saved without it keeps the bar it is made with.
 	if (ibValueCommandBar* bar = GetCommandBar()) {
-		if (const ibDataNode* layers = node.FindChild(ibProtocolName::Layers)) {
-			if (const ibDataNode* barNode = layers->FindChild(ibProtocolName::CommandBar))
+		if (auto layers = node.FindChild(ibProtocol::ibForm::ibCommandBar::Layers)) {
+			if (auto barNode = layers->FindChild(ibProtocol::ibForm::ibCommandBar::CommandBar))
 				bar->ReadData(*barNode);
 		}
 	}
@@ -147,7 +147,7 @@ bool ibValueForm::WriteData(ibDataNode& node) const
 	// …and its command bar, as a composite control writes its own (ibValueWindowComposite::WriteData): a command put on
 	// it was lost with the next drawing of the form (2026-10-15).
 	if (ibValueCommandBar* bar = GetCommandBar())
-		bar->WriteData(node.Child(ibProtocolName::Layers).Child(ibProtocolName::CommandBar));
+		bar->WriteData(node.Child(ibProtocol::ibForm::ibCommandBar::Layers).Child(ibProtocol::ibForm::ibCommandBar::CommandBar));
 	return ibValueFrame::WriteData(node) && attributes;
 }
 
@@ -304,26 +304,26 @@ void ibValueForm::FillFormMembers(ibMemberTable& helper) const
 	// ThisForm / Controls / DataSource are BOUND in formObject (context / export).
 	// The bind is the single source; surfacing to editor + runtime is the
 	// infrastructure's job — no manual AppendProp here.
-	helper.AppendProp(wxT("Modified"), eModified, eSystem);
-	helper.AppendProp(wxT("FormOwner"), eFormOwner, eSystem);
-	helper.AppendProp(wxT("UniqueKey"), eUniqueKey, eSystem);
+	helper.AppendProp(ibT("Modified"), eModified, eSystem);
+	helper.AppendProp(ibT("FormOwner"), eFormOwner, eSystem);
+	helper.AppendProp(ibT("UniqueKey"), eUniqueKey, eSystem);
 
-	helper.AppendProp(wxT("CloseOnChoice"), eCloseOnChoice, eSystem);
-	helper.AppendProp(wxT("CloseOnOwnerClose"), eCloseOnOwnerClose, eSystem);
-	helper.AppendProp(wxT("ReadOnly"), eReadOnly, eSystem);   // runtime read/write — open a form read-only (or read the mode)
-	helper.AppendProp(wxT("CurrentItem"), eCurrentItem, eSystem);   // the control in focus (read only)
+	helper.AppendProp(ibT("CloseOnChoice"), eCloseOnChoice, eSystem);
+	helper.AppendProp(ibT("CloseOnOwnerClose"), eCloseOnOwnerClose, eSystem);
+	helper.AppendProp(ibT("ReadOnly"), eReadOnly, eSystem);   // runtime read/write — open a form read-only (or read the mode)
+	helper.AppendProp(ibT("CurrentItem"), eCurrentItem, eSystem);   // the control in focus (read only)
 
-	helper.AppendProc(wxT("Show"), wxT("Show()"));
-	helper.AppendProc(wxT("Activate"), wxT("Activate()"));
-	helper.AppendProc(wxT("Update"), wxT("Update()"));
-	helper.AppendProc(wxT("Close"), wxT("Close()"));
-	helper.AppendFunc(wxT("IsShown"), wxT("IsShown()"));
-	helper.AppendProc(wxT("AttachIdleHandler"), 3, wxT("AttachIdleHandler(procedureName : string, interval : number, single : boolean)"));
-	helper.AppendProc(wxT("DetachIdleHandler"), 1, wxT("DetachIdleHandler(procedureName : string)"));
-	helper.AppendProc(wxT("NotifyChoice"), 1, wxT("NotifyChoice(value)"));
+	helper.AppendProc(ibT("Show"), ibT("Show()"));
+	helper.AppendProc(ibT("Activate"), ibT("Activate()"));
+	helper.AppendProc(ibT("Update"), ibT("Update()"));
+	helper.AppendProc(ibT("Close"), ibT("Close()"));
+	helper.AppendFunc(ibT("IsShown"), ibT("IsShown()"));
+	helper.AppendProc(ibT("AttachIdleHandler"), 3, ibT("AttachIdleHandler(procedureName : string, interval : number, single : boolean)"));
+	helper.AppendProc(ibT("DetachIdleHandler"), 1, ibT("DetachIdleHandler(procedureName : string)"));
+	helper.AppendProc(ibT("NotifyChoice"), 1, ibT("NotifyChoice(value)"));
 	// ⭐ IS EVERY REQUIRED ATTRIBUTE FILLED — see ibValueForm::CheckFilling. A FUNCTION, because the
 	// answer is the point: it reports what is missing and lets the caller decide to stop.
-	helper.AppendFunc(wxT("CheckFilling"), wxT("CheckFilling()"));
+	helper.AppendFunc(ibT("CheckFilling"), ibT("CheckFilling()"));
 
 	// Module exports AND the context binds (ThisForm.Controls / DataSource) are
 	// surfaced as the helper's tail by the descriptor's ExportThunk (autobind under
@@ -417,17 +417,12 @@ bool ibValueForm::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 		// Bound handle (Controls / DataSource) — resolve the live bind value directly. Works in the
 		// Designer (no ProcUnit) and as a runtime fallback.
 		//
-		// The bound cell is an EMBEDDED member, NOT a heap object with its own ref count: ThisForm =
-		// the form itself; Controls = m_formCollectionControl; DataSource / <attr> = &m_value of the
-		// attribute wrapper. Its ref count is 0. So take `bound` as a CONST pointer — the assignment
-		// then binds a NON-owning reference (operator=(const ibValue*) -> TYPE_CONST_REFFER). An owning
-		// ibValue* (IncrRef now, DecrRef -> delete this on destruct) would drive the member to 0 and
-		// `delete` a member pointer, corrupting the heap (crash: expanding thisForm.DataSource in the
-		// debugger watch).
-		if (const ibValue* bound = GetBoundValue(GetPropName(lPropNum))) {
-			pvarPropVal = bound;
+		// The form module compiles DataSource as a property of ThisForm, so
+		// `DataSource.B = ...` arrives here, and so does `ThisForm.DataSource`.
+		// The cell is an embedded member. Copy the reference it already holds;
+		// a read-only slot answers false instead of leaving the previous value.
+		if (GetBoundValue(GetPropName(lPropNum), pvarPropVal))
 			return true;
-		}
 	}
 	else if (lPropAlias == eProperty || lPropAlias == eEvent) {
 		// Properties + the Events container come from ibValueFrame's surface.
@@ -527,6 +522,13 @@ bool ibValueForm::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibVal
 
 	return ibRuntimeModuleDataObject::ExecAsFunc(
 		GetMethodName(lMethodNum), pvarRetValue, paParams, lSizeArray
+	);
+}
+
+bool ibValueForm::GetParamDefValue(const long lMethodNum, const long lParamNum, ibValue& pvarParamDefValue) const
+{
+	return ibRuntimeModuleDataObject::GetParamDefValue(
+		GetMethodName(lMethodNum), lParamNum, pvarParamDefValue
 	);
 }
 

@@ -21,12 +21,12 @@ void ibValueButton::OnButtonPressed()
 		m_formOwner->RefreshForm();
 }
 
-bool ibValueButton::OnClientEvent(ibProtocolEvent event, const ibDataNode& args)
+bool ibValueButton::OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args)
 {
-	if (event != ibProtocolEvent::Press)
+	if (event != ibProtocol::ibEvent::ibKind::Press)
 		return ibValueWindow::OnClientEvent(event, args);
-	if (args.FindField(wxT("Member")) != nullptr)
-		OnButtonPressed(static_cast<size_t>(args.GetValue<s32>(wxT("Member"))));
+	if (args.Has(ibProtocol::ibEvent::Member))
+		OnButtonPressed(static_cast<size_t>(args.GetValue<std::int32_t>(ibProtocol::ibEvent::Member)));
 	else
 		OnButtonPressed();
 	return true;

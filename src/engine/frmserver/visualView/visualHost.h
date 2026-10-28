@@ -33,7 +33,7 @@ public:
 	virtual bool IsDesignerHost() const { return false; }
 	// The title bar — the form's caption, as the host shows it: the client's view, as its document's title; the
 	// designer's editor, on the card it draws.
-	virtual void SetCaption(const wxString& strCaption) = 0;
+	virtual void SetCaption(const ibString& strCaption) = 0;
 
 	void CreateVisualHost();
 	bool UpdateVisualHost(class ibDataNode& frame);
@@ -49,6 +49,9 @@ protected:
 	// A control's life as a host takes it — the designer's editor writes a new one's node with them (WriteClasses).
 	void GenerateControl(class ibValueFrame* control, bool firstCreated = false);
 	void RefreshControl(class ibValueFrame* control, class ibDataNode& node);
+	// …and drawn again over the node it was drawn as: its own part read anew, each in it drawn there copied as it was,
+	// one not there (added since) read whole.
+	void RefreshControl(class ibValueFrame* control, class ibDataNode& node, const class ibDataNode& drawn);
 	void ClearControl(class ibValueFrame* control);
 
 private:
@@ -96,7 +99,7 @@ public:
 	// THE DOCUMENT'S TITLE FROM THE FORM'S CAPTION, the desktop host's own (ibVisualHostClient::SetCaption): a
 	// caption the form has is the title; without one, what its source object says of itself (a new object's form
 	// included), else the form's synonym. What a person reads the document as — its tab, a question about it.
-	virtual void SetCaption(const wxString& strCaption) override;
+	virtual void SetCaption(const ibString& strCaption) override;
 
 	// THE SAME DOC/VIEW, A FACADE OVER THE FORM'S ACTIVE CONTROL (ibValueForm::GetActiveControl): when it holds
 	// a view of its own (ibValueFrame::GetControlView — the grid box, the text box), activating the form
@@ -132,7 +135,7 @@ public:
 
 	virtual bool IsVisualDemonstrationDoc() const { return false; }
 
-	virtual bool OnCreate(const wxString& WXUNUSED(path), long flags) override;
+	virtual bool OnCreate(const ibString& /*path*/, long flags) override;
 	virtual bool OnCloseDocument() override;
 
 	virtual bool IsCloseOnOwnerClose() const override;

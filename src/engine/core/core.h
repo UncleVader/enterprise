@@ -1,36 +1,10 @@
 #ifndef _CORE_CORE_H__
 #define _CORE_CORE_H__
 
-#include <wx/defs.h>   // WXEXPORT / WXIMPORT — every header of the core includes this one
-
 // THE SHARED MEANINGS — what the engine (backend) and its clients (frmclient, the protocol's sides) mean by the same
 // words: the class ids and the ids of the configuration, the kinds of a value, a text, a date, a guid. Under both, and
 // knowing neither: nothing here reads a base, runs a script or draws a window (docs/private/client-protocol-arc.md).
-#if defined(CORE_EXPORTS)
-#define CORE_API WXEXPORT
-#else
-#define CORE_API WXIMPORT
-#endif
-
-// `inline` IS A HINT AND THE INLINER DECLINES IT under a size budget — which it
-// does exactly where it hurts, inside the big dispatch functions. procUnit.cpp
-// found this first (its note: "the disassembly says so" — a two-instruction body
-// still emitted a call from a 27 KB function) and defined these locally; they
-// live here now because the second caller found the same wall, in
-// ibNumber::Compare on the value comparator's hot arm.
-//
-// Reach for IB_FORCEINLINE only with a disassembly in hand. A forced body is
-// pasted into EVERY caller, so the win has to be real and the body small.
-#if defined(_MSC_VER)
-#  define IB_FORCEINLINE __forceinline
-#  define IB_NOINLINE    __declspec(noinline)
-#elif defined(__GNUC__) || defined(__clang__)
-#  define IB_FORCEINLINE inline __attribute__((always_inline))
-#  define IB_NOINLINE    __attribute__((noinline))
-#else
-#  define IB_FORCEINLINE inline
-#  define IB_NOINLINE
-#endif
+#include "core/coreApi.h"   // CORE_API, ibChar, ibT, IB_FORCEINLINE
 
 #include <cstdint>
 
@@ -39,7 +13,7 @@
 // The UNDEFINED value type's clsid — the canonical "no concrete type"; base-level so low-level code can name it.
 constexpr ibClassID g_valueUndefinedCLSID = primitive_to_clsid("VL_UNDF");
 
-// …and the primitives' — what every value is (anyValue.h), named the same by the engine and the client.
+// …and the primitives' — what every value is (variant.h), named the same by the engine and the client.
 constexpr ibClassID g_valueBooleanCLSID = primitive_to_clsid("VL_BOOL");
 constexpr ibClassID g_valueNumberCLSID = primitive_to_clsid("VL_NUMB");
 constexpr ibClassID g_valueDateCLSID = primitive_to_clsid("VL_DATE");
@@ -79,7 +53,7 @@ typedef int ibActionID;
 // must likewise keep bit 12 clear.
 constexpr ibActionID eStartEditingFlag = 0x1000;
 
-typedef uint64_t ibPictureID;   // same base as ibClassID / u64 — see the note in clsid.h
+typedef uint64_t ibPictureID;   // same base as ibClassID / std::uint64_t — see the note in clsid.h
 typedef unsigned int ibVersionID;
 
 //*******************************************************************************************
@@ -128,6 +102,27 @@ constexpr ibClassID GetIDByVT(ibValueTypes valueType) {
 	}
 }
 
+// THE WIDEST NUMBER AND THE LONGEST STRING a type may be qualified with — `Number(32)`, `String(1024)`. The engine's
+// and the client's: the query's parser checks a CAST against them on either side.
+#define MAX_PRECISION_NUMBER 32
+#define MAX_LENGTH_STRING 1024
+
+// THE PRIMITIVE'S NAME AS THE LANGUAGE WRITES IT — the `Number` of `New TypeDescription("Number")` and of a query's
+// `CAST(… AS Number(15, 2))`; nullptr for a kind that is no primitive. ONE TABLE: the engine registers its primitives
+// by these words (backend/compiler/value.cpp, PRIMITIVE_TYPE_REGISTER) and ibValue::GetNameObjectFromVT answers by
+// it, so the name a class is known by cannot part from the one the query's parser reads.
+constexpr const char* GetNameObjectFromVT(ibValueTypes valueType) {
+	switch (valueType) {
+	case ibValueTypes::TYPE_EMPTY: return "Undefined";
+	case ibValueTypes::TYPE_BOOLEAN: return "Boolean";
+	case ibValueTypes::TYPE_NUMBER: return "Number";
+	case ibValueTypes::TYPE_DATE: return "Date";
+	case ibValueTypes::TYPE_STRING: return "String";
+	case ibValueTypes::TYPE_NULL: return "Null";
+	default: return nullptr;
+	}
+}
+
 // What a date keeps — the date, both, the time. Here, beside the value types, because the type
 // description keeps it (typeDescription.h) and the format string reads it (formatString.h).
 enum ibDateFractions {
@@ -161,12 +156,29 @@ enum ibCtorObjectTypeEvent {
 // more than one place writes into that node: the value base writes the primitives, an enumeration
 // writes its member from the template that defines it, the client reads what the server wrote. Two
 // spellings of the same key is how a value gets written under one name and read under another.
-inline const wxChar* const kValueFieldClsid = wxT("t");   // the type — written and read FIRST
-inline const wxChar* const kValueFieldData  = wxT("v");   // the payload
+inline const ibChar* const kValueFieldClsid = ibT("t");   // the type — written and read FIRST
+inline const ibChar* const kValueFieldData  = ibT("v");   // the payload
+
+// THE CLIPBOARD'S FORMATS — what a copied object is put on the system's clipboard under. Here, not with a designer,
+// because both designers and the client copy and paste by them: one window pastes what another copied, so the
+// name a copy goes under cannot part from the one a paste asks for.
+#define oes_clipboard_metadata	wxT("oes_clipboard_metadata")
+#define oes_clipboard_frame		wxT("oes_clipboard_frame")
+#define oes_clipboard_interface	wxT("oes_clipboard_interface")
+#define oes_clipboard_role		wxT("oes_clipboard_role")
+#define oes_clipboard_template	wxT("oes_clipboard_template")
+#define oes_clipboard_attribute	wxT("oes_clipboard_attribute")
+#define oes_clipboard_command	wxT("oes_clipboard_command")
+// A command of a control's command bar — on the system's clipboard as the others are: the desktop held it in its process
+// (commandBar.cpp's s_commandClipboard), out of reach of another window.
+#define oes_clipboard_command_bar_item	wxT("oes_clipboard_command_bar_item")
 
 //*******************************************************************************************
 
 #define COMPONENT_TYPE_ABSTRACT		 0
 #define COMPONENT_TYPE_METADATA		 COMPONENT_TYPE_ABSTRACT
+
+// _() and its kin over the engine's own catalogs - every unit that says _() includes this one.
+#include "core/localization/dictionary.h"
 
 #endif

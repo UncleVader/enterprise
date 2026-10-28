@@ -31,7 +31,8 @@
 
 #if wxUSE_DOC_VIEW_ARCHITECTURE
 
-#include <wx/tokenzr.h>
+#include "core/fileSystem.h"        // ibPathOf — a template's extension
+#include "core/stringTokenizer.h"
 #include <wx/filename.h>
 #include <wx/scopeguard.h>
 #include <memory>
@@ -44,10 +45,11 @@ namespace
 // Extracted from wx/src/common/docview.cpp's anonymous-namespace helper; used
 // by ibDocTemplate::FileMatchesTemplate. Kept private to this TU so it
 // doesn't leak through docManager.h.
-wxString FindExtension(const wxString& path)
+ibString FindExtension(const ibString& path)
 {
-	wxString ext;
-	wxFileName::SplitPath(path, nullptr, nullptr, &ext);
+	ibString ext(ibPathOf(path).extension().wstring());
+	if (!ext.IsEmpty())
+		ext.Remove(0, 1);   // the dot
 
 	// VZ: extensions are considered not case sensitive — is this really a good
 	//     idea?
@@ -61,12 +63,12 @@ wxString FindExtension(const wxString& path)
 // ----------------------------------------------------------------------------
 
 ibDocTemplate::ibDocTemplate(ibDocManager *manager,
-                             const wxString& descr,
-                             const wxString& filter,
-                             const wxString& dir,
-                             const wxString& ext,
-                             const wxString& docTypeName,
-                             const wxString& viewTypeName,
+                             const ibString& descr,
+                             const ibString& filter,
+                             const ibString& dir,
+                             const ibString& ext,
+                             const ibString& docTypeName,
+                             const ibString& viewTypeName,
                              wxClassInfo *docClassInfo,
                              wxClassInfo *viewClassInfo,
                              long flags)
@@ -91,7 +93,7 @@ ibDocTemplate::~ibDocTemplate()
 }
 
 // Tries to dynamically construct an object of the right class.
-ibDocument *ibDocTemplate::CreateDocument(const wxString& path, long flags)
+ibDocument *ibDocTemplate::CreateDocument(const ibString& path, long flags)
 {
 	// InitDocument() is supposed to delete the document object if its
 	// initialization fails so don't use unique_ptr<> here: this is fragile
@@ -106,7 +108,7 @@ ibDocument *ibDocTemplate::CreateDocument(const wxString& path, long flags)
 }
 
 bool
-ibDocTemplate::InitDocument(ibDocument* doc, const wxString& path, long flags)
+ibDocTemplate::InitDocument(ibDocument* doc, const ibString& path, long flags)
 {
 	wxScopeGuard guard = wxMakeGuard([&, this]()
 	{
@@ -160,14 +162,14 @@ ibView *ibDocTemplate::CreateView(ibDocument *doc, long flags)
 
 // The default (very primitive) format detection: check is the extension is
 // that of the template
-bool ibDocTemplate::FileMatchesTemplate(const wxString& path)
+bool ibDocTemplate::FileMatchesTemplate(const ibString& path)
 {
-	wxStringTokenizer parser(GetFileFilter(), wxT(";"));
-	wxString anything = wxT("*");
+	ibStringTokenizer parser(GetFileFilter(), ibT(";"));
+	ibString anything = ibT("*");
 	while (parser.HasMoreTokens())
 	{
-		wxString filter = parser.GetNextToken();
-		wxString filterExt = FindExtension(filter);
+		ibString filter = parser.GetNextToken();
+		ibString filterExt = FindExtension(filter);
 		if (filter.IsSameAs(anything) ||
 		    filterExt.IsSameAs(anything) ||
 		    filterExt.IsSameAs(FindExtension(path)))
@@ -203,12 +205,12 @@ ibDocTemplateVector ibDocManager::GetTemplatesVector() const
 // ----------------------------------------------------------------------------
 
 ibMetaDocTemplate::ibMetaDocTemplate(ibDocManager* manager,
-                                     const wxString& descr,
-                                     const wxString& filter,
-                                     const wxString& dir,
-                                     const wxString& ext,
-                                     const wxString& docTypeName,
-                                     const wxString& viewTypeName,
+                                     const ibString& descr,
+                                     const ibString& filter,
+                                     const ibString& dir,
+                                     const ibString& ext,
+                                     const ibString& docTypeName,
+                                     const ibString& viewTypeName,
                                      wxClassInfo* docClassInfo,
                                      wxClassInfo* viewClassInfo,
                                      long flags)
@@ -221,7 +223,7 @@ ibMetaDocTemplate::ibMetaDocTemplate(ibDocManager* manager,
 	// metadata-keyed templates registered through AddDocTemplate(ibClassID,...).
 }
 
-bool ibMetaDocTemplate::InitDocument(ibDocument* doc, const wxString& path, long flags)
+bool ibMetaDocTemplate::InitDocument(ibDocument* doc, const ibString& path, long flags)
 {
 	wxTRY
 	{
@@ -261,7 +263,7 @@ ibMetaDocument* ibDocManager::GetCurrentMetaDocument() const
 
 // THE BASE SET: what every application's manager has — the shared templates and the shared schemas. An
 // application's own manager adds its own in its ctor (ibDocManagerRuntime, ibDocManagerDesigner).
-ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
+ibDocManager::ibDocManager(long /*flags*/, bool initialize)
 {
 	m_defaultDocumentNameCounter = 1;
 	m_currentView = nullptr;
@@ -281,11 +283,11 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 	AddDocTemplate(g_metaTemplateCLSID,
 		_("Spreadsheet document"), ibSheetFormatMask(), ibSheetFormatExtensions(),
 		_("Spreadsheet Doc"), _("Spreadsheet View"),
-		CLASSINFO(ibSpreadsheetFileDocument), CLASSINFO(ibSpreadsheetEditView),
+		CLASSINFO(ibSheetFileDocument), CLASSINFO(ibSheetView),
 		ibTEMPLATE_VISIBLE);
 
 	AddDocTemplate(g_metaSectionCLSID,
-		_("Help document"), wxT("*.hle"), wxT("hle"),
+		_("Help document"), ibT("*.hle"), ibT("hle"),
 		_("Help Doc"), _("Help View"),
 		CLASSINFO(ibHelpFileDocument), CLASSINFO(ibHelpEditView),
 		ibTEMPLATE_INVISIBLE);
@@ -293,7 +295,7 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 	// Registration journal — no metaobject. Invisible to File→New; reached through
 	// CreateDocument<ibAuditLogDocument>(), which resolves via FindTemplateByDocClassInfo over m_templates.
 	AddDocTemplate(g_picUserActiveCLSID,
-		_("Registration journal"), wxEmptyString, wxEmptyString,
+		_("Registration journal"), ibEmptyString, ibEmptyString,
 		_("Audit Log Doc"), _("Audit Log View"),
 		CLASSINFO(ibAuditLogDocument), CLASSINFO(ibAuditLogView),
 		ibTEMPLATE_INVISIBLE);
@@ -302,58 +304,58 @@ ibDocManager::ibDocManager(long WXUNUSED(flags), bool initialize)
 	// invisible template reached through CreateDocument<ibHomePageDocument>() from ibHomePageDocument::ShowHomePage,
 	// which the client's start calls after the start-up script runs.
 	AddDocTemplate(g_picHomePageCLSID,
-		_("Home page"), wxEmptyString, wxEmptyString,
+		_("Home page"), ibEmptyString, ibEmptyString,
 		_("Home Page Doc"), _("Home Page View"),
 		CLASSINFO(ibHomePageDocument), CLASSINFO(ibHomePageView),
 		ibTEMPLATE_INVISIBLE);
 
 	// Active users — the sessions and the locks; the designer's dialog and the runtime's showed the same tables.
-	RegisterSchema(ibProtocolSchema::ActiveUser, std::make_unique<ibSchemaActiveUser>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::ActiveUser, std::make_unique<ibSchemaActiveUser>());
 	// The registration journal — a tab its command opens; both applications' Administration had it.
-	RegisterSchema(ibProtocolSchema::AuditLog, std::make_unique<ibSchemaAuditLog>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::AuditLog, std::make_unique<ibSchemaAuditLog>());
 	// About — what the client works in; both applications' Help showed it.
-	RegisterSchema(ibProtocolSchema::About, std::make_unique<ibSchemaAbout>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::About, std::make_unique<ibSchemaAbout>());
 	// The configuration's languages — what a translated text is written in; both applications' translation window.
-	RegisterSchema(ibProtocolSchema::Languages, std::make_unique<ibSchemaLanguages>());
+	RegisterSchema(ibProtocol::ibSchema::ibKind::Languages, std::make_unique<ibSchemaLanguages>());
 
 	// The commands every document answers to — and the window's besides, Open, Exit and the edit commands — with the
 	// default keys the desktop's windows gave them (SetDefaultHotKeys) and the pictures its menu showed them with. A
 	// person's own keys are the client's to keep, over these.
-	RegisterCommand(ibDocCommand::Undo,      _("Undo"),       wxT("Ctrl+Z"), ibClientStockPicture::Undo);
-	RegisterCommand(ibDocCommand::Redo,      _("Redo"),       wxT("Ctrl+Y"), ibClientStockPicture::Redo);
-	RegisterCommand(ibDocCommand::Save,      _("Save"),       wxT("Ctrl+S"), ibClientStockPicture::Save);
-	RegisterCommand(ibDocCommand::Close,     _("Close"),      wxEmptyString, ibClientStockPicture::Close);
-	RegisterCommand(ibDocCommand::CloseAll,  _("Close All"),  wxEmptyString, ibClientStockPicture::None);
-	RegisterCommand(ibDocCommand::Open,      _("Open..."),    wxEmptyString, ibClientStockPicture::Open);
-	RegisterCommand(ibDocCommand::Exit,      _("Exit"),       wxEmptyString, ibClientStockPicture::Quit);
-	RegisterCommand(ibDocCommand::Cut,       _("Cut"),        wxT("Ctrl+X"), ibClientStockPicture::Cut);
-	RegisterCommand(ibDocCommand::Copy,      _("Copy"),       wxT("Ctrl+C"), ibClientStockPicture::Copy);
-	RegisterCommand(ibDocCommand::Paste,     _("Paste"),      wxT("Ctrl+V"), ibClientStockPicture::Paste);
-	RegisterCommand(ibDocCommand::Delete,    _("Delete"),     wxEmptyString, ibClientStockPicture::Delete);
-	RegisterCommand(ibDocCommand::SelectAll, _("Select all"), wxT("Ctrl+A"), ibClientStockPicture::None);
-	RegisterCommand(ibDocCommand::SaveAs,    _("Save as..."), wxEmptyString, ibClientStockPicture::SaveAs);
+	RegisterCommand(ibDocCommand::Undo,      _("Undo"),       ibT("Ctrl+Z"), ibClientStockPicture::Undo);
+	RegisterCommand(ibDocCommand::Redo,      _("Redo"),       ibT("Ctrl+Y"), ibClientStockPicture::Redo);
+	RegisterCommand(ibDocCommand::Save,      _("Save"),       ibT("Ctrl+S"), ibClientStockPicture::Save);
+	RegisterCommand(ibDocCommand::Close,     _("Close"),      ibEmptyString, ibClientStockPicture::Close);
+	RegisterCommand(ibDocCommand::CloseAll,  _("Close All"),  ibEmptyString, ibClientStockPicture::None);
+	RegisterCommand(ibDocCommand::Open,      _("Open..."),    ibEmptyString, ibClientStockPicture::Open);
+	RegisterCommand(ibDocCommand::Exit,      _("Exit"),       ibEmptyString, ibClientStockPicture::Quit);
+	RegisterCommand(ibDocCommand::Cut,       _("Cut"),        ibT("Ctrl+X"), ibClientStockPicture::Cut);
+	RegisterCommand(ibDocCommand::Copy,      _("Copy"),       ibT("Ctrl+C"), ibClientStockPicture::Copy);
+	RegisterCommand(ibDocCommand::Paste,     _("Paste"),      ibT("Ctrl+V"), ibClientStockPicture::Paste);
+	RegisterCommand(ibDocCommand::Delete,    _("Delete"),     ibEmptyString, ibClientStockPicture::Delete);
+	RegisterCommand(ibDocCommand::SelectAll, _("Select all"), ibT("Ctrl+A"), ibClientStockPicture::None);
+	RegisterCommand(ibDocCommand::SaveAs,    _("Save as..."), ibEmptyString, ibClientStockPicture::SaveAs);
 }
 
-void ibDocManager::RegisterSchema(ibProtocolSchema kind, std::unique_ptr<ibClientSchema> schema)
+void ibDocManager::RegisterSchema(ibProtocol::ibSchema::ibKind kind, std::unique_ptr<ibClientSchema> schema)
 {
 	m_schemas[kind] = std::move(schema);
 }
 
-void ibDocManager::RegisterCommand(ibDocCommand command, const wxString& title, const wxString& shortcut,
+void ibDocManager::RegisterCommand(ibDocCommand command, const ibString& title, const ibString& shortcut,
 	ibClientStockPicture picture)
 {
 	m_commands[command] = ibDocCommandInfo{ title, shortcut, picture };
 }
 
-const ibClientSchema* ibDocManager::FindSchema(ibProtocolSchema kind) const
+const ibClientSchema* ibDocManager::FindSchema(ibProtocol::ibSchema::ibKind kind) const
 {
 	const auto found = m_schemas.find(kind);
 	return found != m_schemas.end() ? found->second.get() : nullptr;
 }
 
-std::vector<ibProtocolSchema> ibDocManager::GetSchemaKinds() const
+std::vector<ibProtocol::ibSchema::ibKind> ibDocManager::GetSchemaKinds() const
 {
-	std::vector<ibProtocolSchema> kinds;
+	std::vector<ibProtocol::ibSchema::ibKind> kinds;
 	for (const auto& schema : m_schemas)
 		kinds.push_back(schema.first);
 	return kinds;
@@ -365,12 +367,12 @@ std::vector<ibProtocolSchema> ibDocManager::GetSchemaKinds() const
 // ----------------------------------------------------------------------------
 
 void ibDocManager::AddDocTemplate(const ibPictureID& id,
-                                  const wxString& descr,
-                                  const wxString& filter,
-                                  const wxString& dir,
-                                  const wxString& ext,
-                                  const wxString& docTypeName,
-                                  const wxString& viewTypeName,
+                                  const ibString& descr,
+                                  const ibString& filter,
+                                  const ibString& dir,
+                                  const ibString& ext,
+                                  const ibString& docTypeName,
+                                  const ibString& viewTypeName,
                                   wxClassInfo* docClassInfo,
                                   wxClassInfo* viewClassInfo,
                                   long flags)
@@ -385,24 +387,24 @@ void ibDocManager::AddDocTemplate(const ibPictureID& id,
 }
 
 void ibDocManager::AddDocTemplate(const ibPictureID& id,
-                                  const wxString& descr,
-                                  const wxString& filter,
-                                  const wxString& ext,
-                                  const wxString& docTypeName,
-                                  const wxString& viewTypeName,
+                                  const ibString& descr,
+                                  const ibString& filter,
+                                  const ibString& ext,
+                                  const ibString& docTypeName,
+                                  const ibString& viewTypeName,
                                   wxClassInfo* docClassInfo,
                                   wxClassInfo* viewClassInfo,
                                   long flags)
 {
-	AddDocTemplate(id, descr, filter, wxEmptyString, ext,
+	AddDocTemplate(id, descr, filter, ibEmptyString, ext,
 	               docTypeName, viewTypeName,
 	               docClassInfo, viewClassInfo, flags);
 }
 
 void ibDocManager::AddDocTemplate(const ibClassID& clsid,
-                                  const wxString& descr,
-                                  const wxString& filter,
-                                  const wxString& ext,
+                                  const ibString& descr,
+                                  const ibString& filter,
+                                  const ibString& ext,
                                   wxClassInfo* docClassInfo,
                                   wxClassInfo* viewClassInfo)
 {
@@ -410,8 +412,8 @@ void ibDocManager::AddDocTemplate(const ibClassID& clsid,
 	// (always INVISIBLE); SAVE_AS_FILE only when the template can produce
 	// a stand-alone file.
 	auto* docTemplate = new ibMetaDocTemplate(
-		this, descr, filter, wxEmptyString, ext,
-		wxEmptyString, wxEmptyString,
+		this, descr, filter, ibEmptyString, ext,
+		ibEmptyString, ibEmptyString,
 		docClassInfo, viewClassInfo,
 		ibTEMPLATE_INVISIBLE | (!ext.IsEmpty() ? ibTEMPLATE_SAVE_AS_FILE : 0));
 
@@ -426,7 +428,7 @@ void ibDocManager::AddDocTemplate(const ibClassID& clsid,
                                   wxClassInfo* viewClassInfo)
 {
 	AddDocTemplate(clsid,
-	               wxEmptyString, wxEmptyString, wxEmptyString,
+	               ibEmptyString, ibEmptyString, ibEmptyString,
 	               docClassInfo, viewClassInfo);
 }
 
@@ -441,6 +443,20 @@ ibMetaDocTemplate* ibDocManager::FindMetaTemplate(const ibClassID& clsid) const
 			return mt;
 	}
 	return nullptr;
+}
+
+std::vector<ibClassID> ibDocManager::GetMetaTemplateClasses() const
+{
+	std::vector<ibClassID> classes;
+	for (wxList::compatibility_iterator node = m_templates.GetFirst();
+	     node != nullptr; node = node->GetNext())
+	{
+		auto* mt = dynamic_cast<ibMetaDocTemplate*>(
+			static_cast<ibDocTemplate*>(node->GetData()));
+		if (mt != nullptr)
+			classes.push_back(mt->GetClassID());
+	}
+	return classes;
 }
 
 ibDocTemplate* ibDocManager::FindTemplateByDocClassInfo(const wxClassInfo* classInfo) const
@@ -461,6 +477,11 @@ ibDocTemplate* ibDocManager::FindTemplateByDocClassInfo(const wxClassInfo* class
 
 ibMetaDocument* ibDocManager::OpenForm(ibValueMetaObject* metaObject, long flags)
 {
+	// ⭐⭐ WHOSE IT IS, WORKED OUT HERE (the desktop's): an editor of the database's configuration or of a file's belongs
+	// under the document that shows it, one of the session's own to the manager itself. The caller knows WHAT to open;
+	// the owner follows from the object.
+	ibMetaDocument* docParent = FindMetaDataDocument(metaObject->GetMetaData());
+
 	// ⭐⭐ ALREADY OPEN? THEN RAISE IT. This opened UNCONDITIONALLY, so the second Open on the same
 	// module built a rival document over the first: two editors of one text, each unaware of the
 	// other's edits, and whichever was saved last won. It is what made the property panel's Open
@@ -486,13 +507,19 @@ ibMetaDocument* ibDocManager::OpenForm(ibValueMetaObject* metaObject, long flags
 	auto* newDocument = wxDynamicCast(docClassInfo->CreateObject(), ibMetaDocument);
 	wxASSERT(newDocument);
 
+	if (docParent != nullptr)
+		newDocument->SetDocParent(docParent);
+
 	try {
 		newDocument->SetTitle(metaObject->GetModuleName());
 		newDocument->SetFilename(metaObject->GetDocPath());
 		newDocument->SetDocumentTemplate(docTemplate);
 		newDocument->SetMetaObject(metaObject);
 
-		AddDocument(newDocument);
+		// Owned documents (those with a parent) are managed by the parent, not the global doc list — adding them here
+		// would double-delete on close.
+		if (docParent == nullptr)
+			AddDocument(newDocument);
 
 		newDocument->SetIcon(ibPictureDescription(metaObject->GetClassType()));
 
@@ -505,7 +532,7 @@ ibMetaDocument* ibDocManager::OpenForm(ibValueMetaObject* metaObject, long flags
 		return nullptr;
 	}
 	catch (...) {
-		ibJournalError(wxT("docview"), wxT("OpenForm: failed to create document view"));
+		ibJournalError(ibT("docview"), ibT("OpenForm: failed to create document view"));
 		if (GetDocuments().Member(newDocument))
 			newDocument->DeleteAllViews();
 	}

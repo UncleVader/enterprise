@@ -3,7 +3,7 @@
 #
 # The backend is the core engine: compiler, metadata, database layer, debugger.
 # It has NO GUI code. It links against wxBase (wxString, wxDateTime, wxFile,
-# wxSocket, wxThread, etc.) but never against wxCore or any GUI toolkit.
+# wxThread, etc.) but never against wxCore or any GUI toolkit.
 ################################################################################
 
 cmake_minimum_required(VERSION 3.20)
@@ -155,41 +155,19 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# wxWidgets — the backend code currently uses some GUI types (wxIcon, wxFont,
-# wxPoint, wxBitmap) inherited from the Windows build, so we link wxCore too.
-# TODO: refactor backend to truly separate GUI types behind interfaces.
+# wxWidgets — of wx the base only: no window, no image, no font (wxUSE_GUI=0 makes a GUI type a compile error
+# here). A picture, a colour, a font are the core's data (core/graphics); a window's side draws them.
 # ---------------------------------------------------------------------------
+target_compile_definitions(backend PRIVATE wxUSE_GUI=0)
 target_link_libraries(backend
     PUBLIC
         # The shared meanings the engine is written in (ids, texts, numbers, dates, guids) — PUBLIC: every consumer of
         # the engine's headers speaks them too.
         core
         wx::base
-        wx::core
-        wx::net
         wx::xml
-        wx::propgrid
-        wx::aui
-        wx::stc
-        # cpp-httplib's TLS (CPPHTTPLIB_MBEDTLS_SUPPORT is set for the whole build in the root CMakeLists.txt):
-        # PUBLIC, because every consumer that includes httplib.h - the web server, the tests - compiles the
-        # same TLS roads and has to link them.
-        mbedtls
-        mbedx509
-        mbedcrypto
+        # No Mbed TLS: a cipher, a random byte, TLS are the core's (core/crypto, core/net).
 )
-if(WIN32)
-    # The system certificate store, read by the library for a secure connection that names no trusted file.
-    # (ws2_32 and bcrypt come with mbedcrypto itself.)
-    target_link_libraries(backend PUBLIC crypt32)
-endif()
-if(APPLE)
-    # With a TLS backend and Apple's compiler, cpp-httplib reads the keychain for the system's trusted
-    # certificates (CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN, which it defines itself) - and that is
-    # SecTrustSettingsCopyCertificates, in the Security framework. PUBLIC for the reason the mbedtls
-    # libraries are: everything that includes the header compiles the same call.
-    target_link_libraries(backend PUBLIC "-framework Security" "-framework CoreFoundation")
-endif()
 
 # ---------------------------------------------------------------------------
 # Platform libraries
@@ -296,7 +274,7 @@ endif()
 # Target properties
 # ---------------------------------------------------------------------------
 set_target_properties(backend PROPERTIES
-    CXX_STANDARD          17
+    CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS        OFF
     C_STANDARD            11

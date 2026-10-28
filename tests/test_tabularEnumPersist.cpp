@@ -11,7 +11,7 @@
 // (commonObjectSchema.cpp: `t.Add(object->GetQueryColumn())` for both).
 //
 // The actual defect is in how a GRID commits an edited cell:
-// ibComposerNode::SetValue(unsigned int col, const wxVariant& variant, bool)
+// ibComposerNode::SetValue(unsigned int col, const ibVariant& variant, bool)
 // (tabularModel.h) resolves the editor's committed text to a real value via
 // FindValue, then called `cValue.SetValue(cFoundedValue)` to store it. For a
 // reference-kind cell (TYPE_REFFER — any EnumRef/CatalogRef/DocumentRef),
@@ -38,6 +38,7 @@
 #include <wx/init.h>
 
 #include "backend/appData.h"
+#include "backend/compiler/compileCode.h"   // ibCompileCode::GetCodeStyle — put back as it was found
 #include "backend/tabularModel.h"   // ibValueModel::ibComposerNode
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaObject.h"
@@ -60,11 +61,14 @@ constexpr unsigned int kCellCol = 777;   // arbitrary — ibComposerNode is keye
 struct TabularEnumPersist : ::testing::Test {
 	wxInitializer m_wxInit;
 	std::shared_ptr<ibDatabaseLayerSQLite> db;
-	wxString dbPath;
+	ibString dbPath;
 	std::unique_ptr<ibMetaDataConfigurationFile> cfg;
 	ibValueMetaObjectEnumeration* vatRates = nullptr;
 	ibValueMetaObjectEnum* vat10 = nullptr;
 	ibValueMetaObjectEnum* vat20 = nullptr;
+	// RunDatabase sets this thread's code style to the configuration's. The binary runs VES (test_compiler.cpp), so
+	// TearDown puts it back, as the other fixtures that run a configuration do (AcceptanceCatalogs, FiberTrust).
+	const short m_codeStyle = ibCompileCode::GetCodeStyle();
 
 	void SetUp() override {
 		if (!m_wxInit.IsOk())
@@ -107,6 +111,7 @@ struct TabularEnumPersist : ::testing::Test {
 	void TearDown() override {
 		if (cfg) cfg->CloseDatabase();
 		cfg.reset();
+		ibCompileCode::SetCodeStyle(m_codeStyle);
 		if (ibApplicationInstance::Get() != nullptr)
 			ibApplicationInstance::DestroyAppDataEnv();
 		if (db) db->Close();
@@ -118,7 +123,7 @@ struct TabularEnumPersist : ::testing::Test {
 		}
 	}
 
-	static wxString SqliteTypeOf(const wxString& field) {
+	static ibString SqliteTypeOf(const ibString& field) {
 		if (field.EndsWith(wxT("_RRRef"))) return wxT(" BLOB");
 		if (field.EndsWith(wxT("_D")) || field.EndsWith(wxT("_S"))) return wxT(" TEXT");
 		if (field.EndsWith(wxT("_N"))) return wxT(" NUMERIC");
@@ -126,12 +131,12 @@ struct TabularEnumPersist : ::testing::Test {
 	}
 
 	void CreateTable() {
-		wxString list;
-		std::set<wxString> seen;
+		ibString list;
+		std::set<ibString> seen;
 		for (const ibValueMetaObjectAttributeBase* attribute : vatRates->GetGenericAttributeArrayObject()) {
 			if (attribute == nullptr || attribute->GetQueryColumn() == nullptr)
 				continue;
-			for (const wxString& field : ColumnFieldNames(attribute->GetQueryColumn())) {
+			for (const ibString& field : ColumnFieldNames(attribute->GetQueryColumn())) {
 				if (!seen.insert(field).second)
 					continue;
 				list << (list.IsEmpty() ? wxT("") : wxT(", ")) << field << SqliteTypeOf(field);
@@ -143,8 +148,8 @@ struct TabularEnumPersist : ::testing::Test {
 	}
 
 	void Assign(std::vector<ibDmlAssign>& out, const ibBackendQueryColumn* column, const ibValue& value) const {
-		const std::vector<wxString> fields = ColumnFieldNames(column);
-		ibQueryStatement capture(ibQueryStatement::Kind::Delete, wxString(), fields);
+		const std::vector<ibString> fields = ColumnFieldNames(column);
+		ibQueryStatement capture(ibQueryStatement::Kind::Delete, ibString(), fields);
 		int position = 1;
 		ibColumnCodec::WriteValue(column, cfg.get(), value, &capture, position);
 		const std::vector<ibQueryExprPtr>& consts = capture.CapturedValues();
@@ -177,7 +182,7 @@ TEST_F(TabularEnumPersist, ResolveQueryConstant_FindsTheMemberDirectly) {
 
 // The crux: an EMPTY, PROPERLY-TYPED cell (what a freshly-added tabular row starts
 // with, same as object->CreateValue() would hand it) committed through the GRID's
-// generic wxVariant path. Before the fix this THREW ("Attempt to assign a value to
+// generic ibValue path. Before the fix this THREW ("Attempt to assign a value to
 // a write-denied variable") instead of silently no-opping, because the cell's
 // referenced object is read-only by construction and the old code tried to mutate
 // it in place rather than repoint the wrapper — see the file header.
@@ -190,7 +195,7 @@ TEST_F(TabularEnumPersist, GridCommit_ActuallySetsTheChosenMember) {
 
 	// What the dataview grid calls when a person commits an edited cell.
 	bool committed = false;
-	ASSERT_NO_THROW(committed = node.SetValue(kCellCol, wxVariant(wxT("Vat10")), /*notify*/ false))
+	ASSERT_NO_THROW(committed = node.SetValue(kCellCol, ibVariant(ibT("Vat10")), /*notify*/ false))
 		<< "committing a reference/enum pick in a tabular grid must not throw (#482)";
 	EXPECT_TRUE(committed);
 

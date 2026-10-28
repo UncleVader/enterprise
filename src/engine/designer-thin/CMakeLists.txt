@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-# The thin designer — designer.exe as a thin client (mainApp.h says what it is). It links the thin client's core
+# The thin designer — designer-thin.exe, the designer as a thin client (mainApp.h says what it is). It links the thin client's core
 # alone; a file base's server half (fileserver) is loaded by it when one is opened.
 set(DESIGNER_THIN_SOURCES
     mainApp.cpp
@@ -9,6 +9,7 @@ set(DESIGNER_THIN_SOURCES
     backend/debugger/debugClientAsync.cpp
     backend/debugger/debugClientBridge.cpp
     backend/debugger/debugClientQuery.cpp
+    backend/vcs/gitService.cpp
     mainFrame/debugger/debugClientImpl.cpp
     win/editor/codeEditor/codeEditorDesigner.cpp
     win/editor/commonAttributeEditor/commonAttributeEditor.cpp
@@ -32,8 +33,12 @@ set(DESIGNER_THIN_SOURCES
     docManager/templates/docViewAssistant.cpp
     docManager/templates/docViewCommonAttribute.cpp
     docManager/templates/docViewFunctionalOption.cpp
+    docManager/templates/docViewComposer.cpp
     docManager/templates/docViewInterface.cpp
     docManager/templates/docViewRole.cpp
+    docManager/templates/docViewConfigCompare.cpp
+    docManager/templates/docViewMetaFile.cpp
+    mainFrame/configCompare/configCompareModel.cpp
     mainFrame/local/localWindow.cpp
     mainFrame/mainFrameDesigner.cpp
     mainFrame/mainFrameDesignerEvent.cpp
@@ -49,8 +54,7 @@ set(DESIGNER_THIN_SOURCES
     mainFrame/metaTree/treeDataReportEvent.cpp
     mainFrame/metaTree/treeDataReport_impl.cpp
     mainFrame/stack/stackWindow.cpp
-    mainFrame/watch/watchctrl.cpp
-    mainFrame/watch/watchdroptarget.cpp
+    mainFrame/vcs/gitPanel.cpp
     mainFrame/watch/watchWindow.cpp
     syntaxHelper/helpChooserDialog.cpp
     syntaxHelper/helpDetailView.cpp
@@ -68,7 +72,7 @@ set(DESIGNER_THIN_SOURCES
 add_executable(designer-thin ${DESIGNER_THIN_SOURCES})
 
 set_target_properties(designer-thin PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -96,6 +100,5 @@ target_include_directories(designer-thin PRIVATE
 target_link_libraries(designer-thin PRIVATE
     protocol
     frmclient
-    wx::core wx::aui wx::stc wx::adv wx::html wx::xml wx::base
-    wx::net   # the debugger's connections to the runtimes (backend/debugger)
+    wx::core wx::aui wx::stc wx::html wx::qa wx::xml wx::base
 )

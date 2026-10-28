@@ -29,7 +29,7 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 		_("A connected assistant can read the configuration, check syntax and add objects - "
 		  "as you, with your rights. It runs only while your session is open."),
 		wxDefaultPosition, wxDefaultSize, 0);
-	what->Wrap(420);
+	what->Wrap(FromDIP(420));
 	box->Add(what, 0, wxALL, 5);
 
 	wxFlexGridSizer* grid = new wxFlexGridSizer(2, 2, 0, 0);
@@ -79,11 +79,11 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 		_("Any assistant that speaks MCP can connect, from this machine or another on the "
 		  "network. Put this into its server configuration - it is the standard form and needs "
 		  "nothing else:"));
-	howTo->Wrap(420);
+	howTo->Wrap(FromDIP(420));
 	handout->Add(howTo, 0, wxALL, 5);
 
 	m_endpointCtrl = new wxTextCtrl(this, wxID_ANY, wxEmptyString,
-		wxDefaultPosition, wxSize(-1, 130),
+		wxDefaultPosition, FromDIP(wxSize(-1, 190)),   // the eleven lines below, and the scroll bar of the longest
 		wxTE_READONLY | wxTE_MULTILINE | wxTE_DONTWRAP);
 	handout->Add(m_endpointCtrl, 1, wxALL | wxEXPAND, 5);
 
@@ -95,11 +95,11 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 	// so nobody using something else tries it and concludes the server is broken.
 	wxStaticText* orCommand = new wxStaticText(this, wxID_ANY,
 		_("Using Claude Code? This one line does the same thing:"));
-	orCommand->Wrap(420);
+	orCommand->Wrap(FromDIP(420));
 	handout->Add(orCommand, 0, wxTOP | wxLEFT | wxRIGHT, 5);
 
 	m_commandCtrl = new wxTextCtrl(this, wxID_ANY, wxEmptyString,
-		wxDefaultPosition, wxSize(-1, 52),
+		wxDefaultPosition, FromDIP(wxSize(-1, 70)),    // the command wrapped, key included
 		wxTE_READONLY | wxTE_MULTILINE | wxTE_BESTWRAP);
 	handout->Add(m_commandCtrl, 0, wxALL | wxEXPAND, 5);
 
@@ -111,7 +111,7 @@ ibPanelMcpSettings::ibPanelMcpSettings(wxWindow* parent, int id, wxPoint pos, wx
 	wxStaticText* warning = new wxStaticText(this, wxID_ANY,
 		_("Both contain your access key. Whoever holds it can do here everything you can - put it "
 		  "into your own assistant and nowhere else."));
-	warning->Wrap(420);
+	warning->Wrap(FromDIP(420));
 	handout->Add(warning, 0, wxALL, 5);
 
 	page->Add(handout, 1, wxALL | wxEXPAND, 5);
@@ -251,7 +251,7 @@ void ibPanelMcpSettings::OnRun(wxCommandEvent& WXUNUSED(event))
 
 	// IN THE NAME OF THIS SESSION. Everything the assistant then does, it does as the person who
 	// pressed this - same rights, same configuration - and it stops when they close the designer.
-	wxString refusal;
+	ibString refusal;
 
 	if (!server->Start(ibSession::Current(), refusal)) {
 		// ⚠ ON THE PAGE, NOT IN A BOX. The refusal names the reason - switched off, port taken -
@@ -286,7 +286,7 @@ void ibPanelMcpSettings::RefreshRunState()
 
 	if (m_stateLabel != nullptr)
 		m_stateLabel->SetLabel(running
-			? wxString::Format(_("Running at %s"), m_endpoint)
+			? ibString::Format(_("Running at %s"), m_endpoint)
 			: (m_settings.m_enabled
 				? _("Not running. It starts by itself next time you open the designer.")
 				: _("Not running, and switched off above - it will not start by itself.")));

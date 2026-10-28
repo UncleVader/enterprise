@@ -31,7 +31,7 @@ class ibViewCommandBar;
 
 class ibTabDocument;
 
-// A CONTROL THAT HOLDS A VALUE — the desktop's ibControlFrame (frontend/visualView/ctrl/frame.h): what the shared value
+// A CONTROL THAT HOLDS A VALUE — the old desktop's ibControlFrame:what the shared value
 // choice (ibTypeControlFactory::ChooseValue) reads the current value through and puts the chosen one back through. A
 // settings window's value cell is one.
 class FRMCLIENT_API ibControlFrame : public ibBackendControlFrame {
@@ -51,7 +51,7 @@ public:
 	virtual void ChoiceProcessing(ibValue& vSelected) = 0;
 
 	// THE CHOICE'S WINDOW WENT — chosen or not (the client's): a calculator or a calendar drawn for a server's question
-	// answers it then (ibProtocolRequestKind::SimpleChoice).
+	// answers it then (ibProtocol::ibRequest::ibKind::SimpleChoice).
 	virtual void ChoiceDismissed() {}
 };
 
@@ -65,8 +65,8 @@ struct ibViewEdit {
 // refused. It speaks to the communicator alone, so it may be called from a thread of the control's own.
 using ibViewFetcher = std::function<bool(const ibProtocolNode& request, ibProtocolNode& answer)>;
 
-// A CONTROL OF A VIEW — one node of the tab's form as this client draws it: the desktop's ibValueFrame
-// (frontend/visualView/ctrl) cut down to its drawing half, Create and Update. What it shows comes from the node — what
+// A CONTROL OF A VIEW — one node of the tab's form as this client draws it: the old desktop's ibValueFrame
+// cut down to its drawing half, Create and Update. What it shows comes from the node — what
 // the form saved it with, and its State, what the server reads it as now; what the person does with it goes back to
 // the server as an event, by the control's id. It keeps no value of its own: the next frame says what it shows.
 //
@@ -79,20 +79,22 @@ class FRMCLIENT_API ibValueFrame : public ibValue,
 	public ibPropertyObjectHelper<ibValueFrame> {
 public:
 
-	// The control drawn for a node of that type — none for a type this client does not draw yet; held once it is added to
-	// its parent.
+	// The control drawn for a node of that type — a placeholder in its place for a type this client does not draw yet
+	// (IsPlaceholder); held once it is added to its parent.
 	static ibValueFrame* Make(const wxString& type, ibVisualHostClient& host, long long controlId);
 
 	virtual ~ibValueFrame() = default;
 
 	// ⭐ ITS PROPERTIES ARE THE SERVER'S — which a control has, and which a person may arrange: the client declares none
-	// (Max, 2026-10-14). The form's editor is asked with them, a control's rows each (ibProtocolRequestKind::FormEditor),
+	// (Max, 2026-10-14). The form's editor is asked with them, a control's rows each (ibProtocol::ibRequest::ibKind::FormEditor),
 	// and receives them (ibPropertyObject::Receive).
 
-	virtual wxString GetClassName() const override { return m_className; }
-	virtual wxString GetObjectTypeName() const override { return m_className; }
+	virtual ibString GetClassName() const override { return m_className; }
+	virtual ibString GetObjectTypeName() const override { return m_className; }
 	virtual bool IsEditable() const override { return true; }
 
+	// Its properties fetched as the inspector shows it, through its host (ibVisualHostClient::Fetch).
+	virtual bool Fetch() override;
 	// One of them edited — the desktop's, told to the editor the form is drawn for (g_visualHostContext there; its host
 	// here, which a designer's host passes on).
 	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
@@ -105,13 +107,13 @@ public:
 	// What a person reads it as in the form's tree — the desktop's GetControlTitle, answered by the server where the
 	// metadata is (its State's Caption, a form's or a page's Title: the synonym of what it is bound to when no Title is
 	// set); none said — its class.
-	virtual wxString GetControlTitle() const { return !m_title.IsEmpty() ? m_title : wxGetTranslation(m_className); }
+	virtual wxString GetControlTitle() const { return !m_title.IsEmpty() ? m_title : wxString(ibGetTranslation(m_className)); }
 	void SetControlTitle(const wxString& title) { m_title = title; }
 
 	// The state events the server is subscribed to on it — its State's Subscribed (protocol 3): something there runs on
 	// them. Any other state event waits for the client's next call (Send).
 	void SetSubscribedEvents(const std::vector<ibProtocolNode>& events);
-	bool IsSubscribed(ibProtocolEvent event) const { return (m_subscribedEvents & (1u << static_cast<int>(event))) != 0; }
+	bool IsSubscribed(ibProtocol::ibEvent::ibKind event) const { return (m_subscribedEvents & (1u << static_cast<int>(event))) != 0; }
 
 	// Open in the object tree; offered at all (the base's functional options are the server's: what it draws is offered).
 	void SetExpanded(bool expanded) { m_expanded = expanded; }
@@ -128,12 +130,17 @@ public:
 	// …and only what the frame's patch changed in it (`patch` — its node there): drawn whole, unless the control knows
 	// which of its parts a patch names.
 	virtual void Update(const ibProtocolNode& node, const ibProtocolNode& /*patch*/) { Update(node); }
+	// Selected in the designer — it, or a control inside it (the desktop's OnSelected, said by the editor's host to the
+	// control and its parents): a page shows itself in its notebook. Nothing goes to the server.
+	virtual void OnSelected() {}
 
 	// What it is in the layout — a window or a sizer.
 	virtual wxWindow* GetWindow() const { return nullptr; }
 	virtual wxSizer*  GetSizer() const { return nullptr; }
 	// The window what is in it is built in: its own, a framed group's box; none — the one it was built in.
 	virtual wxWindow* GetChildParent() const { return GetWindow(); }
+	// A placeholder in the place of a control of a type this client does not draw yet (Make): what is in it is not built.
+	virtual bool IsPlaceholder() const { return false; }
 	// The group a table's column built in it hangs on: a table's root group, a column group; none — no table.
 	virtual ibDataViewColumnGroup* GetColumnHolder() const { return nullptr; }
 	// The view it holds of its own — a grid box's sheet, a text box's text (the desktop's GetControlView): what the
@@ -154,12 +161,15 @@ protected:
 
 	ibValueFrame(ibVisualHostClient& host, long long controlId) : m_host(host), m_controlId(controlId) {}
 
+	// …each of its rows, the server's property (ibPropertySerializable).
+	virtual ibProperty* CreateProperty(ibPropertyCategory* cat, ibDataNode&& row) override;
+
 	// The host it is drawn in — the desktop's visualHost its Create was given.
 	ibVisualHostClient& GetVisualHost() const { return m_host; }
 
 	// What the person did, to the server — Args, what the event says with it.
-	void Send(ibProtocolEvent event) const;
-	void Send(ibProtocolEvent event, const ibProtocolNode& args) const;
+	void Send(ibProtocol::ibEvent::ibKind event) const;
+	void Send(ibProtocol::ibEvent::ibKind event, const ibProtocolNode& args) const;
 
 	// Its fetches — kept by whoever reads with them, on whichever thread.
 	ibViewFetcher MakeFetcher() const;
@@ -182,7 +192,7 @@ private:
 	wxString m_name;           // its node's Name (GetControlName)
 	wxString m_title;          // what the server says it is called (GetControlTitle)
 	bool     m_expanded = true;
-	unsigned m_subscribedEvents = 0;   // a bit per ibProtocolEvent — its State's Subscribed
+	unsigned m_subscribedEvents = 0;   // a bit per ibProtocol::ibEvent::ibKind — its State's Subscribed
 };
 
 #endif

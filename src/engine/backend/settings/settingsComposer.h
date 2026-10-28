@@ -44,16 +44,6 @@ class ibMetaData;
 //  So the ADDRESS is the caller's, computed where the metadata already is — a control knows its own
 //  binding, its own form and its own configuration.)
 
-// ONE SAVED SETTING as a shelf shows it — the identity, the caption, and when it
-// was written. The caption comes out of the NODE, which is why this lives here
-// and not on the storage: reading what is inside a node is not the storage's
-// business.
-struct BACKEND_API ibComposerSettingsEntry {
-	ibGuid     m_id;
-	wxString   m_name;
-	ibDateTime m_changed;
-};
-
 // THE ADDRESS. `userKey` empty = THE CURRENT SESSION'S user, which is what every
 // desktop caller means and none of them should have to say.
 //
@@ -74,7 +64,7 @@ BACKEND_API ibSettingsKey ibUserSettingsKey(ibSettingsCategory category, const i
 // identity is minted; a given id REWRITES that entry, which is what both "save
 // over this one" and "rename" are. Returns the id, empty on refusal.
 BACKEND_API ibGuid ibSaveComposerSettings(ibSettingsCategory category, const ibGuid& objectKey,
-                                          const ibGuid& id, const wxString& name,
+                                          const ibGuid& id, const ibString& name,
                                           const ibDataComposer& composer, const ibUserInfo* user = nullptr);
 
 // RESTORE — one call at the end: SetUserSettingsDesc, the same act as picking a
@@ -101,7 +91,7 @@ BACKEND_API std::vector<ibComposerSettingsEntry> ibListComposerSettings(ibSettin
 // person renaming the entry they are not currently using must not have it
 // applied to them as a side effect.
 BACKEND_API bool ibRenameComposerSettings(ibSettingsCategory category, const ibGuid& objectKey,
-                                          const ibGuid& id, const wxString& newName,
+                                          const ibGuid& id, const ibString& newName,
                                           const ibUserInfo* user = nullptr);
 
 // Drop one entry. Clears the default pointer as well when it pointed here — a

@@ -25,19 +25,19 @@ bool ibSchemaAssistant::AccessRight(const ibSession& session) const
 	return server != nullptr && server->IsRunning();
 }
 
-std::function<void()> ibSchemaAssistant::Command(const ibSession& session, s32 command,
-	const ibDataNode& WXUNUSED(args), ibProtocolRefusal& refusal, wxString& error) const
+std::function<void()> ibSchemaAssistant::Command(const ibSession& session, std::int32_t command,
+	const ibDataNode& /*args*/, ibProtocol::ibRefusal& refusal, ibString& error) const
 {
-	if (static_cast<ibProtocolSchemaCommand>(command) != ibProtocolSchemaCommand::Open) {
-		refusal = ibProtocolRefusal::NotFound;
-		error = wxString::Format(wxT("the assistant window has no command %d"), command);
+	if (static_cast<ibProtocol::ibSchema::ibCommand>(command) != ibProtocol::ibSchema::ibCommand::Open) {
+		refusal = ibProtocol::ibRefusal::NotFound;
+		error = ibString::Format(ibT("the assistant window has no command %d"), command);
 		return nullptr;
 	}
 
 	ibMcpServer* const server = ServerOf(session);
 	if (server == nullptr || !server->IsRunning()) {
-		refusal = ibProtocolRefusal::NotNow;
-		error = wxT("the base's assistant access is not running");
+		refusal = ibProtocol::ibRefusal::NotNow;
+		error = ibT("the base's assistant access is not running");
 		return nullptr;
 	}
 
@@ -63,7 +63,7 @@ std::function<void()> ibSchemaAssistant::Command(const ibSession& session, s32 c
 		doc->SetIcon(ibPictureDescription(g_picAssistantCLSID));
 		documentManager->AddDocument(doc);
 
-		if (!doc->OnCreate(wxEmptyString, 0))
+		if (!doc->OnCreate(ibEmptyString, 0))
 			doc->DeleteAllViews();
 	};
 }

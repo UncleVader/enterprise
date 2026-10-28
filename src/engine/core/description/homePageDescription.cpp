@@ -51,34 +51,34 @@ bool ibHomePageDescription::MoveItem(ibHomePageColumn column, unsigned int index
 //                             node form                              //
 ////////////////////////////////////////////////////////////////////////
 
-static const wxChar* s_columnNodeName[eHomePageColumn_Count] = { wxT("Left"), wxT("Right") };
+static const ibChar* s_columnNodeName[eHomePageColumn_Count] = { ibT("Left"), ibT("Right") };
 
 bool ibHomePageDescription::ReadNode(const ibDataValue& value)
 {
 	if (value.Kind() != ibDataKind::Child)
 		return false;   // absent / never written — the default (empty) description stands
 
-	const std::shared_ptr<ibDataNode>& root = value.AsChild();
+	const auto root = value.AsChild();
 	if (!root)
 		return false;
 
-	m_template = (ibHomePageTemplate)root->GetValue<s32>(wxT("Template"));
+	m_template = (ibHomePageTemplate)root->GetValue<std::int32_t>(ibT("Template"));
 
 	for (int idx = eHomePageColumn_Left; idx < eHomePageColumn_Count; idx++) {
 		m_columns[idx].clear();
-		const ibDataValue columnVal = root->GetProperty(s_columnNodeName[idx]);
-		if (columnVal.Kind() != ibDataKind::Array)
+		const auto columnVal = root->FindField(s_columnNodeName[idx]);
+		if (!columnVal || columnVal->Kind() != ibDataKind::Array)
 			continue;
-		for (const ibDataValue& itemVal : columnVal.AsArray()) {
+		for (const ibDataValue& itemVal : columnVal->AsArray()) {
 			if (itemVal.Kind() != ibDataKind::Child)
 				continue;
-			const std::shared_ptr<ibDataNode>& itemNode = itemVal.AsChild();
+			const auto itemNode = itemVal.AsChild();
 			if (!itemNode)
 				continue;
 			ibHomePageItem item;
-			item.m_formId = (ibMetaID)itemNode->GetValue<s32>(wxT("Form"));
-			item.m_height = (unsigned int)itemNode->GetValue<s32>(wxT("Height"));
-			item.m_visible = itemNode->GetValue<bool>(wxT("Visible"));
+			item.m_formId = (ibMetaID)itemNode->GetValue<std::int32_t>(ibT("Form"));
+			item.m_height = (unsigned int)itemNode->GetValue<std::int32_t>(ibT("Height"));
+			item.m_visible = itemNode->GetValue<bool>(ibT("Visible"));
 			if (item.IsOk())
 				m_columns[idx].push_back(item);
 		}
@@ -90,18 +90,18 @@ bool ibHomePageDescription::ReadNode(const ibDataValue& value)
 bool ibHomePageDescription::WriteNode(ibDataValue& value) const
 {
 	auto root = std::make_shared<ibDataNode>();
-	root->SetValue(wxT("Template"), (s32)m_template);
+	root->SetValue(ibT("Template"), (std::int32_t)m_template);
 
 	for (int idx = eHomePageColumn_Left; idx < eHomePageColumn_Count; idx++) {
 		std::vector<ibDataValue> items;
 		for (const ibHomePageItem& item : m_columns[idx]) {
 			auto itemNode = std::make_shared<ibDataNode>();
-			itemNode->SetValue(wxT("Form"), (s32)item.m_formId);
-			itemNode->SetValue(wxT("Height"), (s32)item.m_height);
-			itemNode->SetValue(wxT("Visible"), item.m_visible);
+			itemNode->SetValue(ibT("Form"), (std::int32_t)item.m_formId);
+			itemNode->SetValue(ibT("Height"), (std::int32_t)item.m_height);
+			itemNode->SetValue(ibT("Visible"), item.m_visible);
 			items.push_back(ibDataValue::Child(itemNode));
 		}
-		root->SetProperty(s_columnNodeName[idx], ibDataValue::Array(items));
+		root->AddField(s_columnNodeName[idx], ibDataValue::Array(items));
 	}
 
 	value = ibDataValue::Child(root);

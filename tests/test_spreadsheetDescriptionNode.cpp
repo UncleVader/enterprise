@@ -211,19 +211,19 @@ TEST(SpreadsheetCellDescriptionMemory, WriteNode_ADefaultCell_WritesNothingButSt
 	ibDataValue value;
 	ASSERT_TRUE(ibSpreadsheetCellDescriptionMemory::WriteNode(value, source));
 
-	const std::shared_ptr<ibDataNode>& node = value.AsChild();
-	ASSERT_TRUE(node != nullptr);
+	const auto node = value.AsChild();
+	ASSERT_TRUE(node);
 
-	EXPECT_EQ(nullptr, node->FindField(wxT("value")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("parameter")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("alignHorz")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("alignVert")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("orient")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("rowSpan")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("colSpan")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("fit")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("readOnly")));
-	EXPECT_EQ(nullptr, node->FindField(wxT("fill")));
+	EXPECT_FALSE(node->Has(ibT("value")));
+	EXPECT_FALSE(node->Has(ibT("parameter")));
+	EXPECT_FALSE(node->Has(ibT("alignHorz")));
+	EXPECT_FALSE(node->Has(ibT("alignVert")));
+	EXPECT_FALSE(node->Has(ibT("orient")));
+	EXPECT_FALSE(node->Has(ibT("rowSpan")));
+	EXPECT_FALSE(node->Has(ibT("colSpan")));
+	EXPECT_FALSE(node->Has(ibT("fit")));
+	EXPECT_FALSE(node->Has(ibT("readOnly")));
+	EXPECT_FALSE(node->Has(ibT("fill")));
 
 	ibSpreadsheetCellDescription target(1, 1);
 	ASSERT_TRUE(ibSpreadsheetCellDescriptionMemory::ReadNode(value, target));
@@ -256,9 +256,9 @@ TEST(SpreadsheetCellDescriptionMemory, WriteNode_ACellWithNoFont_WritesNone)
 	ibDataValue value;
 	ASSERT_TRUE(ibSpreadsheetCellDescriptionMemory::WriteNode(value, source));
 
-	const std::shared_ptr<ibDataNode>& node = value.AsChild();
-	ASSERT_TRUE(node != nullptr);
-	EXPECT_EQ(nullptr, node->FindField(wxT("font")));
+	const auto node = value.AsChild();
+	ASSERT_TRUE(node);
+	EXPECT_FALSE(node->Has(ibT("font")));
 
 	ibSpreadsheetCellDescription target(1, 1);
 	ASSERT_TRUE(ibSpreadsheetCellDescriptionMemory::ReadNode(value, target));

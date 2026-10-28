@@ -31,19 +31,19 @@ enum {
 #pragma region __command_h__
 class ibModifyPropertyCmd : public ibFormEditorCmd {
 public:
-	ibModifyPropertyCmd(ibValueFrame* object, ibProperty* prop, const ibDataValue& newValue)
+	ibModifyPropertyCmd(ibValueFrame* object, ibProperty* prop, const wxVariant& newValue)
 		: m_object(object), m_property(prop), m_newValue(newValue)
 	{
 	}
 protected:
 	virtual void DoExecute() override {
-		// …as the row carried it back: the property reads its own node.
-		m_property->SetNodeValue(m_newValue);
+		// Get the ibValueFrame from the event
+		m_property->SetValue(m_newValue);
 	}
 private:
 	ibValueFrame* m_object = nullptr;
 	ibProperty* m_property;
-	ibDataValue m_newValue;
+	wxVariant m_newValue;
 };
 
 class ibShiftChildCmd : public ibFormEditorCmd {
@@ -80,8 +80,8 @@ static void Receive(ibValueForm* form)
 	ibFrontendMainFrame* const frame = ibFrontendMainFrame::GetFrame();
 	if (frame == nullptr)
 		return;
-	for (const ibProtocolNode& described : frame->GetRequest().FindChild(ibProtocolName::Controls).Children()) {
-		ibValueFrame* const control = form->FindControlByID(described.GetInt(ibProtocolName::Control));
+	for (const ibProtocolNode& described : frame->GetRequest().FindChild(ibProtocol::ibRequest::ibFormEditor::Controls).Children()) {
+		ibValueFrame* const control = form->FindControlByID(described.GetInt(ibProtocol::ibRequest::ibFormEditor::Control));
 		if (control != nullptr)
 			control->Receive(described);
 	}
@@ -251,7 +251,7 @@ ibDialogFormEditor::ibDialogFormEditor(ibValueForm* valueForm) :
 
 	// ⭐ SAVE AND RESTORE-THE-DEFAULT STAND ON THE LEFT, away from OK / Apply / Cancel — they are not
 	// about this window's edit at all. OK applies what was just changed; these two decide whether the
-	// arrangement outlives the window (frontend/settings/formSettings.h).
+	// arrangement outlives the window (frmclient/settings/formSettings.h).
 	wxBoxSizer* settingSizer = new wxBoxSizer(wxHORIZONTAL);
 	settingSizer->Add(new wxButton(this, BUTTON_SAVE_SETTING, _("Save setting")),
 		0, wxALL, FromDIP(5));
@@ -527,10 +527,8 @@ void ibDialogFormEditor::OnPropertyGridChanging(wxPropertyGridEvent& event)
 {
 	auto it = m_pgArray.find(event.GetProperty());
 	if (it != m_pgArray.end()) {
-		// The widget's value as the property's node holds it.
-		const ibDataValue value = ibPropertyRegistry::GetNodeValue(it->second, event.GetValue());
 		ExecuteCommand(
-			new ibModifyPropertyCmd(m_selectedControl, it->second, value)
+			new ibModifyPropertyCmd(m_selectedControl, it->second, event.GetValue())
 		);
 	}
 
@@ -543,7 +541,7 @@ void ibDialogFormEditor::OnPropertyGridItemSelected(wxPropertyGridEvent& event)
 
 	// Update displayed description for the new selection
 	const wxString& helpString = propPtr->GetHelpString();
-	const wxString& localized = wxGetTranslation(helpString);
+	const wxString& localized = ibGetTranslation(helpString);
 
 	m_propertyGridManager->SetPropertyHelpString(propPtr, localized);
 	m_propertyGridManager->SetDescription(propPtr->GetLabel(), localized);

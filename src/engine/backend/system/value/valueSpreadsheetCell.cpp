@@ -24,22 +24,22 @@ enum
 
 void ibValueSpreadsheetDocumentArea::FillMembers(ibMemberTable& helper) const
 {
-	helper.AppendProp(wxT("BackgroundColour"));
-	helper.AppendProp(wxT("TextColour"));
-	helper.AppendProp(wxT("TextOrient"));
-	helper.AppendProp(wxT("Font"));
-	helper.AppendProp(wxT("AlignHorizontal"));
-	helper.AppendProp(wxT("AlignVertical"));
+	helper.AppendProp(ibT("BackgroundColour"));
+	helper.AppendProp(ibT("TextColour"));
+	helper.AppendProp(ibT("TextOrient"));
+	helper.AppendProp(ibT("Font"));
+	helper.AppendProp(ibT("AlignHorizontal"));
+	helper.AppendProp(ibT("AlignVertical"));
 
-	helper.AppendProp(wxT("BorderLeft"));
-	helper.AppendProp(wxT("BorderRight"));
-	helper.AppendProp(wxT("BorderTop"));
-	helper.AppendProp(wxT("BorderBottom"));
+	helper.AppendProp(ibT("BorderLeft"));
+	helper.AppendProp(ibT("BorderRight"));
+	helper.AppendProp(ibT("BorderTop"));
+	helper.AppendProp(ibT("BorderBottom"));
 
-	helper.AppendProp(wxT("Size"));
-	helper.AppendProp(wxT("ReadOnly"));
+	helper.AppendProp(ibT("Size"));
+	helper.AppendProp(ibT("ReadOnly"));
 
-	helper.AppendProp(wxT("Value"));
+	helper.AppendProp(ibT("Value"));
 }
 
 #include "valueFont.h"
@@ -212,13 +212,13 @@ bool ibValueSpreadsheetDocumentArea::GetPropVal(const long lPropNum, ibValue& pv
 	{
 		// ⭐ WHAT THE CELL SAYS, NOT HOW IT IS STORED — asked of the document's one door for a
 		// cell's text, the door the grid and the printout ask. A SCRIPT asking a cell what it holds
-		// got `en = 'Автомобиль';` from one cell and plain text from the caption beside it
+		// got `en = 'Car';` from one cell and plain text from the caption beside it
 		// (2026-09-09, reading a built printout back cell by cell); it read the stored form with a
 		// reader and a fallback of its own until 2026-09-21. Read AS TEXT: a document's cells are
 		// text once an area has landed, and a template's cell answers with what is written in it —
 		// a parameter's name, a template's own wording — in the document's language, as it always did.
 		pvarPropVal = m_spreadsheetDoc->ComputeStringValueFromParameters(
-			m_spreadsheetDoc->GetCellValue(m_row, m_col), ibSpreadsheetFillType::ibSpreadsheetFillType_StrText).ToWxString();
+			m_spreadsheetDoc->GetCellValue(m_row, m_col), ibSpreadsheetFillType::ibSpreadsheetFillType_StrText);
 		return true;
 	}
 	}

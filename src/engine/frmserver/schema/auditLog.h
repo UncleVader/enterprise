@@ -14,12 +14,12 @@ public:
 	virtual bool AccessRight(const ibSession& session) const override;
 
 	// Nothing — the journal is a tab, opened by Open.
-	virtual void Build(const ibSession& WXUNUSED(session), const ibDataNode& WXUNUSED(args),
-		ibDataNode& WXUNUSED(result)) const override {}
+	virtual void Build(const ibSession& /*session*/, const ibDataNode& /*args*/,
+		ibDataNode& /*result*/) const override {}
 
 	// Open — the journal's tab, as the desktop's menu item opened it, in the session's configuration.
-	virtual std::function<void()> Command(const ibSession& session, s32 command,
-		const ibDataNode& args, ibProtocolRefusal& refusal, wxString& error) const override;
+	virtual std::function<void()> Command(const ibSession& session, std::int32_t command,
+		const ibDataNode& args, ibProtocol::ibRefusal& refusal, ibString& error) const override;
 };
 
 #endif

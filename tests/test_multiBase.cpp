@@ -34,6 +34,7 @@
 #include "backend/databaseLayer/sqllite/sqliteDatabaseLayer.h"
 #include "backend/session/session.h"
 #include "backend/session/sessionHolder.h"
+#include "backend/session/sessionRegistry.h"           // Start — a base put together by hand starts its registry
 
 namespace {
 
@@ -44,7 +45,7 @@ namespace {
 // connection has to be the same database — a clone of :memory: is empty.
 ibApplicationInstance* OpenBase(ibRunMode mode = ibRunMode::eFILE_MODE,
                                 std::size_t poolSize = 1,
-                                const wxString& database = wxT(":memory:"))
+                                const ibString& database = wxT(":memory:"))
 {
 	if (!ibApplicationInstance::CreateAppDataEnv(mode))
 		return nullptr;
@@ -60,7 +61,7 @@ ibApplicationInstance* OpenBase(ibRunMode mode = ibRunMode::eFILE_MODE,
 }
 
 // Does the table exist in the base this thread works for?
-bool HasTable(const wxString& table)
+bool HasTable(const ibString& table)
 {
 	return db_query != nullptr && db_query->TableExists(table);
 }
@@ -229,7 +230,7 @@ TEST_F(OneBaseFix, AnEmptyUserListOpensAndAnUnreadableOneRefuses)
 
 	// ListAll reads guid, name and fullName. A table of only name is not an
 	// empty list: that read fails, and a failed read is the refusal below.
-	const wxString emptyUserList = wxT(
+	const ibString emptyUserList = wxT(
 		"CREATE TABLE sys_user (guid TEXT, name TEXT, fullName TEXT)");
 
 	{
@@ -256,11 +257,11 @@ TEST_F(OneBaseFix, AnEmptyUserListOpensAndAnUnreadableOneRefuses)
 		EXPECT_TRUE(server->AuthenticateUser(wxEmptyString, wxEmptyString, info));
 	}
 
-	// The registry started by the web server's own session holds a connection
+	// The registry, started below as Open starts it, holds a connection
 	// for sys_session. On the one-connection :memory: base above, the login's
 	// read then waits until the pool says it is exhausted and the door
 	// refuses. A file and a wider pool let that read see the empty list.
-	const wxString path = wxFileName::CreateTempFileName(wxT("oes-users"));
+	const ibString path = wxFileName::CreateTempFileName(wxT("oes-users"));
 	ASSERT_FALSE(path.IsEmpty());
 	ibApplicationInstance* const webBase = OpenBase(ibRunMode::eFILE_MODE, /*poolSize=*/4, path);
 	ASSERT_NE(webBase, nullptr);
@@ -272,6 +273,8 @@ TEST_F(OneBaseFix, AnEmptyUserListOpensAndAnUnreadableOneRefuses)
 			"CREATE TABLE sys_session ("
 			"session TEXT PRIMARY KEY, userName TEXT, application INTEGER, "
 			"started TEXT, lastActive TEXT, computer TEXT)")), -1);
+		// …the base being put together by hand, its registry is started the way Open starts it.
+		ibApplicationInstance::GetSessionRegistry()->Start();
 		ibSessionHolder web = webBase->CreateSession(ibSessionKind::WebServer);
 		ASSERT_NE(web.Get(), nullptr);
 		ibSessionScope scope(web.Get());

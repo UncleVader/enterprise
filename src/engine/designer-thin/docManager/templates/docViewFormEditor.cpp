@@ -49,27 +49,31 @@ bool ibFormEditView::OnCreate(ibFrontendDocument* docBase, long flags)
 	m_visualNotebook = new ibVisualEditorNotebook(doc, m_viewFrame, wxID_ANY, flags);
 	m_visualNotebook->GetCodeEditor()->Bind(wxEVT_KILL_FOCUS, &ibFormEditView::OnKillFocus, this);
 
-	// ⭐ ONE EXCHANGE OPENS THE TAB — the form, its controls' rows, the classes and the module's text in one answer.
-	ibProtocolNode answer;
-	if (!doc->Fetch(ibProtocolNode(), answer))
-		return false;
+	// ⭐ THE FRAME THAT OPENS THE TAB CARRIES IT (State Opening) — the form, its controls' rows, the classes and the module's
+	// text, as one fetch answers them; a server that put none there is asked, as before. A copy: the editor keeps it, and
+	// the frame changes under it with the next answer (closing the tested form's tab took Opening away, and the form
+	// tested again was sent as garbage — 2026-10-19).
+	ibProtocolNode answer = doc->GetOpeningState().FindChild(ibProtocol::ibView::ibFormDesigner::Opening).Clone();
+	if (!answer.IsNode() || !answer.Has(ibProtocol::ibView::ibFormDesigner::Form)) {
+		answer = ibProtocolNode();
+		if (!doc->Fetch(ibProtocolNode(), answer))
+			return false;
+	}
 
 	// The palette — the classes a control may be made of, as the answer has them; the desktop's asked its registry
 	// (a system control's class is not offered: Visible false).
 	wxWindowID id = control_id;
 
-	const std::vector<ibProtocolNode> classes = answer.FindChild(ibProtocolName::Classes).Children();
-	std::vector<wxString> pictures;
-	for (const ibProtocolNode& described : classes)
-		pictures.push_back(described.GetString(ibProtocolName::Picture));
-	ibProtocolPictureReceive(pictures);   // at once, not a call per class
+	const ibProtocolNode palette = answer.FindChild(ibProtocol::ibView::ibFormDesigner::Classes);
+	const std::vector<ibProtocolNode> classes = palette.Children();
+	ibProtocolPictureReceive(palette);   // at once, not a call per class
 
 	for (const ibProtocolNode& described : classes) {
-		if (!described.GetBool(ibProtocolName::Visible, true))
+		if (!described.GetBool(ibProtocol::ibView::ibFormDesigner::Visible, true))
 			continue;
-		const wxBitmap controlImage = ibProtocolPicture(described.GetString(ibProtocolName::Picture));
+		const wxBitmap controlImage = ibProtocolPicture(described, ibProtocol::ibView::ibFormDesigner::Picture);
 		if (controlImage.IsOk()) {
-			m_controlDataArray.push_back({ described.GetString(ibProtocolName::Name), controlImage, id++ });
+			m_controlDataArray.push_back({ described.GetString(ibProtocol::ibView::ibFormDesigner::Name), controlImage, id++ });
 		}
 	}
 
@@ -259,36 +263,18 @@ void ibFormEditView::OnKillFocus(wxFocusEvent& event)
 // ibFormEditDocument implementation
 // ----------------------------------------------------------------------------
 
-bool ibFormEditDocument::Close()
-{
-	ibVisualEditorNotebook* const visualNotebook = GetVisualNotebook();
-	if (visualNotebook != nullptr)
-		visualNotebook->GetVisualEditor()->SaveForm();
-	return ibModuleEditDocument::Close();
-}
-
-bool ibFormEditDocument::Save()
-{
-	ibVisualEditorNotebook* const visualNotebook = GetVisualNotebook();
-	if (visualNotebook != nullptr)
-		visualNotebook->GetVisualEditor()->SaveForm();
-	return ibModuleEditDocument::Save();
-}
-
 void ibFormEditDocument::DrawView(const ibProtocolNode& view, const ibProtocolNode& patch)
 {
-	ibModuleEditDocument::DrawView(view, patch);
-
-	if (patch.IsNode() && !patch.Has(ibProtocolName::State))
-		return;
-
+	// The designer's first — the module's drawing asks the menu and the toolbar anew when the read-only changed, and they
+	// are built of both editors.
 	ibVisualEditorNotebook* const visualNotebook = GetVisualNotebook();
-	if (visualNotebook == nullptr)
-		return;
+	if (visualNotebook != nullptr && (!patch.IsNode() || patch.Has(ibProtocol::ibView::State))) {
+		const ibProtocolNode state = view.FindChild(ibProtocol::ibView::State);
+		visualNotebook->GetVisualEditor()->SetReadOnly(state.GetBool(ibProtocol::ibView::ibModule::ReadOnly));
+		visualNotebook->GetVisualEditor()->GetVisualEditor()->SetCaption(state.GetString(ibProtocol::ibView::ibFormDesigner::Caption));
+	}
 
-	const ibProtocolNode state = view.FindChild(ibProtocolName::State);
-	visualNotebook->GetVisualEditor()->SetReadOnly(state.GetBool(ibProtocolName::ReadOnly));
-	visualNotebook->GetVisualEditor()->GetVisualEditor()->SetCaption(state.GetString(ibProtocolName::Caption));
+	ibModuleEditDocument::DrawView(view, patch);
 }
 
 wxCommandProcessor* ibFormEditDocument::OnCreateCommandProcessor()

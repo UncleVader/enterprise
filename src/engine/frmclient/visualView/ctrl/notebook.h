@@ -7,7 +7,7 @@
 
 class ibPanelPage;
 
-// THE NOTEBOOK OF A VIEW — the desktop's (frontend/visualView/ctrl/notebook.h): its pages the controls in it, the one
+// THE NOTEBOOK OF A VIEW — the old desktop's:its pages the controls in it, the one
 // the State's ActivePage names brought up. A page picked goes to the server (Page), a tab dragged too (Move).
 class ibValueNotebook : public ibValueWindow {
 public:
@@ -19,8 +19,9 @@ public:
 
 private:
 
-	// The page the server selected, brought up once it is on the notebook — asked by the notebook as it is drawn, and by
-	// each page put on it after: the pages are drawn after the notebook.
+	// The active page brought up once it is on the notebook — the server's, or the one the designer selected (a page
+	// selected in the editor, ibValueNotebookPage::OnSelected); asked by the notebook as it is drawn, and by each page put
+	// on it after: the pages are drawn after the notebook.
 	void SelectActivePage();
 
 	void OnPageChanged(wxAuiNotebookEvent& event);
@@ -41,6 +42,7 @@ public:
 
 	virtual void Create(wxWindow* parent, const ibProtocolNode& node) override;
 	virtual void Update(const ibProtocolNode& node) override;
+	virtual void OnSelected() override;
 	virtual wxWindow* GetWindow() const override;
 	virtual wxSizer*  GetSizer() const override;
 

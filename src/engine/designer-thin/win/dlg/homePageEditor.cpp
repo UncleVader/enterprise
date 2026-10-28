@@ -17,6 +17,7 @@
 #include "frmclient/backend/backend_picture.h"                 // ibBackendPicture::GetPicture — the toolbar art
 #include "core/picturePredefined.h"
 #include "frmclient/win/theme/luna_toolbarart.h"
+#include "protocol/protocol.h"                                 // ibProtocol::ibSchema::ibHomePage — the forms' rows
 
 #include <map>
 
@@ -26,10 +27,10 @@ enum {
 };
 
 // A picture the server listed a form with — its own, or its owner's.
-static wxIcon FormIcon(const ibDataNode& form, const wxString& name)
+static wxIcon FormIcon(const ibDataNode& form, const ibString& name)
 {
 	wxIcon icon;
-	const wxBitmap picture = ibProtocolPicture(form.GetValue<wxString>(name));
+	const wxBitmap picture = ibProtocolPicture(form.GetValue<ibString>(name));
 	if (picture.IsOk())
 		icon.CopyFromBitmap(picture);
 	return icon;
@@ -167,18 +168,18 @@ void ibDialogHomePageEditor::CreateDialogView()
 	SetIcon(ibBackendPicture::GetPictureAsIcon(g_picHomePageCLSID));
 }
 
-const ibDataNode* ibDialogHomePageEditor::FindItemForm(const ibHomePageItem& item) const
+std::optional<ibDataNode> ibDialogHomePageEditor::FindItemForm(const ibHomePageItem& item) const
 {
 	if (m_metaObject == nullptr)
-		return nullptr;
+		return std::nullopt;
 
 	// Resolved on every read — a form deleted since it was attached reads as missing
 	// instead of quietly disappearing from the list.
 	for (const ibDataNode& form : m_metaObject->GetFormArray()) {
-		if (form.GetValue<s32>(wxT("Id")) == item.m_formId)
-			return &form;
+		if (form.GetValue<std::int32_t>(ibProtocol::ibSchema::ibHomePage::Id) == item.m_formId)
+			return form;
 	}
-	return nullptr;
+	return std::nullopt;
 }
 
 void ibDialogHomePageEditor::FillColumn(ibHomePageColumn column, long selectIndex)
@@ -197,19 +198,19 @@ void ibDialogHomePageEditor::FillColumn(ibHomePageColumn column, long selectInde
 
 	for (size_t idx = 0; idx < items.size(); idx++) {
 		const ibHomePageItem& item = items[idx];
-		const ibDataNode* const metaForm = FindItemForm(item);
+		const std::optional<ibDataNode> metaForm = FindItemForm(item);
 
 		// Icon per row: the form's own, or the workspace glyph for one that is gone.
 		int imageIndex = -1;
 		if (imageList != nullptr) {
-			const wxIcon rowIcon = metaForm != nullptr ?
-				FormIcon(*metaForm, wxT("Picture")) : ibBackendPicture::GetPictureAsIcon(g_picHomePageCLSID);
+			const wxIcon rowIcon = metaForm ?
+				FormIcon(*metaForm, ibProtocol::ibSchema::ibHomePage::Picture) : ibBackendPicture::GetPictureAsIcon(g_picHomePageCLSID);
 			if (rowIcon.IsOk())
 				imageIndex = imageList->Add(rowIcon);
 		}
 
 		const long row = listCtrl->InsertItem((long)idx,
-			metaForm != nullptr ? metaForm->GetValue<wxString>(wxT("FullName")) : _("<not found>"), imageIndex);
+			metaForm ? metaForm->GetValue<ibString>(ibProtocol::ibSchema::ibHomePage::FullName) : ibString(_("<not found>")), imageIndex);
 		// 0 means "share equally" — say so rather than showing a bare zero.
 		listCtrl->SetItem(row, model_height, item.m_height != 0 ?
 			wxString::Format(wxT("%u"), item.m_height) : wxString(_("same")));
@@ -439,14 +440,14 @@ void ibDialogHomePageFormSelect::FillTree()
 	// Every form the configuration allows (the server listed them), grouped under its owner — a
 	// common form has none, so it files under its own group. Grouping is by owner identity, so
 	// the tree follows the metadata tree without duplicating its walk.
-	std::map<s32, wxTreeItemId> groups;
+	std::map<std::int32_t, wxTreeItemId> groups;
 	wxTreeItemId commonGroup;
 
 	// Every form's picture and its owner's asked for at once — not a call per form.
 	std::vector<wxString> pictures;
 	for (const ibDataNode& metaForm : m_metaObject->GetFormArray()) {
-		pictures.push_back(metaForm.GetValue<wxString>(wxT("Picture")));
-		pictures.push_back(metaForm.GetValue<wxString>(wxT("OwnerPicture")));
+		pictures.push_back(metaForm.GetValue<ibString>(ibProtocol::ibSchema::ibHomePage::Picture));
+		pictures.push_back(metaForm.GetValue<ibString>(ibProtocol::ibSchema::ibHomePage::OwnerPicture));
 	}
 	ibProtocolPictureReceive(pictures);
 
@@ -454,28 +455,29 @@ void ibDialogHomePageFormSelect::FillTree()
 
 		wxTreeItemId parentNode;
 
-		if (metaForm.GetValue<bool>(wxT("Common"))) {
+		if (metaForm.GetValue<bool>(ibProtocol::ibSchema::ibHomePage::Common)) {
 			if (!commonGroup.IsOk())
 				commonGroup = m_treeCtrl->AppendItem(root, _("Common forms"),
-					AppendIcon(FormIcon(metaForm, wxT("Picture"))), AppendIcon(FormIcon(metaForm, wxT("Picture"))));
+					AppendIcon(FormIcon(metaForm, ibProtocol::ibSchema::ibHomePage::Picture)),
+					AppendIcon(FormIcon(metaForm, ibProtocol::ibSchema::ibHomePage::Picture)));
 			parentNode = commonGroup;
 		}
 		else {
-			const s32 owner = metaForm.GetValue<s32>(wxT("Owner"));
+			const std::int32_t owner = metaForm.GetValue<std::int32_t>(ibProtocol::ibSchema::ibHomePage::Owner);
 			if (owner == 0)
 				continue;
 			auto founded = groups.find(owner);
 			if (founded == groups.end()) {
-				const int ownerIcon = AppendIcon(FormIcon(metaForm, wxT("OwnerPicture")));
+				const int ownerIcon = AppendIcon(FormIcon(metaForm, ibProtocol::ibSchema::ibHomePage::OwnerPicture));
 				founded = groups.emplace(owner,
-					m_treeCtrl->AppendItem(root, metaForm.GetValue<wxString>(wxT("OwnerName")), ownerIcon, ownerIcon)).first;
+					m_treeCtrl->AppendItem(root, metaForm.GetValue<ibString>(ibProtocol::ibSchema::ibHomePage::OwnerName), ownerIcon, ownerIcon)).first;
 			}
 			parentNode = founded->second;
 		}
 
-		const int formIcon = AppendIcon(FormIcon(metaForm, wxT("Picture")));
-		m_treeCtrl->AppendItem(parentNode, metaForm.GetValue<wxString>(wxT("Name")),
-			formIcon, formIcon, new ibHomePageFormItemData(metaForm.GetValue<s32>(wxT("Id"))));
+		const int formIcon = AppendIcon(FormIcon(metaForm, ibProtocol::ibSchema::ibHomePage::Picture));
+		m_treeCtrl->AppendItem(parentNode, metaForm.GetValue<ibString>(ibProtocol::ibSchema::ibHomePage::Name),
+			formIcon, formIcon, new ibHomePageFormItemData(metaForm.GetValue<std::int32_t>(ibProtocol::ibSchema::ibHomePage::Id)));
 	}
 
 	m_treeCtrl->ExpandAll();

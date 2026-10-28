@@ -15,14 +15,13 @@
 #include "frmclient/win/dlgs/typeSelector.h"              // the product.s type picker — a parameter declares its type
 #include "frmclient/win/dlgs/translateConstructor/translateConstructor.h"   // a field's title, every language of it
 #include "frmclient/win/dlgs/queryConstructor/queryConstructorInternal.h" // ibExpressionCellRenderer — the Totals tab's own cell
-#include "frmclient/backend/query/queryable.h"                        // ibPeriodUnits — the engine's own list of period words
-#include "frmclient/backend/query/queryLowering.h"                     // the aggregates a field's type admits (the desktop's, through the constructor)
+#include "core/query/queryPeriodUnits.h"                     // ibPeriodUnits — the engine's own list of period words
+#include "core/query/queryAggregates.h"                      // ibQueryAggregatesFor — the aggregates a field's type admits
 #include "frmclient/backend/system/value/valueDataComposition.h"       // ibSyncParameters — the parameters follow the texts
 #include "frmclient/win/editor/codeEditor/codeEditor.h"  // the script editor behind a parameter expression
 #include "frmclient/mainFrame/mainFrame.h"                // the shared editor / font-colour settings
 #include "frmclient/docView/docView.h"                    // ibMetaDocument — the composer editor's document mode
 #include "frmclient/backend/metaCollection/metaComposerObject.h"   // ibValueMetaObjectComposer — what a composer document was opened ON
-#include "frmclient/backend/propertyManager/property/variant/variantComposition.h"  // the SNAPSHOT a Settings property stores
 #include "frmclient/backend/appData.h"                              // the ACTIVE configuration, when the composition names none
 #include "frmclient/backend/system/value/composition/valueComposerField.h"   // a declaration becomes a value for the reader
 #include "frmclient/backend/metaData.h"                             // the compile cache the parent module comes from
@@ -98,7 +97,7 @@ enum {
 
 // WHICH AGGREGATES FIT THIS FIELD — asked of the ENGINE, never listed here.
 //
-// `ibQueryLowering::AggregatesFor` is the one door: `CheckNames` reads it as a REFUSAL ("SUM
+// `ibQueryAggregatesFor` is the one door: `CheckNames` reads it as a REFUSAL ("SUM
 // cannot be taken over 'Description'") and a window reads it as WHAT TO OFFER. A hand-written
 // list beside it drifts, and the drift is a dropdown offering something the query then refuses —
 // which is exactly what a fixed { SUM, COUNT, MIN, MAX, AVG } did to every string field.
@@ -144,7 +143,7 @@ public:
 		Reset(list != nullptr ? (unsigned int)list->size() : 0u);
 	}
 
-	void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
+	void GetValueByRow(ibVariant& variant, unsigned row, unsigned col) const override {
 		const std::vector<ibResourceDescription>* list = List();
 		if (list == nullptr || row >= list->size())
 			return;   // BOUNDS FIRST — a queued paint can outlive the line it was queued for
@@ -174,7 +173,7 @@ public:
 	// calls the cell offered — `SUM(Amount)` — or anything a person wrote in the editor behind "...".
 	// Both land here as text, and the split is the same one the store already speaks: a FUNC and its
 	// argument, or an empty func meaning "the text is the expression".
-	bool SetValueByRow(const wxVariant& variant, unsigned row, unsigned col) override {
+	bool SetValueByRow(const ibVariant& variant, unsigned row, unsigned col) override {
 		std::vector<ibResourceDescription>* list = List();
 		if (list == nullptr || row >= list->size())
 			return false;
@@ -210,7 +209,7 @@ public:
 					for (const wxString& had : known)
 						if (had.IsSameAs(one, false)) { found = true; break; }
 					if (!found) {
-						wxMessageBox(wxString::Format(
+						wxMessageBox(ibString::Format(
 							_("\"%s\" is not a grouping of this report: a figure can only be computed over one of its own groupings."),
 							one), _("Computed over"), wxOK | wxICON_WARNING);
 						return false;   // the cell keeps what it had — nothing silently wrong is stored
@@ -291,7 +290,7 @@ wxString ibDescribeTypes(const ibTypeDescription& typeDesc, const ibMetaData* me
 			described += wxT(", ");
 		described += typeCtor->GetClassName();
 	}
-	return described.IsEmpty() ? _("<any>") : described;
+	return described.IsEmpty() ? wxString(_("<any>")) : described;
 }
 
 // WHAT A FIELD READS AS, in the language a person reads — the title the output prints over its column
@@ -345,7 +344,7 @@ public:
 	// THE PATH A ROW STANDS FOR — what every entry is keyed by. Empty past the end.
 	wxString PathAt(unsigned row) const {
 		const std::vector<ibQueryConstructorField>* fields = m_fields ? m_fields() : nullptr;
-		return fields != nullptr && row < fields->size() ? (*fields)[row].m_name : wxString();
+		return fields != nullptr && row < fields->size() ? (*fields)[row].m_name : ibString();
 	}
 
 	// WHAT WAS SAID about the field on this row — null when nothing was, which is the ordinary case.
@@ -379,7 +378,7 @@ public:
 		return ibRoleForPath(*selects, field->m_name, field->m_balanceRole);
 	}
 
-	void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
+	void GetValueByRow(ibVariant& variant, unsigned row, unsigned col) const override {
 		const std::vector<ibQueryConstructorField>* fields = m_fields ? m_fields() : nullptr;
 		const std::vector<ibSelectDescription>* selects = m_selects ? m_selects() : nullptr;
 		if (fields == nullptr || selects == nullptr || row >= fields->size())
@@ -439,12 +438,12 @@ public:
 			return nullptr;
 		ibFieldDescription* entry = ibFieldEntryForPath(*selects, path);
 		if (entry == nullptr)
-			wxMessageBox(wxString::Format(_("\"%s\" does not say which select of the query it belongs to: name the selects with ONTO."),
+			wxMessageBox(ibString::Format(_("\"%s\" does not say which select of the query it belongs to: name the selects with ONTO."),
 				path), _("Fields"), wxOK | wxICON_WARNING);
 		return entry;
 	}
 
-	bool SetValueByRow(const wxVariant& variant, unsigned row, unsigned col) override {
+	bool SetValueByRow(const ibVariant& variant, unsigned row, unsigned col) override {
 		if (col == kColRole)
 			return SetRole(row, variant.GetString());
 		if (col == kColAppearance) {
@@ -466,7 +465,7 @@ public:
 
 		wxString text = variant.GetString();
 		text.Trim(true).Trim(false);
-		if (col == kColOwnTitle ? variant.GetBool() == OwnTitle(row) : !OwnTitle(row) && text == ShownTitle(row))
+		if (col == kColOwnTitle ? variant.GetBoolean() == OwnTitle(row) : !OwnTitle(row) && text == ShownTitle(row))
 			return false;   // nothing changed — and a click through a generated title is not an edit of it
 
 		ibFieldDescription* said = EntryToWrite(row);
@@ -476,15 +475,15 @@ public:
 		if (col == kColOwnTitle) {
 			// TICKED, THE TITLE STARTS FROM WHAT WAS SHOWN — the generated one becomes the person's to edit, not an
 			// empty cell to retype it into. Unticked, the field follows its source and its name again.
-			said->SayTitle(variant.GetBool()
-				? said->TitleInForce(FieldAt(row) != nullptr ? FieldAt(row)->m_caption : wxString())
-				: wxString());
+			said->SayTitle(variant.GetBoolean()
+				? said->TitleInForce(FieldAt(row) != nullptr ? FieldAt(row)->m_caption : ibString())
+				: ibString());
 		}
 		else {
 			// THE LANGUAGE IN FORCE is the one the cell shows, so it is the one typing writes; the others
 			// stay as they were (the "..." edits them all). Emptied, that language is taken out — and a
 			// title with no language left is given back, the door's own rule (SayTitle).
-			ibTranslateString title(said->m_useTitle ? said->m_title : wxString());
+			ibTranslateString title(said->m_useTitle ? said->m_title : ibString());
 			if (text.IsEmpty())
 				title.RemoveTranslate(ibBackendLocalization::GetUserLanguage());
 			else
@@ -532,7 +531,7 @@ public:
 
 private:
 	wxString ShownTitle(unsigned row) const {
-		wxVariant shown;
+		ibVariant shown;
 		GetValueByRow(shown, row, kColTitle);
 		return shown.GetString();
 	}
@@ -604,7 +603,7 @@ public:
 		Reset((unsigned int)m_rows.size());
 	}
 
-	void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
+	void GetValueByRow(ibVariant& variant, unsigned row, unsigned col) const override {
 		const std::vector<ibParameterDescription>* list = List();
 		const size_t at = IndexAt(row);
 		if (list == nullptr || at >= list->size())
@@ -641,7 +640,7 @@ public:
 		}
 	}
 
-	bool SetValueByRow(const wxVariant& variant, unsigned row, unsigned col) override {
+	bool SetValueByRow(const ibVariant& variant, unsigned row, unsigned col) override {
 		std::vector<ibParameterDescription>* list = List();
 		const size_t at = IndexAt(row);
 		if (list == nullptr || at >= list->size())
@@ -654,7 +653,7 @@ public:
 		// was a text one once, and this line is what is left of that.
 		case kColValue:      return false;
 		case kColExpression: parameter.m_expression   = variant.GetString();          return true;
-		case kColUser:       parameter.m_userSettable = variant.GetBool();            return true;
+		case kColUser:       parameter.m_userSettable = variant.GetBoolean();            return true;
 		default: return false;
 		}
 	}
@@ -679,7 +678,7 @@ private:
 // the variants list and the picker's menu.
 static wxString ibUnnamedVariantCaption(size_t position)
 {
-	return wxString::Format(_("Variant %u"), static_cast<unsigned>(position + 1));
+	return ibString::Format(_("Variant %u"), static_cast<unsigned>(position + 1));
 }
 
 // THE VARIANTS, as a dataview model over the COMPOSITION — which is where they live. The window
@@ -706,13 +705,13 @@ public:
 		Reset(list != nullptr ? (unsigned int)list->size() : 0u);
 	}
 
-	void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
+	void GetValueByRow(ibVariant& variant, unsigned row, unsigned col) const override {
 		const std::vector<ibVariantDescription>* list = List();
 		if (list == nullptr || col != kColName || row >= list->size())
 			return;   // BOUNDS FIRST — a queued paint can outlive the variant it was queued for
 		// AN UNNAMED VARIANT SHOWS WHAT IT HAS — its place in the list, as the picker's menu shows it
 		// (ibUnnamedVariantCaption); an empty row cannot be picked with any confidence (Max, 2026-09-29).
-		variant = (*list)[row].m_name.IsEmpty() ? ibUnnamedVariantCaption(row) : (*list)[row].m_name;
+		variant = (*list)[row].m_name.IsEmpty() ? ibString(ibUnnamedVariantCaption(row)) : (*list)[row].m_name;
 	}
 	// …and it reads grey, like everything else here that generates itself.
 	bool GetAttrByRow(unsigned row, unsigned col, ibDataViewItemAttr& attr) const override {
@@ -722,7 +721,7 @@ public:
 		attr.SetColour(typeConv::WxColourToColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT)));
 		return true;
 	}
-	bool SetValueByRow(const wxVariant& variant, unsigned row, unsigned col) override {
+	bool SetValueByRow(const ibVariant& variant, unsigned row, unsigned col) override {
 		std::vector<ibVariantDescription>* list = List();
 		if (list == nullptr || col != kColName || row >= list->size())
 			return false;
@@ -743,7 +742,7 @@ namespace {
 wxArrayString ibAggregatesForField(const ibQueryConstructorField& field)
 {
 	wxArrayString words;
-	for (const ibQueryKeyword keyword : ibQueryLowering::AggregatesFor(field.m_type))
+	for (const ibQueryKeyword keyword : ibQueryAggregatesFor(field.m_type))
 		words.Add(ibQueryKeywordText(keyword));
 	return words;
 }
@@ -895,7 +894,7 @@ public:
 	}
 
 	// ---- ibDataViewModel ----
-	void GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const override {
+	void GetValue(ibVariant& variant, const ibDataViewItem& item, unsigned int col) const override {
 		const ibStructureNode* node = static_cast<const ibStructureNode*>(item.GetID());
 		if (node == nullptr)
 			return;
@@ -921,7 +920,7 @@ public:
 			// ⚠ NOT "Grouping" — that is what its LEVELS are called, and two rows reading the same
 			// word one under another is how a tree stops saying anything (Max, on the first run).
 			// An output is a place: what it holds is its levels, what it is called is its own.
-			const wxString kind = HasTwoAxes(pos.m_output) ? _("Table") : _("Output");
+			const ibString kind = HasTwoAxes(pos.m_output) ? _("Table") : _("Output");
 			// ⚠ ASCII IN THE SEPARATOR, deliberately. This file has no BOM, so MSVC reads a UTF-8
 			// em-dash in a literal as ANSI bytes and the row came out with mojibake between the two
 			// names, `Output ??? Output2` (seen
@@ -974,7 +973,7 @@ public:
 	// WRITTEN BY THE CELL, not through here: both columns are VALUES, and the cell hands the
 	// chosen value straight to the ladder (a field through the picker, a kind through the quick
 	// choice). Text arriving here would only be a string that looks like one of them.
-	bool SetValue(const wxVariant&, const ibDataViewItem&, unsigned int) override { return false; }
+	bool SetValue(const ibVariant&, const ibDataViewItem&, unsigned int) override { return false; }
 
 	ibDataViewItem GetParent(const ibDataViewItem& item) const override {
 		const ibStructureNode* node = static_cast<const ibStructureNode*>(item.GetID());
@@ -1171,8 +1170,8 @@ public:
 	int RowAt(const ibDataViewItem& item) const;
 	ibDataViewItem ItemForRow(size_t row) const;
 
-	void GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const override;
-	bool SetValue(const wxVariant&, const ibDataViewItem&, unsigned int) override { return false; }
+	void GetValue(ibVariant& variant, const ibDataViewItem& item, unsigned int col) const override;
+	bool SetValue(const ibVariant&, const ibDataViewItem&, unsigned int) override { return false; }
 	ibDataViewItem GetParent(const ibDataViewItem&) const override { return ibDataViewItem(); }
 	bool IsContainer(const ibDataViewItem& item) const override { return !item.IsOk(); }
 	unsigned int GetFirstFetch(const ibDataViewItem& parent, const ibDataViewItem&,
@@ -1215,7 +1214,7 @@ ibDataViewItem ibSelectedListModel::ItemForRow(size_t row) const
 	return row < Count() ? ibDataViewItem(RowFor(row)) : ibDataViewItem();
 }
 
-void ibSelectedListModel::GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const
+void ibSelectedListModel::GetValue(ibVariant& variant, const ibDataViewItem& item, unsigned int col) const
 {
 	const std::vector<ibSelectedFieldDescription>* list = List();
 	const int row = RowAt(item);
@@ -1224,7 +1223,7 @@ void ibSelectedListModel::GetValue(wxVariant& variant, const ibDataViewItem& ite
 	// ⭐ THE `Auto` ROW READS AS WHAT IT IS. It names no field — it says "everything the storey above
 	// chose, here" — so it is drawn as the word rather than as a blank line, which is what an empty
 	// path would look like and is a different thing entirely.
-	variant = (*list)[row].IsAuto() ? _("<Auto>") : (*list)[row].m_path;
+	variant = (*list)[row].IsAuto() ? ibString(_("<Auto>")) : (*list)[row].m_path;
 }
 
 unsigned int ibSelectedListModel::GetFirstFetch(const ibDataViewItem& parent, const ibDataViewItem&,
@@ -1283,7 +1282,7 @@ public:
 		return row != nullptr ? (int)row->GetRow() : wxNOT_FOUND;
 	}
 
-	void GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const override {
+	void GetValue(ibVariant& variant, const ibDataViewItem& item, unsigned int col) const override {
 		const ibLevelDescription* level = Level();
 		const int row = RowAt(item);
 		if (level == nullptr || row == wxNOT_FOUND || (size_t)row >= level->m_settings.m_group.m_lines.size())
@@ -1296,7 +1295,7 @@ public:
 
 	// Written through the CELLS, which hand over values (a field through the picker, a kind through
 	// the runtime's quick choice) — text arriving here would be a string that looks like one.
-	bool SetValue(const wxVariant&, const ibDataViewItem&, unsigned int) override { return false; }
+	bool SetValue(const ibVariant&, const ibDataViewItem&, unsigned int) override { return false; }
 
 	ibDataViewItem GetParent(const ibDataViewItem&) const override { return ibDataViewItem(); }
 	bool IsContainer(const ibDataViewItem& item) const override { return !item.IsOk(); }
@@ -1447,7 +1446,7 @@ public:
 			m_byPeriods = new wxCheckBox(m_periodPane, wxID_ANY, _("By periods"));
 			strip->Add(m_byPeriods, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
 
-			// THE UNITS ARE THE ENGINE'S OWN LIST — `ibPeriodUnits()` (query/queryable.h), the same
+			// THE UNITS ARE THE ENGINE'S OWN LIST — `ibPeriodUnits()` (core/query/queryPeriodUnits.h), the same
 			// vocabulary the lowering reads and the query constructor offers. A list typed out here
 			// would be a second copy of the words, and it would be right until one of them changed.
 			m_periodUnit = new wxChoice(m_periodPane, wxID_ANY);
@@ -1619,7 +1618,7 @@ private:
 		else {
 			const int unitAt = m_periodUnit->GetSelection();
 			periods.m_unit = unitAt != wxNOT_FOUND
-				? m_periodUnit->GetString(unitAt) : ibPeriodUnits().front().second;
+				? ibString(m_periodUnit->GetString(unitAt)) : ibPeriodUnits().front().second;
 			periods.m_from = m_periodFrom->GetValue().Trim(true).Trim(false);
 			periods.m_to   = m_periodTo->GetValue().Trim(true).Trim(false);
 		}
@@ -1641,20 +1640,6 @@ private:
 	wxTextCtrl*               m_periodTo   = nullptr;
 };
 
-// THE DESCRIPTION INSIDE A CELL, and the refusal when the cell is not one. A window that cannot
-// name what it edits has nothing to draw, so this raises rather than binding to a stand-in that
-// silently saves nowhere.
-static ibCompositionDescription& DescriptionIn(const wxVariant& composition)
-{
-	ibVariantDataComposition* cell =
-		dynamic_cast<ibVariantDataComposition*>(composition.GetRefData());
-
-	if (cell == nullptr)
-		ibBackendCoreException::Error(_("The composition to edit is not a composition"));
-
-	return cell->GetCompositionDesc();
-}
-
 // ⭐ THE SETTINGS ARE A PANEL, AND THE DIALOG IS ONE OF ITS HOSTS. A composer declared in the
 // metadata is edited on a TAB of its own (the designer opens it like a form or a template — see
 // docViewComposer), while a composition held by a form is edited modally from the gridbox. The
@@ -1672,29 +1657,16 @@ ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, ibComposition
 	BuildPanel();
 }
 
-// 🛑⭐⭐ THE DESIGNER'S, HOLDING THE CELL IT EDITS. Same window as above; what differs is the GRIP.
-//
-// A metaobject's composition lives in a property, and a property cell is a VARIANT: storing one
-// swaps in a new cell and lets go of the old (ibPropertyComposition::SetValue). A window binds to
-// it for as long as it is open, which is far longer than the call that opened it - so a bare
-// reference into the cell is freed memory the moment ANYTHING stores a composition. It happened on
-// 2026-09-02: an MCP verb (report_select - every one of those verbs is a read-modify-write) wrote
-// while the settings window stood open, and the designer died later and elsewhere, in
-// ApplyPendingQueryText on a page change, assigning into 0xdddddddd.
-//
-// ⭐ THE VARIANT IS REFERENCE-COUNTED, so holding a COPY of it is the whole fix (Max, 2026-09-02:
-// *"the counter just needs to go up while the form holds it"*). The store swaps in its new cell,
-// this window goes on editing the one it opened - one counter down, still alive - and that cell
-// dies quietly when the window closes. What the window then shows is the composition as it was
-// opened, which is the honest thing for an editor with a Cancel: the new one is picked up when it
-// is reopened.
-ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, const wxVariant& composition,
+// 🛑⭐⭐ THE DESIGNER'S, HOLDING WHAT IT EDITS. Same window as above; what differs is the GRIP: a window
+// stays open far longer than the call that opened it, and what it was handed may go first (see the
+// header's m_heldComposition — on the desktop, the 2026-09-02 crash under an MCP write).
+ibComposerSettingsPanel::ibComposerSettingsPanel(wxWindow* parent, const ibCompositionDescription& composition,
 	const ibMetaData* metaData)
 	: wxPanel(parent, wxID_ANY),
 	  m_metaData(metaData), m_readerRoad(false),
 	  m_heldComposition(composition),
-	  m_settings(&DescriptionIn(m_heldComposition).m_variants.front().m_settings),
-	  m_edited(DescriptionIn(m_heldComposition)),
+	  m_settings(&m_heldComposition.m_variants.front().m_settings),
+	  m_edited(m_heldComposition),
 	  m_fieldSource(new ibSettingsFieldTree())
 {
 	BuildPanel();
@@ -2072,23 +2044,18 @@ static const ibMetaData* MetaDataOf(ibMetaDocument* document)
 	return metaComposer != nullptr ? metaComposer->GetMetaData() : nullptr;
 }
 
-// …AND THE COMPOSITION IS REACHED THE SAME WAY — AS THE CELL, not as a reference into it. A tab
-// stays open for as long as somebody is looking at it, and the cell under it is replaced by any
-// store (ibPropertyComposition::SetValue swaps in a new one); the panel holds what it was given, so
-// its count is up for as long as the tab lives. Edits still land in the metaobject's own
-// description, which is the shape ibGridEditor has — no copy travels, and the view stores nothing.
+// …AND THE COMPOSITION IS REACHED THE SAME WAY — the composer's description, held by the panel for as
+// long as the tab lives.
 //
 // ⚠ THE STAND-IN. A composer tab with no composer metaobject cannot happen through the document
 // manager — the template is registered against the composer metatype — but the panel has to bind to
-// something, so it binds to an empty cell here. Nothing written into it is ever saved, which is the
-// truth about a tab that is editing nothing.
-static wxVariant CompositionOf(ibMetaDocument* document)
+// something, so it binds to an empty description here. Nothing written into it is ever saved, which is
+// the truth about a tab that is editing nothing.
+static ibCompositionDescription CompositionOf(ibMetaDocument* document)
 {
-	ibValueMetaObjectComposer* metaComposer = ComposerOf(document);
+	const ibValueMetaObjectComposer* metaComposer = ComposerOf(document);
 
-	return metaComposer != nullptr
-		? metaComposer->GetCompositionValue()
-		: wxVariant(new ibVariantDataComposition(nullptr, ibCompositionDescription()));
+	return metaComposer != nullptr ? metaComposer->GetCompositionDesc() : ibCompositionDescription();
 }
 
 // THE DOCUMENT IS THE ONLY INPUT. Both of the other two — which description is edited, and which
@@ -2175,7 +2142,7 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	ibSettingsDescription edited;
 	{
 		ibDataNode settings;
-		ibReadProtocolNode(request.FindChild(ibProtocolName::Settings), settings);
+		ibReadProtocolNode(request.FindChild(ibProtocol::ibRequest::ibListSettings::Settings), settings);
 		ibSettingsDescriptionMemory::ReadNode(settings, edited);
 	}
 
@@ -2195,16 +2162,16 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	ibCompositionDescription shown;
 	{
 		ibDataNode composition;
-		ibReadProtocolNode(request.FindChild(ibProtocolName::Composition), composition);
+		ibReadProtocolNode(request.FindChild(ibProtocol::ibRequest::ibComposerSettings::Composition), composition);
 		ibCompositionDescriptionMemory::ReadNode(composition, shown);
 	}
 
 	// …and which of the fields' types are references, and to what (the [+] a field gets) — the fields themselves the
 	// panel reads as the desktop's does, by its query (ibQueryFieldsOfText answers with the question's Fields).
-	ibValueReferenceDataObject::ReadReferences(request.FindChild(ibProtocolName::References));
+	ibValueReferenceDataObject::ReadReferences(request.FindChild(ibProtocol::ibRequest::ibListSettings::References));
 
 	// A setting the server refused comes back with why — said before the window opens on it again.
-	const wxString error = request.GetString(ibProtocolName::Error);
+	const wxString error = request.GetString(ibProtocol::ibRequest::ibListSettings::Error);
 	if (!error.IsEmpty())
 		wxMessageBox(error, _("Data composer settings"), wxOK | wxICON_WARNING, top);
 
@@ -2226,7 +2193,7 @@ bool ibDialogComposerSettings::ShowUserSettings(wxWindow* parent, const ibProtoc
 	// says it is outdated); one it refuses is asked again, with why.
 	ibDataNode settings;
 	ibSettingsDescriptionMemory::WriteNode(settings, edited);
-	ibWriteProtocolNode(settings, response.Child(ibProtocolName::Settings));
+	ibWriteProtocolNode(settings, response.Child(ibProtocol::ibRequest::ibListSettings::Settings));
 	return true;
 }
 
@@ -3324,7 +3291,7 @@ bool ibComposerSettingsPanel::EditFieldTitle(wxString& text)
 
 	// A GENERATED TITLE OPENS AS ITSELF — what the cell showed, in the language in force.
 	const ibFieldDescription* said = m_fieldModel->Said(row);
-	const ibTranslateString before(said != nullptr && said->m_useTitle ? said->m_title : text);
+	const ibTranslateString before(said != nullptr && said->m_useTitle ? said->m_title : ibString(text));
 	ibDialogTranslateConstructor dialog(this, _("Title"), before, GetEditedMetaData(), m_readOnly);
 	if (dialog.ShowModal() != wxID_OK)
 		return false;
@@ -3363,7 +3330,7 @@ bool ibComposerSettingsPanel::EditFieldRole(wxString& text)
 	if (entry == nullptr)
 		return false;
 	entry->SayRole(said ? role : fromSource, fromSource, said ? rank : 0);
-	wxVariant shown;
+	ibVariant shown;
 	m_fieldModel->GetValueByRow(shown, row, ibFieldModel::kColRole);   // the word, and the number beside it
 	text = shown.GetString();
 	OnFieldDescribed();
@@ -3469,7 +3436,7 @@ wxWindow* ibComposerSettingsPanel::BuildResourcePage(wxWindow* parent)
 	// side, and neither takes the other away.
 	//
 	// It is the SAME class, not a lookalike: which aggregates fit a type is one answer
-	// (`ibQueryLowering::AggregatesFor`), and a second cell over it would drift from this one.
+	// (`ibQueryAggregatesFor`), and a second cell over it would drift from this one.
 	m_resourceView->GetRootColumnGroup()->AppendColumn(new ibDataViewColumn(_("Expression"),
 		new queryctor::ibExpressionCellRenderer(
 			[this]() -> wxArrayString { return ResourceChoices(); },
@@ -5002,7 +4969,7 @@ wxArrayString ibComposerSettingsPanel::ResourceChoices() const
 		// THE ENGINE COMPOSES THE OFFERS: the calls this type admits over this field, DISTINCT twin
 		// included where it asks a different question. One door, so the constructor and this window
 		// never offer different things about the same field.
-		for (const wxString& call : ibQueryLowering::AggregateCallsFor(field.m_type, path))
+		for (const wxString& call : ibQueryAggregateCallsFor(field.m_type, path))
 			words.Add(call);
 		break;
 	}

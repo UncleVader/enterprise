@@ -13,7 +13,7 @@
 
 // THE ENGINE'S HIERARCHICAL REFERENCE OBJECT (backend/metaCollection/partial/commonObject.h) as far as the predefined
 // values editor asks it (designer-thin/win/dlg/predefinedEditor.h): a catalog's, a chart's — the object of that id in
-// the configuration it was opened from, its predefined items the server's (ibProtocolSchema::Predefined), read when the
+// the configuration it was opened from, its predefined items the server's (ibProtocol::ibSchema::ibKind::Predefined), read when the
 // editor opens and after each of its edits.
 class FRMCLIENT_API ibValueMetaObjectRecordDataHierarchyMutableRef : public ibValueMetaObject {
 public:
@@ -30,8 +30,8 @@ public:
 		virtual bool IsContainer() const override { return m_valueIsFolder; }
 
 		ibPredefinedValueObject(
-			const ibGuid& predefinedGuid, const wxString& strPredefinedName,
-			const wxString& strCode, const wxString& strDescription,
+			const ibGuid& predefinedGuid, const ibString& strPredefinedName,
+			const ibString& strCode, const ibString& strDescription,
 			bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>())
 			:
 			m_predefinedItemGuid(predefinedGuid),
@@ -44,15 +44,15 @@ public:
 
 		ibGuid GetPredefinedGuid() const { return m_predefinedItemGuid; }
 
-		wxString GetPredefinedParentName() const {
+		ibString GetPredefinedParentName() const {
 			if (m_valueParent != nullptr)
 				return m_valueParent->GetPredefinedName();
-			return wxT("");
+			return ibT("");
 		}
 
-		wxString GetPredefinedName() const { return m_strPredefinedName; }
-		wxString GetPredefinedCode() const { return m_strCode; }
-		wxString GetPredefinedDescription() const { return m_strDescription; }
+		const ibString& GetPredefinedName() const { return m_strPredefinedName; }
+		const ibString& GetPredefinedCode() const { return m_strCode; }
+		const ibString& GetPredefinedDescription() const { return m_strDescription; }
 
 		bool IsPredefinedFolder() const { return m_valueIsFolder; }
 		wxObjectDataPtr<ibPredefinedValueObject> GetPredefinedParent() const { return m_valueParent; }
@@ -63,9 +63,9 @@ public:
 
 		ibGuid m_predefinedItemGuid;
 
-		wxString m_strPredefinedName;
-		wxString m_strCode;
-		wxString m_strDescription;
+		ibString m_strPredefinedName;
+		ibString m_strCode;
+		ibString m_strDescription;
 
 		bool m_valueIsFolder;
 
@@ -74,16 +74,16 @@ public:
 
 	//is predefined value?
 	bool HasPredefinedValue(const ibGuid& valueGuid) const { return FindPredefinedValue(valueGuid) != nullptr; }
-	bool HasPredefinedValue(const wxString& strPredefinedName) const { return FindPredefinedValue(strPredefinedName) != nullptr; }
+	bool HasPredefinedValue(const ibString& strPredefinedName) const { return FindPredefinedValue(strPredefinedName) != nullptr; }
 
 	//append predefined value
-	void AppendPredefinedValue(const wxString& strPredefinedName,
-		const wxString& strCode, const wxString& strDescription,
+	void AppendPredefinedValue(const ibString& strPredefinedName,
+		const ibString& strCode, const ibString& strDescription,
 		bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>());
 
 	void SetPredefinedValue(const ibGuid& predefinedGuid,
-		const wxString& strPredefinedName,
-		const wxString& strCode, const wxString& strDescription,
+		const ibString& strPredefinedName,
+		const ibString& strCode, const ibString& strDescription,
 		bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>());
 
 	void DeletePredefinedValue(const ibGuid& predefinedGuid);
@@ -100,7 +100,7 @@ public:
 		return wxObjectDataPtr<ibPredefinedValueObject>();
 	}
 
-	wxObjectDataPtr<ibPredefinedValueObject> FindPredefinedValue(const wxString& predefinedName) const {
+	wxObjectDataPtr<ibPredefinedValueObject> FindPredefinedValue(const ibString& predefinedName) const {
 
 		auto iterator = std::find_if(m_predefinedObjectVector.begin(), m_predefinedObjectVector.end(),
 			[predefinedName](const auto& value) { return predefinedName == value->GetPredefinedName(); });
@@ -114,7 +114,7 @@ public:
 	//predefined values
 	const std::vector<wxObjectDataPtr<ibPredefinedValueObject>>& GetPredefinedValueArray() const { return m_predefinedObjectVector; }
 
-	// …as the server's editor holds them (ibProtocolSchema::Predefined), read anew — when the editor opens and after
+	// …as the server's editor holds them (ibProtocol::ibSchema::ibKind::Predefined), read anew — when the editor opens and after
 	// each of its edits; the array keeps what was read till then.
 	void ReadPredefinedValues();
 

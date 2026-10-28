@@ -80,6 +80,18 @@ inline ibFont ibDefaultSpreadsheetFont() {
 	return font;
 }
 
+// ⭐ THE SHEET'S ORDINARY COLOURS — the platform's, not the system's. A cell nobody coloured is drawn in these, and the
+// editor writes what it draws into the cell it touches: taken from the system (wxSYS_COLOUR_WINDOW / WINDOWTEXT), a
+// template edited under a dark macOS appearance was saved with (23,23,23) on White, and the system's theme became
+// part of the configuration (thin designer, 2026-10-27). The same two colours on every client and every theme.
+inline ibColour ibDefaultSpreadsheetBackgroundColour() {
+	return ibColour(255, 255, 255);
+}
+
+inline ibColour ibDefaultSpreadsheetTextColour() {
+	return ibColour(0, 0, 0);
+}
+
 ///////////////////////////////////////
 
 struct ibSpreadsheetBorderDescription {
@@ -122,7 +134,7 @@ struct ibSpreadsheetCellDescription {
 	void SetValue(const ibString& s) { m_value = s; }
 
 	//special set
-	ibString GetValue() const { return m_value; }
+	const ibString& GetValue() const { return m_value; }
 
 	bool IsEmptyParameter() const { return m_detailsParameter.IsEmpty(); }
 
@@ -130,7 +142,7 @@ struct ibSpreadsheetCellDescription {
 	void SetParameter(const ibString& s) { m_detailsParameter = s; }
 
 	//special set
-	ibString GetParameter() const { return m_detailsParameter; }
+	const ibString& GetParameter() const { return m_detailsParameter; }
 
 	int GetSize(int* num_rows, int* num_cols) const {
 
@@ -188,7 +200,7 @@ struct ibSpreadsheetCellDescription {
 	// This compared fourteen things and not m_value, m_fitMode or m_isReadOnly — so two sheets
 	// differing only in what was WRITTEN in them compared equal. The one thing a person looks at
 	// was the one thing equality ignored, and every caller built on top inherited that: the
-	// description's own operator== is this one in a loop, and ibVariantDataSpreadsheet::Eq is how
+	// description's own operator== is this one in a loop, and ibVariantSpreadsheet::Eq is how
 	// wxVariant answers "did this change" about a template.
 	//
 	// It was found by writing a test for the round trip and discovering the assertion could not
@@ -982,8 +994,8 @@ struct ibSpreadsheetDescription {
 
 	ibFont GetLabelFont() const { return m_labelFont; }
 
-	ibString GetRowLabelValue(int row) const { return ibString::Format(wxT("%d"), row + 1); }
-	ibString GetColLabelValue(int col) const { return ibString::Format(wxT("%d"), col + 1); }
+	ibString GetRowLabelValue(int row) const { return ibString::Format(ibT("%d"), row + 1); }
+	ibString GetColLabelValue(int col) const { return ibString::Format(ibT("%d"), col + 1); }
 
 	// ------ cell value accessors
 	//

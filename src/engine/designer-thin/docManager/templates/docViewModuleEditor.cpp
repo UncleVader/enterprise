@@ -37,16 +37,22 @@ wxEND_EVENT_TABLE()
 
 bool ibModuleEditView::OnCreate(ibFrontendDocument* docBase, long flags)
 {
+	ibModuleEditDocument* const doc = dynamic_cast<ibModuleEditDocument*>(docBase);
+	wxASSERT(doc);
+
 	// The desktop's designer editor — the debugger's margin, its patches, its values (ibCodeEditorDesigner).
-	m_codeEditor = new ibCodeEditorDesigner(dynamic_cast<ibModuleEditDocument*>(docBase), m_viewFrame, wxID_ANY,
+	m_codeEditor = new ibCodeEditorDesigner(doc, m_viewFrame, wxID_ANY,
 		wxDefaultPosition, wxDefaultSize, wxBORDER_THEME);
 
 	m_codeEditor->SetReadOnly(flags == ibDOC_READONLY);
 	m_codeEditor->SetSTCFocus(true);
 	m_codeEditor->Bind(wxEVT_KILL_FOCUS, &ibModuleEditView::OnKillFocus, this);
 
+	// ⭐ THE FRAME THAT OPENS THE TAB CARRIES ITS TEXT (State Text), as the form editor's carries its form (Opening); a
+	// server that put none there is fetched, as before.
+	const ibProtocolNode& state = doc->GetOpeningState();
 	return ibFrontendView::OnCreate(docBase, flags)
-		&& m_codeEditor->LoadModule();
+		&& (state.Has(ibProtocol::ibView::ibModule::Text) ? m_codeEditor->LoadModule(state) : m_codeEditor->LoadModule());
 }
 
 void ibModuleEditView::OnActivateView(bool activate, ibFrontendView* activeView, ibFrontendView* deactiveView)
@@ -170,7 +176,7 @@ void ibModuleEditDocument::Modify(bool modify)
 {
 	if (modify && !m_modified) {
 		m_modified = true;
-		Post(ibProtocolEvent::Input);
+		Post(ibProtocol::ibEvent::ibKind::Input);
 	}
 }
 
@@ -192,13 +198,13 @@ bool ibModuleEditDocument::Save()
 
 void ibModuleEditDocument::DrawView(const ibProtocolNode& view, const ibProtocolNode& patch)
 {
-	if (patch.IsNode() && !patch.Has(ibProtocolName::State))
+	if (patch.IsNode() && !patch.Has(ibProtocol::ibView::State))
 		return;
 
-	const ibProtocolNode state = view.FindChild(ibProtocolName::State);
-	m_modified = state.GetBool(ibProtocolName::Modified);
+	const ibProtocolNode state = view.FindChild(ibProtocol::ibView::State);
+	m_modified = state.GetBool(ibProtocol::ibView::ibModule::Modified);
 
-	const wxString docPath = state.GetString(ibProtocolName::Module);
+	const wxString docPath = state.GetString(ibProtocol::ibView::ibModule::Module);
 	const bool docPathChanged = docPath != m_docPath;
 	m_docPath = docPath;
 
@@ -208,8 +214,14 @@ void ibModuleEditDocument::DrawView(const ibProtocolNode& view, const ibProtocol
 
 	// The syntax the module is written in, and whether it takes typing — the desktop's editor asked the process and
 	// the document (ibCompileCode::GetCodeStyle, ibDOC_READONLY).
-	codeEditor->SetCodeStyle(static_cast<short>(state.GetInt(ibProtocolName::Syntax)));
-	codeEditor->SetReadOnly(state.GetBool(ibProtocolName::ReadOnly));
+	codeEditor->SetCodeStyle(static_cast<short>(state.GetInt(ibProtocol::ibView::ibModule::Syntax)));
+	const bool readOnly = state.GetBool(ibProtocol::ibView::ibModule::ReadOnly);
+	const bool readOnlyChanged = readOnly == codeEditor->IsEditable();
+	codeEditor->SetReadOnly(readOnly);
+	// …the menu and the toolbar asked anew when that changed: built as the tab was activated, before the server said —
+	// the desktop's were built of a document opened read-only already.
+	if (readOnlyChanged)
+		Activate();
 
 	// Its breakpoints, drawn once the address they are kept by is known.
 	if (docPathChanged)

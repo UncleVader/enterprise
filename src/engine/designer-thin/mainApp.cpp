@@ -11,13 +11,11 @@
 #include <wx/dirdlg.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
-#include <wx/socket.h>
 #include <wx/stdpaths.h>
 
-#include "core/diagnostics/crashGuard.h"   // ibCrashGuard::Install — the process's journal and dumps
 #include "frmclient/artProvider/splash/splashLogo.h"   // the splash's picture, the desktop's
 #include "frmclient/backend/appData.h"                 // the base it opens — held there, as the engine's appData held it
-#include "frmclient/win/picture.h"                     // ibProtocolPicture — a PNG in base64, made a bitmap
+#include "frmclient/backend/backend_picture.h"         // ibBackendPicture::GetImageFromBase64 — the splash, a master in the source
 #include "protocol/connectionFile.h"
 #include "protocol/connectionServer.h"
 
@@ -30,7 +28,8 @@ wxIMPLEMENT_APP(ibAppDesigner);
 
 void ibAppDesigner::OnInitCmdLine(wxCmdLineParser& parser)
 {
-	parser.AddOption(wxT("address"), wxT("address"), "Application server: oes://server[:port]/<base>", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("address"), wxT("address"), "Application server: oes://server[:port]/<base>, oess:// over TLS", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+	parser.AddOption(wxT("trusted"), wxT("trusted"), "oess://: the authorities trusted, a PEM file (default: the system's store)", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("file"),   wxT("file"),     "Database file path",      wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("srv"),    wxT("server"),   "Database server address", wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 	parser.AddOption(wxT("p"),      wxT("dbport"),   "Database server port",    wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
@@ -46,36 +45,38 @@ void ibAppDesigner::OnInitCmdLine(wxCmdLineParser& parser)
 
 bool ibAppDesigner::OnCmdLineParsed(wxCmdLineParser& parser)
 {
-	parser.Found(wxT("address"), &appData->m_strAddress);
+	// wxCmdLineParser's own: it writes what it found into a wx string, handed on to the application's data.
+	const auto found = [&parser](const wxString& name, ibString& value) {
+		wxString text;
+		if (parser.Found(name, &text))
+			value = text;
+	};
 
-	parser.Found(wxT("file"), &appData->m_strFile);
+	found(wxT("address"), appData->m_strAddress);
+	found(wxT("trusted"), appData->m_strTrusted);
 
-	parser.Found(wxT("srv"), &appData->m_strServer);
-	parser.Found(wxT("p"), &appData->m_strPort);
-	parser.Found(wxT("db"), &appData->m_strDatabase);
-	parser.Found(wxT("usr"), &appData->m_strUser);
-	parser.Found(wxT("pwd"), &appData->m_strPassword);
+	found(wxT("file"), appData->m_strFile);
 
-	parser.Found(wxT("ib_usr"), &appData->m_strIBUser);
-	parser.Found(wxT("ib_pwd"), &appData->m_strIBPassword);
+	found(wxT("srv"), appData->m_strServer);
+	found(wxT("p"), appData->m_strPort);
+	found(wxT("db"), appData->m_strDatabase);
+	found(wxT("usr"), appData->m_strUser);
+	found(wxT("pwd"), appData->m_strPassword);
 
-	parser.Found(wxT("lc"), &appData->m_strLocale);
+	found(wxT("ib_usr"), appData->m_strIBUser);
+	found(wxT("ib_pwd"), appData->m_strIBPassword);
+
+	found(wxT("lc"), appData->m_strLocale);
 
 	return wxApp::OnCmdLineParsed(parser);
 }
 
 #endif
 
-bool ibAppDesigner::OnInit()
+bool ibAppDesigner::DoOnInit()
 {
-	// THE JOURNAL AND THE DUMPS — the first act, as every application of the platform does (ibCrashGuard::Install), so
-	// whatever goes wrong after it has somewhere to be said: one journal of the process, the client's, the protocol's
-	// and a file base's engine's lines in it alike.
-	ibCrashGuard::Install(wxT("designer-thin"));
-
-	// THE SOCKETS ON THIS THREAD, as the desktop's (ibWxApp::DoOnInit): the debugger's connections open theirs on their
-	// own threads, and a file base has none here before them — wx does not start the socket layer from a worker thread.
-	wxSocketBase::Initialize();
+	// The journal, the dumps and the light appearance are the base's (ibWxApp::OnInit, core/diagnostics/oesApp.h), set
+	// before this runs — as every application of the platform has them.
 
 	// THE COMMAND LINE FIRST, then the connection: wx calls OnExit only after an OnInit that succeeded, so nothing is
 	// opened before a refusal here could leave it behind (the codeRunner exit crash, 2026-10-07).
@@ -98,16 +99,16 @@ bool ibAppDesigner::OnInit()
 	// THE SPLASH — the desktop's (designer/mainApp.cpp): up while the base opens and the client logs in, gone with the
 	// main window shown — or before a refusal is said, which it would stand over.
 	const auto splashDestroy = [](wxSplashScreen* shown) { shown->Destroy(); };
-	std::unique_ptr<wxSplashScreen, decltype(splashDestroy)> splash(new ibProcessSplashScreen(ibProtocolPicture(s_splashLogo_png),
+	std::unique_ptr<wxSplashScreen, decltype(splashDestroy)> splash(new ibProcessSplashScreen(wxBitmap(ibBackendPicture::GetImageFromBase64(s_splashLogo_png)),
 		wxSPLASH_CENTRE_ON_SCREEN, -1, nullptr, -1, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE), splashDestroy);
 
 	std::unique_ptr<ibProtocolConnection> connection;
-	wxString error;
+	ibString error;
 
 	if (!appData->m_strAddress.IsEmpty()) {
 		// An application server — over its port.
 		auto server = std::make_unique<ibProtocolConnectionServer>();
-		if (!server->Open(appData->m_strAddress, error)) {
+		if (!server->Open(appData->m_strAddress, appData->m_strTrusted, error)) {
 			splash.reset();
 			wxMessageBox(error, _("OES Designer - startup error"), wxOK | wxICON_ERROR);
 			return false;
@@ -118,17 +119,17 @@ bool ibAppDesigner::OnInit()
 		// A file base — opened in this process, by the library that brings the server in; the designer's is made
 		// where there is none yet, as the desktop designer made it.
 		ibProtocolNode request;
-		request.SetValue(ibProtocolName::Locale, appData->m_strLocale)
-			.SetValue(ibProtocolName::Create, true);
+		request.SetValue(ibProtocol::ibFileBase::Locale, appData->m_strLocale)
+			.SetValue(ibProtocol::ibFileBase::Create, true);
 		if (!appData->m_strFile.IsEmpty()) {
-			request.SetValue(ibProtocolName::Directory, appData->m_strFile);
+			request.SetValue(ibProtocol::ibFileBase::Directory, appData->m_strFile);
 		}
 		else {
-			request.SetValue(ibProtocolName::Server, appData->m_strServer)
-				.SetValue(ibProtocolName::Port, appData->m_strPort)
-				.SetValue(ibProtocolName::User, appData->m_strUser)
-				.SetValue(ibProtocolName::Password, appData->m_strPassword)
-				.SetValue(ibProtocolName::Database, appData->m_strDatabase);
+			request.SetValue(ibProtocol::ibFileBase::Server, appData->m_strServer)
+				.SetValue(ibProtocol::ibFileBase::Port, appData->m_strPort)
+				.SetValue(ibProtocol::ibFileBase::User, appData->m_strUser)
+				.SetValue(ibProtocol::ibFileBase::Password, appData->m_strPassword)
+				.SetValue(ibProtocol::ibFileBase::Database, appData->m_strDatabase);
 		}
 		auto file = std::make_unique<ibProtocolConnectionFile>();
 		if (!file->Open(request.Write(), error)) {
@@ -145,7 +146,7 @@ bool ibAppDesigner::OnInit()
 		wxMessageBox(
 			_("Cannot start designer-thin.exe - no infobase specified.\n\n"
 			  "Provide one of:\n"
-			  "  --address=oes://<server>[:port]/<base>   (an application server)\n"
+			  "  --address=oes://<server>[:port]/<base>   (an application server; oess:// over TLS)\n"
 			  "  --file=<path>          (Firebird embedded / SQLite file)\n"
 			  "  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]"),
 			_("OES Designer"),

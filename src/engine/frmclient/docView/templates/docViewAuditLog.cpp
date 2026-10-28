@@ -180,7 +180,7 @@ unsigned int ibAuditLogModel::GetPrevFetch(
 	return static_cast<unsigned int>(anchorIdx - startIdx);
 }
 
-void ibAuditLogModel::GetValue(wxVariant& val,
+void ibAuditLogModel::GetValue(ibVariant& val,
                                 const ibDataViewItem& item,
                                 unsigned int col) const
 {
@@ -200,7 +200,7 @@ void ibAuditLogModel::GetValue(wxVariant& val,
 	case kColEvent:   val = r->event_type; break;
 	case kColMessage: val = r->message;   break;
 	case kColRef:     val = r->ref_guid.IsEmpty()
-	                       ? wxString()
+	                       ? ibString()
 	                       : r->ref_guid.Left(8) + wxT("...");
 	                  break;
 	}
@@ -274,7 +274,7 @@ void ibAuditLogView::BuildLayout(wxWindow* parent)
 		0, wxALIGN_CENTER_VERTICAL | wxALL, parent->FromDIP(3));
 	m_sourceChoice = new wxChoice(parent, wxID_ANY);
 	for (int i = 0; kSources[i] != nullptr; ++i) {
-		m_sourceChoice->Append(kSources[i][0] == 0 ? _("any") : wxString(kSources[i]));
+		m_sourceChoice->Append(kSources[i][0] == 0 ? wxString(_("any")) : wxString(kSources[i]));
 	}
 	m_sourceChoice->SetSelection(0);
 	filt->Add(m_sourceChoice, 0, wxALL, parent->FromDIP(3));
@@ -441,13 +441,13 @@ void ibAuditLogView::OnCommandMenu(wxCommandEvent& event)
 		// THE OBJECT IS OPENED BY THE SERVER, where the configuration is — a user's row and a metaobject's alike
 		// (ibAuditLogView::OnClientEvent there); what it opens comes as a tab of its own.
 		ibProtocolNode args, params;
-		args.SetValue(ibProtocolName::Ref, r->ref_guid)
-			.SetValue(ibProtocolName::RefMeta, r->ref_meta_id);
-		params.SetValue(ibProtocolName::Tab, m_auditDoc->GetTabId())
-			.SetValue(ibProtocolName::Event, static_cast<int>(ibProtocolEvent::Open))
-			.SetValue(ibProtocolName::Args, args);
+		args.SetValue(ibProtocol::ibView::ibAuditLog::Ref, r->ref_guid)
+			.SetValue(ibProtocol::ibView::ibAuditLog::RefMeta, r->ref_meta_id);
+		params.SetValue(ibProtocol::ibEvent::Tab, m_auditDoc->GetTabId())
+			.SetValue(ibProtocol::ibEvent::Event, static_cast<int>(ibProtocol::ibEvent::ibKind::Open))
+			.SetValue(ibProtocol::ibEvent::Args, args);
 		if (ibFrontendMainFrame* const frame = ibFrontendMainFrame::GetFrame())
-			frame->Post(ibProtocolMethod::Event, params);
+			frame->Post(ibProtocol::ibMethod::Event, params);
 		break;
 	}
 	}

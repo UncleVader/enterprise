@@ -29,14 +29,15 @@ public:
 	void Modify(bool) override {}
 
 protected:
-	bool DoSaveDocument(const wxString&) override { return true; }
-	bool DoOpenDocument(const wxString&) override { return true; }
+	bool DoSaveDocument(const ibString&) override { return true; }
+	bool DoOpenDocument(const ibString&) override { return true; }
 
 private:
 	std::unique_ptr<ibLoggerReader> m_reader;
 	const ibMetaData* m_metaData;
 
-	wxDECLARE_NO_COPY_CLASS(ibAuditLogDocument);
+	ibAuditLogDocument(const ibAuditLogDocument&) = delete;
+	ibAuditLogDocument& operator=(const ibAuditLogDocument&) = delete;
 	wxDECLARE_DYNAMIC_CLASS(ibAuditLogDocument);
 };
 
@@ -47,15 +48,15 @@ public:
 	ibAuditLogView() : ibView() {}
 
 	// Nothing of the journal is drawn — the client's view is its own, its toolbar's pictures the engine's.
-	virtual void OnDraw(ibDataNode& WXUNUSED(frame)) override {}
+	virtual void OnDraw(ibDataNode& /*frame*/) override {}
 
-	virtual ibProtocolViewKind GetViewKind() const override { return ibProtocolViewKind::AuditLog; }
+	virtual ibProtocol::ibView::ibKind GetViewKind() const override { return ibProtocol::ibView::ibKind::AuditLog; }
 	// The rows the filter selects, newest first: {From, To, Level, User, Session, Source, Event, Ref, Search, Offset,
 	// Count} → a child a row {Time, Level, Session, User, Host, Source, Event, Message, Ref, RefMeta}.
 	virtual bool Fetch(const ibDataNode& request, ibDataNode& response) override;
 
 	// Open {Ref, RefMeta} — the row's object, opened as the desktop's journal opened it.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 private:
 	wxDECLARE_DYNAMIC_CLASS(ibAuditLogView);

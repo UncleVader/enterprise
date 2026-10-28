@@ -1,11 +1,14 @@
 ﻿////////////////////////////////////////////////////////////////////////////
-//	Author		: Maxim Kornienko, 2C-team
-//	Description : translate module 
+//	Author		: Maxim Kornienko
+//	Description : translate module
 ////////////////////////////////////////////////////////////////////////////
 
 #include "translateCode.h"
 
 #include "core/exception.h"
+#include "core/fboolean.h"   // g_booleanTrue / g_booleanFalse — the words of the boolean type
+
+#include "core/localization/dictionary.h"   // _() — the refusals' words
 
 //////////////////////////////////////////////////////////////////////
 //                           Constants
@@ -69,8 +72,8 @@ struct ibKeyWords s_listKeyWord[] =
 	{"Null"},
 
 	//boolean type
-	{"True"},
-	{"False"},
+	{g_booleanTrue},
+	{g_booleanFalse},
 
 	//preprocessor:
 	{"#Define"},
@@ -118,15 +121,15 @@ static_assert(WXSIZEOF(s_listKeyWord) == LastKeyWord,
 
 // The map folds case in its comparator (ibCaseFoldLess), so these are plain
 // O(log n) lookups by the name as written — where the old code ran a linear
-// std::find_if over the whole map, calling CompareString on each entry, for
+// std::find_if over the whole map, calling IsSameAs on each entry, for
 // every identifier in every module.
 
-void ibTranslateCode::ibDefineCollection::RemoveDef(const wxString& strName)
+void ibTranslateCode::ibDefineCollection::RemoveDef(const ibString& strName)
 {
 	m_defineList.erase(strName);
 }
 
-const ibLexemList* ibTranslateCode::ibDefineCollection::FindDefine(const wxString& strName) const
+const ibLexemList* ibTranslateCode::ibDefineCollection::FindDefine(const ibString& strName) const
 {
 	// Iterative walk — the chain is a parent list, not a tree, so recursion bought
 	// nothing and its depth guard was a function-local `static` counter: shared by
@@ -141,7 +144,7 @@ const ibLexemList* ibTranslateCode::ibDefineCollection::FindDefine(const wxStrin
 	return nullptr;
 }
 
-void ibTranslateCode::ibDefineCollection::SetDefine(const wxString& strName, const ibLexemList* src)
+void ibTranslateCode::ibDefineCollection::SetDefine(const ibString& strName, const ibLexemList* src)
 {
 	// Always OUR map. The previous version resolved the destination through the
 	// chain-walking lookup, so redefining a name an ancestor held overwrote the
@@ -154,14 +157,14 @@ void ibTranslateCode::ibDefineCollection::SetDefine(const wxString& strName, con
 		dst.clear();
 }
 
-void ibTranslateCode::ibDefineCollection::SetDefine(const wxString& strName, const wxString& strValue)
+void ibTranslateCode::ibDefineCollection::SetDefine(const ibString& strName, const ibString& strValue)
 {
 	ibLexemList listLexem;
 
 	if (strValue.length() > 0) {
 		ibLexem Lex;
 		Lex.m_lexType = CONSTANT;
-		if (strValue[0] == wxT('-') || strValue[0] == wxT('+') || (strValue[0] >= wxT('0') && strValue[0] <= wxT('9'))) //digit
+		if (strValue[0] == ibT('-') || strValue[0] == ibT('+') || (strValue[0] >= ibT('0') && strValue[0] <= ibT('9'))) //digit
 			Lex.m_valData.SetNumber(strValue);
 		else
 			Lex.m_valData.SetString(strValue);
@@ -185,18 +188,18 @@ void ibTranslateCode::ibDefineCollection::SetDefine(const wxString& strName, con
 // the non-null branch was copied into a temporary first. The caller then read freed stack.
 //
 // MSVC survived it by accident (the temporary's stack slot happened to stay intact long
-// enough for AddLineInfo to copy out of it); GCC reuses the memory immediately and every
+// enough for StampSource to copy out of it); GCC reuses the memory immediately and every
 // test that compiles a script segfaulted. A file-scope empty string keeps both operands
 // lvalues, so the conditional stays an lvalue and the reference is real.
-static const wxString s_emptyLexemString;
+static const ibString s_emptyLexemString;
 
-const wxString& ibLexem::GetModuleName() const {
+const ibString& ibLexem::GetModuleName() const {
 	return m_translateCode ? m_translateCode->m_strModuleName : s_emptyLexemString;
 }
-const wxString& ibLexem::GetDocPath() const {
+const ibString& ibLexem::GetDocPath() const {
 	return m_translateCode ? m_translateCode->m_strDocPath : s_emptyLexemString;
 }
-const wxString& ibLexem::GetFileName() const {
+const ibString& ibLexem::GetFileName() const {
 	return m_translateCode ? m_translateCode->m_strFileName : s_emptyLexemString;
 }
 
@@ -212,7 +215,7 @@ m_codeStyle(codeStyle)
 {
 }
 
-ibTranslateCode::ibTranslateCode(short codeStyle, const wxString& strModuleName, const wxString& strDocPath) : m_current_lex(this),
+ibTranslateCode::ibTranslateCode(short codeStyle, const ibString& strModuleName, const ibString& strDocPath) : m_current_lex(this),
 m_defineList(nullptr),
 m_bAutoDeleteDefList(false),
 m_nModePreparing(LEXEM_ADD),
@@ -221,7 +224,7 @@ m_strModuleName(strModuleName), m_strDocPath(strDocPath)
 {
 }
 
-ibTranslateCode::ibTranslateCode(short codeStyle, const wxString& strFileName) : m_current_lex(this),
+ibTranslateCode::ibTranslateCode(short codeStyle, const ibString& strFileName) : m_current_lex(this),
 m_defineList(nullptr),
 m_bAutoDeleteDefList(false),
 m_nModePreparing(LEXEM_ADD),
@@ -232,7 +235,7 @@ m_strFileName(strFileName)
 
 ibTranslateCode::~ibTranslateCode()
 {
-	if (m_bAutoDeleteDefList) wxDELETE(m_defineList);
+	if (m_bAutoDeleteDefList) delete m_defineList;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -274,7 +277,7 @@ void ibTranslateCode::Clear()
 * none
 */
 
-void ibTranslateCode::Load(const wxString& strCode)
+void ibTranslateCode::Load(const ibString& strCode)
 {
 	Clear();
 
@@ -282,22 +285,12 @@ void ibTranslateCode::Load(const wxString& strCode)
 
 	if (m_bufferSize > 0) {
 
-		m_strBuffer.assign(strCode);
-		m_strBUFFER.assign(strCode);
+		m_strBuffer = strCode;
+		m_strBUFFER = strCode.Upper();
 
-		std::transform(
-			m_strBUFFER.begin(), m_strBUFFER.end(),
-			m_strBUFFER.begin(),
-#ifdef wxUSE_UNICODE
-			[](const auto& c) { return ::towupper(c); }
-#else
-			[](const auto& c) { return ::toupper(c); }
-#endif // wxUSE_UNICODE
-		);
-
-		// Capacity is reserved by the full-PrepareLexem path (after its
+		// Capacity is reserved by the full-Translate path (after its
 		// clear()) so we don't move stale lexems into a new buffer just
-		// to drop them. Incremental PrepareLexem(line, ...) reuses the
+		// to drop them. Incremental Translate(line, ...) reuses the
 		// existing capacity; it depends on the previous parse's lexems
 		// being intact for its rewind/patch logic, so Load must not
 		// touch m_listLexem.
@@ -305,26 +298,26 @@ void ibTranslateCode::Load(const wxString& strCode)
 }
 
 /**
-* SetError
+* Refuse
 * Purpose:
 * Remember the translation error and raise an exception
 * Return value:
 * The method does not return control!strCurWord
 */
 
-void ibTranslateCode::SetError(int codeError, unsigned int currPos, const wxString& errorDesc) const
+void ibTranslateCode::Refuse(int codeError, unsigned int currPos, const ibString& errorDesc) const
 {
 	unsigned int start_pos = 0;
 
 	//look for the beginning of the string where the translation error message is returned
 	for (unsigned int i = (currPos == m_strBuffer.length() ? currPos - 1 : currPos); i > 0; i--) {
-		if (m_strBuffer[i] == wxT('\n')) {
+		if (m_strBuffer[i] == ibT('\n')) {
 			start_pos = i + 1; break;
 		};
 	}
 
 	const int currLine = 1 + std::count(
-		m_strBuffer.begin(), m_strBuffer.begin() + start_pos, wxT('\n'));
+		m_strBuffer.begin(), m_strBuffer.begin() + start_pos, ibT('\n'));
 
 	m_listRefusal.emplace_back(codeError, currPos, currLine, errorDesc, this);
 }
@@ -354,10 +347,10 @@ void ibTranslateCode::SkipSpaces() const
 		(void)SetUtf8CharOffset(c, i_utf8_step);
 		i_utf8_offset += i_utf8_step;
 #endif
-		if (c != wxT(' ') && c != wxT('\t') && c != wxT('\n') && c != wxT('\r')) {
-			if (c == wxT('/')) { //maybe it's a comment
+		if (c != ibT(' ') && c != ibT('\t') && c != ibT('\n') && c != ibT('\r')) {
+			if (c == ibT('/')) { //maybe it's a comment
 				if (i + 1 < m_bufferSize) {
-					if (m_strBuffer[i + 1] == wxT('/')) { //skip comments
+					if (m_strBuffer[i + 1] == ibT('/')) { //skip comments
 
 #ifdef UTF8_LEXEM_TRANSLATE
 						unsigned int j_utf8 = i_utf8;
@@ -383,7 +376,7 @@ void ibTranslateCode::SkipSpaces() const
 #ifdef UTF8_LEXEM_TRANSLATE
 							m_currentUtf8Pos = j_utf8;
 #endif
-							if (w == wxT('\n') || w == wxT('\r')) {
+							if (w == ibT('\n') || w == ibT('\r')) {
 								// Resume the outer walk AT the line end: `i++` lands on it, where it is whitespace like
 								// any other and counts the line (m_currentLine) exactly as the recursive call did.
 								i = j - 1;   // j > i here (the comment starts with '/', which is not a line end)
@@ -409,7 +402,7 @@ void ibTranslateCode::SkipSpaces() const
 #endif
 			break;
 		}
-		else if (c == wxT('\n')) {
+		else if (c == ibT('\n')) {
 			m_currentLine++;
 		}
 	}
@@ -431,7 +424,7 @@ void ibTranslateCode::SkipSpaces() const
 * true,false
 */
 
-bool ibTranslateCode::IsByte(const wxUniChar& c) const
+bool ibTranslateCode::IsByte(const ibChar& c) const
 {
 	SkipSpaces();
 	if (m_currentPos >= m_bufferSize)
@@ -450,7 +443,7 @@ bool ibTranslateCode::IsByte(const wxUniChar& c) const
 * Byte from the buffer
 */
 
-bool ibTranslateCode::GetByte(wxUniChar* c) const
+bool ibTranslateCode::GetByte(ibChar* c) const
 {
 	SkipSpaces();
 
@@ -463,7 +456,7 @@ bool ibTranslateCode::GetByte(wxUniChar* c) const
 		return true;
 	}
 
-	SetError(ERROR_TRANSLATE_BYTE, m_currentPos);
+	Refuse(ibScriptError_TranslateByte, m_currentPos);
 	return false;
 }
 
@@ -494,7 +487,7 @@ void ibTranslateCode::SkipLine() const
 #ifdef UTF8_LEXEM_TRANSLATE
 		m_currentUtf8Pos = i_utf8;
 #endif
-		if (c == wxT('\n') || c == wxT('\r')) {
+		if (c == ibT('\n') || c == ibT('\r')) {
 			SkipSpaces();   // steps over the break itself and counts the line
 			return;
 		}
@@ -511,11 +504,7 @@ bool ibTranslateCode::IsWord() const
 	SkipSpaces();
 	if (m_currentPos < m_bufferSize) {
 		const auto& c = m_strBuffer[m_currentPos];
-#ifdef wxUSE_UNICODE
-		if (((c == wxT('_')) || iswalpha(c) || (c == wxT('#'))) && (c != wxT('[') && c != wxT(']')))
-#else 
-		if (((c == wxT('_')) || isalpha(c) || (c == wxT('#'))) && (c != wxT('[') && c != wxT(']')))
-#endif
+		if (((c == ibT('_')) || iswalpha(c) || (c == ibT('#'))) && (c != ibT('[') && c != ibT(']')))
 			return true;
 	}
 	return false;
@@ -532,12 +521,12 @@ bool ibTranslateCode::IsWord() const
 * Word from the buffer
 */
 
-bool ibTranslateCode::GetWord(wxString* strWord, wxString* strRealName, bool realName, bool get_point) const
+bool ibTranslateCode::GetWord(ibString* strWord, ibString* strRealName, bool realName, bool get_point) const
 {
 	SkipSpaces();
 
 	if (m_currentPos >= m_bufferSize) {
-		SetError(ERROR_TRANSLATE_WORD, m_currentPos);
+		Refuse(ibScriptError_TranslateWord, m_currentPos);
 		return false;
 	}
 
@@ -563,18 +552,14 @@ bool ibTranslateCode::GetWord(wxString* strWord, wxString* strRealName, bool rea
 		i_utf8_offset += i_utf8_step;
 #endif	
 		// if array then break
-		if (c == wxT('[') || c == wxT(']')) break;
+		if (c == ibT('[') || c == ibT(']')) break;
 
-		if ((c == wxT('_')) ||
-#ifdef wxUSE_UNICODE
+		if ((c == ibT('_')) ||
 			iswalpha(c) || isdigit(c) ||
-#else 
-			isalpha(c) || isdigit(c) ||
-#endif 
-			(c == wxT('#') && i == m_currentPos) || //if the first # symbol is a special word
-			(c == wxT('.') && get_point)) {
+			(c == ibT('#') && i == m_currentPos) || //if the first # symbol is a special word
+			(c == ibT('.') && get_point)) {
 
-			if (c == wxT('.') && get_point)
+			if (c == ibT('.') && get_point)
 				get_point = false; //the dot must appear only once
 
 			next_pos = i + 1;
@@ -596,7 +581,7 @@ bool ibTranslateCode::GetWord(wxString* strWord, wxString* strRealName, bool rea
 #endif
 
 	if (first_pos == next_pos) {
-		SetError(ERROR_TRANSLATE_WORD, first_pos);
+		Refuse(ibScriptError_TranslateWord, first_pos);
 		return false;
 	}
 
@@ -610,7 +595,7 @@ bool ibTranslateCode::GetWord(wxString* strWord, wxString* strRealName, bool rea
 * String
 */
 
-wxString ibTranslateCode::GetStrToEndLine() const
+ibString ibTranslateCode::GetStrToEndLine() const
 {
 	unsigned int start_pos = m_currentPos;
 	unsigned int i = m_currentPos;
@@ -627,12 +612,12 @@ wxString ibTranslateCode::GetStrToEndLine() const
 		(void)SetUtf8CharOffset(c, i_utf8_step);
 		i_utf8_offset += i_utf8_step;
 #endif
-		if (c == wxT('\r') || c == wxT('\n')) {
+		if (c == ibT('\r') || c == ibT('\n')) {
 			i += 1;
 #ifdef UTF8_LEXEM_TRANSLATE
 			i_utf8 += i_utf8_step;
 #endif
-			if (c == wxT('\n')) m_currentLine++;
+			if (c == ibT('\n')) m_currentLine++;
 			break;
 		}
 	}
@@ -669,20 +654,20 @@ bool ibTranslateCode::IsNumber() const
 * Number from the buffer
 */
 
-bool ibTranslateCode::GetNumber(wxString* strNumber) const
+bool ibTranslateCode::GetNumber(ibString* strNumber) const
 {
 	// 🛑 `return false`, NOT `return wxEmptyString` — this returned a POINTER from a bool function,
 	// left over from when the signature was `wxString GetNumber()`. It compiles, and a non-null
 	// pointer is TRUE, so both of these error paths were reporting SUCCESS. Every sibling Get* in
-	// this file returns false here. (It went unnoticed because SetError above already records the
+	// this file returns false here. (It went unnoticed because Refuse above already records the
 	// failure, so the compile still refused — but a caller reading the RESULT was told it worked.)
 	if (!IsNumber()) {
-		SetError(ERROR_TRANSLATE_NUMBER, m_currentPos);
+		Refuse(ibScriptError_TranslateNumber, m_currentPos);
 		return false;
 	}
 	SkipSpaces();
 	if (m_currentPos >= m_bufferSize) {
-		SetError(ERROR_TRANSLATE_NUMBER, m_currentPos);
+		Refuse(ibScriptError_TranslateNumber, m_currentPos);
 		return false;
 	}
 	unsigned int next_pos = m_currentPos, error_pos = m_currentPos, point_pos = 0;
@@ -703,8 +688,8 @@ bool ibTranslateCode::GetNumber(wxString* strNumber) const
 		(void)SetUtf8CharOffset(c, i_utf8_step);
 		i_utf8_offset += i_utf8_step;
 #endif
-		if (isdigit(c) || (c == wxT('.'))) {
-			if (c == wxT('.'))
+		if (isdigit(c) || (c == ibT('.'))) {
+			if (c == ibT('.'))
 				point_pos++; //dot must appear only once
 			next_pos = i + 1;
 #ifdef UTF8_LEXEM_TRANSLATE
@@ -724,22 +709,22 @@ bool ibTranslateCode::GetNumber(wxString* strNumber) const
 #endif	
 
 	if (first_pos == next_pos) {
-		SetError(ERROR_TRANSLATE_NUMBER, first_pos);
+		Refuse(ibScriptError_TranslateNumber, first_pos);
 		return false;
 	}
-	else if (IsWord() && !wxIsspace(m_strBuffer[next_pos])) {
+	else if (IsWord() && !ibIsSpace(m_strBuffer[next_pos])) {
 		// Originally compared `!= ' '` — rejected `20\nselect` as
 		// "number-glued-to-word" because newline isn't the literal
 		// space char. IsWord() above calls SkipSpaces() (which advances
 		// past ALL whitespace incl. \n / \t), so the IsWord check
 		// might return true for a far-away identifier after a wide
-		// whitespace gap. Use wxIsspace at next_pos so any whitespace
+		// whitespace gap. Use ibIsSpace at next_pos so any whitespace
 		// separator (space / tab / newline / CR) is accepted.
-		SetError(ERROR_TRANSLATE_NUMBER, error_pos);
+		Refuse(ibScriptError_TranslateNumber, error_pos);
 		return false;
 	}
 	else if (point_pos > 1) {
-		SetError(ERROR_TRANSLATE_NUMBER, error_pos);
+		Refuse(ibScriptError_TranslateNumber, error_pos);
 		return false;
 	}
 
@@ -756,7 +741,7 @@ bool ibTranslateCode::GetNumber(wxString* strNumber) const
 
 bool ibTranslateCode::IsString() const
 {
-	return IsByte(wxT('\"')) || IsByte(wxT('|'));
+	return IsByte(ibT('\"')) || IsByte(ibT('|'));
 }
 
 /**
@@ -768,16 +753,16 @@ bool ibTranslateCode::IsString() const
 * String from the buffer
 */
 
-bool ibTranslateCode::GetString(wxString* strString) const
+bool ibTranslateCode::GetString(ibString* strString) const
 {
 	if (!IsString()) {
-		SetError(ERROR_TRANSLATE_STRING, m_currentPos);
+		Refuse(ibScriptError_TranslateString, m_currentPos);
 		return false;
 	}
 	unsigned int count_char = 0; bool skip_space = false;
 	SkipSpaces();
 	if (m_currentPos >= m_bufferSize) {
-		SetError(ERROR_TRANSLATE_WORD, m_currentPos);
+		Refuse(ibScriptError_TranslateWord, m_currentPos);
 		return false;
 	}
 	unsigned int next_pos = m_currentPos, error_pos = m_currentPos;
@@ -798,7 +783,7 @@ bool ibTranslateCode::GetString(wxString* strString) const
 		(void)SetUtf8CharOffset(c, i_utf8_step);
 		i_utf8_offset += i_utf8_step;
 #endif	
-		if (c == wxT('\n')) {
+		if (c == ibT('\n')) {
 			// ⚠⚠ A CLOSED STRING ENDS AT ITS QUOTE. This branch exists for the CONTINUED string —
 			//     "line one
 			//     |line two"
@@ -814,7 +799,7 @@ bool ibTranslateCode::GetString(wxString* strString) const
 			// — an entirely ordinary query — could not be read back.
 			if (count_char >= 2)
 				break;
-			if (strString != nullptr) strString->Append(wxT('\n'));
+			if (strString != nullptr) strString->Append(ibT('\n'));
 			next_pos = m_currentPos + 1;
 #ifdef UTF8_LEXEM_TRANSLATE
 			next_utf8_pos = m_currentUtf8Pos + 1;
@@ -822,14 +807,14 @@ bool ibTranslateCode::GetString(wxString* strString) const
 			m_currentLine++;
 			skip_space = true;
 		}
-		if (skip_space && c == wxT('|')) {
+		if (skip_space && c == ibT('|')) {
 			skip_space = false;
 			continue;
 		}
-		else if (skip_space && (c == wxT(' ') || c == wxT('\t') || c == wxT('\n') || c == wxT('\r'))) {
+		else if (skip_space && (c == ibT(' ') || c == ibT('\t') || c == ibT('\n') || c == ibT('\r'))) {
 			continue;
 		}
-		else if (skip_space && (c != wxT(' ') && c != wxT('\t') && c != wxT('\n') && c != wxT('\r'))) {
+		else if (skip_space && (c != ibT(' ') && c != ibT('\t') && c != ibT('\n') && c != ibT('\r'))) {
 			break;
 		}
 		error_pos = i + 1;
@@ -841,10 +826,10 @@ bool ibTranslateCode::GetString(wxString* strString) const
 #ifdef UTF8_LEXEM_TRANSLATE
 			next_utf8_pos = i_utf8 + i_utf8_step;
 #endif
-			if (c == wxT('\"')) {
+			if (c == ibT('\"')) {
 				if (i != m_currentPos && i + 1 < m_bufferSize) {
-					if (m_strBuffer[i + 1] == wxT('\"')) {
-						if (strString != nullptr) strString->Append(wxT('\"'));
+					if (m_strBuffer[i + 1] == ibT('\"')) {
+						if (strString != nullptr) strString->Append(ibT('\"'));
 						i++;
 						next_pos = i + 1;
 #ifdef UTF8_LEXEM_TRANSLATE
@@ -875,11 +860,11 @@ bool ibTranslateCode::GetString(wxString* strString) const
 #endif
 
 	if (first_pos == next_pos) {
-		SetError(ERROR_TRANSLATE_STRING, first_pos);
+		Refuse(ibScriptError_TranslateString, first_pos);
 		return false;
 	}
 	else if (count_char < 2) {
-		SetError(ERROR_TRANSLATE_STRING, error_pos);
+		Refuse(ibScriptError_TranslateString, error_pos);
 		m_currentPos = error_pos;
 #ifdef UTF8_LEXEM_TRANSLATE
 		m_currentUtf8Pos = error_utf8_pos;
@@ -900,7 +885,7 @@ bool ibTranslateCode::GetString(wxString* strString) const
 
 bool ibTranslateCode::IsDate() const
 {
-	return IsByte(wxT('\''));
+	return IsByte(ibT('\''));
 }
 
 /**
@@ -912,16 +897,16 @@ bool ibTranslateCode::IsDate() const
 * The date from the buffer, enclosed in quotes
 */
 
-bool ibTranslateCode::GetDate(wxString* strDate) const
+bool ibTranslateCode::GetDate(ibString* strDate) const
 {
 	if (!IsDate()) {
-		SetError(ERROR_TRANSLATE_DATE, m_currentPos);
+		Refuse(ibScriptError_TranslateDate, m_currentPos);
 		return false;
 	}
 	unsigned int count_char = 0;
 	SkipSpaces();
 	if (m_currentPos >= m_bufferSize) {
-		SetError(ERROR_TRANSLATE_WORD, m_currentPos);
+		Refuse(ibScriptError_TranslateWord, m_currentPos);
 		return false;
 	}
 	unsigned int next_pos = m_currentPos, error_pos = m_currentPos;
@@ -942,7 +927,7 @@ bool ibTranslateCode::GetDate(wxString* strDate) const
 		(void)SetUtf8CharOffset(c, i_utf8_step);
 		i_utf8_offset += i_utf8_step;
 #endif
-		if (c == wxT('\n')) {
+		if (c == ibT('\n')) {
 			next_pos = m_currentPos + 1;
 #ifdef UTF8_LEXEM_TRANSLATE
 			next_utf8_pos = m_currentUtf8Pos + i_utf8_step;
@@ -959,7 +944,7 @@ bool ibTranslateCode::GetDate(wxString* strDate) const
 #ifdef UTF8_LEXEM_TRANSLATE
 			next_utf8_pos = i_utf8 + i_utf8_step;
 #endif
-			if (c == wxT('\'')) {
+			if (c == ibT('\'')) {
 				count_char++;
 				continue;
 			}
@@ -976,11 +961,11 @@ bool ibTranslateCode::GetDate(wxString* strDate) const
 #endif
 
 	if (first_pos == next_pos) {
-		SetError(ERROR_TRANSLATE_DATE, first_pos);
+		Refuse(ibScriptError_TranslateDate, first_pos);
 		return false;
 	}
 	else if (count_char < 2) {
-		SetError(ERROR_TRANSLATE_DATE, error_pos);
+		Refuse(ibScriptError_TranslateDate, error_pos);
 		m_currentPos = error_pos;
 #ifdef UTF8_LEXEM_TRANSLATE
 		m_currentUtf8Pos = error_utf8_pos;
@@ -992,12 +977,8 @@ bool ibTranslateCode::GetDate(wxString* strDate) const
 	// read the adjacent character itself, with IsWord's own test.
 	else if (m_currentPos < m_bufferSize) {
 		const auto& c = m_strBuffer[m_currentPos];
-#ifdef wxUSE_UNICODE
-		if ((c == wxT('_')) || iswalpha(c) || (c == wxT('#'))) {
-#else
-		if ((c == wxT('_')) || isalpha(c) || (c == wxT('#'))) {
-#endif
-			SetError(ERROR_TRANSLATE_DATE, error_pos);
+		if ((c == ibT('_')) || iswalpha(c) || (c == ibT('#'))) {
+			Refuse(ibScriptError_TranslateDate, error_pos);
 			return false;
 		}
 	}
@@ -1029,7 +1010,7 @@ bool ibTranslateCode::IsEnd() const
 * greater than or equal to 0: number in the list of service words
 */
 
-int ibTranslateCode::IsKeyWord(const wxString& strKeyWord) const
+int ibTranslateCode::IsKeyWord(const ibString& strKeyWord) const
 {
 	// The inverse of s_listKeyWord: spelling -> the number this returns. Built ONCE,
 	// on first use, and const from then on.
@@ -1041,8 +1022,8 @@ int ibTranslateCode::IsKeyWord(const wxString& strKeyWord) const
 	// one of them wiped it. A function-local static gets the one-time, thread-safe
 	// initialisation from the language itself (C++11 [stmt.dcl]/4) — and, sitting
 	// in its one caller, needs no accessor to reach it.
-	static const std::map<wxString, int, ibCaseFoldLess> s_keyWordNumber = [] {
-		std::map<wxString, int, ibCaseFoldLess> listNumber;
+	static const std::map<ibString, int, ibCaseFoldLess> s_keyWordNumber = [] {
+		std::map<ibString, int, ibCaseFoldLess> listNumber;
 		for (int i = 0; i < static_cast<int>(WXSIZEOF(s_listKeyWord)); i++)
 			listNumber[s_listKeyWord[i].m_strKeyWord] = i;
 		return listNumber;
@@ -1084,7 +1065,7 @@ bool ibTranslateCode::IsAllowedKey(int keywordId) const
 	return true;
 }
 
-wxString ibTranslateCode::GetKeyWord(int k)
+ibString ibTranslateCode::GetKeyWord(int k)
 {
 	// s_listKeyWord IS the inverse — index straight into it instead of scanning the
 	// map for the entry pointing back at k. It also spells the keyword the way the
@@ -1092,24 +1073,24 @@ wxString ibTranslateCode::GetKeyWord(int k)
 	// this returned "ENDPROCEDURE"; compileCode.cpp already reads the array
 	// directly for the same reason when it names a keyword in an error.
 	if (k < 0 || k >= static_cast<int>(WXSIZEOF(s_listKeyWord)))
-		return wxEmptyString;
+		return ibEmptyString;
 
 	return s_listKeyWord[k].m_strKeyWord;
 }
 
 /**
-* PrepareLexem
+* Translate
 * PASS1 - loading lexemes for subsequent quick access during recognition
 */
 
-bool ibTranslateCode::PrepareLexem()
+bool ibTranslateCode::Translate()
 {
 	m_listLexem.clear();
 	m_listRefusal.clear();
 
 	// Reserve capacity here (after clear) instead of in Load — that way
 	// the reserve grows from an empty vector with no per-element move
-	// work, and incremental PrepareLexem(line, ...) (which depends on
+	// work, and incremental Translate(line, ...) (which depends on
 	// previous-parse lexems being intact) is unaffected.
 	const size_t alloc_size = CalcAllocSize();
 	if (alloc_size > m_listLexem.capacity())
@@ -1133,7 +1114,7 @@ bool ibTranslateCode::PrepareLexem()
 	for (auto& translateCode : m_listTranslateCode) {
 		translateCode->m_currentLine = translateCode->m_currentPos = 0;
 		translateCode->m_codeStyle = m_codeStyle;   // one text, one syntax
-		if (!translateCode->PrepareLexem())
+		if (!translateCode->Translate())
 			return false;
 		m_listRefusal.insert(m_listRefusal.end(),
 			translateCode->m_listRefusal.begin(), translateCode->m_listRefusal.end());
@@ -1149,7 +1130,7 @@ bool ibTranslateCode::PrepareLexem()
 #endif
 	}
 
-	wxString s;
+	ibString s;
 
 	while (!IsEnd()) {
 
@@ -1164,7 +1145,7 @@ bool ibTranslateCode::PrepareLexem()
 
 		if (IsWord()) {
 
-			wxString strOrig;
+			ibString strOrig;
 			if (GetWord(s, strOrig)) {
 
 				//processing user definitions (#define)
@@ -1209,7 +1190,7 @@ bool ibTranslateCode::PrepareLexem()
 				//undefined
 				if (k == KEY_UNDEFINED && !member) {
 					m_current_lex.m_lexType = CONSTANT;
-					m_current_lex.m_valData = ibLexValue();
+					m_current_lex.m_valData = ibVariant();
 				}
 				//boolean
 				else if ((k == KEY_TRUE || k == KEY_FALSE) && !member) {
@@ -1219,7 +1200,7 @@ bool ibTranslateCode::PrepareLexem()
 				//null
 				else if (k == KEY_NULL && !member) {
 					m_current_lex.m_lexType = CONSTANT;
-					m_current_lex.m_valData = ibLexValue(ibValueTypes::TYPE_NULL);
+					m_current_lex.m_valData = ibVariant(ibValueTypes::TYPE_NULL);
 				}
 				else {
 
@@ -1249,25 +1230,25 @@ bool ibTranslateCode::PrepareLexem()
 				const int curPos = m_currentPos;
 				GetNumber(s);
 				if (!m_current_lex.m_valData.SetNumber(s)) {
-					SetError(ERROR_TRANSLATE_NUMBER, curPos);
+					Refuse(ibScriptError_TranslateNumber, curPos);
 				}
 				m_current_lex.m_strData = s;
 				int n = m_listLexem.size() - 1;
 				if (n >= 0) {
-					if (m_listLexem[n].m_lexType == DELIMITER && (m_listLexem[n].m_numData == wxT('-') || m_listLexem[n].m_numData == wxT('+'))) {
+					if (m_listLexem[n].m_lexType == DELIMITER && (m_listLexem[n].m_numData == ibT('-') || m_listLexem[n].m_numData == ibT('+'))) {
 						n--;
 						if (n >= 0) {
 							if (m_listLexem[n].m_lexType == DELIMITER &&
 								(
-									m_listLexem[n].m_numData == wxT('[') ||
-									m_listLexem[n].m_numData == wxT('(') ||
-									m_listLexem[n].m_numData == wxT(',') ||
-									m_listLexem[n].m_numData == wxT('<') ||
-									m_listLexem[n].m_numData == wxT('>') ||
-									m_listLexem[n].m_numData == wxT('='))) {
+									m_listLexem[n].m_numData == ibT('[') ||
+									m_listLexem[n].m_numData == ibT('(') ||
+									m_listLexem[n].m_numData == ibT(',') ||
+									m_listLexem[n].m_numData == ibT('<') ||
+									m_listLexem[n].m_numData == ibT('>') ||
+									m_listLexem[n].m_numData == ibT('='))) {
 								n++;
-								if (m_listLexem[n].m_numData == wxT('-'))
-									m_current_lex.m_valData = ibLexValue(-m_current_lex.m_valData.GetNumber());
+								if (m_listLexem[n].m_numData == ibT('-'))
+									m_current_lex.m_valData = ibVariant(-m_current_lex.m_valData.GetNumber());
 								m_listLexem[n] = m_current_lex;
 								continue;
 							}
@@ -1280,7 +1261,7 @@ bool ibTranslateCode::PrepareLexem()
 					const int curPos = m_currentPos;
 					GetString(s);
 					if (!m_current_lex.m_valData.SetString(s)) {
-						SetError(ERROR_TRANSLATE_STRING, curPos);
+						Refuse(ibScriptError_TranslateString, curPos);
 					}
 					m_current_lex.m_strData = s;
 				}
@@ -1288,7 +1269,7 @@ bool ibTranslateCode::PrepareLexem()
 					const int curPos = m_currentPos;
 					GetDate(s);
 					if (!m_current_lex.m_valData.SetDate(s)) {
-						SetError(ERROR_TRANSLATE_DATE, curPos);
+						Refuse(ibScriptError_TranslateDate, curPos);
 					}
 					m_current_lex.m_strData = s;
 				}
@@ -1307,7 +1288,7 @@ bool ibTranslateCode::PrepareLexem()
 			s.Clear();
 
 			m_current_lex.m_lexType = DELIMITER;
-			wxUniChar byte; GetByte(byte);
+			ibChar byte; GetByte(byte);
 			m_current_lex.m_numData = byte;
 
 			if (m_current_lex.m_numData <= 13) continue;
@@ -1324,9 +1305,9 @@ bool ibTranslateCode::PrepareLexem()
 			}
 			if (m_current_lex.m_numData == KEY_DEFINE && m_nModePreparing != LEXEM_ADDDEF) { //setting an arbitrary identifier
 				if (!IsWord()) {
-					SetError(ERROR_IDENTIFIER_DEFINE, m_currentPos);
+					Refuse(ibScriptError_IdentifierDefine, m_currentPos);
 				}
-				wxString strName; GetWord(strName);
+				ibString strName; GetWord(strName);
 				//add the translation result to the list of definitions
 				if (LEXEM_ADD == m_nModePreparing)
 					PrepareFromCurrent(LEXEM_ADDDEF, strName);
@@ -1337,19 +1318,19 @@ bool ibTranslateCode::PrepareLexem()
 			}
 			else if (m_current_lex.m_numData == KEY_UNDEF) {//removing the identifier
 				if (!IsWord()) {
-					SetError(ERROR_IDENTIFIER_DEFINE, m_currentPos);
+					Refuse(ibScriptError_IdentifierDefine, m_currentPos);
 				}
-				wxString strName; GetWord(strName);
+				ibString strName; GetWord(strName);
 				m_defineList->RemoveDef(strName);
 				continue;
 			}
 			else if (m_current_lex.m_numData == KEY_IFDEF || m_current_lex.m_numData == KEY_IFNDEF) { //conditional compilation
 
 				if (!IsWord()) {
-					SetError(ERROR_IDENTIFIER_DEFINE, m_currentPos);
+					Refuse(ibScriptError_IdentifierDefine, m_currentPos);
 				}
 
-				wxString strName; GetWord(strName);
+				ibString strName; GetWord(strName);
 
 				bool bHasDef = m_defineList->HasDefine(strName);
 				if (m_current_lex.m_numData == KEY_IFNDEF)
@@ -1365,10 +1346,10 @@ bool ibTranslateCode::PrepareLexem()
 				PrepareFromCurrent(nMode);
 
 				if (!IsWord()) {
-					SetError(ERROR_USE_ENDDEF, m_currentPos);
+					Refuse(ibScriptError_UseEndDef, m_currentPos);
 				}
 
-				wxString strWord; GetWord(strWord);
+				ibString strWord; GetWord(strWord);
 				if (IsKeyWord(strWord) == KEY_ELSEDEF) {//suddenly #else
 
 					//translate again
@@ -1380,14 +1361,14 @@ bool ibTranslateCode::PrepareLexem()
 					PrepareFromCurrent(nMode);
 
 					if (!IsWord()) {
-						SetError(ERROR_USE_ENDDEF, m_currentPos);
+						Refuse(ibScriptError_UseEndDef, m_currentPos);
 					}
 
 					GetWord(strWord);
 				}
 				//Require #endif
 				if (IsKeyWord(strWord) != KEY_ENDIFDEF) {
-					SetError(ERROR_USE_ENDDEF, m_currentPos);
+					Refuse(ibScriptError_UseEndDef, m_currentPos);
 				}
 				continue;
 			}
@@ -1408,17 +1389,17 @@ bool ibTranslateCode::PrepareLexem()
 			}
 			else if (m_current_lex.m_numData == KEY_REGION) {
 				if (!IsWord()) {
-					SetError(ERROR_IDENTIFIER_REGION, m_currentPos);
+					Refuse(ibScriptError_IdentifierRegion, m_currentPos);
 				}
 				/*const wxString &strName = */GetWord();
 				PrepareFromCurrent(LEXEM_ADD);
 				if (!IsWord()) {
-					SetError(ERROR_USE_ENDREGION, m_currentPos);
+					Refuse(ibScriptError_UseEndRegion, m_currentPos);
 				}
-				wxString strWord; GetWord(strWord);
+				ibString strWord; GetWord(strWord);
 				//Require #endregion
 				if (IsKeyWord(strWord) != KEY_ENDREGION) {
-					SetError(ERROR_USE_ENDREGION, m_currentPos);
+					Refuse(ibScriptError_UseEndRegion, m_currentPos);
 				}
 				continue;
 			}
@@ -1450,7 +1431,7 @@ bool ibTranslateCode::PrepareLexem()
 
 // ⭐ THE PATCH — see the declaration. Moved here from the editor's own copy of this class, which is
 // where it was written and not where its data lives: every line of it rewrites m_listLexem.
-void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
+void ibTranslateCode::Translate(const ibTextEdit& edit)
 {
 	// A patch has no baseline: without a prior full pass the index math below has not even the
 	// trailing ENDPROGRAM marker to stand on.
@@ -1496,7 +1477,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 		break;
 	}
 
-	wxString s;
+	ibString s;
 
 	const bool insert_text = pos_offset > 0;
 	const bool delete_text = pos_offset < 0;
@@ -1529,7 +1510,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 
 		if (IsWord()) {
 
-			wxString strOrig;
+			ibString strOrig;
 
 			if (GetWord(s, strOrig)) {
 
@@ -1545,7 +1526,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 				//undefined
 				if (k == KEY_UNDEFINED && !member) {
 					m_current_lex.m_lexType = CONSTANT;
-					m_current_lex.m_valData = ibLexValue();
+					m_current_lex.m_valData = ibVariant();
 				}
 				//boolean
 				else if ((k == KEY_TRUE || k == KEY_FALSE) && !member) {
@@ -1555,7 +1536,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 				//null
 				else if (k == KEY_NULL && !member) {
 					m_current_lex.m_lexType = CONSTANT;
-					m_current_lex.m_valData = ibLexValue(ibValueTypes::TYPE_NULL);
+					m_current_lex.m_valData = ibVariant(ibValueTypes::TYPE_NULL);
 				}
 				else {
 
@@ -1587,7 +1568,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 					auto prev = std::prev(hint, 1);
 					if (prev != m_listLexem.begin() && prev->m_lexType == DELIMITER && (prev->m_numData == '[' || prev->m_numData == '(' || prev->m_numData == ',' || prev->m_numData == '<' || prev->m_numData == '>' || prev->m_numData == '=')) {
 						if (hint->m_numData == '-')
-							m_current_lex.m_valData = ibLexValue(-m_current_lex.m_valData.GetNumber());
+							m_current_lex.m_valData = ibVariant(-m_current_lex.m_valData.GetNumber());
 						*hint = std::move(m_current_lex);
 						continue;
 					}
@@ -1624,7 +1605,7 @@ void ibTranslateCode::PrepareLexem(const ibTextEdit& edit)
 			s.clear();
 
 			m_current_lex.m_lexType = DELIMITER;
-			wxUniChar byte; GetByte(byte);
+			ibChar byte; GetByte(byte);
 			m_current_lex.m_numData = byte;
 
 			if (m_current_lex.m_numData <= 13) continue;
@@ -1736,7 +1717,7 @@ ibTranslateCode::ibCaretText ibTranslateCode::CaretAt(unsigned int caret) const
 		if (m_listLexem[nameAt].m_lexType == KEYWORD && m_listLexem[nameAt].m_numData == KEY_NEW) {
 			answer.m_place = ibCaretPlace::InKeyword;
 			answer.m_keyword = m_listLexem[nameAt].m_valData.GetString();
-			answer.m_expression = (nameAt == at) ? wxString() : answer.m_word;
+			answer.m_expression = (nameAt == at) ? ibString() : answer.m_word;
 			return answer;
 		}
 	}
@@ -1778,9 +1759,9 @@ ibTranslateCode::ibCaretText ibTranslateCode::CaretAt(unsigned int caret) const
 
 // The dotted path ENDING at `dotAt` — `Catalogs.Goods` for a caret in `Catalogs.Goods.`. Walked
 // backwards over `name . name . name`, which is the only shape a path has.
-wxString ibTranslateCode::ExpressionEndingAt(size_t dotAt) const
+ibString ibTranslateCode::ExpressionEndingAt(size_t dotAt) const
 {
-	std::vector<wxString> parts;
+	std::vector<ibString> parts;
 
 	for (size_t i = dotAt + 1; i-- > 0; ) {
 
@@ -1801,9 +1782,9 @@ wxString ibTranslateCode::ExpressionEndingAt(size_t dotAt) const
 			break;
 	}
 
-	wxString path;
+	ibString path;
 	for (size_t i = parts.size(); i-- > 0; ) {
-		if (!path.IsEmpty()) path += wxT('.');
+		if (!path.IsEmpty()) path += ibT('.');
 		path += parts[i];
 	}
 	return path;
@@ -1813,7 +1794,7 @@ wxString ibTranslateCode::ExpressionEndingAt(size_t dotAt) const
 * create lexemes starting from the current position
 */
 
-void ibTranslateCode::PrepareFromCurrent(int nMode, const wxString& strName)
+void ibTranslateCode::PrepareFromCurrent(int nMode, const ibString& strName)
 {
 	ibTranslateCode translate(m_codeStyle);
 
@@ -1836,7 +1817,7 @@ void ibTranslateCode::PrepareFromCurrent(int nMode, const wxString& strName)
 		translate.m_bufferSize = m_currentPos;
 	}
 
-	translate.PrepareLexem();
+	translate.Translate();
 
 	if (nMode == LEXEM_ADDDEF) {
 		// Re-anchor BEFORE storing, for the same reason LEXEM_ADD does below: the
@@ -1933,7 +1914,7 @@ size_t ibTranslateCode::CalcAllocSize() const {
 // It declared neither wxDECLARE_DYNAMIC_CLASS nor wxIMPLEMENT_DYNAMIC_CLASS —
 // wxModule::RegisterModules finds candidates through wxClassInfo, so without them
 // the class was never instantiated and OnInit never ran (compare wxFrontendModule
-// in frontend/artProvider/artProvider.cpp, which has both). The table was in fact
+// in frmclient/artProvider/artProvider.cpp, which has both). The table was in fact
 // being built by whichever ibTranslateCode ctor got there first. IsKeyWord's own
 // static now does the same job on first use, once, without a module to register.
 

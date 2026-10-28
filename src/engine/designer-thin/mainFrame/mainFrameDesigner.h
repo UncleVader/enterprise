@@ -1,6 +1,8 @@
 #ifndef _MAINFRAME_DESIGNER_H__
 #define _MAINFRAME_DESIGNER_H__
 
+#include <functional>
+
 #include "frmclient/mainFrame/mainFrame.h"
 
 #if defined(mainFrame)
@@ -13,7 +15,7 @@ class ibStackWindow;
 class ibWatchWindow;
 class ibLocalWindow;
 
-// The syntax helper's pane — the desktop's (frontend/mainFrame/mainFrame.h), the designer's alone here; its commands —
+// The syntax helper's pane — the designer's alone; its commands —
 // the base's (the code editor posts them).
 #define wxAUI_PANE_HELP     wxT("syntaxHelperWindow")
 // …and the configuration's tree's.
@@ -55,8 +57,6 @@ enum {
 
 	wxID_DESIGNER_ABOUT,
 
-	wxID_DESIGNER_DEBUG_START_THIN,
-	wxID_DESIGNER_DEBUG_START_WITHOUT_DEBUGGING_THIN,
 	wxID_DESIGNER_END
 };
 
@@ -66,6 +66,24 @@ enum {
 // build on an insertion or a removal instead of moving somebody's keys. The numbers are the day the
 // "shortcuts" profile began.
 static_assert(wxID_DESIGNER_ABOUT == 10026, "append new designer commands before wxID_DESIGNER_END - the key profile keeps keys by number");
+
+// …and the desktop's application commands, by the same numbers. Here only Connection is bound, where the desktop binds
+// it (no menu item sends it, there either); the rest are the server's menu — Users, Options and the assistant.
+enum {
+	wxID_APPLICATION_DEBUG = wxID_HIGHEST + 1,
+	wxID_APPLICATION_SETTING,
+	wxID_APPLICATION_USERS,
+	wxID_APPLICATION_ACTIVE_USERS,
+	wxID_APPLICATION_AUDIT_LOG,
+	wxID_APPLICATION_CONNECTION,
+	// Assistant access — one command, because starting and stopping are the same
+	// switch seen from its two sides; the label follows the state through
+	// EVT_UPDATE_UI rather than through two entries a person has to choose between.
+	wxID_APPLICATION_MCP_SERVER,
+	wxID_APPLICATION_MCP_ASSISTANT,
+};
+// …and the same for these (see above): a new one goes last.
+static_assert(wxID_APPLICATION_MCP_ASSISTANT == wxID_HIGHEST + 8, "append new application commands last - the key profile keeps keys by number");
 
 #define mainFrame	(ibFrontendMainFrameDesigner::GetFrame())
 
@@ -103,10 +121,15 @@ public:
 	// (OnUpdateDebugCommand) - it does not carry a state of its own.
 	void Debugger_OnStateChanged();
 
+	// …and the debugger's own connection, the window's doors to it (ibCommunicator::ListenDebug, Debug): the server's
+	// debugger heard — `told` on that connection's thread — and asked, answered at once beside the window's call.
+	bool ListenDebug(std::function<void(const ibProtocolNode& news)> told, ibProtocol::ibRefusal& refusal, ibString& error);
+	bool Debug(const ibProtocolNode& params, ibProtocolNode& result, ibProtocol::ibRefusal& refusal, ibString& error);
+
 protected:
 
 	// The base's parts, and the desktop designer's around them (its CreateWideGui): the Update database button on the
-	// main toolbar, the debug toolbar beside it, the configuration's tree on the left.
+	// main toolbar, the debug toolbar beside it, the configuration's tree on the left, version control's pane hidden.
 	virtual void CreateGUI() override;
 	// …and the notebook along the bottom — the messages, then the debugger's three (the desktop's).
 	virtual void CreateBottomPane() override;
@@ -115,11 +138,13 @@ protected:
 	virtual void DrawFrame(const ibProtocolNode& frame, const ibProtocolNode& patch) override;
 
 	// The designer's tabs — an external data processor's and report's tree — over the base's.
-	virtual ibTabDocument* CreateDocument(ibProtocolViewKind kind, long long tabId) override;
+	virtual ibTabDocument* CreateDocument(ibProtocol::ibView::ibKind kind, long long tabId) override;
 
-	// The designer's Users and Options — the desktop's dialogs (Administration → Users, Tools → Options) — over the
-	// base's schemas.
-	virtual void ShowSchema(ibProtocolSchema schema, const ibProtocolNode& shown) override;
+	// The debugger's store, read in the login — not a call of its own at the start.
+	virtual std::vector<ibProtocol::ibSchema::ibKind> GetStartSchemas() const override;
+	// The designer's Users and Options — the desktop's dialogs (Administration → Users, Tools → Options) — and the
+	// debugger made over its store as the login read it, over the base's schemas.
+	virtual void ShowSchema(ibProtocol::ibSchema::ibKind schema, const ibProtocolNode& shown) override;
 	// …and the questions only the designer is asked — the restructure's ledger (the desktop's ibDialogApplyChange), the
 	// kind of a form just made (ibDialogSelectTypeForm); the rest — the base's.
 	virtual void ShowRequest(const ibProtocolNode& request, ibProtocolNode& response) override;
@@ -133,6 +158,8 @@ private:
 
 	// The configuration's tree's pane — the desktop's.
 	void CreateMetadataPane();
+	// …and version control's, the desktop's: hidden, floating on the right, over the working copy beside the file base.
+	void CreateGitPane();
 	// The debug commands as buttons, beside the main toolbar. They are the Debug menu's own commands
 	// (same ids, same handlers, same OnUpdateDebugCommand for enabling) - a button is a second way to
 	// press a menu item, not a second implementation of it.
@@ -147,10 +174,10 @@ private:
 	void OnStartDebugWithoutDebug(wxCommandEvent& event);
 	void OnStartDebugWeb(wxCommandEvent& event);
 	void OnStartDebugWithoutDebugWeb(wxCommandEvent& event);
-	void OnStartDebugThin(wxCommandEvent& event);
-	void OnStartDebugWithoutDebugThin(wxCommandEvent& event);
 	void OnAttachForDebugging(wxCommandEvent& event);
 
+	// The database's configuration, browsed in a tab of its own — the desktop's; ⚠ not in the thin yet, said so.
+	void OnOpenConfiguration(wxCommandEvent& event);
 	void OnRollbackConfiguration(wxCommandEvent& event);
 	void OnUpdateConfiguration(wxCommandEvent& event);
 	void OnConfiguration(wxCommandEvent& event);
@@ -159,8 +186,11 @@ private:
 
 	void OnRunDebugCommand(wxCommandEvent& event);
 	void OnUpdateDebugCommand(wxUpdateUIEvent& event);
+	// The connection's dialog — the desktop's (ibDialogConnection).
+	void OnConnection(wxCommandEvent& event);
 
 	ibConfigurationTree* m_metaWindow = nullptr;
+	class ibGitPanel* m_gitPanel = nullptr;
 	class ibHelpPaneView* m_helpPane = nullptr;
 
 	// THE DEBUGGER — the engine's client, the designer's own (designer-thin/backend/debugger): its sockets go straight to

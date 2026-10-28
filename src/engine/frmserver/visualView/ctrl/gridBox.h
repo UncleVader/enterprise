@@ -109,13 +109,15 @@ class ibValueGridBox : public ibValueWindowComposite, public ibTypeControlFactor
 	// ⭐ WHAT THE BOX SHOWS NOW — the window's state, and the SHEET'S Version — a number that moves whenever the sheet
 	// on show is replaced, so a client knows the sheet it holds is stale — and what the sheet is to its report
 	// (ComposeState): being composed, which the window draws as its progress, or outdated by a setting changed since,
-	// which it draws as the word to compose again. The sheet itself is too much for a frame: a client asks for it (Fetch).
+	// which it draws as the word to compose again. When the sheet is composed, State may also carry Sheet (and ReadOnly)
+	// once for that Version — the same payload Fetch would give — so the frame that announces the new Version need not
+	// be followed by a fetch. A client that finds no Sheet still asks Fetch, as before.
 	virtual void OnUpdate(ibDataNode& state, ibVisualHost* host) override;
 
 	// The events this box has: Cell {Row, Col} — a cell clicked, the question "what is this figure made of"
 	// (OnCellLeftClick), Row and Col counted from 1; Change {Sheet} — the sheet edited on the client, whole, in the form
 	// Fetch gives it. Anything else is the composite's.
-	virtual bool OnClientEvent(ibProtocolEvent event, const ibDataNode& args) override;
+	virtual bool OnClientEvent(ibProtocol::ibEvent::ibKind event, const ibDataNode& args) override;
 
 	// ⭐ THE SHEET A CLIENT SHOWS, whole (ibFetchSpreadsheet), and the Version it was read at.
 	virtual bool Fetch(const ibDataNode& request, ibDataNode& response) override;
@@ -124,7 +126,7 @@ class ibValueGridBox : public ibValueWindowComposite, public ibTypeControlFactor
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);                   //attribute value
 
 	//support icons
-	virtual wxIcon GetIcon() const;
+	virtual ibPicture GetIcon() const;
 
 	//load & save object in control
 	virtual bool ReadData(const ibDataNode& node);
@@ -145,12 +147,12 @@ public:
 	void FillControlMembers(ibMemberTable& helper) const;   // bound in ctor (was PrepareNames)
 
 	//support icons
-	static wxIcon GetIconGroup();
+	static ibPicture GetIconGroup();
 
 protected:
 
 	// A source change re-takes the model — the one event this control answers.
-	virtual void OnPropertyChanged(ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) override;
+	virtual void OnPropertyChanged(ibProperty* property, const ibVariant& oldValue, const ibVariant& newValue) override;
 
 private:
 
@@ -204,12 +206,14 @@ private:
 	//
 	// The document and its view live as long as the box — held side by side so nothing is cast to find them; the
 	// view is what the form's active control hands on (GetControlView: Save as, the formats it offers).
-	class ibSpreadsheetGridBoxDocument* m_gridDocument = nullptr;
-	class ibSpreadsheetGridBoxView*     m_gridView = nullptr;
+	class ibSheetGridBoxDocument* m_gridDocument = nullptr;
+	class ibSheetGridBoxView*     m_gridView = nullptr;
 
 	// …and its VERSION — moved each time the sheet on show is replaced (the model installed, a compose
 	// delivered). The model keeps no such number, so the box counts what it shows.
-	s32 m_documentVersion = 0;
+	std::int32_t m_documentVersion = 0;
+	// The Version whose Sheet was last written into State — so a composed sheet rides one frame, not every later one.
+	std::int32_t m_sheetSentVersion = -1;
 
 	// Composes handed to the background and not yet delivered — the client's progress indicator. A count
 	// rather than a flag: a second Compose cancels the first, and the first is still delivered after it.
@@ -220,8 +224,8 @@ private:
 	// (OK in the settings window, a variant, the shelf, a script's Sort) and the report waits for Compose, as a report does.
 	std::optional<ibSettingsDescription> m_composedSettings;
 
-	ibPropertyCategory* m_categoryData = ibPropertyObject::CreatePropertyCategory(wxT("Data"), _("Data"));
-	ibPropertySource*   m_propertySource = ibPropertyObject::CreateProperty<ibPropertySource>(m_categoryData, wxT("Source"), _("Source"),
+	ibPropertyCategory* m_categoryData = ibPropertyObject::CreatePropertyCategory(ibT("Data"), _("Data"));
+	ibPropertySource*   m_propertySource = ibPropertyObject::CreateProperty<ibPropertySource>(m_categoryData, ibT("Source"), _("Source"),
 		_("The form attribute the grid shows: a spreadsheet document, or a composition (a report) whose result the grid displays. Empty: the grid keeps a spreadsheet document of its own."));
 
 	// ⭐⭐ COMPOSE ON OPEN — the report builds itself as the control is first shown, with no press of
@@ -238,7 +242,7 @@ private:
 	// sent passes through there, and a report that re-read itself on each of them would be reading the
 	// database because a form was drawn again.
 	ibPropertyBoolean*  m_propertyComposeOnOpen = ibPropertyObject::CreateProperty<ibPropertyBoolean>(
-		m_categoryData, wxT("ComposeOnOpen"), _("Compose on open"),
+		m_categoryData, ibT("ComposeOnOpen"), _("Compose on open"),
 		_("Whether a report bound to the grid builds itself once when the control is created, without the user pressing Compose. Off (the default) suits a report whose parameters are set first; on suits one with nothing left to ask, such as a report on a desktop."),
 		false);
 
@@ -259,10 +263,10 @@ private:
 	//
 	// ⚠ `StandardProcessing` cleared takes the default away entirely: no choice, no value opened. The
 	// row and the column travel because a handler doing its own thing must know WHICH cell was hit.
-	ibPropertyCategory* m_categoryEvent = ibPropertyObject::CreatePropertyCategory(wxT("Event"), _("Event"));
+	ibPropertyCategory* m_categoryEvent = ibPropertyObject::CreatePropertyCategory(ibT("Event"), _("Event"));
 	ibEventControl*     m_eventOnDetailProcessing = ibPropertyObject::CreateEvent<ibEventControl>(m_categoryEvent,
-		wxT("OnDetailProcessing"), _("On detail processing"), _("When a cell is clicked - before its value is opened or detailed"),
-		wxArrayString{ wxT("Control"), wxT("Row"), wxT("Column"), wxT("StandardProcessing") });
+		ibT("OnDetailProcessing"), _("On detail processing"), _("When a cell is clicked - before its value is opened or detailed"),
+		std::vector<ibString>{ ibT("Control"), ibT("Row"), ibT("Column"), ibT("StandardProcessing") });
 
 	// A click on a cell, forwarded to the event above — the client's Cell event (OnClientEvent). Row and
 	// column count from 0 here, as the sheet counts them and as the handler has always been given them.
@@ -276,15 +280,15 @@ private:
 	// field of their own — it becomes the single grouping, and the context stays the filter.
 	//
 	// Both live in gridBoxDetail.cpp — the click is one thing, the composition it opens is another.
-	void ShowCellDetail(int row, int col, const wxString& byPath = wxEmptyString);
+	void ShowCellDetail(int row, int col, const ibString& byPath = ibEmptyString);
 
 	// …and WHICH fields this cell can be broken down by: appends a "Detail by" submenu, one item per
 	// field, ids running from `firstId`, and returns the paths index-aligned with them. Empty = nothing
 	// worth offering, and then nothing is appended.
-	std::vector<wxString> AppendDetailByMenu(std::vector<ibMenuItem>& menu, s32 firstId, int row, int col) const;
+	std::vector<ibString> AppendDetailByMenu(std::vector<ibMenuItem>& menu, std::int32_t firstId, int row, int col) const;
 };
 
-// A SHEET AS A CLIENT DRAWS IT — the box's, and a spreadsheet document's in a tab of its own (ibSpreadsheetEditView):
+// A SHEET AS A CLIENT DRAWS IT — the box's, and a spreadsheet document's in a tab of its own (ibSheetView):
 // the whole of it under Sheet, in the form a template is stored in (ibSpreadsheetDescriptionMemory::WriteNode), each
 // cell's text as the sheet shows it — parameters and templates filled in; ReadOnly when the document takes no edits.
 bool ibFetchSpreadsheet(const ibSpreadsheetObject& document, ibDataNode& response);

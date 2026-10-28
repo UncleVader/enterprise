@@ -113,7 +113,7 @@ public:
 
 	virtual wxWindow* CreateEditorCtrl(wxWindow* dv,
 		wxRect labelRect,
-		const wxVariant& value) override {
+		const ibVariant& value) override {
 
 		if (m_editor != nullptr)
 			m_editor->SetEditedRow(m_item);   // the window holds it — see ibFilterEditor::SetEditedRow
@@ -124,7 +124,7 @@ public:
 		// create the window hidden to prevent flicker
 		textEditor->Show(false);
 
-		bool result = textEditor->Create(dv, wxID_ANY, value,
+		bool result = textEditor->Create(dv, wxID_ANY, value.GetString().ToWxString(),
 			labelRect.GetPosition(),
 			labelRect.GetSize());
 
@@ -172,7 +172,7 @@ public:
 		return textEditor;
 	}
 
-	virtual bool GetValueFromEditorCtrl(wxWindow* ctrl, wxVariant& value) override {
+	virtual bool GetValueFromEditorCtrl(wxWindow* ctrl, ibVariant& value) override {
 		ibControlTextEditor* textEditor = wxDynamicCast(ctrl, ibControlTextEditor);
 		if (textEditor == nullptr)
 			return false;
@@ -522,7 +522,7 @@ private:
 			// responding to the clicks that expand a reference.
 			wxWindow* parent = m_editor;
 			FinishSelecting();
-			const wxString held = (asField != nullptr) ? asField->GetPath() : wxString();
+			const wxString held = (asField != nullptr) ? asField->GetPath() : ibString();
 			// …and nothing has to be put back afterwards: the row is the window's, and the window is
 			// still standing (SetEditedRow). This used to save it, restore it around the write and clear
 			// it again, because the cell's own copy did not survive the picker.

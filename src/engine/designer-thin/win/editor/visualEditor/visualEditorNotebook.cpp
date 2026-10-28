@@ -3,7 +3,8 @@
 #include "frmclient/win/theme/luna_tabart.h"
 
 #include "frmclient/docView/docView.h"   // ibDOC_READONLY
-#include "frmclient/backend/propertyManager/property/propertySerializable.h"   // ibPropertySerializable — an event's row, its Args
+#include "core/serialize/dataBuilder.h"   // ibDataNode — an event's row, its Args
+#include "protocol/protocol.h"            // ibProtocol::ibEvent::Args
 
 #include "core/compiler/scriptParseCode.h"
 #include "core/stringUtils.h"
@@ -63,7 +64,7 @@ bool ibVisualEditorNotebook::CanRedo() const
 
 // THE DESKTOP'S (designer visualEditorNotebook.cpp) over the module this tab holds: the syntax and the template are the
 // code editor's (the desktop's were the process's). The event's value itself is the server's — a row set (ModifyProperty).
-void ibVisualEditorNotebook::ModifyEvent(ibPropertySerializable* event, const wxVariant& oldValue, const wxVariant& newValue)
+void ibVisualEditorNotebook::ModifyEvent(ibProperty* event, const wxVariant& oldValue, const wxVariant& newValue)
 {
 	ibParseCode parser(m_codeEditor->GetCodeStyle()); bool procFounded = false;
 
@@ -90,7 +91,7 @@ void ibVisualEditorNotebook::ModifyEvent(ibPropertySerializable* event, const wx
 				content.m_eType == ibContentType::eExportProcedure ||
 				content.m_eType == ibContentType::eExportFunction) {
 				m_lineStart = content.m_lineStart; m_lineEnd = content.m_lineEnd;
-				if (stringUtils::CompareString(content.m_name, oldEvent) && !stringUtils::CompareString(content.m_name, strEvent) && changeSel) {
+				if (stringUtils::IsSameAs(content.m_name, oldEvent) && !stringUtils::IsSameAs(content.m_name, strEvent) && changeSel) {
 					int answer = wxMessageBox(_("Do you rename an existing procedure?"), _("Rename"), wxYES_NO | wxCENTRE);
 					if (answer == wxYES) {
 						wxString currentLine = m_codeEditor->GetLine(content.m_lineStart);
@@ -100,11 +101,11 @@ void ibVisualEditorNotebook::ModifyEvent(ibPropertySerializable* event, const wx
 					}
 					break;
 				}
-				else if (stringUtils::CompareString(content.m_name, strEvent)) {
+				else if (stringUtils::IsSameAs(content.m_name, strEvent)) {
 					procFounded = true; m_lineStart = content.m_lineStart; m_lineEnd = content.m_lineEnd;
 					break;
 				}
-				else if (stringUtils::CompareString(content.m_name, oldEvent) && !changeSel) {
+				else if (stringUtils::IsSameAs(content.m_name, oldEvent) && !changeSel) {
 					int answer = wxMessageBox(_("Do you delete an existing procedure?"), _("Delete"), wxYES_NO | wxCENTRE);
 					if (answer == wxYES) {
 						m_codeEditor->Replace(
@@ -123,9 +124,14 @@ void ibVisualEditorNotebook::ModifyEvent(ibPropertySerializable* event, const wx
 
 		wxString prcArgs;
 
-		for (auto& args : event->GetArgs()) {
-			if (!prcArgs.IsEmpty()) prcArgs += ", ";
-			prcArgs += args;
+		// Its procedure's parameters — the event's row's Args (the server's ibEvent::GetProtocolValue).
+		ibDataNode row;
+		event->GetProtocolValue(row);
+		if (const auto args = row.FindField(ibProtocol::ibEvent::Args)) {
+			for (const ibDataValue& arg : args->AsArray()) {
+				if (!prcArgs.IsEmpty()) prcArgs += ", ";
+				prcArgs += arg.AsString();
+			}
 		}
 
 		if (wxAuiNotebook::GetSelection() != wxNOTEBOOK_PAGE_CODE_EDITOR)

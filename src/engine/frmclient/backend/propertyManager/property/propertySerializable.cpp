@@ -1,54 +1,83 @@
 #include "propertySerializable.h"
+#include "frmclient/backend/propertyManager/property/variant/variantSerializable.h"   // its value — the one variant
 
 #include "frmclient/win/picture.h"   // ibProtocolPicture — a choice's picture, as the wire carries it
-#include "protocol/protocol.h"       // ibProtocolName — the row's keys, as the server's inspector writes them
+#include "protocol/protocol.h"       // ibProtocol::ibSchema::ibProperties — the row's keys, as the server's inspector writes them
 
-ibPropertySerializable::ibPropertySerializable(ibPropertyCategory* cat, const ibDataNode& row) :
-	ibProperty(cat, row.GetValue<wxString>(ibProtocolName::Name), row.GetValue<wxString>(ibProtocolName::Title),
-		row.GetValue<wxString>(ibProtocolName::Help), wxVariant(row.GetValue<wxString>(ibProtocolName::Presentation))),
-	m_type(row.GetValue<wxString>(ibProtocolName::Class)),
-	m_readOnly(row.GetValue<bool>(ibProtocolName::ReadOnly)),
-	m_objectId(row.GetValue<s32>(ibProtocolName::Object))
+namespace {
+
+// A std::uint64_t as the wire carries it — a decimal (past what a JSON number keeps); none: 0.
+std::uint64_t ReceiveU64(const ibDataNode& node, const char* name)
+{
+	unsigned long long value = 0;
+	node.GetValue<ibString>(name).ToULongLong(&value);
+	return value;
+}
+
+// A class as the server named and drew it (Type, Picture), registered under that name: what a picker, a cell and a
+// window read it by (ibValue::GetAvailableCtor).
+ibClassID RegisterCtor(const ibDataNode& entry, const ibString& name)
+{
+	const ibClassID clsid = ReceiveU64(entry, ibProtocol::ibSchema::ibProperties::Type);
+	// Held already as the server names it — its picture is not made again: every property of every control drawn
+	// registered every type it offers, a GDI icon made of a bitmap each time (two thirds of a property's making,
+	// 2026-10-22).
+	const ibCtorAbstractType* const held = ibValue::GetAvailableCtor(clsid);
+	if (held != nullptr && held->GetClassName() == name)
+		return clsid;
+	const wxBitmap picture = ibProtocolPicture(entry, ibProtocol::ibSchema::ibProperties::Picture);
+	wxIcon icon;
+	if (picture.IsOk())
+		icon.CopyFromBitmap(picture);
+	ibValue::RegisterCtor(clsid, name, icon);
+	return clsid;
+}
+
+// Its value as the server wrote it (ibPropertyInspector): a scalar a field, a composite a node — in the one variant,
+// named by its class and reading as its words.
+wxVariant ReceiveValue(const ibDataNode& row)
+{
+	const auto scalar = row.FindField(ibProtocol::ibSchema::ibProperties::Value);
+	return wxVariant(new ibVariantDataSerializable(row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Class),
+		scalar ? *scalar : row.GetProperty(ibProtocol::ibSchema::ibProperties::Value),
+		row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Presentation)));
+}
+
+}
+
+ibPropertySerializable::ibPropertySerializable(ibPropertyCategory* cat, ibDataNode&& row) :
+	ibProperty(cat, row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Name), row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Title),
+		row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Help), ReceiveValue(row)),
+	m_row(std::move(row)),
+	m_type(m_row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Class)),
+	m_readOnly(m_row.GetValue<bool>(ibProtocol::ibSchema::ibProperties::ReadOnly))
 {
 	if (m_propLabel.IsEmpty())
 		m_propLabel = m_propName;
 
-	// …as the server wrote it (ibPropertyInspector): a scalar a field, a composite a node.
-	if (const ibDataValue* const scalar = row.FindField(ibProtocolName::Value))
-		m_value = *scalar;
-	else
-		m_value = row.GetProperty(ibProtocolName::Value);
+	// The classes its choices' data names (Classes) — what a window groups them under.
+	if (const auto classes = m_row.FindChild(ibProtocol::ibSchema::ibProperties::Classes)) {
+		for (const ibDataNode& entry : classes->Children())
+			RegisterCtor(entry, entry.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Name));
+	}
 
-	// What it may be set to — its children with an Id; a type's, the types it may hold (Type — the class id, named and
-	// drawn as the server offered it: what the picker and the cell read it by, ibValue::GetAvailableCtor).
-	for (const ibDataNode& choice : row.Children()) {
-		if (const ibDataValue* const type = choice.FindField(ibProtocolName::Type)) {
-			unsigned long long clsid = 0;
-			type->AsString().ToULongLong(&clsid);
-			const wxString title = choice.GetValue<wxString>(ibProtocolName::Title);
-			const wxBitmap picture = ibProtocolPicture(choice.GetValue<wxString>(ibProtocolName::Picture));
-			wxIcon icon;
-			if (picture.IsOk())
-				icon.CopyFromBitmap(picture);
-			ibValue::RegisterCtor(clsid, title, icon);
-			m_choices.Add(m_choices.GetCount(), title, wxEmptyString, wxVariant(wxULongLong(clsid)));
+	// What it may be set to — its children with an Id, each with its data; a type's, the types it may hold (Type — the
+	// class id, named and drawn as the server offered it: what the picker and the cell read it by).
+	for (const ibDataNode& choice : m_row.Children()) {
+		if (choice.Has(ibProtocol::ibSchema::ibProperties::Type)) {
+			const ibString title = choice.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Title);
+			const ibClassID clsid = RegisterCtor(choice, title);
+			m_choices.Add(m_choices.GetCount(), title, ibEmptyString, wxVariant(wxULongLong(clsid)));
 			continue;
 		}
-		if (choice.FindField(ibProtocolName::Id) == nullptr)
+		if (!choice.FindField(ibProtocol::ibSchema::ibProperties::Id))
 			continue;
-		m_choices.Add(choice.GetValue<wxString>(ibProtocolName::Title), choice.GetValue<s32>(ibProtocolName::Id),
-			ibProtocolPicture(choice.GetValue<wxString>(ibProtocolName::Picture)));
+		const long id = choice.GetValue<std::int32_t>(ibProtocol::ibSchema::ibProperties::Id);
+		m_choices.Add(id, choice.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Title), ibEmptyString, wxVariant(id),
+			ibProtocolPicture(choice, ibProtocol::ibSchema::ibProperties::Picture), ReceiveU64(choice, ibProtocol::ibSchema::ibProperties::Data));
 	}
-	m_mode = row.GetValue<bool>(ibProtocolName::Multiple) ? ibPropertyChoiceMode::Mult
+	m_mode = m_row.GetValue<bool>(ibProtocol::ibSchema::ibProperties::Multiple) ? ibPropertyChoiceMode::Mult
 		: m_choices.GetCount() > 0 ? ibPropertyChoiceMode::Single : ibPropertyChoiceMode::None;
-
-	// An event's — its procedure's parameters.
-	if (const ibDataValue* const args = row.FindField(ibProtocolName::Args)) {
-		if (args->Kind() == ibDataKind::Array) {
-			for (const ibDataValue& arg : args->AsArray())
-				m_args.Add(arg.AsString());
-		}
-	}
 }
 
 ibPropertyChoiceMode ibPropertySerializable::GetValueList(ibPropertyChoiceList& list)
@@ -57,17 +86,23 @@ ibPropertyChoiceMode ibPropertySerializable::GetValueList(ibPropertyChoiceList& 
 	return m_mode;
 }
 
+bool ibPropertySerializable::GetProtocolValue(ibDataNode& row) const
+{
+	if (m_type.IsEmpty())
+		return ibProperty::GetProtocolValue(row);
+	row = m_row;
+	return true;
+}
+
 bool ibPropertySerializable::ReadNodeValue(const ibDataValue& value)
 {
-	// The value an edit gives — the one the owner puts before the server (ibValueMetaObject::OnPropertyChanging). Its
-	// presentation is the server's to say: what reads here is a new cell of the old words until the rows come back.
-	m_value = value;
-	m_propValue = wxVariant(m_propValue.GetString());
+	m_propValue = wxVariant(new ibVariantDataSerializable(GetType(), value, m_propValue.GetString()));
 	return true;
 }
 
 bool ibPropertySerializable::WriteNodeValue(ibDataValue& value) const
 {
-	value = m_value;
+	value = ibVariantDataSerializable::GetNodeValue(m_propValue);
 	return true;
 }
+

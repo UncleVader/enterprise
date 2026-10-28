@@ -58,7 +58,7 @@ bool ibDatabaseResultSetFirebird::Next()
 		// throws it as one); written first as an error, it put an error window in front of the person who had
 		// just closed the report (a debug build shows its error lines) and a crash dump beside it (2026-09-11).
 		if (GetErrorCode() != DATABASE_LAYER_QUERY_CANCELLED)
-			ibJournalError(wxT("db.firebird"),wxT("Error retrieving Next record\n"));
+			ibJournalError(ibT("db.firebird"),ibT("Error retrieving Next record\n"));
 		ThrowDatabaseException();
 		return false;
 	}
@@ -126,7 +126,7 @@ ibString ibDatabaseResultSetFirebird::GetResultString(int nField)
 	ResetErrorCodes();
 
 	// Each road returns its own string — made once, where it is known, decoded straight into the value's
-	// text — rather than a wxString made first and copied out of (for every text field of every row).
+	// text — rather than a string made first and copied out of (for every text field of every row).
 	XSQLVAR* pVar = &(m_pFields->sqlvar[nField - 1]);
 	if (IsNull(pVar))
 		return ibString();   // the column is NULL
@@ -149,7 +149,7 @@ ibString ibDatabaseResultSetFirebird::GetResultString(int nField)
 
 	// Incompatible field type
 	// Set error codes and throw an exception here
-	SetErrorMessage(wxT("Invalid field type"));
+	SetErrorMessage(ibT("Invalid field type"));
 	SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 	ThrowDatabaseException();
@@ -207,7 +207,7 @@ long long ibDatabaseResultSetFirebird::GetResultLong(int nField)
 			// We should really set error codes and throw an exception here
 			nReturn = 0;
 
-			SetErrorMessage(wxT("Invalid field type"));
+			SetErrorMessage(ibT("Invalid field type"));
 			SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 			ThrowDatabaseException();
@@ -292,7 +292,7 @@ ibDateTime ibDatabaseResultSetFirebird::GetResultDate(int nField)
 			// Set error codes and throw an exception here
 			dateReturn = ibDateTime();
 
-			SetErrorMessage(wxT("Invalid field type"));
+			SetErrorMessage(ibT("Invalid field type"));
 			SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 			ThrowDatabaseException();
@@ -354,7 +354,7 @@ double ibDatabaseResultSetFirebird::GetResultDouble(int nField)
 			// Set error codes and throw an exception here
 			dblReturn = 0.00;
 
-			SetErrorMessage(wxT("Invalid field type"));
+			SetErrorMessage(ibT("Invalid field type"));
 			SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 			ThrowDatabaseException();
@@ -428,7 +428,7 @@ ibNumber ibDatabaseResultSetFirebird::GetResultNumber(int nField)
 			// Set error codes and throw an exception here
 			dblReturn = ibNumber();
 
-			SetErrorMessage(wxT("Invalid field type"));
+			SetErrorMessage(ibT("Invalid field type"));
 			SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 			ThrowDatabaseException();
@@ -438,7 +438,7 @@ ibNumber ibDatabaseResultSetFirebird::GetResultNumber(int nField)
 	return dblReturn;
 }
 
-void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, wxMemoryBuffer& buffer)
+void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, ibMemoryBuffer& buffer)
 {
 	ResetErrorCodes();
 
@@ -446,7 +446,7 @@ void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, wxMemoryBuffer& buf
 	if (IsNull(pVar))
 	{
 		// The column is NULL
-		wxMemoryBuffer tempBuffer(0);
+		ibMemoryBuffer tempBuffer(0);
 		tempBuffer.SetBufSize(0);
 		tempBuffer.SetDataLen(0);
 		buffer = tempBuffer;
@@ -478,7 +478,7 @@ void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, wxMemoryBuffer& buf
 				return NULL;
 			}
 
-			wxMemoryBuffer tempBuffer;
+			ibMemoryBuffer tempBuffer;
 			unsigned int bufferSize = 0;
 			for (;;)
 			{
@@ -525,7 +525,7 @@ void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, wxMemoryBuffer& buf
 		}
 		else if (nType == SQL_TEXT)
 		{
-			wxMemoryBuffer tempBuffer(pVar->sqllen);
+			ibMemoryBuffer tempBuffer(pVar->sqllen);
 			tempBuffer.AppendData(pVar->sqldata, pVar->sqllen);		
 			buffer = tempBuffer;
 		}
@@ -533,12 +533,12 @@ void* ibDatabaseResultSetFirebird::GetResultBlob(int nField, wxMemoryBuffer& buf
 		{
 			// Incompatible field type
 			// Set error codes and throw an exception here
-			wxMemoryBuffer tempBuffer(0);
+			ibMemoryBuffer tempBuffer(0);
 			tempBuffer.SetBufSize(0);
 			tempBuffer.SetDataLen(0);
 			buffer = tempBuffer;
 
-			SetErrorMessage(wxT("Invalid field type"));
+			SetErrorMessage(ibT("Invalid field type"));
 			SetErrorCode(DATABASE_LAYER_INCOMPATIBLE_FIELD_TYPE);
 
 			ThrowDatabaseException();
@@ -571,7 +571,7 @@ void ibDatabaseResultSetFirebird::AllocateFieldSpace()
 		// `sqldata` pointing to a memory region of the right size; the
 		// engine writes typed bytes through it.  Storing as `new char[n]`
 		// (instead of `(char*)new ISC_X` etc.) lets FreeFieldSpace use a
-		// single wxDELETEA without typed-vs-char* delete UB.
+		// single delete[] without typed-vs-char* delete UB.
 		switch (pVar->sqltype & ~1)
 		{
 		case SQL_ARRAY:
@@ -652,10 +652,14 @@ void ibDatabaseResultSetFirebird::FreeFieldSpace()
 		// All sqldata slots are now `new char[size]` array allocations —
 		// uniform array delete is correct and previous typed scalar delete
 		// (e.g. `delete (char*)new ISC_TIME`) was UB.
-		if (pVar->sqldata != 0)
-			wxDELETEA(pVar->sqldata);
-		if ((pVar->sqltype & 1) && (pVar->sqlind != 0))
-			wxDELETE(pVar->sqlind);
+		if (pVar->sqldata != 0) {
+			delete[] pVar->sqldata;
+			pVar->sqldata = nullptr;
+		}
+		if ((pVar->sqltype & 1) && (pVar->sqlind != 0)) {
+			delete pVar->sqlind;
+			pVar->sqlind = nullptr;
+		}
 	}
 
 	// XSQLDA itself is allocated with malloc() (see firebirdDatabaseLayer
@@ -682,7 +686,7 @@ void ibDatabaseResultSetFirebird::PopulateFieldLookupMap()
 // field: 17 % of a forty-thousand-employee payroll's posting sat here (MEASURED 2026-09-11, Release, stack
 // samples). One lookup instead — and of the name AS ASKED: an upper-cased copy per lookup was the next
 // cost down the same path, so the map ignores case itself (StringToIntMap, databaseResultSet.h).
-int ibDatabaseResultSetFirebird::LookupField(const wxString& strField)
+int ibDatabaseResultSetFirebird::LookupField(const ibString& strField)
 {
 	StringToIntMap::iterator SearchIterator = m_FieldLookupMap.find(strField);
 
@@ -694,8 +698,8 @@ int ibDatabaseResultSetFirebird::LookupField(const wxString& strField)
 		ibDatabaseLayerException::Throw(
 			ibBackendDatabaseException::Kind::Unknown,
 			DATABASE_LAYER_FIELD_NOT_IN_RESULTSET,
-			/*sqlState*/ wxEmptyString,
-			wxT("Field '") + strField + wxT("' not found in the resultset"));
+			/*sqlState*/ ibEmptyString,
+			ibT("Field '") + strField + ibT("' not found in the resultset"));
 	}
 	else
 	{

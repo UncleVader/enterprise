@@ -22,6 +22,7 @@
 #include "clientFrameDesigner.h"
 #include "clientFrameRuntime.h"
 #include "clientHost.h"      // NotifyChanged — the client told its frame changed by itself
+#include "propertyInspector.h"   // ShowProperties — an object's rows, as the inspector writes them
 #include "protocol/protocol.h"
 #include "clientSession.h"
 
@@ -55,13 +56,13 @@ ibDocManager* ibDocManager::GetDocumentManager()
 	return frame != nullptr ? frame->GetDocumentManager() : nullptr;
 }
 
-std::unique_ptr<ibClientFrame> ibClientFrame::Create(ibProtocolMode mode, ibSessionHolder&& holder,
+std::unique_ptr<ibClientFrame> ibClientFrame::Create(ibProtocol::ibLogin::ibMode mode, ibSessionHolder&& holder,
 	ibClientInstance* clientInstance)
 {
 	switch (mode) {
-	case ibProtocolMode::Runtime:
+	case ibProtocol::ibLogin::ibMode::Runtime:
 		return std::unique_ptr<ibClientFrame>(new ibClientFrameRuntime(std::move(holder), clientInstance));
-	case ibProtocolMode::Designer:
+	case ibProtocol::ibLogin::ibMode::Designer:
 		return std::unique_ptr<ibClientFrame>(new ibClientFrameDesigner(std::move(holder), clientInstance));
 	}
 	return nullptr;
@@ -96,7 +97,8 @@ ibClientFrame::~ibClientFrame()
 	// (ibClientInstance::OnExit). What is left are the tab shells, and the manager with nothing in it.
 	m_pendingCloses.clear();
 	m_tabs.clear();
-	wxDELETE(m_docManager);
+	delete m_docManager;
+	m_docManager = nullptr;
 
 	// Every request still waiting is withdrawn — nothing chosen — and its script woken, so it unwinds instead
 	// of waiting for a client nobody will respond for once the frame is gone.
@@ -112,7 +114,7 @@ ibClientFrame::~ibClientFrame()
 		pool->Wake(session);
 }
 
-void ibClientFrame::SetStatusText(const wxString& strStatus, int /*number*/)
+void ibClientFrame::SetStatusText(const ibString& strStatus, int /*number*/)
 {
 	m_status = strStatus;
 }
@@ -124,7 +126,16 @@ void ibClientFrame::RefreshFrame()
 		host->NotifyChanged(m_clientInstance);
 }
 
-void ibClientFrame::Message(const wxString& strMessage, ibStatusMessage status)
+void ibClientFrame::RaiseFrame()
+{
+	{
+		std::lock_guard<std::mutex> lock(m_msgMutex);
+		m_raisePending = true;
+	}
+	RefreshFrame();
+}
+
+void ibClientFrame::Message(const ibString& strMessage, ibStatusMessage status)
 {
 	std::lock_guard<std::mutex> lock(m_msgMutex);
 	m_pendingMessages.push_back({ status, strMessage });
@@ -138,19 +149,19 @@ void ibClientFrame::ClearMessage()
 	m_clearPending = true;
 }
 
-void ibClientFrame::BackendError(const wxString& strFileName,
-	const wxString& strDocPath, const long line,
-	const wxString& strErrorMessage)
+void ibClientFrame::BackendError(const ibString& strFileName,
+	const ibString& strDocPath, const long line,
+	const ibString& strErrorMessage)
 {
 	// THE DESKTOP'S ERROR WINDOW (ibFrontendMainFrameEnterprise::BackendError), asked of the client: the person chooses
 	// what becomes of the failure. Closed without a choice — as Close window.
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::Error));
-	request.SetValue(wxT("Picture"), SendPicture(g_picErrorCLSID));
-	request.SetValue(wxT("Text"), strErrorMessage);
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::Error));
+	request.SetValue(ibProtocol::ibRequest::ibError::Picture, ibBackendPicture::SendPicture(g_picErrorCLSID));
+	request.SetValue(ibProtocol::ibRequest::ibError::Text, strErrorMessage);
 
 	ibDataNode response;
-	const s32 act = DoRequest(request, response) ? response.GetValue<s32>(wxT("Act")) : 0;   // 0 — closed: Close window
+	const std::int32_t act = DoRequest(request, response) ? response.GetValue<std::int32_t>(ibProtocol::ibRequest::ibError::Act) : 0;   // 0 — closed: Close window
 
 	// ⭐ THE ANSWERS ARE CUMULATIVE, as the desktop's: the error stays in the messages whatever was chosen; Go to designer
 	// also sends it to the designer debugging this base; Close program does both, and the client goes.
@@ -159,12 +170,12 @@ void ibClientFrame::BackendError(const wxString& strFileName,
 		m_pendingMessages.push_back({ ibStatusMessage_Error, strErrorMessage });
 	}
 
-	if (act == static_cast<s32>(ibProtocolErrorAct::GotoDesigner) || act == static_cast<s32>(ibProtocolErrorAct::CloseProgram)) {
+	if (act == static_cast<std::int32_t>(ibProtocol::ibRequest::ibError::ibAct::GotoDesigner) || act == static_cast<std::int32_t>(ibProtocol::ibRequest::ibError::ibAct::CloseProgram)) {
 		if (ibDebuggerServer* const server = debugServer)
 			server->SendErrorToClient(strFileName, strDocPath, line, strErrorMessage);
 	}
 
-	if (act == static_cast<s32>(ibProtocolErrorAct::CloseProgram))
+	if (act == static_cast<std::int32_t>(ibProtocol::ibRequest::ibError::ibAct::CloseProgram))
 		ExitClient(true);
 }
 
@@ -192,6 +203,32 @@ bool ibClientFrame::TakeExitPending()
 	return was;
 }
 
+bool ibClientFrame::TakeRaisePending()
+{
+	std::lock_guard<std::mutex> lock(m_msgMutex);
+	const bool was = m_raisePending;
+	m_raisePending = false;
+	return was;
+}
+
+void ibClientFrame::ShowProperties(ibValueMetaObject* object, std::int32_t tabId)
+{
+	ibPropertyInspector inspector;
+	inspector.SelectObject(object, tabId);
+	ibDataNode rows;
+	inspector.OnDraw(rows);
+	std::lock_guard<std::mutex> lock(m_msgMutex);
+	m_shownProperties.push_back(std::move(rows));
+}
+
+std::vector<ibDataNode> ibClientFrame::TakeShownProperties()
+{
+	std::lock_guard<std::mutex> lock(m_msgMutex);
+	std::vector<ibDataNode> out;
+	out.swap(m_shownProperties);
+	return out;
+}
+
 
 bool ibClientFrame::DoRequest(const ibDataNode& request, ibDataNode& response)
 {
@@ -214,7 +251,7 @@ bool ibClientFrame::DoRequest(const ibDataNode& request, ibDataNode& response)
 	}
 	catch (...) {
 		// Cancelled while waiting — the request is withdrawn and the interruption goes on up the script.
-		ibJournalInfo(wxT("client"), wxT("request %s withdrawn: the wait was interrupted"), wxString::FromUTF8(id.c_str()));
+		ibJournalInfo(ibT("client"), ibT("request %s withdrawn: the wait was interrupted"), ibString::FromUTF8(id.c_str()));
 		std::lock_guard<std::mutex> lock(m_requestMutex);
 		m_waiting.erase(std::remove_if(m_waiting.begin(), m_waiting.end(),
 			[&id](const Waiting& waiting) { return waiting.id == id; }), m_waiting.end());
@@ -226,16 +263,16 @@ bool ibClientFrame::DoRequest(const ibDataNode& request, ibDataNode& response)
 	return true;
 }
 
-int ibClientFrame::DoShowModalMessage(const wxString& message, const wxString& caption, int style)
+int ibClientFrame::DoShowModalMessage(const ibString& message, const ibString& caption, int style)
 {
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::Message));
-	request.SetValue(wxT("Text"), message);
-	request.SetValue(wxT("Caption"), caption);
-	request.SetValue(wxT("Style"), style);
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::Message));
+	request.SetValue(ibProtocol::ibRequest::ibMessage::Text, message);
+	request.SetValue(ibProtocol::ibRequest::ibMessage::Caption, caption);
+	request.SetValue(ibProtocol::ibRequest::ibMessage::Style, style);
 
 	ibDataNode response;
-	return DoRequest(request, response) ? response.GetValue<s32>(wxT("Button")) : 0;   // 0 — no button: cancelled
+	return DoRequest(request, response) ? response.GetValue<std::int32_t>(ibProtocol::ibRequest::ibMessage::Button) : 0;   // 0 — no button: cancelled
 }
 
 bool ibClientFrame::HasPendingRequest() const
@@ -345,17 +382,17 @@ bool ibClientFrame::UpdateFormUniqueKey(const ibUniqueKeyPair& guid)
 
 #include "frmserver/docView/templates/docViewSpreadsheet.h"
 
-bool ibClientFrame::ShowSpreadsheetDocument(const wxString& strTitle, std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument)
+bool ibClientFrame::ShowSpreadsheetDocument(const ibString& strTitle, std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument)
 {
 	class ibSpreadsheetMemoryDocument :
-		public ibSpreadsheetFileDocument {
+		public ibSheetFileDocument {
 	public:
 
-		ibSpreadsheetMemoryDocument(const wxString& strTitle, const std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument) :
-			ibSpreadsheetFileDocument(spreadSheetDocument)
+		ibSpreadsheetMemoryDocument(const ibString& strTitle, const std::shared_ptr<ibSpreadsheetObject>& spreadSheetDocument) :
+			ibSheetFileDocument(spreadSheetDocument)
 		{
-			ibSpreadsheetFileDocument::SetTitle(strTitle);
-			ibSpreadsheetFileDocument::SetFilename(strTitle);
+			ibSheetFileDocument::SetTitle(strTitle);
+			ibSheetFileDocument::SetFilename(strTitle);
 		}
 	};
 
@@ -364,7 +401,7 @@ bool ibClientFrame::ShowSpreadsheetDocument(const wxString& strTitle, std::share
 	if (createdDoc == nullptr)
 		return false;
 
-	if (createdDoc->OnCreate(wxEmptyString, 0)) {
+	if (createdDoc->OnCreate(ibEmptyString, 0)) {
 		createdDoc->SetCommandProcessor(createdDoc->OnCreateCommandProcessor());
 		m_docManager->AddDocument(createdDoc);
 		return true;
@@ -381,17 +418,17 @@ bool ibClientFrame::ShowSpreadsheetDocument(const wxString& strTitle, std::share
 	return false;
 }
 
-bool ibClientFrame::PrintSpreadsheetDocument(const std::shared_ptr<ibSpreadsheetObject>& doc, bool WXUNUSED(showPrintDlg))
+bool ibClientFrame::PrintSpreadsheetDocument(const std::shared_ptr<ibSpreadsheetObject>& doc, bool /*showPrintDlg*/)
 {
 	// THE SHEET AS A SPREADSHEET'S FETCH WRITES IT (ibFetchSpreadsheet) — its texts as shown: the client's sheet holds no
 	// parameters, and prints it as the desktop's printed its own.
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::Print));
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::Print));
 	if (!doc || !ibFetchSpreadsheet(*doc, request))
 		return false;
 
 	ibDataNode response;
-	return DoRequest(request, response) && response.GetValue<bool>(wxT("Done"));
+	return DoRequest(request, response) && response.GetValue<bool>(ibProtocol::ibRequest::ibPrint::Done);
 }
 
 bool ibClientFrame::ShowScheduleEditor(ibJobScheduleDescription& schedule)
@@ -401,15 +438,15 @@ bool ibClientFrame::ShowScheduleEditor(ibJobScheduleDescription& schedule)
 		return false;
 
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::Schedule));
-	request.SetField(wxT("Schedule"), stored);
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::Schedule));
+	request.SetField(ibProtocol::ibRequest::ibSchedule::Schedule, stored);
 
 	// CANCEL IS THE ONLY "NOTHING HAPPENED" — answered with no Schedule.
 	ibDataNode response;
 	if (!DoRequest(request, response))
 		return false;
-	const ibDataValue* const edited = response.FindField(wxT("Schedule"));
-	if (edited == nullptr || !ibJobScheduleDescriptionMemory::ReadNode(*edited, schedule))
+	const auto edited = response.FindField(ibProtocol::ibRequest::ibSchedule::Schedule);
+	if (!edited || !ibJobScheduleDescriptionMemory::ReadNode(*edited, schedule))
 		return false;
 
 	// OK MARKS THE FORM, as the desktop's did (ibFrontendMainFrame::ShowScheduleEditor): the window that did the editing
@@ -432,7 +469,7 @@ ibClientChildFrame* ibClientFrame::CreateChildFrame(ibView* view)
 	const ibFormVisualDocument* const formDocument = dynamic_cast<const ibFormVisualDocument*>(document);
 	ibValueForm* const form = formDocument != nullptr ? formDocument->GetValueForm() : nullptr;
 
-	wxString title = document != nullptr ? document->GetTitle() : wxString();
+	ibString title = document != nullptr ? document->GetTitle() : ibString();
 	if (title.IsEmpty() && form != nullptr)
 		title = form->GetControlTitle();
 	// A file's document — its file's name (the address's own: ibTempStorage::NameOf).
@@ -458,20 +495,6 @@ ibClientFrame* ibClientFrame::GetFrame()
 	// The server's own session (kind Service) has no frame.
 	ibSession* const session = ibSession::Current();
 	return session != nullptr ? dynamic_cast<ibClientFrame*>(session->GetFrame()) : nullptr;
-}
-
-ibString ibClientFrame::SendPicture(const ibPictureDescription& picture)
-{
-	if (picture.IsEmptyPicture())
-		return ibString();
-	// A picture held as a file's bytes has no name of its own: it goes as itself.
-	if (picture.m_type == ibPictureType::eFromFile)
-		return ibBackendPicture::GetServerPicture(picture).GetData();
-
-	// A backend picture's number as a decimal — a u64 is past what a JSON number keeps; a configuration picture's guid.
-	return picture.m_type == ibPictureType::eFromBackend
-		? ibString::Format(wxT("%llu"), static_cast<unsigned long long>(picture.m_class_identifier))
-		: ibString(picture.m_meta_guid.str());
 }
 
 void ibClientFrame::CloseDocuments()
@@ -511,7 +534,7 @@ void ibClientFrame::SetActiveTab(std::size_t i)
 		m_activeTab = i;
 }
 
-std::size_t ibClientFrame::FindTab(s32 id) const
+std::size_t ibClientFrame::FindTab(std::int32_t id) const
 {
 	for (std::size_t i = 0; i < m_tabs.size(); ++i) {
 		if (m_tabs[i]->GetId() == id)
@@ -564,7 +587,7 @@ bool ibClientFrame::CloseAll()
 	return true;
 }
 
-bool ibClientFrame::IsSchemaAllowed(ibProtocolSchema kind) const
+bool ibClientFrame::IsSchemaAllowed(ibProtocol::ibSchema::ibKind kind) const
 {
 	const ibClientSchema* const schema = GetDocumentManager() != nullptr ? GetDocumentManager()->FindSchema(kind) : nullptr;
 	return schema != nullptr && schema->AccessRight(*GetSession());
@@ -640,7 +663,7 @@ ibDocument* ibClientFrame::GetSaveAsDocument(std::size_t i) const
 	return tab != nullptr ? tab->GetDocument() : nullptr;
 }
 
-bool ibClientFrame::DoCommand(ibDocCommand command, const wxString& name)
+bool ibClientFrame::DoCommand(ibDocCommand command, const ibString& name)
 {
 	if (!IsCommandEnabled(command))
 		return false;
@@ -676,7 +699,7 @@ bool ibClientFrame::DoCommand(ibDocCommand command, const wxString& name)
 		ibSession* const session = ibSession::Current();
 		ibTempStorage* const storage = session != nullptr
 			? ibApplicationInstance::GetTempStorage(session->GetApplicationInstance()) : nullptr;
-		const wxString file = storage != nullptr && !name.IsEmpty() ? storage->Create(session->Identity().m_guid, name) : wxString();
+		const ibString file = storage != nullptr && !name.IsEmpty() ? storage->Create(session->Identity().m_guid, name) : ibString();
 		ibDocument* const saved = GetSaveAsDocument(m_activeTab);
 		if (file.IsEmpty() || !saved->OnSaveDocument(file))
 			return false;
@@ -714,8 +737,8 @@ bool ibClientFrame::EditFocused(ibDocCommand command)
 	// The field under the focus is the client's, and what it holds selected: the client does it there. Nothing comes
 	// back — a field changed sends its Change as it does when typed into.
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::Edit));
-	request.SetValue(wxT("Command"), static_cast<s32>(command));
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::Edit));
+	request.SetValue(ibProtocol::ibRequest::ibEdit::Command, static_cast<std::int32_t>(command));
 
 	ibDataNode response;
 	return Request(request, response);
@@ -726,19 +749,19 @@ bool ibClientFrame::OpenChosenFile()
 	// What may be chosen — the templates a person picks (the desktop's File → Open filter), as the frame's Templates
 	// list them.
 	ibDataNode request;
-	request.SetValue(wxT("Kind"), static_cast<s32>(ibProtocolRequestKind::File));
-	request.SetValue(wxT("Caption"), _("Open"));
+	request.SetValue(ibProtocol::ibRequest::Kind, static_cast<std::int32_t>(ibProtocol::ibRequest::ibKind::File));
+	request.SetValue(ibProtocol::ibRequest::ibFile::Caption, ibString(_("Open")));
 	for (const ibDocTemplate* const temp : m_docManager->GetTemplatesVector()) {
 		if (!temp->IsVisible())
 			continue;
 		ibDataNode& item = request.AddChild(0, 0);
-		item.SetValue(wxT("Title"), temp->GetDescription());
-		item.SetValue(wxT("Mask"), temp->GetFileFilter());
+		item.SetValue(ibProtocol::ibRequest::ibFile::Title, temp->GetDescription());
+		item.SetValue(ibProtocol::ibRequest::ibFile::Mask, temp->GetFileFilter());
 	}
 
 	// Cancelled — nothing chosen, nothing opened.
 	ibDataNode response;
-	const wxString id = Request(request, response) ? response.GetValue<wxString>(wxT("File")) : wxString();
+	const ibString id = Request(request, response) ? response.GetValue<ibString>(ibProtocol::ibRequest::ibFile::File) : ibString();
 	if (id.IsEmpty())
 		return false;
 
@@ -746,7 +769,7 @@ bool ibClientFrame::OpenChosenFile()
 	const ibTempFile file(id);
 	const ibDocTemplate* const temp = file.IsOpened() ? m_docManager->FindTemplateForPath(id) : nullptr;
 	if (temp == nullptr || !temp->IsVisible()) {
-		ShowModalMessage(wxString::Format(_("Nothing here opens '%s'."), file.GetName()), _("Open"), wxOK | wxICON_ERROR);
+		ShowModalMessage(ibString::Format(_("Nothing here opens '%s'."), file.GetName()), _("Open"), wxOK | wxICON_ERROR);
 		return false;
 	}
 	return m_docManager->CreateDocument(id) != nullptr;
@@ -771,10 +794,25 @@ void ibClientFrame::DrainPendingCloses()
 				continue;
 			// The view goes, and with the last view the document and its form (ibDocument::DeleteAllViews) —
 			// only now, with nothing on the stack inside them. Then the tab, and the mark its view's going put on it.
-			if (ibDocument* const document = m_tabs[i]->GetDocument())
+			ibDocument* const document = m_tabs[i]->GetDocument();
+			const ibDocument* const owner = document != nullptr ? document->GetDocParent() : nullptr;
+			if (document != nullptr)
 				document->DeleteAllViews();
 			m_pendingCloses.erase(std::remove(m_pendingCloses.begin(), m_pendingCloses.end(), tab), m_pendingCloses.end());
+			const bool wasActive = i == m_activeTab;
 			m_tabs.erase(m_tabs.begin() + i);
+			// ⭐ WHAT IS ACTIVE AFTER IT — the desktop's: a tab closed before the active one leaves that one active; the
+			// active one closed hands it to its owner's tab (the form editor's — the object it was opened from), else to
+			// the tab on its left (ibAuiDocChildFrame::Destroy). The index kept handed it to the one on the right.
+			if (i < m_activeTab)
+				--m_activeTab;
+			else if (wasActive) {
+				m_activeTab = i > 0 ? i - 1 : 0;
+				for (std::size_t j = 0; owner != nullptr && j < m_tabs.size(); ++j) {
+					if (m_tabs[j]->GetDocument() == owner)
+						m_activeTab = j;
+				}
+			}
 			if (m_activeTab >= m_tabs.size())
 				m_activeTab = m_tabs.empty() ? 0 : m_tabs.size() - 1;
 			break;

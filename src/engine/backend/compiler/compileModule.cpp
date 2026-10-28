@@ -75,7 +75,7 @@ bool ibCompileModule::Compile()
 
 		if (m_parentModule != nullptr) {
 			m_cByteCode.m_parent = &m_parentModule->m_cByteCode;
-			m_rootContext->m_parentContext = m_parentModule->m_rootContext;
+			m_rootContext->m_parentContext = m_parentModule->GetContext();
 		}
 
 		m_translateCode.SetModuleName(m_moduleObject->GetFullName());
@@ -86,7 +86,7 @@ bool ibCompileModule::Compile()
 	}
 
 	//prepare lexem
-	if (!PrepareLexem()) {
+	if (!Translate()) {
 		return false;
 	}
 
@@ -139,7 +139,7 @@ bool ibCompileModule::Recompile()
 
 		if (m_parentModule) {
 			m_cByteCode.m_parent = &m_parentModule->m_cByteCode;
-			m_rootContext->m_parentContext = m_parentModule->m_rootContext;
+			m_rootContext->m_parentContext = m_parentModule->GetContext();
 		}
 
 		m_translateCode.SetModuleName(m_moduleObject->GetFullName());
@@ -150,7 +150,7 @@ bool ibCompileModule::Recompile()
 	}
 
 	//prepare lexem 
-	if (!PrepareLexem()) {
+	if (!Translate()) {
 		return false;
 	}
 

@@ -62,12 +62,12 @@ ibValueModel::ibComposerNode::ibComposerNode(const std::map<ibMetaID, ibValue>& 
 // LIVE storage rows THROUGH this (m_valueTable set → the storage IS updated + the model refreshes); a DB-list
 // COPY node (m_valueTable null, self-contained) just mirrors into the copy for the inline editor (the grid is
 // read-only — a real edit goes through the object form). No write-back source / backing index any more.
-bool ibValueModel::ibComposerNode::SetValue(const ibMetaID& id, const ibValue& variant, bool notify)
+bool ibValueModel::ibComposerNode::SetValue(unsigned int col, const ibValue& variant, bool notify)
 {
-	auto iterator = m_nodeValues.find(id);
+	auto iterator = m_nodeValues.find(col);
 	if (iterator == m_nodeValues.end())
 		return false;
-	ibValue& cValue = m_nodeValues.at(id);
+	ibValue& cValue = m_nodeValues.at(col);
 
 	// 🛑 THE VALUE FIRST, THE NEWS AFTER IT. The notification went out while the cell still held the OLD
 	// value, and whatever reacts to it — the view recomputing the row, a handler reading the cell — read
@@ -77,7 +77,7 @@ bool ibValueModel::ibComposerNode::SetValue(const ibMetaID& id, const ibValue& v
 	const bool changed = cValue != variant;
 	cValue = variant;
 	if (notify && m_valueTable != nullptr && changed)
-		m_valueTable->RowValueChanged(this, id);
+		m_valueTable->RowValueChanged(this, col);
 	return true;
 }
 
@@ -141,6 +141,40 @@ ibComposerNode* ibValueModelStorage::NewRow() const
 	for (const auto& column : m_newRowAnew)
 		row->AppendTableValue(column.first, column.second());
 	return row;
+}
+
+long ibValueModelStorage::IndexOf(const ibValue& row) const
+{
+	// A row of another model, or of no model any more, is not among these rows: GetRow answers -1 for it.
+	ibValueModelReturnLine* line = nullptr;
+	return row.ConvertToValue(line) ? GetRow(line->GetLineItem()) : wxNOT_FOUND;
+}
+
+ibValue ibValueModelStorage::TotalOf(const ibString& column) const
+{
+	ibValueModelColumnCollection* const columns = GetColumnCollection();
+	const ibValueModelColumnCollection::ibValueModelColumnInfo* const colInfo =
+		columns != nullptr ? columns->GetColumnByName(column) : nullptr;
+	if (colInfo == nullptr)
+		ibBackendCoreException::Error(_("Table column '%s' not found"), column);
+
+	const ibMetaID id = static_cast<ibMetaID>(colInfo->GetColumnID());
+	ibNumber total(0);
+	for (long row = 0; row < GetRowCount(); ++row) {
+		ibComposerNode* const node = m_storage.GetNode(row);
+		if (node == nullptr)
+			continue;
+		const ibValue cell = node->GetTableValue(id);
+		if (cell.GetType() == ibValueTypes::TYPE_NUMBER) {
+			total += cell.GetNumber();
+			continue;
+		}
+		if (cell.IsEmpty())
+			continue;   // nothing there adds nothing
+		ibBackendCoreException::Error(_("Table column '%s' holds a value that is not a number (row %d); a column added without a type holds text - declare it as a Number"),
+			column, static_cast<int>(row + 1));
+	}
+	return ibValue(total);
 }
 
 ibValueModel::~ibValueModel()
@@ -391,7 +425,7 @@ bool ibValueModel::GetCompositionAttrByRow(const ibDataViewItem& row, unsigned i
 	const ibDataComposer& composer = GetModelComposer();
 	const std::vector<ibCompositionRule> rules = ibCompositionRulesOf(composer.GetCurrentConditionalAppearanceDesc());
 	std::deque<ibValue> read;   // what the engine is handed stays where it is while the condition is read
-	const ibCompositionValueOf valueOf = [this, node, &read](const wxString& path) -> const ibValue* {
+	const ibCompositionValueOf valueOf = [this, node, &read](const ibString& path) -> const ibValue* {
 		const ibMetaID id = GetColumnIDByName(path);
 		ibValue value;
 		if (id == wxNOT_FOUND || !node->GetValue(id, value))
@@ -402,7 +436,7 @@ bool ibValueModel::GetCompositionAttrByRow(const ibDataViewItem& row, unsigned i
 	attr = ibCompositionAttr();
 	ibCompositionAttr own;
 	const bool held = ibCompositionSayRules(rules, composer.GetMetaData(), valueOf, composer.SubtreeOf(), attr,
-		[this, col, &own](const wxString& field, const ibCompositionAttr& said) {
+		[this, col, &own](const ibString& field, const ibCompositionAttr& said) {
 			if (GetColumnIDByName(field) == static_cast<ibMetaID>(col))
 				own.Say(said);
 		});
@@ -454,7 +488,7 @@ bool ibValueModel::GetAttrByRow(const ibDataViewItem& row, unsigned int col, ibD
 	return !attr.IsDefault();
 }
 
-void ibValueModel::GetValue(wxVariant& variant, const ibDataViewItem& item, unsigned int col) const
+void ibValueModel::GetValue(ibVariant& variant, const ibDataViewItem& item, unsigned int col) const
 {
 	GetValueByRow(variant, item, col);
 	if (!HasAttrByRow(item))
@@ -466,9 +500,9 @@ void ibValueModel::GetValue(wxVariant& variant, const ibDataViewItem& item, unsi
 	ibValue value;
 	if (const ibComposerNode* node = GetViewData<ibComposerNode>(item))
 		node->GetValue(static_cast<ibMetaID>(col), value);
-	wxString text;
+	ibString text;
 	if (drawn.TextOf(value, text))
-		variant = new ibVariantDataValueModel(ibValue(text));
+		variant = ibValue(text);
 }
 
 // RAM-backed models have NO source primary key (RunComposerPage stamps an EMPTY row-key for them) → restore by
@@ -541,11 +575,11 @@ enum Prop {
 
 void ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo::FillMembers(ibMemberTable& helper) const
 {
-	helper.AppendProp(wxT("Name"));
-	helper.AppendProp(wxT("Types"));
-	helper.AppendProp(wxT("Caption"));
-	helper.AppendProp(wxT("Width"));
-	helper.AppendProp(wxT("Indexing"));
+	helper.AppendProp(ibT("Name"));
+	helper.AppendProp(ibT("Types"));
+	helper.AppendProp(ibT("Caption"));
+	helper.AppendProp(ibT("Width"));
+	helper.AppendProp(ibT("Indexing"));
 }
 
 bool ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
@@ -613,12 +647,12 @@ ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* ibValueModel
 	return nullptr;
 }
 
-ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* ibValueModel::ibValueModelColumnCollection::GetColumnByName(const wxString& colName) const
+ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* ibValueModel::ibValueModelColumnCollection::GetColumnByName(const ibString& colName) const
 {
 	for (unsigned int idx = 0; idx < GetColumnCount(); idx++) {
 		ibValueModelColumnInfo* columnInfo = GetColumnInfo(idx);
 		wxASSERT(columnInfo);
-		if (stringUtils::CompareString(colName, columnInfo->GetColumnName()))
+		if (stringUtils::IsSameAs(colName, columnInfo->GetColumnName()))
 			return columnInfo;
 	}
 

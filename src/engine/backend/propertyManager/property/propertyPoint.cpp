@@ -4,14 +4,14 @@
 #include "backend/system/value/valuePoint.h"
 
 
-wxVariantData* ibPropertyPoint::CreateVariantData(const ibPoint& val)
+ibVariant ibPropertyPoint::CreateVariantData(const ibPoint& val)
 {
-	return new ibVariantDataPoint(val);
+	return ibVariant(new ibVariantPoint(val));
 }
 
 ibPoint ibPropertyPoint::GetValueAsPoint() const
 {
-	return get_cell_variant<ibVariantDataPoint>()->GetPoint();
+	return get_cell_variant<ibVariantPoint>()->GetPoint();
 }
 
 //base property for "point"

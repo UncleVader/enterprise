@@ -39,7 +39,7 @@ const ibMetaData* ibValueCheckbox::GetMetaData() const
 
 void ibValueCheckbox::FillControlMembers(ibMemberTable& helper) const
 {
-	helper.AppendProp(wxT("Value"), eControlValue, eControl);
+	helper.AppendProp(ibT("Value"), eControlValue, eControl);
 }
 
 bool ibValueCheckbox::SetPropVal(const long lPropNum, const ibValue& varPropVal)
@@ -67,7 +67,7 @@ bool ibValueCheckbox::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 	return ibValueFrame::GetPropVal(lPropNum, pvarPropVal);
 }
 
-wxString ibValueCheckbox::GetControlTitle() const
+ibString ibValueCheckbox::GetControlTitle() const
 {
 	if (!m_propertyTitle->IsEmptyProperty()) {
 		return m_propertyTitle->GetValueAsTranslateString();
@@ -77,7 +77,7 @@ wxString ibValueCheckbox::GetControlTitle() const
 		if (column != nullptr)   // null when the bound field is gone / whole-attribute binding
 			return column->GetSynonym();
 	}
-	return wxEmptyString;
+	return ibEmptyString;
 }
 
 bool ibValueCheckbox::IsReadOnly() const
@@ -102,20 +102,20 @@ void ibValueCheckbox::OnUpdate(ibDataNode& state, ibVisualHost* host)
 {
 	ibValueWindow::OnUpdate(state, host);
 
-	state.SetValue(wxT("Caption"), GetControlTitle());
+	state.SetValue(ibProtocol::ibForm::ibState::Caption, GetControlTitle());
 
 	// The value from the source, through the binding path (the source walks it). Not in the designer:
 	// there the box shows no value.
 	if (!appData->DesignerMode()) {
 		ibValue value;
 		GetControlValue(value);
-		state.SetValue(wxT("Checked"), value.GetBoolean());
+		state.SetValue(ibProtocol::ibForm::ibState::Checked, value.GetBoolean());
 	}
 
 	// A read-only binding makes the box READ-ONLY: value shown and focusable, but a click / space can't
 	// toggle it (OnClickedCheckbox refuses the change) — NOT Enabled off, which would grey it out
 	// (availability, for action buttons, not data controls).
-	state.SetValue(wxT("ReadOnly"), IsReadOnly());
+	state.SetValue(ibProtocol::ibForm::ibState::ReadOnly, IsReadOnly());
 }
 
 //*******************************************************************

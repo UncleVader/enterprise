@@ -3,6 +3,9 @@
 
 #include <functional>
 
+#include <wx/choice.h>
+#include <wx/weakref.h>   // the zoom choice — the toolbar's, gone with its tools
+
 #include "frmclient/docView/docView.h"
 #include "frmclient/win/editor/gridEditor/gridEditor.h"
 #include "core/spreadsheet/sheetFormat.h"   // which formats this document can be saved as
@@ -39,9 +42,18 @@ private:
 
 	void OnMenuEvent(wxCommandEvent& event);
 
+	// The toolbar's own zoom percentage choice, and the grid's own zoom (Ctrl+wheel) keep each other
+	// in sync — #484: a preview had no visible way to change scale, so the grid's existing zoom
+	// (SetGridZoom, already wired to Ctrl+wheel) gets a toolbar face.
+	void OnZoomChoice(wxCommandEvent& event);
+	void OnGridZoomChanged(ibGridEvent& event);
+	void SyncZoomChoice();
+
 protected:
 
 	ibGridEditor* m_gridEditor;
+	// The choice it put on the toolbar — the toolbar's: destroyed with its tools when another view's are put up.
+	wxWeakRef<wxChoice> m_zoomChoice;
 
 	wxDECLARE_EVENT_TABLE();
 	wxDECLARE_DYNAMIC_CLASS(ibSpreadsheetEditView);

@@ -83,7 +83,7 @@ const ibMetaData* ibValueTextCtrl::GetMetaData() const
 
 void ibValueTextCtrl::FillControlMembers(ibMemberTable& helper) const
 {
-	helper.AppendProp(wxT("Value"), eControlValue, eControl);
+	helper.AppendProp(ibT("Value"), eControlValue, eControl);
 }
 
 bool ibValueTextCtrl::SetPropVal(const long lPropNum, const ibValue& varPropVal)
@@ -111,7 +111,7 @@ bool ibValueTextCtrl::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 	return ibValueFrame::GetPropVal(lPropNum, pvarPropVal);
 }
 
-wxString ibValueTextCtrl::GetControlTitle() const
+ibString ibValueTextCtrl::GetControlTitle() const
 {
 	if (!m_propertyTitle->IsEmptyProperty()) {
 		return m_propertyTitle->GetValueAsTranslateString();
@@ -121,7 +121,7 @@ wxString ibValueTextCtrl::GetControlTitle() const
 		if (column != nullptr)   // null when the bound field is gone / whole-attribute binding
 			return column->GetSynonym();
 	}
-	return wxEmptyString;
+	return ibEmptyString;
 }
 
 bool ibValueTextCtrl::IsReadOnly() const
@@ -158,7 +158,7 @@ void ibValueTextCtrl::OnUpdate(ibDataNode& state, ibVisualHost* host)
 {
 	ibValueWindow::OnUpdate(state, host);
 
-	state.SetValue(wxT("Caption"), GetControlTitle());
+	state.SetValue(ibProtocol::ibForm::ibState::Caption, GetControlTitle());
 
 	// The value as text, through the field's own format or, without one, the bound attribute's. Not in
 	// the designer: there the field shows no value.
@@ -166,20 +166,20 @@ void ibValueTextCtrl::OnUpdate(ibDataNode& state, ibVisualHost* host)
 		ibValue value;
 		GetControlValue(value);
 
-		wxString text;
+		ibString text;
 		const ibTranslateString& format = m_propertyFormat->GetValueAsFormatString();
 		GetFormatFromColumn(!format.IsEmpty() ? format : GetSourceFormat(), GetTypeDesc()).Apply(value, text);
-		state.SetValue(wxT("Text"), text);
+		state.SetValue(ibProtocol::ibForm::ibState::Text, text);
 		// …and the value itself, with its type (ibValue::Serialize): a client edits by the type — a date as a date —
 		// and may answer a Change with the value instead of text. One that does not travel (an open object) is shown
 		// by its text alone.
 		if (value.IsTransferable())
-			value.Serialize(state.Child(wxT("Value")));
+			value.Serialize(state.Child(ibProtocol::ibForm::ibState::Value));
 	}
 
 	// TextEditMode off or a binding that cannot be written: the text is shown but not typed into, and
 	// Select / Clear are locked with it; Open stays live.
-	state.SetValue(wxT("ReadOnly"), IsReadOnly());
+	state.SetValue(ibProtocol::ibForm::ibState::ReadOnly, IsReadOnly());
 }
 
 //*******************************************************************

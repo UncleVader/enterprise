@@ -19,7 +19,7 @@ ibValueHTMLBox::ibValueHTMLBox() : ibValueWindow()
 void ibValueHTMLBox::OnUpdate(ibDataNode& state, ibVisualHost* host)
 {
 	ibValueWindow::OnUpdate(state, host);
-	state.SetValue(wxT("Page"), m_page);
+	state.SetValue(ibProtocol::ibForm::ibState::Page, m_page);
 }
 
 //**********************************************************************************
@@ -44,7 +44,7 @@ enum Func {
 
 void ibValueHTMLBox::FillControlMembers(ibMemberTable& helper) const
 {
-	helper.AppendFunc(wxT("SetPage"), 1, wxT("SetPage(p: page)"), enSetPage, wxNOT_FOUND);
+	helper.AppendFunc(ibT("SetPage"), 1, ibT("SetPage(p: page)"), enSetPage, wxNOT_FOUND);
 }
 
 bool ibValueHTMLBox::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)       //method call

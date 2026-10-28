@@ -1,18 +1,21 @@
 // =============================================================================
 // OES Enterprise — the application server's client connections
 //
-// cpp-httplib's own pool grows to 4 * max(8, cores - 1) and then queues. A
-// WebSocket holds its thread until the socket closes, so the client past that
-// ceiling is accepted and never answered. ClientConnections raises the ceiling
-// (1000 when backend.conf leaves it out). This opens more sockets than the old
-// ceiling and requires a reply on every one.
+// The listener is the core's HTTP (core/net), asynchronous: a socket waiting for
+// its client costs a buffer, not a thread. Under cpp-httplib a WebSocket held a
+// pool thread until it closed, and the client past 4 * max(8, cores - 1) was
+// accepted and never answered. ClientConnections is the ceiling (1000 when
+// backend.conf leaves it out). This opens more sockets than the old pool held
+// and requires a reply on every one, and a burst of them adds no thread.
 // =============================================================================
 
 #include <gtest/gtest.h>
 
 #include "backend/appData.h"
 #include "backend/appHost.h"
+#include "backend/rpc/rpcMessage.h"
 #include "clientListener.h"
+#include "core/serialize/dataBuilder.h"
 #include "frmserver/client/clientHost.h"
 
 #include <wx/file.h>
@@ -31,6 +34,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <future>
 #include <string>
 #include <thread>
@@ -64,7 +68,48 @@ unsigned OldClientCeiling()
 	return base * 4;
 }
 
-const char kPing[] = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
+// A request for a method nobody has, as the packet a client sends (OES-RPC): the server answers it with a refusal
+// that names the method. Text it does not take — it closes the socket.
+const std::string& PingPacket()
+{
+	static const std::string packet = [] {
+		ibDataNode request;
+		request.SetValue(wxT("id"), 1);
+		request.SetValue(wxT("method"), ibString(wxT("ping")));
+		ibMemoryBuffer bytes;
+		ibBinaryProvider().Write(request, bytes);
+		return std::string(static_cast<const char*>(bytes.GetData()), bytes.GetDataLen());
+	}();
+	return packet;
+}
+
+bool SendPing(httplib::ws::WebSocketClient& client)
+{
+	return client.send(PingPacket().data(), PingPacket().size());
+}
+
+// THE TEST'S CLIENT WRITES WHERE THE SERVER HAS HUNG UP — a close frame after Stop, a ping past the fifteen seconds.
+// Off Windows such a write raises SIGPIPE, whose default ends the process, and under ctest the process is the test
+// (macOS CI, 2026-10-26). Ignored for the test's duration: the other way round from ibDefaultSigpipe
+// (test_valueHttp.cpp), which puts the default back to see that the engine's own sends never raise it.
+#ifndef _WIN32
+struct ibIgnoredSigpipe {
+	void (*m_before)(int);
+	ibIgnoredSigpipe() : m_before(signal(SIGPIPE, SIG_IGN)) {}
+	~ibIgnoredSigpipe() { signal(SIGPIPE, m_before); }
+};
+#else
+struct ibIgnoredSigpipe {};
+#endif
+
+// …and the refusal, read from the packet it came in: its JSON view names the method.
+bool Refused(const std::string& packet)
+{
+	ibDataNode answer;
+	if (!ibBinaryProvider().Read(ibMemoryBuffer(packet.data(), packet.size()), answer))
+		return false;
+	return ibRpcRenderNode(answer).ToUtf8().find("no method named") != std::string::npos;
+}
 
 // Threads of this process. A retired pool thread stays visible until some later enqueue joins it.
 unsigned CountThreads()
@@ -110,20 +155,22 @@ unsigned CountThreads()
 
 bool Answered(httplib::ws::WebSocketClient& client)
 {
-	if (!client.send(kPing))
+	if (!SendPing(client))
 		return false;
 	std::string reply;
-	if (client.read(reply) != httplib::ws::Text)
+	if (client.read(reply) != httplib::ws::Binary)
 		return false;
-	return reply.find("no method named") != std::string::npos;
+	return Refused(reply);
 }
 
-// Connected, and a reply has come back, so a pool thread is inside the socket rather than idle.
+// Connected, and a reply has come back, so the server holds the socket and has answered on it.
 bool Hold(std::unique_ptr<httplib::ws::WebSocketClient>& client, const std::string& url)
 {
 	client = std::make_unique<httplib::ws::WebSocketClient>(url);
 	client->set_connection_timeout(8);
 	client->set_read_timeout(8);
+	// No heartbeat: cpp-httplib pings from a thread of each socket's own, and the threads counted here are the server's.
+	client->set_websocket_ping_interval(0);
 	if (!client->connect())
 		return false;
 	return Answered(*client);
@@ -131,10 +178,10 @@ bool Hold(std::unique_ptr<httplib::ws::WebSocketClient>& client, const std::stri
 
 bool Bind(ibClientListener& listener, ibClientHost& host, unsigned short& port, std::string& url)
 {
-	std::map<wxString, ibClientHost*> hosts;
+	std::map<ibString, ibClientHost*> hosts;
 	hosts[wxT("demo")] = &host;
-	wxString refusal;
-	if (!listener.Start(wxT("127.0.0.1"), port, true, std::move(hosts), refusal))
+	ibString refusal;
+	if (!listener.Start(ibPortRange{ port, 100 }, port, std::move(hosts), refusal))
 		return false;
 	url = "ws://127.0.0.1:" + std::to_string(port) + "/demo/client";
 	return true;
@@ -156,7 +203,7 @@ void StopWithin(ibClientListener& listener)
 }
 
 struct RestoreCwd {
-	wxString saved;
+	ibString saved;
 	RestoreCwd() : saved(wxGetCwd()) {}
 	~RestoreCwd() { wxSetWorkingDirectory(saved); }
 };
@@ -177,12 +224,12 @@ TEST(ClientConnections, AbsentOrZeroMeansOneThousand) {
 	EXPECT_EQ(ibApplicationHost::ReadCount(empty, wxT("backend.conf"), wxT("ClientConnections"), 1, 1000),
 		static_cast<std::size_t>(1000));
 
-	const wxString path = wxFileName(wxStandardPaths::Get().GetTempDir(),
+	const ibString path = wxFileName(wxStandardPaths::Get().GetTempDir(),
 		wxT("oes-client-connections.conf")).GetFullPath();
 	{
 		wxFile file;
 		ASSERT_TRUE(file.Create(path, true));
-		ASSERT_TRUE(file.Write(wxString(wxT("ClientConnections=40\n"))));
+		ASSERT_TRUE(file.Write(ibString(wxT("ClientConnections=40\n"))));
 	}
 	wxFileConfig forty(wxT(""), wxT(""), wxT(""), path);
 	EXPECT_EQ(ibApplicationHost::ReadCount(forty, wxT("backend.conf"), wxT("ClientConnections"), 1, 1000),
@@ -192,7 +239,7 @@ TEST(ClientConnections, AbsentOrZeroMeansOneThousand) {
 	{
 		wxFile file;
 		ASSERT_TRUE(file.Create(path, true));
-		ASSERT_TRUE(file.Write(wxString(wxT("ClientConnections=0\n"))));
+		ASSERT_TRUE(file.Write(ibString(wxT("ClientConnections=0\n"))));
 	}
 	wxFileConfig zero(wxT(""), wxT(""), wxT(""), path);
 	EXPECT_EQ(ibApplicationHost::ReadCount(zero, wxT("backend.conf"), wxT("ClientConnections"), 1, 1000),
@@ -213,14 +260,13 @@ TEST(ClientListener, MoreConnectionsThanTheOldPoolAllGetAReply) {
 	ibClientHost host(nullptr);
 	ibClientListener listener;
 	unsigned short port = 28173;
-	std::map<wxString, ibClientHost*> hosts;
+	std::map<ibString, ibClientHost*> hosts;
 	hosts[wxT("demo")] = &host;
-	wxString refusal;
-	ASSERT_TRUE(listener.Start(wxT("127.0.0.1"), port, true, std::move(hosts), refusal))
+	ibString refusal;
+	ASSERT_TRUE(listener.Start(ibPortRange{ port, 100 }, port, std::move(hosts), refusal))
 		<< refusal.ToStdString();
 
 	const std::string url = "ws://127.0.0.1:" + std::to_string(port) + "/demo/client";
-	const std::string request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}";
 
 	std::vector<std::unique_ptr<httplib::ws::WebSocketClient>> clients(count);
 	std::vector<int> opened(count, 0);
@@ -249,7 +295,7 @@ TEST(ClientListener, MoreConnectionsThanTheOldPoolAllGetAReply) {
 		if (!opened[i])
 			continue;
 		threads.emplace_back([&, i] {
-			if (!clients[i]->send(request)) {
+			if (!SendPing(*clients[i])) {
 				reads[i] = -2;
 				return;
 			}
@@ -262,9 +308,8 @@ TEST(ClientListener, MoreConnectionsThanTheOldPoolAllGetAReply) {
 	for (unsigned i = 0; i < count; ++i) {
 		if (!opened[i])
 			continue;
-		EXPECT_EQ(reads[i], static_cast<int>(httplib::ws::Text)) << "connection " << i;
-		EXPECT_NE(replies[i].find("no method named"), std::string::npos)
-			<< "connection " << i << " answered: " << replies[i];
+		EXPECT_EQ(reads[i], static_cast<int>(httplib::ws::Binary)) << "connection " << i;
+		EXPECT_TRUE(Refused(replies[i])) << "connection " << i;
 	}
 
 	clients.clear();
@@ -275,13 +320,13 @@ TEST(ClientConnections, ReadFromTheFileTheServerReads) {
 	WxReady();
 	RestoreCwd cwd;
 	RestoreHost host;
-	const wxString dir = wxFileName(wxStandardPaths::Get().GetTempDir(),
-		wxString::Format(wxT("oes-cc-%ld"), static_cast<long>(wxGetProcessId()))).GetFullPath();
+	const ibString dir = wxFileName(wxStandardPaths::Get().GetTempDir(),
+		ibString::Format(wxT("oes-cc-%ld"), static_cast<long>(wxGetProcessId()))).GetFullPath();
 	wxMkdir(dir);
 	ASSERT_TRUE(wxSetWorkingDirectory(dir));
 
 	// A fresh process each time: the file is read once, when the host is made.
-	const auto expect = [&](const wxString& body, std::size_t want) {
+	const auto expect = [&](const ibString& body, std::size_t want) {
 		struct Guard {
 			~Guard()
 			{
@@ -315,14 +360,14 @@ TEST(ClientListener, RefusesTheConnectionOnceTheCeilingIsBusy) {
 	WxReady();
 	RestoreCwd cwd;
 	RestoreHost process;
-	const wxString dir = wxFileName(wxStandardPaths::Get().GetTempDir(),
-		wxString::Format(wxT("oes-cc-ceiling-%ld"), static_cast<long>(wxGetProcessId()))).GetFullPath();
+	const ibString dir = wxFileName(wxStandardPaths::Get().GetTempDir(),
+		ibString::Format(wxT("oes-cc-ceiling-%ld"), static_cast<long>(wxGetProcessId()))).GetFullPath();
 	wxMkdir(dir);
 	ASSERT_TRUE(wxSetWorkingDirectory(dir));
 	{
 		wxFile file;
 		ASSERT_TRUE(file.Create(dir + wxFILE_SEP_PATH + wxT("backend.conf"), true));
-		ASSERT_TRUE(file.Write(wxString(wxT("ClientConnections=2\n"))));
+		ASSERT_TRUE(file.Write(ibString(wxT("ClientConnections=2\n"))));
 	}
 	ASSERT_TRUE(ibApplicationInstance::CreateAppDataEnv(ibRunMode::eFILE_MODE));
 	ASSERT_EQ(ibApplicationHost::Get()->GetClientConnections(), static_cast<std::size_t>(2));
@@ -353,12 +398,11 @@ TEST(ClientListener, RefusesTheConnectionOnceTheCeilingIsBusy) {
 	wxRmdir(dir);
 }
 
-TEST(ClientListener, RetiresTheThreadsABurstNoLongerNeeds) {
+TEST(ClientListener, ABurstOfConnectionsAddsNoThread) {
 	WxReady();
 	ASSERT_EQ(ibApplicationHost::Get(), nullptr);
-	const unsigned base = static_cast<unsigned>(CPPHTTPLIB_THREAD_POOL_COUNT);
-	const unsigned surplus = 4;
-	ASSERT_LT(base + surplus, 1000u);
+	const unsigned count = OldClientCeiling() + 4;
+	ASSERT_LT(count, 1000u);
 
 	ibClientHost host(nullptr);
 	ibClientListener listener;
@@ -369,30 +413,23 @@ TEST(ClientListener, RetiresTheThreadsABurstNoLongerNeeds) {
 	const unsigned before = CountThreads();
 	ASSERT_GT(before, 0u);
 
-	std::vector<std::unique_ptr<httplib::ws::WebSocketClient>> clients(base + surplus);
+	// Each one answered, so each is a socket the server is inside of rather than one still in its backlog.
+	std::vector<std::unique_ptr<httplib::ws::WebSocketClient>> clients(count);
 	for (unsigned i = 0; i < clients.size(); ++i)
 		ASSERT_TRUE(Hold(clients[i], url)) << "connection " << i;
 	const unsigned during = CountThreads();
-	EXPECT_GE(during, before + surplus);
+
+	// One thread of noise is room for a helper that came and went. A thread per socket fails by the burst.
+	EXPECT_LE(during, before + 1);
 
 	clients.clear();
-	// The extra threads wait the same few seconds httplib waits, then leave the pool. They are joined on the
-	// next enqueue — a thread does not join itself — which is when they stop counting.
-	std::this_thread::sleep_for(std::chrono::seconds(CPPHTTPLIB_THREAD_POOL_IDLE_TIMEOUT + 2));
-	std::unique_ptr<httplib::ws::WebSocketClient> probe;
-	ASSERT_TRUE(Hold(probe, url));
-	probe.reset();
-
-	const unsigned after = CountThreads();
-	// One thread of noise is room for a helper that came and went. A pool that kept the burst fails by the surplus.
-	EXPECT_LE(after + surplus, during + 1);
-
 	listener.Stop();
 }
 
 TEST(ClientListener, StopReturnsWhileSocketsAreOpen) {
 	WxReady();
 	ASSERT_EQ(ibApplicationHost::Get(), nullptr);
+	const ibIgnoredSigpipe ignored{};   // the clients close after the listener has stopped
 
 	ibClientHost host(nullptr);
 	ibClientListener listener;
@@ -413,6 +450,7 @@ TEST(ClientListener, StopReturnsWhileSocketsAreOpen) {
 TEST(ClientListener, ASocketThatNeverLogsInClosesFifteenSecondsAfterItOpened) {
 	WxReady();
 	ASSERT_EQ(ibApplicationHost::Get(), nullptr);
+	const ibIgnoredSigpipe ignored{};   // a ping may go after the server has closed
 
 	ibClientHost host(nullptr);
 	ibClientListener listener;
@@ -430,7 +468,7 @@ TEST(ClientListener, ASocketThatNeverLogsInClosesFifteenSecondsAfterItOpened) {
 	bool closed = false;
 	while (std::chrono::steady_clock::now() - opened < std::chrono::seconds(25)) {
 		if (std::chrono::steady_clock::now() >= nextSend) {
-			if (!client.send("x")) {
+			if (!SendPing(client)) {
 				closed = true;
 				break;
 			}
@@ -438,7 +476,7 @@ TEST(ClientListener, ASocketThatNeverLogsInClosesFifteenSecondsAfterItOpened) {
 		}
 		std::string reply;
 		const auto read = client.read(reply);
-		if (read == httplib::ws::Text || read == httplib::ws::Timeout)
+		if (read == httplib::ws::Binary || read == httplib::ws::Timeout)
 			continue;
 		closed = true;
 		break;
@@ -452,11 +490,12 @@ TEST(ClientListener, ASocketThatNeverLogsInClosesFifteenSecondsAfterItOpened) {
 	listener.Stop();
 }
 
-// A message more often than the one-second read timeout never takes the timeout branch. The deadline
-// still counts from the open, so the socket closes at about fifteen seconds anyway.
+// A message every 200 ms does not move the mark: the deadline counts from the open, so the socket closes at
+// about fifteen seconds anyway.
 TEST(ClientListener, ASocketThatKeepsSendingClosesFifteenSecondsAfterItOpened) {
 	WxReady();
 	ASSERT_EQ(ibApplicationHost::Get(), nullptr);
+	const ibIgnoredSigpipe ignored{};   // a ping may go after the server has closed
 
 	ibClientHost host(nullptr);
 	ibClientListener listener;
@@ -474,7 +513,7 @@ TEST(ClientListener, ASocketThatKeepsSendingClosesFifteenSecondsAfterItOpened) {
 	bool closed = false;
 	while (std::chrono::steady_clock::now() - opened < std::chrono::seconds(25)) {
 		if (std::chrono::steady_clock::now() >= nextSend) {
-			if (!client.send("x")) {
+			if (!SendPing(client)) {
 				closed = true;
 				break;
 			}
@@ -482,7 +521,7 @@ TEST(ClientListener, ASocketThatKeepsSendingClosesFifteenSecondsAfterItOpened) {
 		}
 		std::string reply;
 		const auto read = client.read(reply);
-		if (read == httplib::ws::Text || read == httplib::ws::Timeout)
+		if (read == httplib::ws::Binary || read == httplib::ws::Timeout)
 			continue;
 		closed = true;
 		break;

@@ -48,10 +48,10 @@
 
 namespace {
 
-wxString EnvOr(const char* name, const wxString& fallback)
+ibString EnvOr(const char* name, const ibString& fallback)
 {
 	const char* value = std::getenv(name);
-	return (value != nullptr && *value != '\0') ? wxString::FromUTF8(value) : fallback;
+	return (value != nullptr && *value != '\0') ? ibString::FromUTF8(value) : fallback;
 }
 
 bool HaveServer()
@@ -197,7 +197,7 @@ TEST_F(PostgresDialect, BlobBytesAreReturnedIntact)
 	ASSERT_TRUE(static_cast<bool>(rs));
 	ASSERT_TRUE(rs->Next());
 
-	wxMemoryBuffer readBack;
+	ibMemoryBuffer readBack;
 	rs->GetResultBlob(1, readBack);
 	ASSERT_EQ(sizeof(payload), readBack.GetDataLen());
 	EXPECT_EQ(0, memcmp(payload, readBack.GetData(), sizeof(payload)));
@@ -259,7 +259,7 @@ TEST_F(PostgresDialect, NoWaitDoesNotWaitForAHeldRow)
 	opts.noWait = true;
 	waiter->BeginTransaction(opts);
 
-	wxString state;
+	ibString state;
 	const auto started = std::chrono::steady_clock::now();
 	try {
 		ibResultSetGuard blocked(waiter,

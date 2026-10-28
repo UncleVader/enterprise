@@ -1,6 +1,6 @@
 #include "variantSize.h"
 
-wxString ibVariantDataSize::MakeString() const
+ibString ibVariantSize::GetString() const
 {
 	return m_size.ToString();
 }

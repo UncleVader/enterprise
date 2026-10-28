@@ -41,14 +41,14 @@ TEST(Guid, ResetMakesInvalid) {
 // ---------------------------------------------------------------------------
 
 TEST(Guid, StrIsCanonical36) {
-    const wxString s = ibGuid(ibGuid::newGuid()).str();
+    const ibString s = ibGuid(ibGuid::newGuid()).str();
     EXPECT_EQ(s.length(), 36u);            // 8-4-4-4-12 + 4 hyphens
     EXPECT_EQ(s.Freq(wxT('-')), 4);
 }
 
 TEST(Guid, RoundTripViaString) {
     const ibGuid g = ibGuid::newGuid();
-    const wxString s = g.str();
+    const ibString s = g.str();
     const ibGuid parsed(s);                // wxString ctor
     EXPECT_EQ(parsed, g);
     EXPECT_EQ(parsed.str(), s);
@@ -99,7 +99,7 @@ TEST(Guid, OrderingIsAntisymmetric) {
 // GUID, which means "no object", and the script value still holds it.
 TEST(ValueGuid, NilStringIsAnEmptyGuid)
 {
-	const wxString nil = wxT("00000000-0000-0000-0000-000000000000");
+	const ibString nil = wxT("00000000-0000-0000-0000-000000000000");
 	ibValue text(nil);
 	ibValue* params[] = { &text };
 
@@ -112,14 +112,14 @@ TEST(ValueGuid, NilStringIsAnEmptyGuid)
 	ASSERT_TRUE(other.Init(params, 1));
 	EXPECT_TRUE(guid.CompareValueEQ(other));
 
-	ibValue realText(wxT("6fab82bc-d41d-4664-b0f6-bb61b0ed78d8"));
+	ibValue realText(ibT("6fab82bc-d41d-4664-b0f6-bb61b0ed78d8"));
 	ibValue* realParams[] = { &realText };
 	ibValueGuid real;
 	ASSERT_TRUE(real.Init(realParams, 1));
 	EXPECT_FALSE(real.IsEmpty());
 	EXPECT_FALSE(guid.CompareValueEQ(real));
 
-	ibValue junk(wxT("not-a-guid"));
+	ibValue junk(ibT("not-a-guid"));
 	ibValue* bad[] = { &junk };
 	ibValueGuid refused;
 	EXPECT_THROW(refused.Init(bad, 1), ibBackendException);

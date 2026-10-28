@@ -24,9 +24,9 @@ typedef ibValueModelTable::ibValueModelTableColumnCollection::ibValueModelTableC
 namespace {
 
 // A clsid as the wire carries it — 64 bits do not fit a JSON number.
-wxString ClsidText(const ibClassID& clsid)
+ibString ClsidText(const ibClassID& clsid)
 {
-	return wxString::Format(wxT("%llu"), static_cast<unsigned long long>(clsid));
+	return ibString::Format(ibT("%llu"), static_cast<unsigned long long>(clsid));
 }
 
 // The control-class CLSID a node maps to (0 = not draggable). Mirrors BuildForm's type->control choice
@@ -72,35 +72,35 @@ bool HasComposition(ibFormAttributeValue* entry, const std::vector<ibMetaID>& re
 
 // ONE ROW — the desktop's tree item and what its item data held (the path from the attribute, the reference's
 // targets, the view flags); `id` the attribute's on a root row, none under it.
-ibDataNode& AppendRow(ibDataNode& parent, ibMetaID id, const wxString& label, const std::vector<ibSourceHop>& path,
+ibDataNode& AppendRow(ibDataNode& parent, ibMetaID id, const ibString& label, const std::vector<ibSourceHop>& path,
 	const std::vector<ibMetaID>& refTypes, bool tableSection, ibClassID dropControl, bool underList)
 {
 	ibDataNode& row = parent.AddChild(0, id);
-	row.SetValue(ibProtocolName::Name, label);
+	row.SetValue(ibProtocol::ibView::ibFormDesigner::Name, label);
 
 	std::vector<ibDataValue> hops;
 	for (const ibSourceHop& hop : path) {
 		std::shared_ptr<ibDataNode> node = std::make_shared<ibDataNode>();
-		node->SetValue(ibProtocolName::Id, static_cast<s32>(hop.m_id));
+		node->SetValue(ibProtocol::ibView::ibFormDesigner::Id, static_cast<std::int32_t>(hop.m_id));
 		if (hop.m_type != g_valueUndefinedCLSID)
-			node->SetValue(ibProtocolName::Type, ClsidText(hop.m_type));
+			node->SetValue(ibProtocol::ibView::ibFormDesigner::Type, ClsidText(hop.m_type));
 		hops.push_back(ibDataValue::Child(node));
 	}
-	row.AddField(ibProtocolName::Path, ibDataValue::Array(std::move(hops)));
+	row.AddField(ibProtocol::ibView::ibFormDesigner::Path, ibDataValue::Array(std::move(hops)));
 
 	if (!refTypes.empty()) {
 		std::vector<ibDataValue> ids;
 		for (const ibMetaID& target : refTypes)
 			ids.push_back(ibDataValue::Int(target));
-		row.AddField(ibProtocolName::Targets, ibDataValue::Array(std::move(ids)));
-		row.SetValue(ibProtocolName::HasComposition, true);   // reference -> lazy [+]
+		row.AddField(ibProtocol::ibView::ibFormDesigner::Targets, ibDataValue::Array(std::move(ids)));
+		row.SetValue(ibProtocol::ibView::ibFormDesigner::HasComposition, true);   // reference -> lazy [+]
 	}
 	if (tableSection)
-		row.SetValue(ibProtocolName::TableSection, true);
+		row.SetValue(ibProtocol::ibView::ibFormDesigner::TableSection, true);
 	if (dropControl != 0)
-		row.SetValue(ibProtocolName::DropControl, ClsidText(dropControl));
+		row.SetValue(ibProtocol::ibView::ibFormDesigner::DropControl, ClsidText(dropControl));
 	if (underList)
-		row.SetValue(ibProtocolName::UnderList, true);
+		row.SetValue(ibProtocol::ibView::ibFormDesigner::UnderList, true);
 	return row;
 }
 
@@ -112,7 +112,7 @@ ibDataNode& AppendRow(ibDataNode& parent, ibMetaID id, const wxString& label, co
 // it still expands lazily). `metaData` resolves reference targets; `suffix` disambiguates composite-
 // reference branches by target name.
 void AppendComposition(ibDataNode& parent, const std::vector<ibSourceHop>& prefix,
-	const ibSourceExplorer& explorer, const ibMetaData* metaData, const wxString& suffix = wxEmptyString,
+	const ibSourceExplorer& explorer, const ibMetaData* metaData, const ibString& suffix = ibEmptyString,
 	bool parentIsList = false)
 {
 	for (unsigned int i = 0; i < explorer.GetHelperCount(); ++i) {
@@ -126,8 +126,8 @@ void AppendComposition(ibDataNode& parent, const std::vector<ibSourceHop>& prefi
 		const std::vector<ibMetaID> refTypes = ibValueReferenceDataObject::ConvertToMetaIds(col->GetTypeValueDesc().GetClsidList(), metaData);
 		// The tree node is the column's IDENTITY — show its NAME, not its Caption/synonym (a control's
 		// header takes the synonym; the attribute tree stays name-keyed so a column is findable by name).
-		const wxString base = col->GetSourceName();
-		const wxString label = suffix.IsEmpty() ? base : base + wxT(" - ") + suffix;
+		const ibString base = col->GetSourceName();
+		const ibString label = suffix.IsEmpty() ? base : base + ibT(" - ") + suffix;
 		// A field UNDER a list / table section is a COLUMN of that table. It IS draggable: dropped onto a
 		// tablebox bound to the SAME source it appends a bound column (CreateBoundControl's tablebox branch);
 		// dropped anywhere else it is declined (ResolveDropControlClass rejects a table column) so no broken
@@ -137,7 +137,7 @@ void AppendComposition(ibDataNode& parent, const std::vector<ibSourceHop>& prefi
 		if (refTypes.empty() && col->GetHelperCount() > 0) {
 			// table section / nested composite: finite, non-cyclic -> build its columns inline now. A
 			// section's columns are list-like (not standalone-bindable) -> parentIsList = true for them.
-			AppendComposition(child, childPath, *col, metaData, wxEmptyString, true);
+			AppendComposition(child, childPath, *col, metaData, ibEmptyString, true);
 		}
 	}
 }
@@ -163,15 +163,15 @@ void ibFormDesignView::FillAttributeTree(ibDataNode& node) const
 		ibDataNode& row = AppendRow(node, attrId, entry->GetName(), std::vector<ibSourceHop>{ { attrId } }, refTypes, isTable,
 			dropControl, false);   // ROOT: holder + head-of-path
 		if (entry->IsMain())
-			row.SetValue(ibProtocolName::Main, true);
+			row.SetValue(ibProtocol::ibView::ibFormDesigner::Main, true);
 		if (HasComposition(entry, refTypes))
-			row.SetValue(ibProtocolName::HasComposition, true);   // [+]; built lazily on expand
+			row.SetValue(ibProtocol::ibView::ibFormDesigner::HasComposition, true);   // [+]; built lazily on expand
 		// A value table grows COLUMNS on the attribute side (the desktop's "Add column", value-table only): what the row
 		// adds in itself, as a class's Menu says it.
 		if (entry->GetBindValue()->GetClassType() == g_valueTableCLSID) {
-			ibDataNode& item = row.Child(ibProtocolName::Menu).AddChild(0, 0);
-			item.SetValue(ibProtocolName::Name, wxString(ibProtocolName::Column));
-			item.SetValue(ibProtocolName::Title, _("Add column"));
+			ibDataNode& item = row.Child(ibProtocol::ibView::ibFormDesigner::Menu).AddChild(0, 0);
+			item.SetValue(ibProtocol::ibView::ibFormDesigner::Name, ibString(ibProtocol::ibView::ibFormDesigner::Column));
+			item.SetValue(ibProtocol::ibView::ibFormDesigner::Title, ibString(_("Add column")));
 		}
 	}
 }
@@ -193,15 +193,15 @@ ibPropertyObject* ibFormDesignView::FindColumnById(ibFormAttributeValue* entry, 
 void ibFormDesignView::ReadPath(const ibDataNode& node, ibSourceDescription& desc)
 {
 	desc.ClearSource();
-	const ibDataValue* const hops = node.FindField(ibProtocolName::Path);
-	if (hops == nullptr || hops->Kind() != ibDataKind::Array)
+	const auto hops = node.FindField(ibProtocol::ibView::ibFormDesigner::Path);
+	if (!hops || hops->Kind() != ibDataKind::Array)
 		return;
 	for (const ibDataValue& hop : hops->AsArray()) {
-		if (hop.Kind() != ibDataKind::Child || hop.AsChild() == nullptr)
+		if (hop.Kind() != ibDataKind::Child || !hop.AsChild())
 			continue;
 		unsigned long long type = 0;
-		hop.AsChild()->GetValue<wxString>(ibProtocolName::Type).ToULongLong(&type);
-		desc.AppendSource(static_cast<ibSourceId>(hop.AsChild()->GetValue<s32>(ibProtocolName::Id)),
+		hop.AsChild()->GetValue<ibString>(ibProtocol::ibView::ibFormDesigner::Type).ToULongLong(&type);
+		desc.AppendSource(static_cast<ibSourceId>(hop.AsChild()->GetValue<std::int32_t>(ibProtocol::ibView::ibFormDesigner::Id)),
 			type != 0 ? static_cast<ibClassID>(type) : g_valueUndefinedCLSID);
 	}
 }
@@ -213,12 +213,12 @@ bool ibFormDesignView::FetchComposition(const ibDataNode& request, ibDataNode& r
 	ReadPath(request, desc);
 	const std::vector<ibSourceHop>& path = desc.GetPath();
 	std::vector<ibMetaID> refTypes;
-	if (const ibDataValue* const targets = request.FindField(ibProtocolName::Targets)) {
+	if (const auto targets = request.FindField(ibProtocol::ibView::ibFormDesigner::Targets)) {
 		if (targets->Kind() == ibDataKind::Array)
 			for (const ibDataValue& id : targets->AsArray())
 				refTypes.push_back(static_cast<ibMetaID>(id.AsInt()));
 	}
-	const bool underList = request.GetValue<bool>(ibProtocolName::UnderList);
+	const bool underList = request.GetValue<bool>(ibProtocol::ibView::ibFormDesigner::UnderList);
 	if (path.empty())
 		return false;
 
@@ -229,7 +229,7 @@ bool ibFormDesignView::FetchComposition(const ibDataNode& request, ibDataNode& r
 	if (metaData == nullptr)
 		return false;
 
-	ibDataNode& rows = response.Child(ibProtocolName::Rows);
+	ibDataNode& rows = response.Child(ibProtocol::ibView::ibFormDesigner::Rows);
 	if (!refTypes.empty()) {
 		// Reference node: descend into each TARGET type via an empty reference-as-source (metadata-only,
 		// no live row needed) — the design-time twin of the runtime value hop. A COMPOSITE reference
@@ -247,7 +247,7 @@ bool ibFormDesignView::FetchComposition(const ibDataNode& request, ibDataNode& r
 			childPrefix.back().m_type = refValue.GetClassType();
 			if (const ibSourceExplorer* explorer = refSource->GetSourceExplorer())
 				AppendComposition(rows, childPrefix, *explorer, metaData,
-					multi ? refSource->GetSourceCaption() : wxString(wxEmptyString), underList);
+					multi ? refSource->GetSourceCaption() : ibString(ibEmptyString), underList);
 		}
 	}
 	else if (ibFormAttributeValue* entry = path.size() == 1 ? m_valueForm->FindAttributeById(path.front().m_id) : nullptr) {
@@ -255,7 +255,7 @@ bool ibFormDesignView::FetchComposition(const ibDataNode& request, ibDataNode& r
 		// A LIST root's children are COLUMNS (not standalone sources) -> mark them under-list.
 		if (ibSourceDataObject* src = entry->GetSourceValue())
 			if (const ibSourceExplorer* explorer = src->GetSourceExplorer())
-				AppendComposition(rows, path, *explorer, metaData, wxEmptyString, src->IsTableSource());
+				AppendComposition(rows, path, *explorer, metaData, ibEmptyString, src->IsTableSource());
 	}
 	return true;
 }
@@ -268,49 +268,48 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 {
 	// The desktop's tree's handlers, on the form the client holds — not undoable here: the client takes the form answered
 	// as an edit of its own.
-	const ibMetaID id = request.GetValue<s32>(ibProtocolName::Attribute);
+	const ibMetaID id = request.GetValue<std::int32_t>(ibProtocol::ibView::ibFormDesigner::Attribute);
 	ibFormAttributeValue* const entry = id != 0 ? m_valueForm->FindAttributeById(id) : nullptr;
 	if (id != 0 && entry == nullptr)
 		return false;
 
 	// A value table's column of it — the row under the attribute (the desktop's SelectColumnInInspector).
-	const ibMetaID columnId = request.GetValue<s32>(ibProtocolName::Column);
+	const ibMetaID columnId = request.GetValue<std::int32_t>(ibProtocol::ibView::ibFormDesigner::Column);
 	ibPropertyObject* const column = columnId != 0 ? FindColumnById(entry, columnId) : nullptr;
 	if (columnId != 0 && column == nullptr)
 		return false;
 
 	ibFormAttributeValue* shown = entry;
 	ibMetaID shownColumn = columnId;
-	switch (static_cast<ibProtocolFormDesignerCommand>(request.GetValue<s32>(ibProtocolName::Command))) {
-	case ibProtocolFormDesignerCommand::Create:
+	switch (static_cast<ibProtocol::ibView::ibFormDesigner::ibCommand>(request.GetValue<std::int32_t>(ibProtocol::ibView::ibFormDesigner::Command))) {
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::Create:
 		// Never empty: a unique name and the default type (String), the type changed in the inspector after — the
 		// desktop's OnAdd, the new one shown.
 		shown = m_valueForm->AttachAttribute(m_valueForm->MakeAttribute(m_valueForm->MakeUniqueAttributeName()));
 		break;
-	case ibProtocolFormDesignerCommand::Paste: {
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::Paste: {
 		// The node the client copied of its form's Attributes — the whole entry, its description and its held value (a
 		// dynamic list's Source, Settings), as a form save writes it; a fresh NON-main entry of it, wired in.
-		const ibDataNode* const copied = request.FindChild(ibProtocolName::Value);
-		if (copied == nullptr)
+		const auto copied = request.FindChild(ibProtocol::ibView::ibFormDesigner::Value);
+		if (!copied)
 			return false;
 		ibDataNode node = *copied;
-		RestoreProperties(node);
 		shown = m_valueForm->PasteAttribute(node);
 		break;
 	}
-	case ibProtocolFormDesignerCommand::Remove:
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::Remove:
 		// The controls bound to it now render broken / empty — drawn again with the form.
 		if (entry == nullptr)
 			return false;
 		m_valueForm->DetachAttribute(entry);
 		shown = nullptr;
 		break;
-	case ibProtocolFormDesignerCommand::SetMain:
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::SetMain:
 		// None given — no main (its controls get their own command bar back); the source moved to the new main, the
 		// controls drawn again with it.
 		m_valueForm->SetMainAttribute(entry);
 		break;
-	case ibProtocolFormDesignerCommand::AddColumn: {
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::AddColumn: {
 		// The desktop's OnAddColumn: a column of the value table the attribute holds — its columns live in the value and
 		// are saved with the attribute; named uniquely among them (Column, Column1, …), String, the type changed in the
 		// inspector after; the new one shown.
@@ -320,8 +319,8 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 		ibValueModel::ibValueModelColumnCollection* const cols = valueTable->GetColumnCollection();
 		if (cols == nullptr)
 			return false;
-		const wxString base = _("Column");
-		wxString name = base;
+		const ibString base = _("Column");
+		ibString name = base;
 		for (unsigned int suffix = 0;;) {
 			bool taken = false;
 			for (unsigned int c = 0; c < cols->GetColumnCount(); c++) {
@@ -330,7 +329,7 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 			}
 			if (!taken)
 				break;
-			name = wxString::Format(wxT("%s%u"), base, ++suffix);
+			name = ibString::Format(ibT("%s%u"), base, ++suffix);
 		}
 		ibValueModel::ibValueModelColumnCollection::ibValueModelColumnInfo* const added =
 			cols->AddColumn(name, ibTypeDescription(g_valueStringCLSID), name);
@@ -339,7 +338,7 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 		shownColumn = static_cast<ibMetaID>(added->GetColumnID());
 		break;
 	}
-	case ibProtocolFormDesignerCommand::Set:
+	case ibProtocol::ibView::ibFormDesigner::ibCommand::Set:
 		if (entry == nullptr)
 			return false;
 		// A COLUMN'S — its own property, as the inspector's door sets it.
@@ -349,9 +348,9 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 			break;
 		}
 		// THE NAME — through the form's rename, as the desktop's tree renamed it (OnEndLabelEdit): unique, and the
-		// module's variable bound under it again. Text — the wire brings it back a field (RestoreProperties).
-		if (request.GetValue<wxString>(ibProtocolName::Name) == ibProtocolName::Name) {
-			if (!m_valueForm->RenameAttribute(entry, request.GetValue<wxString>(ibProtocolName::Value)))
+		// module's variable bound under it again. Text — the wire brings it back a field.
+		if (request.GetValue<ibString>(ibProtocol::ibView::ibFormDesigner::Name) == ibProtocol::ibView::ibFormDesigner::Name) {
+			if (!m_valueForm->RenameAttribute(entry, request.GetValue<ibString>(ibProtocol::ibView::ibFormDesigner::Value)))
 				return false;
 		}
 		else if (!SetProperty(entry, request))
@@ -361,10 +360,12 @@ bool ibFormDesignView::FetchAttribute(const ibDataNode& request, ibDataNode& res
 		return false;
 	}
 
+	// An attribute is what the controls bound to it show — their titles, their columns: the form drawn whole.
+	UpdateControl(m_valueForm);
 	WriteForm(response);
 	if (shown != nullptr)
-		response.SetValue(ibProtocolName::Attribute, static_cast<s32>(shown->GetId()));
+		response.SetValue(ibProtocol::ibView::ibFormDesigner::Attribute, static_cast<std::int32_t>(shown->GetId()));
 	if (shown != nullptr && shownColumn != 0)
-		response.SetValue(ibProtocolName::Column, static_cast<s32>(shownColumn));
+		response.SetValue(ibProtocol::ibView::ibFormDesigner::Column, static_cast<std::int32_t>(shownColumn));
 	return true;
 }

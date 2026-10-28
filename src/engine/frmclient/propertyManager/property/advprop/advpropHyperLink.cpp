@@ -9,10 +9,8 @@
 
 wxPG_IMPLEMENT_PROPERTY_CLASS(ibPGHyperLinkProperty, wxPGProperty, HyperLink)
 
-#include "frmclient/backend/metaData.h"   // the owner's configuration — copied into the command
-
-ibPGHyperLinkProperty::ibPGHyperLinkProperty(ibPropertyObject* ownerProperty, const wxString& label,
-	const wxString& name, const wxVariant& value) : wxPGProperty(label, name), m_ownerProperty(ownerProperty) {
+ibPGHyperLinkProperty::ibPGHyperLinkProperty(ibMetaID id, const ibMetaData& metaData, const wxString& label,
+	const wxString& name, const wxVariant& value) : wxPGProperty(label, name), m_metaId(id), m_metaData(metaData) {
 
 	wxPGProperty::SetFlagRecursively(wxPGFlags::ReadOnly, true);
 	//wxPGProperty::SetFlagRecursively(wxPGFlags::Hidden, true);
@@ -24,9 +22,9 @@ ibPGHyperLinkProperty::ibPGHyperLinkProperty(ibPropertyObject* ownerProperty, co
 	// deferred OpenObjectForm; those fired against a document list that had moved on, and the
 	// designer went down inside ibDocManager::GetDocumentsVector (two dumps, 2026-08-24).
 	//
-	// The value is what it always was — false. The name is put on by the EDITOR at the click
+	// The value is the property's, as it was given. The name is put on by the EDITOR at the click
 	// (propertyEditor.cpp) and taken off by OnSetValue below, which is what makes it an event.
-	wxPGProperty::SetValue(wxVariant(false));
+	wxPGProperty::SetValue(value);
 }
 
 ibPGHyperLinkProperty::~ibPGHyperLinkProperty()
@@ -45,7 +43,6 @@ bool ibPGHyperLinkProperty::StringToValue(wxVariant& variant,
 	return false;
 }
 
-#include "frmclient/backend/propertyManager/property/propertySerializable.h"   // GetObjectId — the module the row names
 #include "frmclient/docView/docView.h"   // docManager — the door that opens a metaobject
 
 void ibPGHyperLinkProperty::OnSetValue()
@@ -58,19 +55,14 @@ void ibPGHyperLinkProperty::OnSetValue()
 		// standing turns one click into every later refresh.
 		m_value.SetName(wxEmptyString);
 
-		// THE LINK CARRIES ITS COMMAND — open the module its row names (Object), in the configuration its owner was
-		// opened from; the server opens it. Taken now, by value: the owner is the inspector's, and goes with the next
-		// selection.
-		const ibPropertyObject* const owner = m_ownerProperty;
-		const ibPropertySerializable* const property = owner != nullptr
-			? dynamic_cast<const ibPropertySerializable*>(owner->GetProperty(GetName())) : nullptr;
-		const ibMetaData* const metaData = owner != nullptr ? owner->GetMetaData() : nullptr;
-		if (property != nullptr && property->GetObjectId() != 0 && metaData != nullptr) {
+		// THE LINK CARRIES ITS OBJECT — the one the server named, in the configuration its owner was opened from; the
+		// server opens it. Taken by value: the cell goes with the next selection.
+		if (m_metaId != 0) {
 
 			// ⚠ DEFERRED, because the click is still being dispatched: opening a document from
 			// inside the grid's own event tears down the cell that is handling it.
 			wxTheApp->CallAfter(
-				[id = property->GetObjectId(), metaData = *metaData]() {
+				[id = m_metaId, metaData = m_metaData]() {
 
 					// ⭐⭐ JUST OPEN IT. Whose it is — the document holding that configuration, or
 					// nobody's when it is the one the main window shows — is worked out INSIDE

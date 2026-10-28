@@ -32,13 +32,31 @@ bool ibBackendMetaDescriptionMemory::WriteNode(ibDataValue& value, const ibMetaD
 		// back, saved, reopened — and gone, with no error anywhere (found with probes over MCP,
 		// 2026-09-16). The rule this filter states — "an id that names no object is not written" —
 		// is about existence, and existence does not depend on depth. The READING side asks the
-		// same way (ibVariantDataOwner), or a binding that was written is unreadable.
+		// same way (ibVariantOwner), or a binding that was written is unreadable.
 		const ibValueMetaObject* named = metaData->FindAnyObjectByFilter(id, /*use_child_filter*/ true);
 		if (named == nullptr || named->IsDeleted())
 			continue;
 		standing.AppendMetaType(id);
 	}
 	return ibMetaDescriptionMemory::WriteNode(value, standing);
+}
+
+//***********************************************************************
+//*                         Type description                            *
+//***********************************************************************
+
+bool ibBackendTypeDescriptionMemory::WriteNode(ibDataValue& value, const ibTypeDescription& typeDesc,
+	const ibMetaData* metaData)
+{
+	if (metaData == nullptr)
+		return ibTypeDescriptionMemory::WriteNode(value, typeDesc);
+
+	ibTypeDescription standing = typeDesc;
+	for (const ibClassID& clsid : typeDesc.GetClsidList()) {
+		if (metaData->GetAvailableCtor(clsid) == nullptr)
+			standing.ClearMetaType(clsid);
+	}
+	return ibTypeDescriptionMemory::WriteNode(value, standing);
 }
 
 //***********************************************************************
@@ -221,7 +239,7 @@ ibTypeDescription& ibBackendTypeConfigFactory::GetTypeValueDesc() const
 	return chart->GetTypesOfCharacteristics();
 }
 
-// The one filter-kind -> default value clsid mapping. Static so both ibVariantDataAttribute::DoSetDefault-
+// The one filter-kind -> default value clsid mapping. Static so both ibVariantAttribute::DoSetDefault-
 // MetaType and ibValueControl::AutoBindNewSource resolve the SAME default type for a given filter kind.
 ibClassID ibBackendTypeConfigFactory::GetDefaultTypeByFilter(ibSelectorDataType filterDataType)
 {
@@ -255,9 +273,9 @@ static void AppendMetaAnyKinds(ibCtorObjectMetaType kind, std::vector<ibClassID>
 // ⭐⭐ WHAT A FIELD OF THIS KIND MAY HOLD — see the header. Built from the registry, so nothing keeps a
 // list of metatypes that would have to learn about each new one.
 //
-// 🛑 THE BODY CAME FROM THE TYPE PICKER (frontend/win/dlgs/typeSelector.cpp), where it was a static
+// 🛑 THE BODY CAME FROM THE OLD DESKTOP'S TYPE PICKER, where it was a static
 // function only that dialog could reach — which is why the MCP door, in this very library, could set a
-// type the designer does not offer. The picker now asks this.
+// type the designer does not offer. The type property now asks this (propertyType.cpp).
 void ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType filterDataType,
 	const ibMetaData* metaData, std::vector<ibClassID>& out)
 {
@@ -359,7 +377,7 @@ void ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType filterDataT
 
 	// …and `AnyRef` last — a reference to anything at all.
 	if (references)
-		if (const ibCtorAbstractType* anyRef = ibValue::GetAvailableCtor(wxT("AnyRef")))
+		if (const ibCtorAbstractType* anyRef = ibValue::GetAvailableCtor(ibT("AnyRef")))
 			out.push_back(anyRef->GetClassType());
 }
 
@@ -376,7 +394,7 @@ const ibFormatString& ibBackendTypeConfigFactory::GetFormatFromColumn(const ibTr
 	// in a row and the first cell of the next column asks a new one. The answer handed back is good until the
 	// next ask on this thread — read it at once.
 	struct ibKeptFormat {
-		wxString m_text;
+		ibString m_text;
 		ibTypeDescription m_type;
 		ibFormatString m_formatString;
 	};
@@ -384,8 +402,8 @@ const ibFormatString& ibBackendTypeConfigFactory::GetFormatFromColumn(const ibTr
 
 	// The text in the language in force, through a scratch: compared with the one kept without allocating
 	// (comparing the translations themselves copied every language of both, every cell).
-	thread_local wxString s_text;
-	const wxString& text = format.GetString(s_text);
+	thread_local ibString s_text;
+	const ibString& text = format.GetString(s_text);
 	if (s_kept.m_text == text && s_kept.m_type == type)
 		return s_kept.m_formatString;
 
@@ -402,7 +420,7 @@ const ibFormatString& ibBackendTypeConfigFactory::GetFormatFromColumn(const ibTr
 #include "backend/query/queryColumn.h"                      // ibBackendSourceColumn — the leaf the dot returns
 
 const ibBackendSourceColumn* ibBackendTypeSourceFactory::WalkSource(
-	const ibSourceDescription& desc, bool* valid, wxString* outText) const
+	const ibSourceDescription& desc, bool* valid, ibString* outText) const
 {
 	if (valid != nullptr) *valid = false;
 	const std::vector<ibSourceHop>& path = desc.GetPath();

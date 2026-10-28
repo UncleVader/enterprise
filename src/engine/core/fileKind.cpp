@@ -1,7 +1,5 @@
 #include "core/fileKind.h"
-
-#include <wx/filename.h>
-#include <wx/intl.h>
+#include "core/fileSystem.h"   // ibPathOf — std::filesystem reads the extension
 
 namespace {
 
@@ -9,7 +7,7 @@ namespace {
 // row here and nothing else — no second list to keep in step.
 struct ibFileKindRow {
 	ibFileKind    kind;
-	const wxChar* extension;
+	const ibChar* extension;
 	// The SOURCE string, marked for extraction and left untranslated here: this
 	// table is static data, built before a locale is loaded. Translating at the
 	// point of use is what lets the same table answer in whatever language the
@@ -18,12 +16,12 @@ struct ibFileKindRow {
 };
 
 const ibFileKindRow s_kinds[] = {
-	{ ibFileKind::Application, wxT("oap"), wxTRANSLATE("Application files") },
-	{ ibFileKind::Tool,        wxT("otl"), wxTRANSLATE("Tool files")        },
-	{ ibFileKind::Report,      wxT("orp"), wxTRANSLATE("Report files")      },
-	{ ibFileKind::Table,       wxT("oxl"), wxTRANSLATE("Table files")       },
-	{ ibFileKind::Log,         wxT("olg"), wxTRANSLATE("Log files")         },
-	{ ibFileKind::Save,        wxT("osv"), wxTRANSLATE("Data files")        },
+	{ ibFileKind::Application, ibT("oap"), ibTRANSLATE("Application files") },
+	{ ibFileKind::Tool,        ibT("otl"), ibTRANSLATE("Tool files")        },
+	{ ibFileKind::Report,      ibT("orp"), ibTRANSLATE("Report files")      },
+	{ ibFileKind::Table,       ibT("oxl"), ibTRANSLATE("Table files")       },
+	{ ibFileKind::Log,         ibT("olg"), ibTRANSLATE("Log files")         },
+	{ ibFileKind::Save,        ibT("osv"), ibTRANSLATE("Data files")        },
 };
 
 const ibFileKindRow* RowFor(ibFileKind kind)
@@ -37,34 +35,34 @@ const ibFileKindRow* RowFor(ibFileKind kind)
 
 } // namespace
 
-wxString ibFileExtension(ibFileKind kind)
+ibString ibFileExtension(ibFileKind kind)
 {
 	const ibFileKindRow* row = RowFor(kind);
-	return row != nullptr ? wxString(row->extension) : wxString();
+	return row != nullptr ? ibString(row->extension) : ibString();
 }
 
-wxString ibFileMask(ibFileKind kind)
+ibString ibFileMask(ibFileKind kind)
 {
 	const ibFileKindRow* row = RowFor(kind);
-	return row != nullptr ? wxString::Format(wxT("*.%s"), row->extension) : wxString();
+	return row != nullptr ? ibString::Format(ibT("*.%s"), row->extension) : ibString();
 }
 
-wxString ibFileFilter(ibFileKind kind)
+ibString ibFileFilter(ibFileKind kind)
 {
 	const ibFileKindRow* row = RowFor(kind);
 	if (row == nullptr)
-		return wxString();
+		return ibString();
 
-	const wxString mask = ibFileMask(kind);
-	const wxString description = wxGetTranslation(wxString::FromUTF8(row->description));
-	return wxString::Format(wxT("%s (%s)|%s"), description, mask, mask);
+	const ibString mask = ibFileMask(kind);
+	const ibString description = ibGetTranslation(ibString::FromUTF8(row->description));
+	return ibString::Format(ibT("%s (%s)|%s"), description, mask, mask);
 }
 
-bool ibFileKindOf(const wxString& path, ibFileKind& kind)
+bool ibFileKindOf(const ibString& path, ibFileKind& kind)
 {
 	// The EXTENSION, not the tail of the name: "report.orp.bak" is a backup of a
 	// report, not a report.
-	const wxString ext = wxFileName(path).GetExt().Lower();
+	const ibString ext = ibString(ibPathOf(path).extension().wstring()).Mid(1).Lower();
 	if (ext.IsEmpty())
 		return false;
 

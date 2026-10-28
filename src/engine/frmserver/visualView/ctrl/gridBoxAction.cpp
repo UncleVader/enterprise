@@ -35,13 +35,13 @@ void ibChooseVariant(ibDataComposer& composer)
 	std::vector<ibMenuItem> menu;
 	for (size_t i = 0; i < variants.size(); ++i) {
 		ibMenuItem item;
-		item.id = static_cast<s32>(i);
+		item.id = static_cast<std::int32_t>(i);
 		// WHAT THE PICKER SHOWS — the synonym in the configuration's language, else the name, else its place
 		// in the list: not a caption anybody wrote, but what an unnamed variant HAS, and a blank line in a menu
 		// cannot be clicked with any confidence.
 		item.caption = ibVariantCaption(variants[i]);
 		if (item.caption.IsEmpty())
-			item.caption = wxString::Format(_("Variant %u"), static_cast<unsigned>(i + 1));
+			item.caption = ibString::Format(_("Variant %u"), static_cast<unsigned>(i + 1));
 		// ⭐ AND THE ONE IN FORCE IS TICKED — by COMPARING the settings against what COMPOSES, because there is
 		// no stored "active variant" to read. Asked of the reader's section instead, nothing would be ticked
 		// until they had picked something, while variant zero plainly composes.
@@ -49,7 +49,7 @@ void ibChooseVariant(ibDataComposer& composer)
 		menu.push_back(item);
 	}
 
-	s32 chosen = 0;
+	std::int32_t chosen = 0;
 	if (!ibRequestMenu(menu, chosen))
 		return;   // closed without choosing — nothing changes
 
@@ -121,7 +121,7 @@ void ibValueGridBox::CallAsAction(const ibActionID& lNumAction, ibBackendValueFo
 		// person it reports to both belong to.
 		ibSession* const session = ibSession::Current();
 		model->SubmitFetchAsync([self, alive, keepModel, session]() {
-			wxString failure;
+			ibString failure;
 			bool cancelled = false;
 			ibSettingsDescription composedWith;
 			try {
@@ -180,10 +180,10 @@ void ibValueGridBox::CallAsAction(const ibActionID& lNumAction, ibBackendValueFo
 						deliver();
 					}
 					catch (const std::exception& err) {
-						ibJournalWarning(wxT("gridbox"), wxT("a composed report was not delivered: %s"), wxString::FromUTF8(err.what()));
+						ibJournalWarning(ibT("gridbox"), ibT("a composed report was not delivered: %s"), ibString::FromUTF8(err.what()));
 					}
 					catch (...) {
-						ibJournalWarning(wxT("gridbox"), wxT("a composed report was not delivered"));
+						ibJournalWarning(ibT("gridbox"), ibT("a composed report was not delivered"));
 					}
 				});
 			else

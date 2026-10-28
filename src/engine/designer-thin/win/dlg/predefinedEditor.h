@@ -28,7 +28,7 @@ class ibDialogPredefinedEditor : public wxDialog {
 
 
 		// and implement some others by forwarding them to our own ones
-		virtual void GetValue(wxVariant& variant,
+		virtual void GetValue(ibVariant& variant,
 			const ibDataViewItem& item, unsigned int col) const override;
 
 		// return true if the given item has a value to display in the given
@@ -41,7 +41,7 @@ class ibDialogPredefinedEditor : public wxDialog {
 			return true;
 		}
 
-		virtual bool SetValue(const wxVariant& variant,
+		virtual bool SetValue(const ibVariant& variant,
 			const ibDataViewItem& item, unsigned int col) override {
 			return false;
 		}
@@ -214,7 +214,7 @@ class ibDialogPredefinedEditor : public wxDialog {
 
 			// --- Description ---
 			wxBoxSizer* sizerDescription = new wxBoxSizer(wxHORIZONTAL);
-			m_staticTextDescription = new wxStaticText(this, wxID_ANY, wxGETTEXT_IN_CONTEXT("item name", "Description"), wxDefaultPosition, wxSize(kLabel, -1));
+			m_staticTextDescription = new wxStaticText(this, wxID_ANY, ibGETTEXT_IN_CONTEXT("item name", "Description"), wxDefaultPosition, wxSize(kLabel, -1));
 			sizerDescription->Add(m_staticTextDescription, 0, wxALL, kPad);
 			m_textDescription = new wxTextCtrl(this, wxID_ANY, strDescription);
 			sizerDescription->Add(m_textDescription, 1, wxALL, kPad);

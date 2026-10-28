@@ -127,6 +127,8 @@ ibGridEditor::ibGridEditor(ibMetaDocument* document,
 
 	ibGrid::SetLabelFont(typeConv::FontToWxFont(ibDefaultSpreadsheetFont()));
 	ibGrid::SetDefaultCellFont(typeConv::FontToWxFont(ibDefaultSpreadsheetFont()));
+	ibGrid::SetDefaultCellBackgroundColour(typeConv::ColourToWxColour(ibDefaultSpreadsheetBackgroundColour()));
+	ibGrid::SetDefaultCellTextColour(typeConv::ColourToWxColour(ibDefaultSpreadsheetTextColour()));
 
 	ibGrid::SetDefaultEditor(new ibGridEditorCellTextEditor);
 
@@ -152,7 +154,7 @@ ibGridEditor::~ibGridEditor()
 
 ibGridEditorPrintout* ibGridEditor::CreatePrintout() const
 {
-	return new ibGridEditorPrintout(m_spreadsheetObject, wxGP_SHOW_NONE, m_document ? m_document->GetTitle() : _("Spreadsheet document"));
+	return new ibGridEditorPrintout(m_spreadsheetObject, wxGP_SHOW_NONE, m_document ? m_document->GetTitle() : wxString(_("Spreadsheet document")));
 }
 
 #pragma region commands
@@ -221,10 +223,10 @@ void ibGridEditor::DockTable()
 
 // See the header. Built on first use and kept: a spinner that is created and destroyed per compose
 // flickers, and the second compose is the common case.
-void ibGridEditor::ShowComposeState(ibProtocolComposeState state)
+void ibGridEditor::ShowComposeState(ibProtocol::ibForm::ibSpreadsheet::ibComposeState state)
 {
 	if (m_composeState == nullptr) {
-		if (state == ibProtocolComposeState::Composed)
+		if (state == ibProtocol::ibForm::ibSpreadsheet::ibComposeState::Composed)
 			return;   // nothing built, nothing to hide
 
 		wxWindow* const panel = new wxPanel(this, wxID_ANY);
@@ -240,14 +242,14 @@ void ibGridEditor::ShowComposeState(ibProtocolComposeState state)
 		m_composeState = panel;
 	}
 
-	if (state == ibProtocolComposeState::Composed) {
+	if (state == ibProtocol::ibForm::ibSpreadsheet::ibComposeState::Composed) {
 		m_composeSpinner->Stop();
 		m_composeState->Hide();
 		return;
 	}
 
 	// WHICH OF THE TWO — the spinner turns while the report fills; an outdated sheet waits for the person.
-	const bool composing = state == ibProtocolComposeState::Composing;
+	const bool composing = state == ibProtocol::ibForm::ibSpreadsheet::ibComposeState::Composing;
 	if (composing)
 		m_composeSpinner->Start();
 	else
@@ -329,11 +331,9 @@ void ibGridEditor::OnMouseLeftDown(ibGridEvent& event)
 	if (m_spreadsheetObject != nullptr && !IsEditable()) {
 		ibString bound;
 		m_spreadsheetObject->GetCellDetailsParameter(event.GetRow(), event.GetCol(), bound);
-		ibAnyValuePtr<ibAnyValue> held;
-		if (!bound.IsEmpty() && m_spreadsheetObject->GetParameter(bound, held)) {
-			ibValue boundValue = ibValue::FromAnyValue(held);
-			boundValue.ShowValue();
-		}
+		ibVariant held;
+		if (!bound.IsEmpty() && m_spreadsheetObject->GetParameter(bound, held))
+			ibValue(held).ShowValue();
 	}
 
 	event.Skip();

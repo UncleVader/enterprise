@@ -42,8 +42,8 @@ class BACKEND_API ibValueMetaObjectSessionParameter : public ibValueMetaObjectAt
 		: ibValueMetaObjectAttribute(valType) {}
 
 	//support icons
-	virtual wxIcon GetIcon() const;
-	static wxIcon GetIconGroup();
+	virtual ibPicture GetIcon() const;
+	static ibPicture GetIconGroup();
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -76,7 +76,7 @@ class BACKEND_API ibValueSessionParameter : public ibValue {
 	// hand back this object rather than what is in it.
 	virtual ibValue GetValue(bool getThis = false) const override;
 	// Through the declaration's AdjustValue, and only while the session module runs.
-	void SetValue(const ibValue& value) override;
+	void SetValue(const ibVariant& value) override;
 
 	// Reads AS ITS VALUE: comparing a parameter with a field must compare what is in
 	// it, not the holder.

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <mutex>
 
+#include "core/utils/base64.h"   // ibBase64 — a master's text in the source, read into its bytes
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Registered as the DLLs load and read from every thread after — the lock is for a DLL loaded later (a file base's
@@ -17,7 +19,7 @@ static std::vector<ibPictureEntry>& Registry()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool ibPictureRegistry::RegisterPicture(const wxString& name, ibPictureID id, const ibPicture& picture)
+bool ibPictureRegistry::RegisterPicture(const ibString& name, ibPictureID id, const ibPicture& picture)
 {
 	const std::lock_guard<std::mutex> lock(s_registryLock);
 	std::vector<ibPictureEntry>& registry = Registry();
@@ -50,9 +52,10 @@ std::vector<ibPictureEntry> ibPictureRegistry::GetArrayPicture()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool RegisterPicture(const wxString name, const ibPictureID& id, const wxString& base64)
+bool RegisterPicture(const ibString name, const ibPictureID& id, const ibString& base64)
 {
-	if (ibPictureRegistry::RegisterPicture(name, id, ibPicture(base64)))
+	ibMemoryBuffer png;
+	if (ibBase64::Read(base64, png) && ibPictureRegistry::RegisterPicture(name, id, ibPicture(png)))
 		return true;
 
 	wxASSERT_MSG(false, "Picture is register");

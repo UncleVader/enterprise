@@ -67,7 +67,7 @@ public:
 	}
 	ibOutputParameter ParameterAt(unsigned row) const { return ibOutputParameters(m_editor->m_scope)[row]; }
 
-	void GetValueByRow(wxVariant& variant, unsigned row, unsigned col) const override {
+	void GetValueByRow(ibVariant& variant, unsigned row, unsigned col) const override {
 		if (!IsRow(row))
 			return;
 		const ibOutputParameter parameter = ParameterAt(row);
@@ -79,16 +79,16 @@ public:
 			variant = Presentation(*m_editor->m_parameters, parameter);
 	}
 
-	bool SetValueByRow(const wxVariant& variant, unsigned row, unsigned col) override {
+	bool SetValueByRow(const ibVariant& variant, unsigned row, unsigned col) override {
 		if (!IsRow(row) || m_editor->m_readOnly)
 			return false;
 		ibOutputParametersDescription& parameters = *m_editor->m_parameters;
 		const ibOutputParameter parameter = ParameterAt(row);
 		const ibValue kept = Kept(parameters, parameter);
 		if (col == kColUse) {
-			if (variant.GetBool() == IsTicked(parameters, parameter))
+			if (variant.GetBoolean() == IsTicked(parameters, parameter))
 				return false;
-			parameters.Say(parameter, variant.GetBool(), ibStoreValue(kept));
+			parameters.Say(parameter, variant.GetBoolean(), ibStoreValue(kept));
 			m_editor->Changed();
 			return true;
 		}
@@ -108,7 +108,7 @@ public:
 				translated.RemoveTranslate(ibBackendLocalization::GetUserLanguage());
 			else
 				translated.SetTranslate(text);
-			const wxString raw = translated.GetRawText();
+			const ibString raw = translated.GetRawText();
 			SayValue(parameters, parameter, raw.IsEmpty() ? ibValue() : ibValue(raw));
 			m_editor->Changed();
 			return true;
@@ -123,7 +123,7 @@ public:
 		if (parameter == ibOutputParameter::Theme) {
 			for (const ibCompositionTheme* theme : ibCompositionThemes())
 				if (text.IsSameAs(theme->Caption(), false)) {
-					SayValue(parameters, parameter, ibValue(wxString(theme->m_id)));
+					SayValue(parameters, parameter, ibValue(ibString(theme->m_id)));
 					m_editor->Changed();
 					return true;
 				}
@@ -232,7 +232,7 @@ bool ibOutputParametersEditor::EditValue(wxString& text)
 		const ibTranslateString after = dialog.GetTranslate();
 		if (after == before)
 			return false;
-		const wxString raw = after.GetRawText();
+		const ibString raw = after.GetRawText();
 		SayValue(*m_parameters, parameter, raw.IsEmpty() ? ibValue() : ibValue(raw));
 		text = after.GetString();
 		Changed();
@@ -247,7 +247,7 @@ bool ibOutputParametersEditor::EditValue(wxString& text)
 	if (parameter == ibOutputParameter::Theme) {
 		for (const ibCompositionTheme* theme : ibCompositionThemes()) {
 			labels.Add(theme->Caption());
-			offered.push_back(ibValue(wxString(theme->m_id)));
+			offered.push_back(ibValue(ibString(theme->m_id)));
 		}
 	}
 	else if (ibOutputParameterShows(parameter)) {

@@ -6,37 +6,23 @@
 #include "propertyObject.h"
 #include "core/serialize/dataBuilder.h"   // ibDataValue — property node serialization
 #include "core/typeName.h"                // ibTypeInfoName — a property's class, named as the server names one
-#include "frmclient/backend/metaData.h"                                        // GetAnyArrayObject — the candidates
-#include "frmclient/backend/metaCollection/metaObject.h"                       // …each one's id, name, synonym
-#include "frmclient/backend/propertyManager/property/propertySerializable.h"          // a row's property
-#include "frmclient/backend/propertyManager/property/variant/variantOwner.h"   // the variant a relationship holds
 #include "frmclient/backend/serialize/dataProtocol.h"                         // ibReadProtocolNode — the answer's rows
 #include "frmclient/win/picture.h"                                            // ibProtocolPictureReceive — the choices' pictures
-#include "protocol/protocol.h"                                                // ibProtocolName — the rows' keys
+#include "protocol/protocol.h"                                                // ibProtocol::ibSchema::ibProperties — the rows' keys
 
 #define propBlock 0x00023456
 #define eventBlock 0x00023457
 
-// The pictures the rows name — a choice's, a type's — by their ids, at any depth.
-static void PicturesOf(const ibDataNode& rows, std::vector<wxString>& pictures)
-{
-	for (const ibDataNode& row : rows.Children()) {
-		if (const ibDataValue* const picture = row.FindField(ibProtocolName::Picture))
-			pictures.push_back(picture->AsString());
-		PicturesOf(row, pictures);
-	}
-}
-
 namespace ibPropertyGate {
 
 // Said once, so neither verb below repeats the null check at every place it has something to say.
-static void Refuse(wxString* refusal, const wxString& text)
+static void Refuse(ibString* refusal, const ibString& text)
 {
 	if (refusal != nullptr)
 		*refusal = text;
 }
 
-bool SetValue(ibPropertyObject* asked, ibProperty* property, const wxVariant& newValue, wxString* refusal)
+bool SetValue(ibPropertyObject* asked, ibProperty* property, const wxVariant& newValue, ibString* refusal)
 {
 	if (property == nullptr)
 		return false;
@@ -47,7 +33,7 @@ bool SetValue(ibPropertyObject* asked, ibProperty* property, const wxVariant& ne
 		asked = property->GetPropertyObject();
 
 	if (asked == nullptr) {
-		Refuse(refusal, wxString::Format(
+		Refuse(refusal, ibString::Format(
 			_("'%s' belongs to nothing that could accept a change."), property->GetName()));
 		return false;
 	}
@@ -57,7 +43,7 @@ bool SetValue(ibPropertyObject* asked, ibProperty* property, const wxVariant& ne
 	// A VETO IS AN ANSWER, not a failure — an object refusing a value knows something the caller
 	// does not, and it is the same refusal a person meets in the inspector.
 	if (!asked->OnPropertyChanging(property, newValue)) {
-		Refuse(refusal, wxString::Format(
+		Refuse(refusal, ibString::Format(
 			_("'%s' would not accept that value - the object refused the change."),
 			property->GetName()));
 		return false;
@@ -77,7 +63,7 @@ bool SetValue(ibPropertyObject* asked, ibProperty* property, const wxVariant& ne
 // shape — and what it read is put back as it was, to be placed through the four steps of `door`: the owner asked first,
 // as with a value from the grid.
 template <typename typeProperty, typename typeDoor, typename typeTelling>
-static bool SetNodeValue(ibPropertyObject* asked, typeProperty* property, const ibDataValue& newValue, wxString* refusal,
+static bool SetNodeValue(ibPropertyObject* asked, typeProperty* property, const ibDataValue& newValue, ibString* refusal,
 	typeDoor door, typeTelling telling)
 {
 	if (property == nullptr)
@@ -85,7 +71,7 @@ static bool SetNodeValue(ibPropertyObject* asked, typeProperty* property, const 
 
 	const wxVariant oldValue = property->GetValue();
 	if (!property->SetNodeValue(newValue)) {
-		Refuse(refusal, wxString::Format(_("'%s' would not take that value."), property->GetName()));
+		Refuse(refusal, ibString::Format(_("'%s' would not take that value."), property->GetName()));
 		return false;
 	}
 	const wxVariant readValue = property->GetValue();
@@ -105,16 +91,16 @@ static bool SetNodeValue(ibPropertyObject* asked, typeProperty* property, const 
 	return true;
 }
 
-bool SetValue(ibPropertyObject* asked, ibProperty* property, const ibDataValue& newValue, wxString* refusal)
+bool SetValue(ibPropertyObject* asked, ibProperty* property, const ibDataValue& newValue, ibString* refusal)
 {
 	return SetNodeValue(asked, property, newValue, refusal,
-		[](ibPropertyObject* asked, ibProperty* property, const wxVariant& value, wxString* refusal) {
+		[](ibPropertyObject* asked, ibProperty* property, const wxVariant& value, ibString* refusal) {
 			return SetValue(asked, property, value, refusal); },
 		[](ibPropertyObject* asked, ibProperty* property, const wxVariant& oldValue, const wxVariant& newValue) {
 			asked->OnPropertyChanged(property, oldValue, newValue); });
 }
 
-bool SetEvent(ibPropertyObject* asked, ibEvent* event, const wxVariant& newValue, wxString* refusal)
+bool SetEvent(ibPropertyObject* asked, ibEvent* event, const wxVariant& newValue, ibString* refusal)
 {
 	if (event == nullptr)
 		return false;
@@ -123,7 +109,7 @@ bool SetEvent(ibPropertyObject* asked, ibEvent* event, const wxVariant& newValue
 		asked = event->GetPropertyObject();
 
 	if (asked == nullptr) {
-		Refuse(refusal, wxString::Format(
+		Refuse(refusal, ibString::Format(
 			_("'%s' belongs to nothing that could accept a handler."), event->GetName()));
 		return false;
 	}
@@ -131,7 +117,7 @@ bool SetEvent(ibPropertyObject* asked, ibEvent* event, const wxVariant& newValue
 	const wxVariant oldValue = event->GetValue();
 
 	if (!asked->OnEventChanging(event, newValue)) {
-		Refuse(refusal, wxString::Format(
+		Refuse(refusal, ibString::Format(
 			_("'%s' would not accept that handler - the object refused the change."),
 			event->GetName()));
 		return false;
@@ -146,55 +132,16 @@ bool SetEvent(ibPropertyObject* asked, ibEvent* event, const wxVariant& newValue
 	return true;
 }
 
-bool SetEvent(ibPropertyObject* asked, ibEvent* event, const ibDataValue& newValue, wxString* refusal)
+bool SetEvent(ibPropertyObject* asked, ibEvent* event, const ibDataValue& newValue, ibString* refusal)
 {
 	return SetNodeValue(asked, event, newValue, refusal,
-		[](ibPropertyObject* asked, ibEvent* event, const wxVariant& value, wxString* refusal) {
+		[](ibPropertyObject* asked, ibEvent* event, const wxVariant& value, ibString* refusal) {
 			return SetEvent(asked, event, value, refusal); },
 		[](ibPropertyObject* asked, ibEvent* event, const wxVariant& oldValue, const wxVariant& newValue) {
 			asked->OnEventChanged(event, oldValue, newValue); });
 }
 
 } // namespace ibPropertyGate
-
-ibPropertyChoiceMode ibBackendProperty::CreateValueList(ibPropertyChoiceList& list,
-	ibPropertyChoiceMode mode, const std::initializer_list<ibClassID> classes,
-	bool (*accept)(const ibPropertyObject*))
-{
-	// ⚠ THE CONST OWNER, deliberately. GetMetaData has an overload pair and the non-const one is a
-	// wxFAIL unless a subclass overrode it — reading through the const handle is both the working
-	// road and the honest one: listing what a property MAY hold changes nothing.
-	//
-	// No dynamic_cast: the owner answers GetMetaData virtually. It used to be cast to
-	// ibValueMetaObjectGenericData first, which is the narrower type nobody here needed.
-	const ibPropertyObject* owner = m_owner;
-	const ibMetaData* metaData = owner != nullptr ? owner->GetMetaData() : nullptr;
-	if (metaData == nullptr)
-		return ibPropertyChoiceMode::None;
-
-	for (const ibValueMetaObject* object : metaData->GetAnyArrayObject(classes)) {
-
-		if (accept != nullptr && !accept(object))
-			continue;
-
-		// ⭐ THE VARIANT IS BUILT WHILE LISTING, so a caller that picked an item has nothing left to
-		// work out: it places this. One metaID per choice, because one choice is one relationship —
-		// a Mult property composes the set out of the ones that were picked.
-		// ⭐ THE NUMBER SAYS WHICH, THE VARIANT IS WHAT TO PLACE. The metaID identifies the candidate
-		// — a wxPGChoices entry carries it and a caller points at it by that. The value is the
-		// METADESCRIPTION, built here while listing, so whoever picked this item places it as it
-		// stands and nothing downstream has to turn a number back into a relationship.
-		list.Add((long)object->GetMetaID(), object->GetName(), object->GetSynonym(),
-			wxVariant(new ibVariantDataOwner(owner, ibMetaDescription(object->GetMetaID()))),
-			object->GetIcon());
-	}
-
-	// THE MODE EVEN WHEN THE LIST CAME OUT EMPTY. "There is nothing of that kind in this
-	// configuration yet" is a real answer — it is what a caller sees before the first chart of
-	// accounts exists — and it is NOT "this property is not chosen from a list". Collapsing the two
-	// would make an empty configuration look like an unsupported property.
-	return mode;
-}
 
 ////////////////////////////////////////////////////////////////////////
 
@@ -206,7 +153,7 @@ bool ibBackendProperty::IsEditable() const
 	return m_owner ? m_owner->IsEditable() : false;
 }
 
-wxString ibBackendProperty::GetType() const
+ibString ibBackendProperty::GetType() const
 {
 	return ibTypeInfoName(typeid(*this));
 }
@@ -285,6 +232,31 @@ ibDataValue ibBackendProperty::GetNodeValue() const
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// property -> protocol value
+
+bool ibBackendProperty::GetProtocolValue(ibDataNode& row) const
+{
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Name, GetName());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Title, GetLabel());
+	if (!GetHelp().IsEmpty())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::Help, GetHelp());
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Class, GetType());
+
+	// …as it is stored: a scalar a field, a composite a node of its own.
+	const ibDataValue value = GetNodeValue();
+	if (value.Kind() == ibDataKind::Child)
+		row.SetProperty(ibProtocol::ibSchema::ibProperties::Value, value);
+	else
+		row.AddField(ibProtocol::ibSchema::ibProperties::Value, value);
+	// …and what it reads as.
+	row.SetValue(ibProtocol::ibSchema::ibProperties::Presentation, ibString(GetValue().MakeString()));
+
+	if (!IsEditable())
+		row.SetValue(ibProtocol::ibSchema::ibProperties::ReadOnly, true);
+	return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 #include "frmclient/backend/backend_mainFrame.h"
 #include "frmclient/backend/appData.h"
@@ -345,18 +317,18 @@ ibPropertyObject::~ibPropertyObject()
 		wxDELETE(event.second);
 }
 
-wxString ibPropertyObject::GetIndentString(int indent) const
+ibString ibPropertyObject::GetIndentString(int indent) const
 {
-	wxString s;
-	for (int i = 0; i < indent; i++) s += wxT(" ");
+	ibString s;
+	for (int i = 0; i < indent; i++) s += ibT(" ");
 	return s;
 }
 
-ibProperty* ibPropertyObject::GetProperty(const wxString& nameParam) const
+ibProperty* ibPropertyObject::GetProperty(const ibString& nameParam) const
 {
-	std::map<wxString, ibProperty*>::const_iterator it = std::find_if(m_properties.begin(), m_properties.end(),
-		[nameParam](const std::pair<wxString, ibProperty*>& pair) {
-			return stringUtils::CompareString(nameParam, pair.first);
+	std::map<ibString, ibProperty*>::const_iterator it = std::find_if(m_properties.begin(), m_properties.end(),
+		[nameParam](const std::pair<ibString, ibProperty*>& pair) {
+			return stringUtils::IsSameAs(nameParam, pair.first);
 		}
 	);
 
@@ -377,7 +349,7 @@ ibProperty* ibPropertyObject::GetProperty(unsigned int idx) const
 	assert(idx < m_properties.size());
 
 	if (idx < m_properties.size()) {
-		std::map<wxString, ibProperty*>::const_iterator iterator = m_properties.begin();
+		std::map<ibString, ibProperty*>::const_iterator iterator = m_properties.begin();
 		std::advance(iterator, idx);
 		return iterator->second;
 	}
@@ -385,11 +357,11 @@ ibProperty* ibPropertyObject::GetProperty(unsigned int idx) const
 	return nullptr;
 }
 
-ibEvent* ibPropertyObject::GetEvent(const wxString& nameParam) const
+ibEvent* ibPropertyObject::GetEvent(const ibString& nameParam) const
 {
-	std::map<wxString, ibEvent*>::const_iterator it = std::find_if(m_events.begin(), m_events.end(),
-		[nameParam](const std::pair<wxString, ibEvent*>& pair) {
-			return stringUtils::CompareString(nameParam, pair.first);
+	std::map<ibString, ibEvent*>::const_iterator it = std::find_if(m_events.begin(), m_events.end(),
+		[nameParam](const std::pair<ibString, ibEvent*>& pair) {
+			return stringUtils::IsSameAs(nameParam, pair.first);
 		}
 	);
 
@@ -404,7 +376,7 @@ ibEvent* ibPropertyObject::GetEvent(unsigned int idx) const
 {
 	assert(idx < m_events.size());
 
-	std::map<wxString, ibEvent*>::const_iterator it = m_events.begin();
+	std::map<ibString, ibEvent*>::const_iterator it = m_events.begin();
 	unsigned int i = 0;
 	while (i < idx && it != m_events.end()) {
 		i++; it++;
@@ -418,12 +390,12 @@ ibEvent* ibPropertyObject::GetEvent(unsigned int idx) const
 
 void ibPropertyObject::AddProperty(ibProperty* prop)
 {
-	m_properties.emplace(std::map<wxString, ibProperty*>::value_type(prop->GetName(), prop));
+	m_properties.emplace(std::map<ibString, ibProperty*>::value_type(prop->GetName(), prop));
 }
 
 void ibPropertyObject::AddEvent(ibEvent* event)
 {
-	m_events.emplace(std::map<wxString, ibEvent*>::value_type(event->GetName(), event));
+	m_events.emplace(std::map<ibString, ibEvent*>::value_type(event->GetName(), event));
 }
 
 void ibPropertyObject::AddNotifier(ibPropertyObjectNotifier* notifier)
@@ -432,6 +404,8 @@ void ibPropertyObject::AddNotifier(ibPropertyObjectNotifier* notifier)
 		return;
 	m_notifiers.push_back(notifier);
 	notifier->SetOwner(this);
+	// …and what it shows, fetched — what the server says of it (a metaobject's rows).
+	Fetch();
 }
 
 void ibPropertyObject::RemoveNotifier(ibPropertyObjectNotifier* notifier)
@@ -451,13 +425,25 @@ bool ibPropertyObject::HideProperty(const ibProperty* property, bool hide)
 		return false;
 	bool result = false;
 	for (ibPropertyObjectNotifier* notifier : m_notifiers)
-		if (notifier->PropertyHidden(property, hide))
+		if (notifier->SetState(property, hide))
 			result = true;
 	// ⭐ …AND UP THE ATTACH CHAIN. An attached object's properties are DRAWN by its owner's
 	// inspector, and the notifier lives on the owner — so an attached object hiding one of its own
 	// properties reached nobody at all. (That is why a composition kept showing Source and Query
 	// text after being told to hide them: it was talking to an empty notifier list.)
 	if (m_attachOwner != nullptr && m_attachOwner != this && m_attachOwner->HideProperty(property, hide))
+		result = true;
+	return result;
+}
+
+bool ibPropertyObject::Cleared()
+{
+	bool result = false;
+	for (ibPropertyObjectNotifier* notifier : m_notifiers)
+		if (notifier->Cleared())
+			result = true;
+	// …and up the attach chain, as a hidden one: an attached object is drawn by its owner's inspector.
+	if (m_attachOwner != nullptr && m_attachOwner != this && m_attachOwner->Cleared())
 		result = true;
 	return result;
 }
@@ -503,30 +489,28 @@ bool ibPropertyObject::Receive(const ibProtocolNode& answer)
 	ibDataNode rows;
 	ibReadProtocolNode(answer, rows);
 	// Every choice's and type's picture asked for at once — not a call per choice read.
-	std::vector<wxString> pictures;
-	PicturesOf(rows, pictures);
-	ibProtocolPictureReceive(pictures);
+	ibProtocolPictureReceive(answer);
 	Receive(m_category, rows);
 	return true;
 }
 
-void ibPropertyObject::Receive(ibPropertyCategory* category, const ibDataNode& rows)
+void ibPropertyObject::Receive(ibPropertyCategory* category, ibDataNode& rows)
 {
-	for (const ibDataNode& row : rows.Children()) {
+	for (ibDataNode row : rows.Children()) {   // the row's bytes where they lie, held
 		// A CATEGORY — a row with no class, its rows within.
-		if (row.FindField(ibProtocolName::Class) == nullptr)
-			Receive(CreatePropertyCategory(category, row.GetValue<wxString>(ibProtocolName::Name),
-				row.GetValue<wxString>(ibProtocolName::Title)), row);
+		if (!row.FindField(ibProtocol::ibSchema::ibProperties::Class))
+			Receive(CreatePropertyCategory(category, row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Name),
+				row.GetValue<ibString>(ibProtocol::ibSchema::ibProperties::Title)), row);
 		else
-			CreateProperty<ibPropertySerializable>(category, row);
+			CreateProperty(category, std::move(row));
 	}
 }
 
-unsigned int ibPropertyObject::GetPropertyIndex(const wxString& nameParam) const {
+unsigned int ibPropertyObject::GetPropertyIndex(const ibString& nameParam) const {
 	return std::distance(m_properties.begin(),
 		std::find_if(m_properties.begin(), m_properties.end(),
-			[nameParam](const  std::pair<wxString, ibProperty*>& pair) {
-				return stringUtils::CompareString(nameParam, pair.first);
+			[nameParam](const  std::pair<ibString, ibProperty*>& pair) {
+				return stringUtils::IsSameAs(nameParam, pair.first);
 			}
 		)
 	);
@@ -541,7 +525,7 @@ bool ibPropertyObject::CopyProperty(ibWriterMemory& writer) const
 {
 	ibDataBuilder builder;
 
-	ibDataNode& propsNode = builder.Root().Child(wxT("props"));
+	ibDataNode& propsNode = builder.Root().Child(ibT("props"));
 	for (unsigned int idx = 0; idx < GetPropertyCount(); idx++) {
 		ibProperty* prop = GetProperty(idx);
 		wxASSERT(prop);
@@ -551,7 +535,7 @@ bool ibPropertyObject::CopyProperty(ibWriterMemory& writer) const
 		propsNode.SetProperty(prop->GetName(), value);
 	}
 
-	ibDataNode& eventsNode = builder.Root().Child(wxT("events"));
+	ibDataNode& eventsNode = builder.Root().Child(ibT("events"));
 	for (unsigned int idx = 0; idx < GetEventCount(); idx++) {
 		ibEvent* event = GetEvent(idx);
 		wxASSERT(event);
@@ -576,23 +560,23 @@ bool ibPropertyObject::PasteProperty(ibReaderMemory& reader)
 	// being handed over as an empty ibDataValue — a property type that (rightly) refuses an empty
 	// value made the whole paste fail, so pasting a Document onto a Constant died instead of
 	// copying the properties the two do share. "Nothing arrived" is not "an empty value arrived".
-	if (const ibDataNode* propsNode = builder.Root().FindChild(wxT("props"))) {
+	if (auto propsNode = builder.Root().FindChild(ibT("props"))) {
 		for (unsigned int idx = 0; idx < GetPropertyCount(); idx++) {
 			ibProperty* prop = GetProperty(idx);
 			wxASSERT(prop);
-			const ibDataValue* incoming = propsNode->FindProperty(prop->GetName());
-			if (incoming == nullptr)
+			auto incoming = propsNode->FindProperty(prop->GetName());
+			if (!incoming)
 				continue;
 			if (!prop->PasteNodeValue(*incoming))
 				return false;
 		}
 	}
-	if (const ibDataNode* eventsNode = builder.Root().FindChild(wxT("events"))) {
+	if (auto eventsNode = builder.Root().FindChild(ibT("events"))) {
 		for (unsigned int idx = 0; idx < GetEventCount(); idx++) {
 			ibEvent* event = GetEvent(idx);
 			wxASSERT(event);
-			const ibDataValue* incoming = eventsNode->FindProperty(event->GetName());
-			if (incoming == nullptr)
+			auto incoming = eventsNode->FindProperty(event->GetName());
+			if (!incoming)
 				continue;
 			if (!event->PasteNodeValue(*incoming))
 				return false;
