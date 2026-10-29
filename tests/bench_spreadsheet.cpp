@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
+#include <functional>
+#include <string>
 #include "core/spreadsheet/spreadsheetObject.h"
+#include "core/xml/xmlDocument.h"
 #include "backend/sheetFormat/sheetFormat.h"
 
 #include <wx/filename.h>
@@ -37,8 +41,8 @@ TEST(SpreadsheetDocumentBench, DISABLED_FillCost)
 //   oes_tests --gtest_also_run_disabled_tests --gtest_filter=*SheetFormatBench*
 //
 // WHY IT EXISTS. A person opened a real workbook of tens of thousands of rows and
-// it read slower than it should; the profiler pointed at wxXmlDocument::Load, i.e.
-// at building a DOM for the whole sheet. This bench is the number behind that
+// it read slower than it should; the profiler pointed at wxXmlDocument::Load (the
+// reader then), i.e. at building a DOM for the whole sheet. This bench is the number behind that
 // sentence: how long each format takes to write and to read the same sheet, at
 // sizes that grow, so the SHAPE of the curve is visible and not just one figure.
 //
@@ -102,5 +106,80 @@ TEST(SheetFormatBench, DISABLED_ReadWrite)
 
 			wxRemoveFile(file);
 		}
+	}
+}
+
+// =============================================================================
+// ⚠ MEASUREMENT of the XML PARSER on a sheet's part, not a check — DISABLED by default. Run with:
+//   oes_tests --gtest_also_run_disabled_tests --gtest_filter=*SheetFormatBench*
+//
+// WHAT IT SPLITS. The read above is the zip, the parser and the cells together; this is the parser alone, on the
+// part that holds the cells, two ways at a time: names resolved (kNamespaces — a URI made for every element and
+// attribute) or as written (kAsWritten — the tree's), and a part handed over as its bytes or made a string first.
+// =============================================================================
+TEST(SheetFormatBench, DISABLED_ParseSheetPart)
+{
+	printf("%-30s %8s %10s %12s\n", "parse", "rows", "ms", "bytes");
+
+	for (int rows : { 5000, 50000 }) {
+		// A sheet's part as a workbook writer makes it: the namespaces on the root, rows of ten cells.
+		std::string part = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+			"<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\""
+			" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheetData>";
+		for (int row = 1; row <= rows; row++) {
+			const std::string r = std::to_string(row);
+			part += "<row r=\"" + r + "\">";
+			for (int col = 0; col < 10; col++) {
+				const std::string ref = std::string(1, char('A' + col)) + r;
+				if (col == 0)
+					part += "<c r=\"" + ref + "\" t=\"s\"><v>" + r + "</v></c>";
+				else
+					part += "<c r=\"" + ref + "\"><v>" + std::to_string(row * col) + "</v></c>";
+			}
+			part += "</row>";
+		}
+		part += "</sheetData></worksheet>";
+
+		// The best of three: what the machine let through least disturbed.
+		const auto measure = [&](const char* what, const std::function<void()>& parse) {
+			long long best = -1;
+			for (int run = 0; run < 3; run++) {
+				const auto t0 = std::chrono::steady_clock::now();
+				parse();
+				const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - t0).count();
+				if (best < 0 || ms < best)
+					best = ms;
+			}
+			printf("%-30s %8d %10lld %12zu\n", what, rows, best, part.size());
+		};
+
+		// The parser alone, its queue let go of as it fills.
+		const auto drain = [&](ibXmlParser::ibNames names) {
+			ibXmlParser parser(ibT("XML"), ibXmlParser::kBytes, names);
+			size_t at = 0;
+			do {
+				const size_t chunk = std::min(ibXmlParser::kChunk, part.size() - at);
+				parser.Feed(part.data() + at, chunk, at + chunk == part.size(), ibString());
+				at += chunk;
+				parser.Queue().clear();
+				while (parser.Paused()) {
+					parser.Resume(ibString());
+					parser.Queue().clear();
+				}
+			} while (at < part.size());
+		};
+		measure("parser, names resolved", [&] { drain(ibXmlParser::kNamespaces); });
+		measure("parser, names as written", [&] { drain(ibXmlParser::kAsWritten); });
+
+		// The tree: from the part's bytes, and from a string made of them first (decoded whole, encoded back).
+		measure("tree, from the bytes", [&] {
+			ibXmlDocument xml;
+			xml.Load(part.data(), part.size());
+		});
+		measure("tree, from a string of them", [&] {
+			ibXmlDocument xml;
+			xml.Load(ibString::FromUTF8(part.data(), part.size()));
+		});
 	}
 }

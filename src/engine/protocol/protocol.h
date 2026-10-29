@@ -1859,6 +1859,7 @@ namespace ibProtocol {
 			inline constexpr const char* Count            = "Count";
 			inline constexpr const char* Before           = "Before";      // (protocol 4) a reset fetch's: the rows wanted ahead
 			                                                               // of the page — answered with how many stand first
+			inline constexpr const char* Begin            = "Begin";       // a reset's answer: no row stands before its rows
 			inline constexpr const char* End              = "End";
 			// …a row:
 			inline constexpr const char* Container        = "Container";

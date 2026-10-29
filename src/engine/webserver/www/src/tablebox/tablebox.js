@@ -5,8 +5,10 @@
 // that do not fit into the row they belong to. The thin client's table (frmclient/visualView/ctrl/tableBox.cpp) is
 // the one this follows.
 //
-// The first page comes in the State (Rows, protocol 5) or is fetched from the top; the next ones are fetched as the
-// person scrolls — after the last row held (Direction 1) and before the first (Direction -1), keyset, never an offset.
+// The first page comes in the State (Rows, protocol 5) or is fetched — a reset with no anchor, which the server reads
+// from the top, or around the row it stands on with as many rows ahead as the page, the page saying how many came
+// (Before); the next ones are fetched as the person scrolls — after the last row held (Direction 1) and before the
+// first (Direction -1), keyset, never an offset.
 // A new Version is the rows read anew IN PLACE: around the row at the top of the window, which stays where it stood —
 // from the State's page when it holds that row, else fetched. A read is one of a generation: a page asked before the
 // rows were read anew is dropped when it comes.
@@ -269,7 +271,7 @@ class Tablebox extends Control {
 	 */
 	edge(direction) {
 		const holder = this.holder();
-		if (holder === null)
+		if (holder === null || holder.clientHeight === 0)
 			return;
 		const margin = slack * this.rowHeight();
 		if (direction > 0 && holder.scrollHeight - holder.scrollTop - holder.clientHeight < margin)
@@ -278,11 +280,22 @@ class Tablebox extends Control {
 			this.back();
 	}
 
-	/** Rows read on while those held do not reach `slack` past the window — a short first page, a window grown. */
+	/**
+	 * Rows read while those held do not reach `slack` past the window — a short first page, a window grown: on, and back
+	 * once there is nothing after them (a window read around the last row would otherwise hold that row alone, with no
+	 * scroll to reach the rows before it). Not while the table is not on show (a notebook page behind another): with no
+	 * height no number of rows would fill it, and the whole list was read; it is read when shown (the resize).
+	 */
 	fill() {
 		const holder = this.holder();
-		if (holder !== null && holder.scrollHeight - holder.clientHeight < slack * this.rowHeight())
+		if (holder === null || holder.clientHeight === 0)
+			return;
+		if (holder.scrollHeight - holder.clientHeight >= slack * this.rowHeight())
+			return;
+		if (!this.end)
 			this.more();
+		else if (!this.begin)
+			this.back();
 	}
 
 	/** The rows the window shows (the thin client's GetCountPerPage) — the size of a page. */
@@ -562,8 +575,12 @@ class Tablebox extends Control {
 	}
 
 	/**
-	 * The rows of the table's first Version: the page the State carries, or the first one fetched from the top — and
-	 * the row the server stands on, read around when the page does not hold it (a choice form opened on its value).
+	 * The rows of the table's first Version: the page the State carries, or the first one fetched — and the row the
+	 * server stands on, read around when the page does not hold it (a choice form opened on its value).
+	 * A reset with no anchor is the server's to place (frmserver tableBox.cpp, Fetch): from the top, or around the row it
+	 * stands on with rows ahead of it — the page says whether it is the top (Begin). Taken for the top whatever it said,
+	 * a table standing on its last row came back as that one row with no way to the rows above it (a resumed session on
+	 * the gallery's grown table, 2026-10-28).
 	 * @param {ProtocolNode | undefined} rows
 	 * @param {number} current
 	 */
@@ -574,7 +591,7 @@ class Tablebox extends Control {
 			return;
 		const read = readPage(page);
 		await this.table.setData(read.records);
-		this.take(read, read.anchor !== 0 ? read.count : 0);
+		this.take(read);
 		const at = read.current || current;
 		if (at !== 0 && !this.select(at))
 			this.around(at);
@@ -582,7 +599,11 @@ class Tablebox extends Control {
 		this.fill();
 	}
 
-	/** The list read again from its first row, the window at its top — the thumb let go at the very top. */
+	/**
+	 * The list read again, the window at its top — the thumb let go at the very top. From the first row when the server
+	 * reads from the top; else around the row it stands on, the rows ahead of it with it (see `load`), and the page is
+	 * not taken for the top when it does not say so: the rows above stay to be read.
+	 */
 	async fromTop() {
 		if (this.table === null)
 			return;
@@ -592,7 +613,7 @@ class Tablebox extends Control {
 			return;
 		const read = readPage(page);
 		await this.table.replaceData(read.records);
-		this.take(read, 0);
+		this.take(read);
 		this.scrollTo(0);
 		this.restore(read);
 		this.updatePager();
@@ -612,7 +633,6 @@ class Tablebox extends Control {
 		const top = visible[0]?.getData().handle ?? 0;
 		const place = this.placeOf(top);
 		const held = rows !== undefined && (top === 0 || (rows.NodeChildren ?? []).some((row) => row.NodeId === top));
-		const ahead = held ? (rows?.Anchor ? rows.Count ?? 0 : 0) : top !== 0 ? slack : 0;
 		const page = held ? rows : await this.fetch(top !== 0
 			? { Direction: reset, Anchor: top, Count: this.perPage() + slack, Before: slack }
 			: { Direction: reset, Count: this.perPage() + slack, Before: 0 });
@@ -620,7 +640,7 @@ class Tablebox extends Control {
 			return;
 		const read = readPage(page);
 		await this.table.replaceData(read.records);
-		this.take(read, ahead);
+		this.take(read);
 		await this.putBack(top, place);
 		if (read.current !== 0)
 			this.select(read.current);
@@ -641,19 +661,18 @@ class Tablebox extends Control {
 			return;
 		const read = readPage(page);
 		await this.table.setData(read.records);
-		this.take(read, slack);
+		this.take(read);
 		this.select(read.current || handle);
 		this.updatePager();
 	}
 
 	/**
-	 * What a page read says of the rows now held: the top reached when fewer rows came ahead than were asked (none asked
-	 * — a read from the top), the bottom when it says End.
+	 * What a page read says of the rows now held: the top when it says Begin, the bottom when it says End — the server's
+	 * to say, which knows how many it read ahead of the page.
 	 * @param {ReturnType<typeof readPage>} read
-	 * @param {number} ahead the rows asked ahead of its anchor
 	 */
-	take(read, ahead) {
-		this.begin = ahead === 0 || read.before < ahead;
+	take(read) {
+		this.begin = read.begin;
 		this.end = read.end;
 		this.firstHandle = read.records[0]?.handle ?? 0;
 		this.lastHandle = read.records.at(-1)?.handle ?? 0;
