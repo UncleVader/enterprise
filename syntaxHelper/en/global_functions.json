@@ -802,6 +802,44 @@
       "reviewed": true
     },
     {
+      "id": "fn.BegOfHour",
+      "name_local": "BegOfHour",
+      "name_en": "BegOfHour",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "BegOfHour(d : date)",
+      "description": "The start of the hour that holds the date: minutes and seconds are zero, and the day does not change.",
+      "syntax_block": "BegOfHour(d : date)",
+      "parameters": "d — a date.",
+      "return_descr": "Date at hh:00:00.",
+      "example": "Message(BegOfHour(Date(2024, 3, 15, 14, 40, 7)));   // 15.03.2024 14:00:00",
+      "availability": "Thin client, Server",
+      "see_also": ["fn.EndOfHour", "fn.BegOfDay"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.EndOfHour",
+      "name_local": "EndOfHour",
+      "name_en": "EndOfHour",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "EndOfHour(d : date)",
+      "description": "The same hour at its 59th minute and 59th second. Together with BegOfHour it makes an hour into a period a comparison can use.",
+      "syntax_block": "EndOfHour(d : date)",
+      "parameters": "d — a date.",
+      "return_descr": "Date at hh:59:59.",
+      "example": "from = BegOfHour(d);\nto   = EndOfHour(d);",
+      "availability": "Thin client, Server",
+      "see_also": ["fn.BegOfHour", "fn.EndOfDay"],
+      "reviewed": true
+    },
+    {
       "id": "fn.GetYear",
       "name_local": "GetYear",
       "name_en": "GetYear",
@@ -913,6 +951,25 @@
       "example": "Message(GetSecond(CurrentDate()));",
       "availability": "Thin client, Server",
       "see_also": ["fn.GetHour", "fn.GetMinute"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.GetMillisecond",
+      "name_local": "GetMillisecond",
+      "name_en": "GetMillisecond",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "GetMillisecond(d : date)",
+      "description": "The date's own count: milliseconds from the empty date. A date taken as a number is seconds; this keeps the milliseconds. Two of them apart are the time between, to the millisecond.",
+      "syntax_block": "GetMillisecond(d : date)",
+      "parameters": "d — a date.",
+      "return_descr": "Number of milliseconds.",
+      "example": "start = GetMillisecond(CurrentDate());\n// … the work measured …\nMessage(GetMillisecond(CurrentDate()) - start);",
+      "availability": "Thin client, Server",
+      "see_also": ["fn.GetSecond", "fn.CurrentDate"],
       "reviewed": true
     },
     {
@@ -1858,46 +1915,90 @@
       "reviewed": true
     },
     {
-      "id": "fn.SerializeValue",
-      "name_local": "SerializeValue",
-      "name_en": "SerializeValue",
+      "id": "fn.JSONString",
+      "name_local": "JSONString",
+      "name_en": "JSONString",
       "kind": "system_function",
       "category_keys": [
         "global_context",
         "global_functions"
       ],
-      "signature": "SerializeValue(value : any)",
+      "signature": "JSONString(value : any)",
       "description": "Turns a runtime value into text (JSON). Printing a value answers what it LOOKS like; this answers what it IS MADE OF, so a structure survives being written down: a selection, a record set, a document object, an array. Use it where the value exists - beside the line that built it - to see what is inside it, to store it, to compare two of them, or to send one somewhere. What can be written grows with the types: whatever learns to pack itself is covered the day it does.",
-      "syntax_block": "SerializeValue(value : any)",
+      "syntax_block": "JSONString(value : any)",
       "parameters": "value - any value this configuration can hold.",
       "return_descr": "The value as JSON text. Raises when the value cannot travel (IsTransferable) or when no configuration is open - the types a reference names live in the configuration's own registry.",
-      "example": "Selection = Query.Execute().Select();\nWhile Selection.Next() Do\n\tMessage(SerializeValue(Selection));\nEndDo;",
+      "example": "Selection = Query.Execute().Select();\nWhile Selection.Next() Do\n\tMessage(JSONString(Selection));\nEndDo;",
       "availability": "Thin client, Server",
       "see_also": [
-        "fn.DeserializeValue"
+        "fn.JSONValue"
       ],
       "reviewed": true
     },
     {
-      "id": "fn.DeserializeValue",
-      "name_local": "DeserializeValue",
-      "name_en": "DeserializeValue",
+      "id": "fn.JSONValue",
+      "name_local": "JSONValue",
+      "name_en": "JSONValue",
       "kind": "system_function",
       "category_keys": [
         "global_context",
         "global_functions"
       ],
-      "signature": "DeserializeValue(json : string)",
-      "description": "Reads text written by SerializeValue back into a runtime value - and, with it, BUILDS a value from JSON that was written by hand or arrived from outside. That is the only way to construct one without script: text in, value out. NOT every writing survives the return trip: the JSON view is a rendering, so a date is an ISO string and some shapes flatten. Where a value has to come back exactly as it left, keep the binary form.",
-      "syntax_block": "DeserializeValue(json : string)",
-      "parameters": "json - text as SerializeValue writes it.",
+      "signature": "JSONValue(json : string)",
+      "description": "Reads text written by JSONString back into a runtime value - and, with it, BUILDS a value from JSON that was written by hand or arrived from outside. That is the only way to construct one without script: text in, value out. NOT every writing survives the return trip: the JSON view is a rendering, so a date is an ISO string and some shapes flatten. Where a value has to come back exactly as it left, keep the binary form.",
+      "syntax_block": "JSONValue(json : string)",
+      "parameters": "json - text as JSONString writes it.",
       "return_descr": "The value the text describes. Raises when the text is not JSON a value can be read from, when it names a type this configuration does not have, or when no configuration is open.",
-      "example": "Value = DeserializeValue(\"{\\\"type\\\":\\\"Number\\\",\\\"value\\\":42}\");",
+      "example": "Value = JSONValue(\"{\\\"type\\\":\\\"Number\\\",\\\"value\\\":42}\");",
       "availability": "Thin client, Server",
       "see_also": [
-        "fn.SerializeValue"
+        "fn.JSONString"
       ],
       "reviewed": true
+    },
+    {
+      "id": "fn.XMLString",
+      "name_local": "XMLString",
+      "name_en": "XMLString",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "XMLString(value : any)",
+      "description": "A value as XML - the twin of `JSONString`, with XML where that one has JSON. The value is packed the way the platform stores it (its type, then its contents: a number exact, a date to the millisecond, a string, a reference by its GUID, an enumeration's value, a Guid as its text, BinaryData, a structure or an array with what it holds), and that packed form is written as an XML document. Unlike the JSON view every kind is kept, and `XMLValue` reads the value back as it went, a reference or a configuration's enumeration value inside a structure, an array or a container included.\n\nThe text is a whole document, not the inside of one element. A value that cannot be packed - a form, an open object, a type - is refused: `The value 'Type' cannot be serialized`. Needs a configuration open.",
+      "syntax_block": "XMLString(value : any)",
+      "parameters": "value - the value to write.",
+      "return_descr": "String.",
+      "example": "text = XMLString(doc.Ref);\nsame = XMLValue(text);",
+      "availability": "Thin client, Server",
+      "see_also": [
+        "fn.XMLValue",
+        "cls.XMLWriter"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "fn.XMLValue",
+      "name_local": "XMLValue",
+      "name_en": "XMLValue",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "XMLValue(xml : string)",
+      "description": "The value `XMLString` wrote, read back - against the configuration that runs. The text is read as XML into the packed form and the form into a value of the type the text names, as `JSONValue` reads JSON. A text that is not XML, or XML that is not a packed value, is refused, and so is a Guid whose text is not a guid. Needs a configuration open.",
+      "syntax_block": "XMLValue(xml : string)",
+      "parameters": "xml - the string to read.",
+      "return_descr": "The value, of the type the text names.",
+      "example": "text = XMLString(doc.Ref);\nsame = XMLValue(text);",
+      "availability": "Thin client, Server",
+      "see_also": [
+        "fn.XMLString",
+        "cls.XMLReader"
+      ],
+      "reviewed": false
     },
     {
       "id": "fn.RunScheduledJobs",

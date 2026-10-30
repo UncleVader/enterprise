@@ -6,6 +6,7 @@
 #include "backend/session/session.h"
 #include "backend/session/sessionRegistry.h"
 #include "backend/temp/tempStorage.h"
+#include "frmserver/client/clientFrame.h"   // ibClientFrame::CloseAll — the open tabs, closed before a clear
 #include "core/exception.h"   // ibCoreException — a restore refused on the way
 #include "core/fileKind.h"
 #include "core/serialize/dataBuilder.h"
@@ -58,8 +59,7 @@ std::function<void()> ibSchemaDatabase::Command(const ibSession& session, std::i
 		return nullptr;
 	}
 
-	// ⚠ THE TABS ARE NOT CLOSED FIRST, as the desktop's were: a restore closes every session after, this one among them,
-	// and a clear leaves the configuration the tabs edit as it was.
+	// ⚠ A RESTORE DOES NOT CLOSE THE TABS FIRST, as the desktop's did: it closes every session after, this one among them.
 	switch (static_cast<ibProtocol::ibSchema::ibCommand>(command)) {
 	case ibProtocol::ibSchema::ibCommand::Load:
 		return [applicationInstance]() {
@@ -124,6 +124,11 @@ std::function<void()> ibSchemaDatabase::Command(const ibSession& session, std::i
 			ibBackendDocFrame* const frame = ibSession::CurrentFrame();
 			if (frame == nullptr || frame->ShowModalMessage(_("Are you sure you want to clear the database?"),
 				ibString(), wxYES_NO | wxCENTRE | wxICON_QUESTION) != wxYES)
+				return;
+			// …the open tabs closed first, as the desktop's Clear closed its windows: the frame's Close All, each tab by the
+			// road its cross takes (a modified one asks) — one kept, nothing cleared.
+			ibClientFrame* const client = ibClientFrame::GetFrame();
+			if (client != nullptr && !client->CloseAll())
 				return;
 			if (applicationInstance->ClearDatabase())
 				frame->ShowModalMessage(_("Database cleared successfully!"), ibString(), wxOK | wxCENTRE);

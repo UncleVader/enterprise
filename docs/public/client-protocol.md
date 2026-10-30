@@ -28,9 +28,9 @@ with the window on (left out, 120 seconds; 0 is off; never more than 30 minutes)
 comes back with `login` `{Token}`.
 
 A packet is the node the server builds, as its bytes lie (`src/engine/core/serialize/dataBuilder.h`): `OES1`, the
-version, the length, then the root — `id`, `method` and `params`, or `id` and `result` or `error`, and `types`, the
+version (2; 1, from before a guid had a kind of its own, is still read), the length, then the root — `id`, `method` and `params`, or `id` and `result` or `error`, and `types`, the
 names of the types its nodes carry. Text is UTF-16LE; bytes (a picture's PNG, a file's part) are a `Binary`, never
-text. A WebSocket opened with `?compress=deflate` gets every answer of 1 KB and more raw-deflated (RFC 1951 — a
+text; a guid is a `Guid`, its 16 bytes (the browser shows it as its text). A WebSocket opened with `?compress=deflate` gets every answer of 1 KB and more raw-deflated (RFC 1951 — a
 browser's `DecompressionStream("deflate-raw")`); a packet begins `OES1`, a deflated one never does.
 
 ## Methods
@@ -117,11 +117,16 @@ the link opens, by its id.
 
 In the designer a report's composer is a tab of `Kind` 14. Its `View` holds `State` (`ReadOnly`), `Composition` —
 the composer's description in its node form — and `Fields`, `References`, `Error` — what its query offers, as the
-ComposerSettings question has them. The client edits the description itself and sends it back whole: event
+ComposerSettings question has them — and `Classes`, rows `{Type, Name, Picture}`: the classes its type cells name.
+The client edits the description itself and sends it back whole: event
 `Change {Composition}`; the configuration is modified, and the answer's `View` carries the fields of the query the
 composition now has. The fields of another text are fetched by the tab: `fetch {Tab, Request: {Kind: 21, Text}}` —
-`Fields`, `References`, `Error`; the fields of a reference's targets — `fetch {Tab, Request: {Kind: 22, Targets}}` —
-`Expanded` and `References`, as a ListSettings window asked again has them.
+`Fields`, `References`, `Error`, `Classes`; the fields of a reference's targets — `fetch {Tab, Request: {Kind: 22,
+Targets}}` — `Expanded` and `References`, as a ListSettings window asked again has them; the types a parameter may be
+given — `fetch {Tab, Request: {Kind: 28}}` — `Types` (class ids) and `Classes`; what is wrong with a parameter's
+expression — `fetch {Tab, Request: {Kind: 29, Text}}` — `Error`, none when it compiles. A cell's "..." is a ListSettings
+window's `Act Choose` said to the tab: event `Select {Type, Value, Choice}`; the value chosen comes back in the view's
+`State` as `Chosen`, as the window's question carries it.
 A form designer tab answers the same two requests for an attribute of type DataComposition: its inspector row
 `ibPropertyDataComposition` carries the composition as its `Value`, the client opens the settings window over it,
 asks the form's tab for the fields (`Kind` 21, 22) and sends the edited composition back through the attribute's `Set`.
@@ -152,7 +157,10 @@ the command bound already, sends nothing. Making a new form command is the form 
 A picture's `ibPropertyPicture` row carries the configuration's pictures it may be loaded from (the picture
 metaobjects of the owner's configuration, or of the one it extends) as an optional node `Pictures`: children with
 `Name`, `Guid` and `Id` (the id it is drawn by). They are named rather than sent as a `Picture`; the cell asks for them
-in one `picture` call. Picking one is the row's `Set` with the value `{Type 2, Guid}`.
+in one `picture` call. Picking one is the row's `Set` with the value `{Type 2, Guid}`. Beside them, as an optional
+node `ClassPictures`, come the engine's class icons, a metadata class's and a control's: children with `Name` and `Id`,
+the class id the icon is drawn and stored by. The core's own pictures are not among them; the client has those. Picking
+one is `{Type 1, Id}`.
 A configuration picture's version is a guid new with each picture its object is given; it is not stored. A client
 keeps a picture by its guid with the id it came by, and asks again when an answer names another version.
 A field's `ibPropertyChoiceLink` (link by type) and `ibPropertyChoiceParameters` rows carry what their windows ask of
@@ -195,7 +203,8 @@ by column id: `Text`, `Checked` for a flag, `Number`, `Value` when the cell take
 model set one — `TextColour`, `BackgroundColour` (a colour's text, `r,g,b`, as a form's colours), `Bold`, `Italic`,
 `Strikethrough`, `Underlined`, `Face`, `Size`, `Align` (`Left`, `Center`, `Right`). In the designer (`login` `Mode` 2)
 a table reads no rows — its `fetch` is refused, and a designer's client does not ask. A read that fails is refused
-`Failed` in the base's own words, and the frame carries the same message for the person.
+`Exception` in the base's own words, and the frame carries the same message for the person; a `Parent` the table no
+longer holds is refused `Exception` too.
 
 From protocol 4 a fetch from the start (`Direction` 0) may name `Before`, the rows wanted ahead of the row it starts
 at; the answer gives those rows first and says in `Before` how many came. A server before protocol 4 gives none: the
@@ -216,7 +225,8 @@ page read from the top says `Begin` and no `Anchor`; one read around a row the c
 page's, a row just added) names no `Anchor` either. The client answers its own read anew from it when the read names
 the same `Anchor` and asks no more, or — when the page is the whole level, `Begin` and `End` — around any row of it,
 cut out as the server would read it. Any other read is a `fetch`, as before. The fields are those of a `fetch` answer,
-so a client that does not look at them takes the page only for a read that matches it.
+so a client that does not look at them takes the page only for a read that matches it. A hierarchical view whose last
+level read named a `Parent` is given no `Rows`: the page would be of the top, and the client reads its own level.
 A designer's module tab (its `View` `State`: `Syntax`, `Module`, `Modified`, `ReadOnly`) carries the module's `Text`
 in the frame that opens the tab, once; the client draws it without a `fetch`. A server that puts no `Text` there is
 asked with `fetch`, as before. A form's tab reads its module's text as it did.
@@ -335,7 +345,7 @@ while the number stays: clicking an object again, or walking back to it, before 
 | 9 Menu | items: `Id`, `Caption`, `Checked`, `Enabled` (false — greyed) and their own items — a submenu; a popup menu where the mouse is | `Id` — the item picked; none — dismissed |
 | 8 SavedSettings | `Mode` (0 save, 1 restore), `Key`, `Default` and items: `Id`, `Caption` — the person's saved settings | `Act` (1 save, 2 restore, 3 default, 4 rename, 5 remove), `Id`, `Name`; none — closed |
 | 10 FormEditor | the active tab's form, as the frame has it: `Picture`, `HasSetting`, `Result` (the act before's: 0 done, 1 no storage, 2 no address, 3 refused), `Classes` (`Name`, `Picture`) | `Act` (1 apply — with `Controls`: each `Control`, its `Position`, the properties a person may arrange; 2 save; 3 reset); none — closed |
-| 11 ListSettings | a table's settings: `Settings` (the setting in force, in the node form the settings schema writes), `Fields` (`Name`, `Presentation`, `Id`, `Type`, `Available`, `Picture` — the column's, by its id, where the source describes itself; none — the attribute picture), `References` (`Type` — a class id as text, `Targets` — the metaobjects it points at), `Error` | `Settings` — the setting edited; none — cancelled |
+| 11 ListSettings | a table's settings: `Settings` (the setting in force, in the node form the settings schema writes), `Fields` (`Name`, `Presentation`, `Id`, `Type`, `Available`, `Picture` — the column's, by its id, where the source describes itself; none — the attribute picture), `References` (`Type` — a class id as text, `Targets` — the metaobjects it points at, `Value` — its empty value as a value is written, read as the server reads it: `CatalogRef.Goods.EmptyRef` in the designer; none for a family), `Error` | `Settings` — the setting edited; none — cancelled |
 | 12 SimpleChoice | `Value` — a field's number or date, with its type | `Value` — the one chosen; none — dismissed |
 | 13 ComposerSettings | a report's settings: `Settings` (the setting in force), `Composition` (what the report arranges, in its node form), `Fields` and `References` as ListSettings has them — the fields its query offers, no `Id`; `Error` | `Settings` — the setting edited; none — cancelled |
 | 14 Error | a script's failure: `Picture`, `Text` — the error with its call stack | `Act`: 1 close the window, 2 and send it to the designer debugging the base, 3 and close the client — each does the one before it too; none — 1 |
@@ -521,6 +531,7 @@ are HTTP's by meaning; where two reasons share one, the method tells them apart.
 | 404 | no such schema, command, item, tab, file, part or request |
 | 409 | not now: the active document does not take the command; `login`: the server could not take the session in yet — log in again |
 | 500 | the server could not do it |
+| 520 | the engine raised an exception doing it: `message` is its words, for the person — a read that failed. A client raises it as its own |
 
 An HTTP status answers only what comes before the protocol: no base at the address (404), a notification (204).
 

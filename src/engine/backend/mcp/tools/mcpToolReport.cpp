@@ -1425,7 +1425,7 @@ public:
 		for (const auto& word : Words()) {
 			if (!said->Says(word.first))
 				continue;
-			const ibValue value = ibStoredValue(said->ValueInForce(word.first), nullptr);
+			const ibValue value = ibStoredValue(said->ValueInForce(word.first), composer->GetMetaData());
 			result.SetValue(word.second->Name(), ibOutputParameterShows(word.first)
 				? ShowWords()[std::min<size_t>(static_cast<size_t>(std::max(0, value.GetInteger())), 2)]
 				: ibString(value.GetString()));
@@ -1789,7 +1789,7 @@ public:
 			for (const auto& word : Words())
 				if (rule.m_appearance.Says(word.first))
 					entry->SetValue(word.second->Name(),
-						WordOfValue(word.first, ibStoredValue(rule.m_appearance.ValueInForce(word.first), nullptr)));
+						WordOfValue(word.first, ibStoredValue(rule.m_appearance.ValueInForce(word.first), composer->GetMetaData())));
 			shown.push_back(ibDataValue::Child(entry));
 		}
 		result.AddField(ibT("rules"), ibDataValue::Array(shown));
@@ -2285,7 +2285,7 @@ public:
 		if (field->m_useRole && field->m_periodRank > 0)
 			result.SetValue(ibT("period_number"), static_cast<std::int32_t>(field->m_periodRank));
 		result.SetValue(ibT("format"),
-			ibString(ibStoredValue(field->m_appearance.ValueInForce(ibAppearanceParameter::Format), nullptr).GetString()));
+			ibString(ibStoredValue(field->m_appearance.ValueInForce(ibAppearanceParameter::Format), composer->GetMetaData()).GetString()));
 		ibMcpSayComposerComplaints(composition, result);
 		return true;
 	}
@@ -2762,9 +2762,13 @@ public:
 
 	ibString GetDescription() const override
 	{
-		return ibMcpText("Declare a resource - what the levels FOLD. Either a function over a field "
-			"(SUM over Quantity) or a whole expression, which is checked by the compiler. The "
-			"resource has no caption of its own: it is built on a field, and the field holds "
+		return ibMcpText("Declare a resource - what the levels FOLD. A function over a field "
+			"(SUM over Quantity), one aggregate call over an expression, `SUM(Quantity * Price)`, or "
+			"arithmetic BETWEEN calls, `SUM(Accrued) - SUM(Deducted)` or `100 * SUM(Margin) / SUM(Revenue)` "
+			"- worked out at every grouping from the calls folded there, which a sum of per-row ratios "
+			"is not. Arithmetic between calls folds no one field, so it needs `name`: the field of the "
+			"query it answers to - a grouping shows the figure, a detail row the field's own value. An "
+			"area (`over`) is the whole figure's. The resource has no caption of its own: it is built on a field, and the field holds "
 			"the title. A resource is known by its name: declaring one under a name already taken "
 			"REPLACES it, so running the same build twice leaves one. Pass remove:true with the "
 			"same path to take one out again.");
@@ -2848,8 +2852,8 @@ public:
 		if (function.IsEmpty()) {
 			result.SetValue(ibT("expression"), path);
 			result.SetValue(ibT("note"),
-				ibMcpText("An expression is not checked here - script_check compiles it, which is what "
-				  "the settings window does before it closes."));
+				ibMcpText("An expression is not checked here: the query it goes into is built and parsed "
+				  "by compose_run, and a mistake in it comes back from there."));
 		}
 		else {
 			result.SetValue(ibT("function"), function);

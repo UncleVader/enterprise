@@ -23,6 +23,7 @@
 #include "settings/settingsxml.h"
 
 
+#include "core/exception.h"   // ibCoreException — the engine's exception a fetch was refused with
 #include "frmclient/docView/docManager.h"
 #include "frmclient/docView/templates/docViewFile.h"
 #include "frmclient/docView/templates/docViewAuditLog.h"   // the journal's tab — a view of its own (the tab's Kind)
@@ -68,6 +69,21 @@ constexpr int kLastMenuId               = wxID_HIGHEST + 6999;
 // The Window menu's Close All — wxAuiMDIParentFrame's own id, which tabmdi.cpp keeps to itself (the desktop designer's
 // mainFrameDesignerMenu.cpp names it as well).
 constexpr int kWindowCloseAllId = 4002;
+
+// The Window menu out of a bar BY THE MENU — wx's RemoveWindowMenu looks for it by `_("&Window")` as said at that moment.
+// ⚠ THE WORD CHANGES WITH THE THREAD'S LANGUAGE: put in as "Окно" under a base's, it is looked for as "Window" at the
+// exit, stays in the bar, and goes twice — by ~wxAuiMDIParentFrame, then by the bar (a fall at every such exit, 2026-10-30).
+void RemoveWindowMenuOf(wxMenuBar* bar, wxMenu* windowMenu)
+{
+	if (bar == nullptr || windowMenu == nullptr)
+		return;
+	for (size_t pos = 0; pos < bar->GetMenuCount(); pos++) {
+		if (bar->GetMenu(pos) == windowMenu) {
+			bar->Remove(pos);
+			return;
+		}
+	}
+}
 
 // The person's options file, beside the desktop designer's options.xml: the thin client's commands go by other ids.
 constexpr const wxChar* kOptionsFile = wxT("options-thin.xml");
@@ -315,6 +331,10 @@ ibFrontendMainFrame::~ibFrontendMainFrame()
 
 	// deinitialize the valueForm manager
 	m_mgr.UnInit();
+
+	// ~wxAuiMDIParentFrame deletes the Window menu itself: it leaves no bar still holding it. While a view's bar is shown,
+	// the window's own holds it (SetMenuBar).
+	RemoveWindowMenuOf(m_pMyMenuBar != nullptr ? m_pMyMenuBar : GetMenuBar(), GetWindowMenu());
 }
 
 wxAuiMDIClientWindow* ibFrontendMainFrame::OnCreateClient()
@@ -395,7 +415,7 @@ void ibFrontendMainFrame::SetMenuBar(wxMenuBar* pMenuBar)
 	if (m_pMyMenuBar == nullptr) {
 
 		//Remove the Window menu from the old menu bar
-		RemoveWindowMenu(GetMenuBar());
+		RemoveWindowMenuOf(GetMenuBar(), GetWindowMenu());
 
 		//Add the Window menu to the new menu bar.
 		AddWindowMenu(pMenuBar);
@@ -894,7 +914,13 @@ bool ibFrontendMainFrame::Fetch(ibProtocol::ibMethod method, const ibProtocolNod
 {
 	ibProtocol::ibRefusal refusal = ibProtocol::ibRefusal::None;
 	ibString error;
-	return m_communicator->Call(method, params, answer, refusal, error);
+	if (m_communicator->Call(method, params, answer, refusal, error))
+		return true;
+	// ⭐ THE ENGINE'S EXCEPTION IS THE CLIENT'S — a read that failed came back as false, and a table took it for no rows:
+	// a folder read anew showed empty, and nobody was told why (2026-10-29).
+	if (refusal == ibProtocol::ibRefusal::Exception)
+		ibCoreException::Error(ibT("%s"), error);
+	return false;
 }
 
 void ibFrontendMainFrame::ShowSchema(ibProtocol::ibSchema::ibKind schema, const ibProtocolNode& shown)
@@ -968,10 +994,20 @@ void ibFrontendMainFrame::Draw(const ibProtocolNode& answer)
 		DrawMenu(frame.FindChild(ibProtocol::ibFrame::Menu));
 	if (whole || patch.Has(ibProtocol::ibFrame::Templates))
 		DrawTemplates(frame.FindChild(ibProtocol::ibFrame::Templates));
-	if (whole || patch.Has(ibProtocol::ibFrame::Tabs))
-		DrawTabs(frame.FindChild(ibProtocol::ibFrame::Tabs));
-	DrawFrame(frame, patch);
-	DrawView(frame.GetInt(ibProtocol::ibFrame::ActiveTab), frame.FindChild(ibProtocol::ibFrame::View), patch);
+
+	// ⭐ A TAB AND ITS VIEW COME UP AS ONE. A view is built when its first frame is drawn, after the tab: thawed between
+	// the two, the person watched the composer's panel be born — a dot in the corner, then its pages, then its layout.
+	{
+		wxWindowUpdateLocker freeze;
+		wxAuiMDIClientWindow* const client = GetClientWindow();
+		if (client != nullptr && (whole || patch.Has(ibProtocol::ibFrame::Tabs)))
+			freeze.Lock(client);
+
+		if (whole || patch.Has(ibProtocol::ibFrame::Tabs))
+			DrawTabs(frame.FindChild(ibProtocol::ibFrame::Tabs));
+		DrawFrame(frame, patch);
+		DrawView(frame.GetInt(ibProtocol::ibFrame::ActiveTab), frame.FindChild(ibProtocol::ibFrame::View), patch);
+	}
 
 	// THE EVENTS — what happened since the last answer: read from the answer, never kept in the frame. Exit done: the
 	// client goes once its call has settled (Call, AllowClose).
@@ -1288,9 +1324,9 @@ void ibFrontendMainFrame::Ask()
 	}
 }
 
-void ibFrontendMainFrame::TakeChosen(const ibProtocolNode& request)
+void ibFrontendMainFrame::TakeChosen(const ibProtocolNode& asked)
 {
-	const ibProtocolNode chosen = request.FindChild(ibProtocol::ibRequest::ibListSettings::Chosen);
+	const ibProtocolNode chosen = asked.FindChild(ibProtocol::ibRequest::ibListSettings::Chosen);
 	if (m_choosing.owner == nullptr || !chosen.IsNode() || chosen.GetInt(ibProtocol::ibRequest::ibListSettings::Choice) != m_choosing.choice)
 		return;
 	ibControlFrame* const owner = m_choosing.owner;
@@ -1303,8 +1339,11 @@ void ibFrontendMainFrame::TakeChosen(const ibProtocolNode& request)
 
 bool ibFrontendMainFrame::ChooseValue(ibControlFrame* owner, const ibValue& current)
 {
-	const ibProtocolNode request = GetRequest();
-	if (owner == nullptr || m_asking.empty() || !IsSettingsRequest(request))
+	// ⭐ NO WINDOW ASKS — the cell is on the active tab (a designer's composer panel; 2026-10-29: a parameter's "..." and a
+	// condition's opened nothing): the same act goes to the tab, whose view chooses through the configuration there.
+	const bool asking = !m_asking.empty() && IsSettingsRequest(GetRequest());
+	const long long tab = asking ? 0 : GetActiveTab();
+	if (owner == nullptr || (!asking && tab == 0))
 		return false;
 
 	m_choosing = ibChoosing{ owner, ++m_choice, m_asking.size() };
@@ -1319,6 +1358,16 @@ bool ibFrontendMainFrame::ChooseValue(ibControlFrame* owner, const ibValue& curr
 		current.Serialize(node);
 		ibWriteProtocolNode(node, act.Child(ibProtocol::ibRequest::ibListSettings::Value));
 	}
+
+	// …on the tab: the value comes back with its view (State Chosen), which its document hands to TakeChosen as it draws.
+	if (!asking) {
+		ibProtocolNode params, answer;
+		params.SetValue(ibProtocol::ibEvent::Tab, tab)
+			.SetValue(ibProtocol::ibEvent::Event, static_cast<int>(ibProtocol::ibEvent::ibKind::Select))
+			.SetValue(ibProtocol::ibEvent::Args, act);
+		return Call(ibProtocol::ibMethod::Event, params, answer);
+	}
+
 	if (!Respond(act))
 		return false;
 

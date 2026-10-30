@@ -7,6 +7,7 @@
 
 #include "backend/metaCollection/metaFormObject.h"
 #include "backend/metadataConfiguration.h"
+#include "backend/metadataSerialization.h"           // a value as text and back — the configuration's door
 
 #include "backend/backend_mainFrame.h"
 #include "backend/backend_form.h"
@@ -392,6 +393,8 @@ ibValue ibValueSystemFunction::BegOfWeek(const ibValue& cData)   { return ibValu
 ibValue ibValueSystemFunction::EndOfWeek(const ibValue& cData)   { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Week)); }
 ibValue ibValueSystemFunction::BegOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Day)); }
 ibValue ibValueSystemFunction::EndOfDay(const ibValue& cData)    { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Day)); }
+ibValue ibValueSystemFunction::BegOfHour(const ibValue& cData)   { return ibValue(cData.GetDate().BeginOfPeriod(ibTotalsPeriod::Hour)); }
+ibValue ibValueSystemFunction::EndOfHour(const ibValue& cData)   { return ibValue(cData.GetDate().EndOfPeriod(ibTotalsPeriod::Hour)); }
 
 int ibValueSystemFunction::GetYear(const ibValue& cData)         { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Year)); }
 int ibValueSystemFunction::GetMonth(const ibValue& cData)        { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Month)); }
@@ -399,6 +402,7 @@ int ibValueSystemFunction::GetDay(const ibValue& cData)          { return static
 int ibValueSystemFunction::GetHour(const ibValue& cData)         { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Hour)); }
 int ibValueSystemFunction::GetMinute(const ibValue& cData)       { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Minute)); }
 int ibValueSystemFunction::GetSecond(const ibValue& cData)       { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Second)); }
+ibNumber ibValueSystemFunction::GetMillisecond(const ibValue& cData) { return ibNumber(cData.GetDate().GetValue()); }
 int ibValueSystemFunction::GetWeekOfYear(const ibValue& cData)   { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::Week)); }
 int ibValueSystemFunction::GetDayOfYear(const ibValue& cData)    { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::DayOfYear)); }
 int ibValueSystemFunction::GetDayOfWeek(const ibValue& cData)    { return static_cast<int>(cData.GetDate().GetPart(ibDatePart::WeekDay)); }
@@ -709,6 +713,16 @@ bool ibValueSystemFunction::ValueIsFilled(const ibValue& cData)
 	return !cData.IsEmpty();
 }
 
+namespace {
+
+// A type's name in a text, as the running configuration knows it - what it does not know it refuses.
+ibClassID LookupType(const ibString& name)
+{
+	return activeMetaData != nullptr ? activeMetaData->GetIDObjectFromString(name) : ibClassID(0);
+}
+
+} // namespace
+
 // ⭐⭐ A VALUE, AS TEXT — WRITTEN WHERE THE VALUE IS. Everything under this was already built: a
 // value packs itself into an ibDataNode, the configuration's door adds the types only it can make
 // (references, enum members), and a provider writes that node as JSON. What was missing is the one
@@ -719,7 +733,7 @@ bool ibValueSystemFunction::ValueIsFilled(const ibValue& cData)
 // Printing answers what a value LOOKS like; this answers what it IS. A structure survives the trip,
 // which is the difference between reading a report and reading a sentence about one. Coverage grows
 // with the types: whatever learns to pack itself is in here the day it does, with nothing to add.
-ibString ibValueSystemFunction::SerializeValue(const ibValue& cData)
+ibString ibValueSystemFunction::JSONString(const ibValue& cData)
 {
 	// THE CONFIGURATION IS THE RUNNING ONE — the same one every other function in this file asks
 	// for. A value's references mean nothing without it: their types exist in its registry alone.
@@ -727,7 +741,7 @@ ibString ibValueSystemFunction::SerializeValue(const ibValue& cData)
 		ibBackendCoreException::Error(_("There is no open configuration to write this value against"));
 
 	ibDataNode node;
-	activeMetaData->Serialize(cData, node);   // raises on a value that cannot travel
+	ibSerializeValue(cData, node);   // raises on a value that cannot travel
 
 	ibJsonProvider provider;
 	provider.SetTypeResolver(ibMetaTypeResolver(activeMetaData));
@@ -749,15 +763,13 @@ ibString ibValueSystemFunction::SerializeValue(const ibValue& cData)
 // carry, so a value that must return EXACTLY as it left travels as the binary form instead. Said
 // here rather than discovered: a lossy round trip that nobody warned about is read as a defect in
 // whatever used it next.
-ibValue ibValueSystemFunction::DeserializeValue(const ibString& strJson)
+ibValue ibValueSystemFunction::JSONValue(const ibString& strJson)
 {
 	if (activeMetaData == nullptr || !activeMetaData->IsConfigOpen())
 		ibBackendCoreException::Error(_("There is no open configuration to read this value against"));
 
 	ibJsonProvider provider;
-	provider.SetTypeLookup([](const ibString& name) -> ibClassID {
-		return activeMetaData != nullptr
-			? activeMetaData->GetIDObjectFromString(name) : ibClassID(0); });
+	provider.SetTypeLookup(LookupType);
 
 	const std::string utf8 = strJson.ToUtf8();
 
@@ -769,7 +781,45 @@ ibValue ibValueSystemFunction::DeserializeValue(const ibString& strJson)
 	if (!provider.Read(reader, node))
 		ibBackendCoreException::Error(_("This text is not JSON a value can be read from"));
 
-	return activeMetaData->Deserialize(node);
+	return ibDeserializeValue(node, activeMetaData);
+}
+
+#include "core/serialize/provider/xmlProvider.h"   // the node as XML — the twins of the two verbs above
+
+// ⭐ A VALUE AS XML — JSONString's twin, with the XML provider where that one has the JSON view: the value packs
+// itself into a node, the configuration's door adds what only it can make (references, enumeration members), and
+// the provider writes the node. The XML form keeps every kind the node holds, so XMLValue reads the value back as
+// it went - a structure or an array too, its elements read through the configuration (ibDeserializeValue), a
+// reference among them. A value that cannot pack itself is refused by the door; the
+// provider refuses on its own what it cannot write or read.
+ibString ibValueSystemFunction::XMLString(const ibValue& value)
+{
+	if (activeMetaData == nullptr || !activeMetaData->IsConfigOpen())
+		ibBackendCoreException::Error(_("There is no open configuration to write this value against"));
+
+	ibDataNode node;
+	ibSerializeValue(value, node);   // raises on a value that cannot travel
+
+	ibXmlProvider provider;
+	provider.SetTypeResolver(ibMetaTypeResolver(activeMetaData));
+	ibString text;
+	provider.Write(node, text);
+	return text;
+}
+
+// …AND BACK: the text XMLString wrote, read into a node and the node into a value — of the type the node names, as
+// JSONValue reads its own.
+ibValue ibValueSystemFunction::XMLValue(const ibString& text)
+{
+	if (activeMetaData == nullptr || !activeMetaData->IsConfigOpen())
+		ibBackendCoreException::Error(_("There is no open configuration to read this value against"));
+
+	ibXmlProvider provider;
+	provider.SetTypeLookup(LookupType);
+
+	ibDataNode node;
+	provider.Read(text, node);
+	return ibDeserializeValue(node, activeMetaData);
 }
 
 ibValue ibValueSystemFunction::Evaluate(const ibString& strExpression)

@@ -33,7 +33,7 @@
 #include <map>                                                        // dot-walk join dedup + col->attr cache
 #include <functional>                                                 // std::function — reference-hierarchy parent chain-up
 #include <stdexcept>                                                  // guard for the not-yet-built multi-source composition path
-#include <algorithm>                                                  // stable_sort — RAM ORDER BY over a composed result
+#include <algorithm>                                                  // stable_sort, rotate — RAM ORDER BY over a composed result, a page from its anchor
 #include <set>                                                        // DedupeRows — seen-row identity keys (plain UNION)
 #include <unordered_set>                                              // DISTINCT folds — keyed by value, see ibValueHash
 #include <unordered_map>                                              // RAM hash-join index
@@ -291,6 +291,22 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, 
 	filter.Resume();
 	if (spec.m_predicate)
 		rows = ibQueryComposer::FilterRows(rows, spec.m_predicate.get());
+	// ⭐ …AND ONE LEVEL OF A TREE, as the database provider reads it (the page's parent scope): a folder's children
+	// when a folder is browsed, the rows with no parent at the top. Not taken, a list of a query read in memory
+	// answered every folder with the whole list — the folder in it, opened in itself without end (2026-10-29).
+	if (req.m_hierarchyFilter && !req.m_flatScan && req.m_hierarchyCol != nullptr && spec.m_queryable != nullptr) {
+		const ibBackendQueryColumn* const parentCol = spec.m_queryable->OwnsColumn(req.m_hierarchyCol)
+			? req.m_hierarchyCol : spec.m_queryable->ResolveColumnByName(req.m_hierarchyCol->GetName());
+		if (parentCol != nullptr) {
+			ibQueryRamTable level = RamTableOf(cols);
+			for (long i = 0; i < rows.RowCount(); ++i) {
+				const ibValue parent = rows.GetCell(i, parentCol->GetColumnId());
+				if (req.m_isTopLevel ? (parent.IsNull() || parent.IsEmpty()) : ibValueEqual()(parent, req.m_hierarchyKey))
+					level.AppendRowFrom(rows, i);
+			}
+			rows = std::move(level);
+		}
+	}
 	filter.Pause();
 
 	// The stages after the read, said once whichever return this read leaves by.
@@ -338,7 +354,17 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, 
 	}
 	distinct.Pause();
 
-	if (spec.m_sorts != nullptr && !spec.m_sorts->empty()) {
+	// ⭐ A PAGE IS READ FROM ITS ANCHOR, as the database provider keysets it: in the cursor's total order (EffectiveSort —
+	// the sort and the key after it, the order the anchor's values come in), turned round for a page read backwards
+	// (m_reverseSort), and only the rows past the anchor. Not taken, every page of a list read in memory was the whole
+	// list: the rows read ahead of a page came again before it, turned round (2026-10-29).
+	std::vector<ibQuerySortItem> sorting;
+	if (spec.m_sorts != nullptr)
+		sorting = *spec.m_sorts;
+	if (req.m_hasAnchor && spec.m_queryable != nullptr)
+		sorting = ibDataQueryBuilder::EffectiveSort(spec.m_queryable, sorting);
+
+	if (!sorting.empty()) {
 		sort.Resume();
 		// ⭐ THE KEYS ARE TAKEN OUT OF THE ROWS ONCE, not once per comparison. The comparator used to ask
 		// the table for both cells of every key on every call — a lookup in the row's map and a COPY of
@@ -346,9 +372,12 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, 
 		// three keys did that some thirteen million times. Read into one flat array first, the comparator
 		// only looks at what is already there.
 		std::vector<const ibQuerySortItem*> by;
-		for (const ibQuerySortItem& s : *spec.m_sorts)
-			if (s.m_col != nullptr)
-				by.push_back(&s);
+		std::vector<size_t> anchorAt;   // where each key's anchor value stands — the anchor has one per sort item
+		for (size_t i = 0; i < sorting.size(); ++i)
+			if (sorting[i].m_col != nullptr) {
+				by.push_back(&sorting[i]);
+				anchorAt.push_back(i);
+			}
 		const size_t width = by.size();
 		std::vector<ibValue> keys(static_cast<size_t>(rows.RowCount()) * width);
 		for (long i = 0; i < rows.RowCount(); ++i)
@@ -360,18 +389,35 @@ ibDataQueryResult ibComputedProvider::ExecuteRead(const ibDataQuerySpec& given, 
 			const ibValue* const ka = keys.data() + static_cast<size_t>(a) * width;
 			const ibValue* const kb = keys.data() + static_cast<size_t>(b) * width;
 			for (size_t k = 0; k < width; ++k) {
-				const int c = ibQueryComposer::RamSortCompareKey(ka[k], kb[k], by[k]->m_ascending);
+				const int c = ibQueryComposer::RamSortCompareKey(ka[k], kb[k], by[k]->m_ascending != req.m_reverseSort);
 				if (c != 0) return c < 0;
 			}
 			return false;
 		});
+		// …and the page starts at the first row past the anchor — turned to the front, the rows before it after the page.
+		size_t from = 0;
+		if (req.m_hasAnchor && width != 0) {
+			while (from < order.size()) {
+				const ibValue* const key = keys.data() + static_cast<size_t>(order[from]) * width;
+				int c = 0;
+				for (size_t k = 0; k < width && c == 0; ++k)
+					if (anchorAt[k] < req.m_anchorSortValues.size())
+						c = ibQueryComposer::RamSortCompareKey(key[k], req.m_anchorSortValues[anchorAt[k]],
+							by[k]->m_ascending != req.m_reverseSort);
+				if (c > 0)
+					break;
+				++from;
+			}
+			std::rotate(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(from), order.end());
+		}
 		sort.Pause();
 		rebuild.Resume();
 		// ⚠ THE ROWS ARE PUT IN THE NEW ORDER WHERE THEY STAND, NOT COPIED — `rows` is not read again, and
 		// a copy was every cell of the list made and freed once more (1.6 s of the payroll sheet, 2026-09-12,
 		// Debug). Reordered in place (ReorderRows) and handed to the result whole.
 		ibQueryRamTable sorted = RamTableOf(cols);
-		const long limit = (req.m_count > 0 && req.m_count < rows.RowCount()) ? req.m_count : rows.RowCount();
+		const long past = rows.RowCount() - static_cast<long>(from);
+		const long limit = (req.m_count > 0 && req.m_count < past) ? req.m_count : past;
 		rows.ReorderRows(order, limit);
 		sorted.AppendRowsFrom(rows);
 		rebuild.Pause();
@@ -3364,6 +3410,29 @@ void AddSyntheticAggColumns(ibSelectorTree& tree, const std::vector<ibDataQueryB
 			tree.AddColumn(AggSlotId(aggs, i), aggs[i].m_alias, ibTypeDescription());
 }
 
+// ⭐ A NODE AS THE EVALUATOR SEES IT — the figures folded onto it, asked for by the names they were declared under
+// (a derived figure's OutputRef). The twin of ibResultRow: the one evaluator walks the expression, and only the row
+// it reads is a node of the tree.
+class ibTreeNodeRow : public ibQueryRow {
+public:
+	ibTreeNodeRow(const ibSelectorTree::Node& node, const std::vector<ibDataQueryBuilder::AggregateItem>& aggs)
+		: m_node(node), m_aggs(aggs) {}
+	ibValue Get(ibMetaID id) const override {
+		const auto it = m_node.m_values.find(id);
+		return it != m_node.m_values.end() ? it->second : ibValue();
+	}
+	// …and a figure by its name, from the slot it was folded into — the same slot every road writes (AggSlotId).
+	ibValue Get(const ibString& name) const override {
+		for (size_t i = 0; i < m_aggs.size(); ++i)
+			if (m_aggs[i].m_alias.IsSameAs(name, false))
+				return Get(AggSlotId(m_aggs, i));
+		return ibValue();
+	}
+private:
+	const ibSelectorTree::Node&                           m_node;
+	const std::vector<ibDataQueryBuilder::AggregateItem>& m_aggs;
+};
+
 // CellKey is GONE. Hierarchy linking keys by the VALUE itself now (ibValueHash / ibValueEqual,
 // value.h): a REFERENCE compares by its _RRRef there — a row's own data-reference and a parent-ref
 // pointing AT it are the same value, which is what the link needs — and no cell is rendered to text
@@ -5325,6 +5394,39 @@ void ibQueryComposer::PadPeriodLevels(ibSelectorTree& tree, const std::vector<ib
 	}
 }
 
+// ⭐ A FIGURE OVER FIGURES — `SUM(Accrued) - SUM(Deducted) AS ToPay`. Every road folds its own
+// figures (the DBMS, the stream, the snapshot, the hierarchy), and the expression between them is
+// computed here, on the finished tree, so there is one statement of it whichever road built the tree.
+void ibQueryComposer::ApplyDerivedAggregates(ibSelectorTree& tree, const std::vector<ibDataQueryBuilder::AggregateItem>& aggregates,
+                                             const std::vector<ibDerivedAggregate>& derived)
+{
+	for (size_t j = 0; j < derived.size(); ++j) {
+		// The selected field's own column — or a slot past every aggregate's own, of the same kind, so it is clear
+		// of every other minted id, as theirs are.
+		const ibBackendQueryColumn* const field = derived[j].m_col;
+		const ibMetaID slot = field != nullptr ? field->GetColumnId()
+			: ibSynthId(ibSynthKind::Aggregate, static_cast<ibMetaID>(aggregates.size() + j));
+		// Declared once: a selection builds again on a tree that already has it (a shared read's branches).
+		const std::vector<ibQueryRamColumn>& columns = tree.Columns();
+		if (std::none_of(columns.begin(), columns.end(), [slot](const ibQueryRamColumn& c) { return c.m_id == slot; }))
+			tree.AddColumn(slot, derived[j].m_alias, field != nullptr ? field->GetTypeDesc() : ibTypeDescription());
+
+		// ⚠ EVERY HEADING, a padded period's included: a figure its calls do not reach there (erased above an area)
+		// reads as NULL, which is what the evaluator makes of a missing operand — no figure, rather than a wrong one.
+		// A fork carries none, and neither does a DETAIL ROW: its calls' slots hold the row's own values, not folds
+		// of one row (`COUNT(Number)` there is the number, ibStreamingFold::AddDetail), so an expression over them
+		// would be one over readings. The row shows the selected field's own value, or nothing.
+		const std::function<void(ibSelectorTree::Node&)> walk = [&](ibSelectorTree::Node& node) {
+			if (node.m_kind == ibSelectorNodeKind::Group)
+				node.m_values[slot] = EvalColumnExprRow(derived[j].m_expr.get(), ibTreeNodeRow(node, aggregates));
+			for (const std::unique_ptr<ibSelectorTree::Node>& child : node.m_children)
+				if (child != nullptr)
+					walk(*child);
+		};
+		walk(tree.Root());
+	}
+}
+
 // totals fold over a combined row set -> a RAW totals TREE (L3's own ibQueryRamTable). L3
 // stops here — flat-vs-hierarchical rendering is the runtime's call. Group columns keyed by
 // GetColumnId; aggregates by a synthetic id (read by alias). Grand total = the root (level
@@ -6780,10 +6882,11 @@ void ibDataQueryResult::SetComputedSpreads(std::vector<ibComputedSpread> spreads
 }
 
 void ibDataQueryResult::SetTotals(std::vector<ibTotalLevel> levels, std::vector<ibAggregateItem> aggregates,
-	bool overall)
+	bool overall, std::vector<ibDerivedAggregate> derived)
 {
 	m_totalLevels     = std::move(levels);
 	m_totalAggregates = std::move(aggregates);
+	m_totalDerived    = std::move(derived);
 	m_totalsOverall   = overall;
 }
 
@@ -6883,7 +6986,7 @@ ibSelector ibDataQueryResult::Select(ibSelectKind mode)
 	// exactly the rows the push-down exists to leave in the database.
 	if (m_readyTree) {
 		ibSelector s(ibQueryRamTable(), mode);
-		s.WithTotals(m_totalLevels, m_totalAggregates, m_totalsOverall);
+		s.WithTotals(m_totalLevels, m_totalAggregates, m_totalsOverall, m_totalDerived);
 		s.WithReadyTree(m_readyTree);
 		return s;
 	}
@@ -6898,7 +7001,8 @@ ibSelector ibDataQueryResult::Select(ibSelectKind mode)
 	// query read directly (`Select()`, `Unload()`) came back as ONE row with every column blank, over a register as
 	// over a value table (2026-09-29). The totals are the grouped walk's.
 	s.WithTotals(m_totalLevels, m_totalAggregates,
-	             m_totalsOverall && mode != ibSelectKind::ibSelectKind_Direct);   // fold by the door's TotalBy config
+	             m_totalsOverall && mode != ibSelectKind::ibSelectKind_Direct,    // fold by the door's TotalBy config
+	             m_totalDerived);
 	s.WithSource(m_srcHolder, m_srcQueryable, m_srcSelectCols, m_srcConditions);  // enable lazy sub-selections
 	// ⚠ AND IT IS NOT FOLDED HERE. A selection is configured AFTER it is made — MakeChild adds
 	// ByParentRef / ByGroups / Aggregating to what this hands back — so folding at this point would

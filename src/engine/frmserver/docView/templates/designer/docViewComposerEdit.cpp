@@ -1,5 +1,7 @@
 #include "docViewComposerEdit.h"
 
+#include "backend/backend_type.h"                        // GetTypesByFilter — what a parameter may be given
+#include "backend/compiler/scriptCheck.h"                // ibCheckExpression — a parameter's expression, compiled, not run
 #include "backend/metaData.h"
 #include "backend/metaCollection/metaComposerObject.h"   // the composer — its description, its configuration
 #include "backend/query/queryConstructorModel.h"         // ibQueryFieldsOfText — the fields its query offers
@@ -7,7 +9,7 @@
 #include "backend/srcDataObject.h"                       // …which describes itself (ibSourceExplorer)
 #include "core/description/compositionDescription.h"     // ibCompositionDescriptionMemory — the node form
 #include "core/serialize/dataBuilder.h"
-#include "frmserver/win/dlgs/settings/settingsRequest.h" // ibWriteSettingsField / References — a field as the windows read it
+#include "frmserver/win/dlgs/settings/settingsRequest.h" // ibWriteSettingsField / References / Classes, ibChooseSettingsValue
 #include "queryConstructorRequest.h"                      // ibFetchQueryConstructorRequest — the query constructor over its query
 
 #include <vector>
@@ -15,8 +17,11 @@
 namespace {
 
 // WHAT A QUERY TEXT OFFERS — written as the settings windows' questions write it (ComposerSettings: no Id, a field of a
-// parsed text stands behind no attribute), with the parser's complaint when it offers none.
-void WriteQueryFields(ibDataNode& into, const ibString& text, const ibMetaData* metaData)
+// parsed text stands behind no attribute), with the parser's complaint when it offers none — and the classes its type
+// cells name (Classes): the fields', the composition's `parameters`' and the primitive kinds, a new parameter being a
+// String before anybody chose its type (2026-10-29: every cell read <any>).
+void WriteQueryFields(ibDataNode& into, const ibString& text, const ibMetaData* metaData,
+	const std::vector<ibParameterDescription>& parameters = {})
 {
 	ibString error;
 	ibDataNode& fields = into.Child(ibProtocol::ibView::ibComposer::Fields);
@@ -29,6 +34,15 @@ void WriteQueryFields(ibDataNode& into, const ibString& text, const ibMetaData* 
 	ibWriteSettingsReferences(into.Child(ibProtocol::ibView::ibComposer::References), types, metaData);
 	if (!error.IsEmpty())
 		into.SetValue(ibProtocol::ibView::ibComposer::Error, error);
+
+	for (const ibParameterDescription& parameter : parameters)
+		types.push_back(parameter.m_type);
+	ibTypeDescription primitives;
+	for (const ibValueTypes kind : { ibValueTypes::TYPE_BOOLEAN, ibValueTypes::TYPE_NUMBER, ibValueTypes::TYPE_DATE,
+			ibValueTypes::TYPE_STRING })
+		primitives.AppendMetaType(kind);
+	types.push_back(primitives);
+	ibWriteSettingsClasses(into.Child(ibProtocol::ibView::ibComposer::Classes), types, metaData);
 }
 
 
@@ -83,6 +97,15 @@ void WriteListSourceFields(ibDataNode& into, ibMetaID mainTable, const ibString&
 
 wxIMPLEMENT_DYNAMIC_CLASS(ibComposerCompositionView, ibMetaView);
 
+ibComposerCompositionView::~ibComposerCompositionView()
+{
+	// The cell a value was being chosen for — a choice form may still hold it; what it chooses then is nobody's.
+	if (m_choosing != nullptr) {
+		m_choosing->Detach();
+		m_choosing->ControlDecrRef();
+	}
+}
+
 void ibComposerCompositionView::OnDraw(ibDataNode& frame)
 {
 	const ibValueMetaObjectComposer* const metaComposer =
@@ -96,7 +119,11 @@ void ibComposerCompositionView::OnDraw(ibDataNode& frame)
 
 	const ibCompositionDescription& composition = metaComposer->GetCompositionDesc();
 	ibCompositionDescriptionMemory::WriteNode(frame.Child(ibProtocol::ibView::ibComposer::Composition), composition);
-	WriteQueryFields(frame, composition.m_query, metaComposer->GetMetaData());
+	WriteQueryFields(frame, composition.m_query, metaComposer->GetMetaData(), composition.m_parameters);
+
+	// …and the value chosen for a cell of the panel (Select), as a settings window's question carries it.
+	if (m_choosing != nullptr)
+		m_choosing->WriteChosen(state);
 }
 
 bool ibComposerCompositionView::Fetch(const ibDataNode& request, ibDataNode& response)
@@ -130,6 +157,12 @@ bool ibComposerCompositionView::OnClientEvent(ibProtocol::ibEvent::ibKind event,
 		document->Modify(true);
 		return true;
 	}
+	case ibProtocol::ibEvent::ibKind::Select:
+		// A CELL'S "..." — a parameter's value, a condition's right side: the desktop's panel chose it through the
+		// configuration (ChooseValue → the declared-value window), which is here; a settings window's Act Choose,
+		// chosen as there (2026-10-29: the "..." opened nothing).
+		ibChooseSettingsValue(args, metaComposer->GetMetaData(), m_choosing);
+		return true;
 	default:
 		return false;
 	}
@@ -167,6 +200,29 @@ bool ibFetchComposerRequest(const ibDataNode& request, ibDataNode& response, con
 			? static_cast<ibMetaID>(request.GetValue<std::int32_t>(ibProtocol::ibView::ibComposer::Id)) : static_cast<ibMetaID>(wxNOT_FOUND),
 			request.GetValue<ibString>(ibProtocol::ibView::ibComposer::Text), metaData);
 		return true;
+	case ibProtocol::ibView::ibComposer::ibRequest::Types: {
+		// What the desktop's type picker over a parameter offered — what a reference-shaped field may hold, asked of the
+		// configuration when the "..." is pressed; the client's picker shows only what the server offered.
+		std::vector<ibClassID> offered;
+		ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType::ibSelectorDataType_reference, metaData, offered);
+		ibTypeDescription types;
+		std::vector<ibDataValue> ids;
+		for (const ibClassID& clsid : offered) {
+			types.AppendMetaType(clsid);
+			ids.push_back(ibDataValue::String(ibString::Format(ibT("%llu"), static_cast<unsigned long long>(clsid))));
+		}
+		response.AddField(ibProtocol::ibView::ibComposer::Types, ibDataValue::Array(ids));
+		ibWriteSettingsClasses(response.Child(ibProtocol::ibView::ibComposer::Classes), { types }, metaData);
+		return true;
+	}
+	case ibProtocol::ibView::ibComposer::ibRequest::Check: {
+		// The engine's check, as an MCP tool or a plugin has it (ibCheckScript's road): its first refusal, in its words.
+		const std::vector<ibDiagnostic> refused =
+			ibCheckExpression(request.GetValue<ibString>(ibProtocol::ibView::ibComposer::Text), metaData);
+		if (!refused.empty())
+			response.SetValue(ibProtocol::ibView::ibComposer::Error, refused.front().m_message);
+		return true;
+	}
 	default:
 		return false;
 	}

@@ -117,6 +117,7 @@ namespace ibProtocol {
 		NotFound     = 404,   // no such client's thing: schema, command, item, tab, file, part, request
 		NotNow       = 409,   // offered, but not now: the active document does not take the command
 		Failed       = 500,   // the server could not do it: a part not written, a frame not drawn
+		Exception    = 520,   // the engine raised it doing the call — its words, for the person: a read that failed
 	};
 
 	// THE ENVELOPE — JSON-RPC 2.0's own.
@@ -680,9 +681,10 @@ namespace ibProtocol {
 		// The desktop's ibDialogListSettings over a table's model: Settings — the setting in force, as
 		// ibSettingsDescriptionMemory writes it — Fields, its columns (children Name, Presentation, Id, Type — as
 		// ibTypeDescriptionMemory writes it — Available, Picture), and References: which types are references and to what
-		// (children Type — its class id as text — and Targets, the metaobjects) → Settings — the setting edited, which the
-		// server puts on and asks no more; Error beside the setting when it refused one; none — cancelled. On the way: an
-		// Act (ibAct), asked again with what it brought.
+		// (children Type — its class id as text — Targets, the metaobjects, and Value, its empty value as a value is written:
+		// read as the server reads it, `CatalogRef.Goods.EmptyRef` in the designer; none for a family) → Settings — the
+		// setting edited, which the server puts on and asks no more; Error beside the setting when it refused one; none —
+		// cancelled. On the way: an Act (ibAct), asked again with what it brought.
 		namespace ibListSettings {
 
 			inline constexpr const char* Settings     = "Settings";
@@ -1150,6 +1152,9 @@ namespace ibProtocol {
 			inline constexpr const char* Targets      = "Targets";
 			inline constexpr const char* Pictures     = "Pictures";       // a picture's: those it may be (Guid, Name; Id —
 			                                                              // the id it is drawn by)
+			inline constexpr const char* ClassPictures = "ClassPictures"; // a picture's: the engine's class icons it may be
+			                                                              // besides the core's (Name; Id — the class id it
+			                                                              // is drawn and stored by)
 			inline constexpr const char* Guid         = "Guid";
 			inline constexpr const char* Object       = "Object";         // a link's: the metaobject it opens, by its id —
 			                                                              // an inner module's module, else its own object
@@ -1566,9 +1571,18 @@ namespace ibProtocol {
 			inline constexpr const char* Id          = "Id";
 			inline constexpr const char* Targets     = "Targets";
 			inline constexpr const char* Expanded    = "Expanded";
+			// The classes a type cell may name — the fields', the parameters' and the primitive kinds — each once, as the
+			// inspector names its choices' (ibSchema::ibProperties: Type, Name, Picture): the client has no configuration
+			// to name a kind by.
+			inline constexpr const char* Classes     = "Classes";
+			// …and the types a parameter may be given (Kind Types: each a decimal class id, named in Classes) — the offer
+			// the client's type picker shows.
+			inline constexpr const char* Types       = "Types";
 
 			// WHAT A COMPOSER'S TAB IS ASKED — `fetch {Tab, Request: {Kind, …}}`, numbered past the form's
-			// (ibFormDesigner::ibRequest).
+			// (ibFormDesigner::ibRequest). A cell's "..." is a settings window's Act Choose said to the tab — event {Tab,
+			// Event: Select, Args: {Type, Value, Choice} (ibRequest::ibListSettings)}; the value chosen comes back with the
+			// view, as the window's question carries it: State Chosen.
 			enum class ibRequest : int {
 				Fields = 21,   // {Text} — the fields that query text offers: Fields, References, Error — as the tab's view
 				               // has them
@@ -1577,6 +1591,12 @@ namespace ibProtocol {
 				Source = 23,   // {Id, Text} — a dynamic list's fields: those of its main table (Id, optional) and what its
 				               // query (Text, optional) adds — Fields, References, Error — as the desktop's list settings
 				               // window reads them
+				Types  = 28,   // {} — what a parameter may be given: Types, named in Classes — what the desktop's type picker
+				               // asked its configuration for a reference-shaped field (GetTypesByFilter). Past the query
+				               // constructor's, which a composer's tab answers too
+				Check  = 29,   // {Text} — a parameter's expression compiled, not run: Error — why it does not compile;
+				               // none — it does (the desktop panel's CheckExpression). Past the query constructor's
+				               // (ibQueryConstructor::ibRequest, 24–27): the same tab answers both
 			};
 
 		}

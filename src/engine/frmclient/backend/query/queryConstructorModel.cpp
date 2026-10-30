@@ -1,7 +1,6 @@
 #include "queryConstructorModel.h"
 
 #include "frmclient/backend/metaCollection/partial/reference/reference.h"   // ibValueReferenceDataObject — the fields' [+]
-#include "frmclient/docView/tabDocument.h"                                  // a tab's fetch — the fields of its text
 #include "frmclient/mainFrame/mainFrame.h"
 #include "frmclient/win/dlgs/settings/settingsFieldTree.h"   // ibReadSettingsFields — a field as the server writes it
 #include "protocol/protocol.h"
@@ -10,6 +9,7 @@
 #include "core/guid.h"                // a configuration picture's name
 #include "core/serialize/dataBuilder.h"   // a type, as the server wrote it
 #include "frmclient/backend/serialize/dataProtocol.h"   // ibReadProtocolNode — …read off the answer
+#include "frmclient/backend/compiler/value.h"           // ibValue::ReadClasses — the classes the answer names
 
 #include <map>
 
@@ -77,8 +77,7 @@ std::vector<ibSettingsPlainField> ibListSourceFields(ibMetaID mainTable, const i
 	if (error != nullptr)
 		error->clear();
 
-	ibFrontendMainFrame* const frame = ibFrontendMainFrame::GetFrame();
-	if (frame == nullptr || metaData == nullptr || metaData->GetTabId() == 0)
+	if (metaData == nullptr || metaData->GetTabId() == 0)
 		return {};
 	if (mainTable == wxNOT_FOUND && ibString(text).Trim(true).Trim(false).IsEmpty())
 		return {};
@@ -90,15 +89,12 @@ std::vector<ibSettingsPlainField> ibListSourceFields(ibMetaID mainTable, const i
 		answer = known->second.m_answer;
 	}
 	else {
-		const ibTabDocument* const document = frame->FindDocument(tabId);
-		if (document == nullptr)
-			return {};
 		ibProtocolNode request;
 		request.SetValue(ibProtocol::ibView::ibComposer::Kind, static_cast<long long>(ibProtocol::ibView::ibComposer::ibRequest::Source))
 			.SetValue(ibProtocol::ibView::ibComposer::Text, text);
 		if (mainTable != wxNOT_FOUND)
 			request.SetValue(ibProtocol::ibView::ibComposer::Id, static_cast<long long>(mainTable));
-		if (!document->Fetch(request, answer))
+		if (!metaData->Fetch(request, answer))
 			return {};
 		KnownListFields()[tabId] = ibKnownListFields{ mainTable, text, answer };
 	}
@@ -131,17 +127,15 @@ std::vector<ibQueryConstructorField> ibQueryFieldsOfText(const ibString& text, c
 			answer = known->second.m_answer;
 		}
 		else {
-			const ibTabDocument* const document = frame->FindDocument(tabId);
-			if (document == nullptr)
-				return {};
 			ibProtocolNode request;
 			request.SetValue(ibProtocol::ibView::ibComposer::Kind, static_cast<long long>(ibProtocol::ibView::ibComposer::ibRequest::Fields))
 				.SetValue(ibProtocol::ibView::ibComposer::Text, text);
-			if (!document->Fetch(request, answer))
+			if (!metaData->Fetch(request, answer))
 				return {};
 			ibQueryFieldsKnown(tabId, text, answer);
 		}
 		ibValueReferenceDataObject::ReadReferences(answer.FindChild(ibProtocol::ibView::ibComposer::References));
+		ibValue::ReadClasses(answer.FindChild(ibProtocol::ibView::ibComposer::Classes));
 		if (error != nullptr)
 			*error = answer.GetString(ibProtocol::ibView::ibComposer::Error);
 		return ReadQueryFields(answer.FindChild(ibProtocol::ibView::ibComposer::Fields));
@@ -208,16 +202,6 @@ std::vector<ibQueryConstructorField> FieldsOfRows(const ibQueryConstructorModel&
 	return fields;
 }
 
-// ASKED OF THE TAB THE WINDOW WAS OPENED FROM — the configuration's. Off a tab, nobody to ask: no answer.
-bool AskTab(const ibMetaData* metaData, const ibProtocolNode& request, ibProtocolNode& answer)
-{
-	ibFrontendMainFrame* const frame = ibFrontendMainFrame::GetFrame();
-	if (frame == nullptr || metaData == nullptr || metaData->GetTabId() == 0)
-		return false;
-	const ibTabDocument* const document = frame->FindDocument(metaData->GetTabId());
-	return document != nullptr && document->Fetch(request, answer);
-}
-
 // THE SOURCE AS A FROM WRITES IT, its arguments too — what decides its columns (a turnover's periodicity), and the key
 // its answer is kept by. No alias: the fields are the table's.
 ibString SourceText(const ibQuerySource& source)
@@ -253,7 +237,7 @@ std::vector<ibQueryConstructorSource> ibQueryConstructorModel::GetSources() cons
 		m_known->m_sourcesAsked = true;
 		ibProtocolNode request;
 		request.SetValue(qc::Kind, static_cast<long long>(qc::ibRequest::Sources));
-		if (!AskTab(m_metaData, request, m_known->m_sources))
+		if (m_metaData == nullptr || !m_metaData->Fetch(request, m_known->m_sources))
 			m_known->m_sources = ibProtocolNode();
 	}
 	std::vector<ibQueryConstructorSource> out;
@@ -285,7 +269,7 @@ void ibQueryConstructorModel::CheckNames(const ibQueryPackage& package) const
 	ibProtocolNode request, answer;
 	request.SetValue(qc::Kind, static_cast<long long>(qc::ibRequest::Check))
 		.SetValue(qc::Text, ibRenderQueryPackage(package));
-	if (!AskTab(m_metaData, request, answer))
+	if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 		return;
 	const ibString error = answer.GetString(qc::Error);
 	if (!error.IsEmpty())
@@ -302,7 +286,7 @@ std::vector<ibQueryAstExprPtr> ibQueryConstructorModel::UngroupedProjections(con
 		.SetValue(qc::Statement, static_cast<long long>(statement))
 		.SetValue(qc::UnionBranch, static_cast<long long>(unionBranch));
 	std::vector<ibQueryAstExprPtr> out;
-	if (!AskTab(m_metaData, request, answer))
+	if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 		return out;
 	for (const ibProtocolNode& missing : answer.GetList(qc::UngroupedProjections))
 		if (ibQueryAstExprPtr column = ibQueryColumnFromPath(missing.AsString()))
@@ -322,7 +306,7 @@ std::vector<ibQuerySourceParameter> ibQueryConstructorModel::GetSourceParameters
 	if (known == m_known->m_parameters.end()) {
 		ibProtocolNode request, answer;
 		request.SetValue(qc::Kind, static_cast<long long>(qc::ibRequest::SourceParameters)).SetValue(qc::Source, text);
-		if (!AskTab(m_metaData, request, answer))
+		if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 			answer = ibProtocolNode();
 		known = m_known->m_parameters.emplace(text, answer).first;
 	}
@@ -357,7 +341,7 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetConditionFields
 		ibProtocolNode request, answer;
 		request.SetValue(qc::Kind, static_cast<long long>(qc::ibRequest::Fields)).SetValue(qc::Source, text)
 			.SetValue(qc::Slot, slot);
-		if (!AskTab(m_metaData, request, answer))
+		if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 			answer = ibProtocolNode();
 		known = m_known->m_fields.emplace(key, answer).first;
 	}
@@ -406,7 +390,7 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetTableFields(con
 	if (known == m_known->m_fields.end()) {
 		ibProtocolNode request, answer;
 		request.SetValue(qc::Kind, static_cast<long long>(qc::ibRequest::Fields)).SetValue(qc::Source, text);
-		if (!AskTab(m_metaData, request, answer))
+		if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 			answer = ibProtocolNode();
 		known = m_known->m_fields.emplace(text, answer).first;
 	}
@@ -423,7 +407,7 @@ std::vector<ibQueryConstructorField> ibQueryConstructorModel::GetTableFields(ibM
 		request.SetValue(ibProtocol::ibView::ibComposer::Kind,
 			static_cast<long long>(ibProtocol::ibView::ibComposer::ibRequest::Expand));
 		request.AddItem(ibProtocol::ibView::ibComposer::Targets, static_cast<long long>(table));
-		if (!AskTab(m_metaData, request, answer))
+		if (m_metaData == nullptr || !m_metaData->Fetch(request, answer))
 			answer = ibProtocolNode();
 		known = m_known->m_expanded.emplace(table, answer).first;
 	}

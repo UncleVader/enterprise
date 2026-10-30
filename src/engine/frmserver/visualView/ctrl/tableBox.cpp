@@ -14,6 +14,7 @@
 #include "formAttribute.h"                              // the attribute this box is bound to — its source IS the address
 #include "backend/srcDataObject.h"                      // …and the source answers with the guid of what it reads
 #include "backend/appData.h"
+#include "backend/backend_exception.h"                  // ibBackendException — a folder the table no longer holds, said
 #include "backend/backend_picture.h"                    // ibBackendPicture::SendPicture — a row's picture, by its id
 #include "frmserver/visualView/visualHost.h"            // IsDesignerHost — what the form is held by
 
@@ -702,6 +703,14 @@ void ibValueModelTableBox::OnUpdate(ibDataNode& state, ibVisualHost* host)
 	// the client's own opening read is — a reset with no anchor, Fetch's: from the top when the table stands on no row,
 	// else around the row it stands on with as many rows ahead as the page, the page saying how many came (Before) and
 	// whether it is the top (Begin). No Anchor on such a page: the client named none, and matches its own read by that.
+	//
+	// …AND NONE WHILE THE CLIENT STANDS IN A FOLDER — the Hierarchical view drilled into (m_drillItem): the page is of
+	// the top, which the client does not read there, it reads its own level anew. And the top read anew forgot every row
+	// handed out, the folder's too: the client's read of its folder was refused, the list showed it empty, and the drill
+	// went back to the top, so the next element was created there (an element added in a folder, 2026-10-29). The
+	// version is answered by the client's own read.
+	if (m_rowsSentVersion != m_rowsVersion && m_drillItem.IsOk())
+		m_rowsSentVersion = m_rowsVersion;
 	if (m_rowsSentVersion != m_rowsVersion) {
 		std::int32_t anchor = 0;
 		if (m_rowsSentVersion != -1 && m_tableCurrentLine != nullptr)
@@ -930,10 +939,12 @@ bool ibValueModelTableBox::Fetch(const ibDataNode& request, ibDataNode& response
 	// the top. A FLAT List view passes the ignore-parent SENTINEL, so the model walks the WHOLE table in one
 	// order; any other view an EMPTY parent, so it returns the roots.
 	ibDataViewItem parentItem;
+	// …and one the table no longer holds (its data replaced while the client stood in it) is said: refused as no rows,
+	// the client showed the folder empty.
 	if (parentHandle != 0) {
 		parentItem = FindRow(parentHandle);
 		if (!parentItem.IsOk())
-			return false;   // a container the table no longer holds — the client reads the top again
+			ibBackendException::Error(_("The folder is no longer in the list."));
 	}
 	const ibDataViewViewMode viewMode = m_propertyViewMode->GetValueAsEnum();
 	const ibDataViewItem scope = parentItem.IsOk() ? parentItem
@@ -1367,7 +1378,10 @@ void ibValueModelTableBox::OnViewModeChanged(ibDataViewViewMode viewMode)
 	if (appData->DesignerMode())
 		return;
 
-	m_propertyViewMode->SetValue(viewMode);
+	// …THROUGH THE PROPERTY'S DOOR, as the inspector writes it: the table hears it, and the next frame draws it with its
+	// mode. Set past the door, the frame answering the switch drew nothing, and the client read its rows in the new mode
+	// only when something else was drawn (2026-10-29).
+	ibPropertyGate::SetValue(this, m_propertyViewMode, ibVariant(ibNumber(static_cast<long>(viewMode))));
 	// A drill is the Hierarchical view's own; the client reads the top again in whichever it now is.
 	m_drillItem = ibDataViewItem();
 }

@@ -144,8 +144,13 @@ public:
 	// A VALUE OF THE SERVER'S TYPE CHOSEN FOR A CELL OF THE WINDOW ASKING — the window answers its question with the act
 	// (a list's settings: Act Choose), the server opens the value's quick choice or its choice form (a dialog over this
 	// modal: CreateChildFrame), and the value chosen comes back with the window's question asked again (Chosen), to
-	// the cell's ChoiceProcessing. False — no window asks.
+	// the cell's ChoiceProcessing. No window asks — the cell is on the active tab (a designer's composer panel): the same
+	// act goes to the tab (event Select), whose view chooses through its configuration and says the value with the view
+	// (State Chosen). False — neither is there.
 	bool ChooseValue(class ibControlFrame* owner, const class ibValue& current);
+	// …and the value chosen, when the window's question or the tab's view state says one was (Chosen) — handed to the
+	// cell once.
+	void TakeChosen(const ibProtocolNode& asked);
 	// A tab closed — by the server, which asks about what is unsaved; the tab goes when the frame says so. Whatever
 	// closes it comes here: its button, its window closed (Escape, the application's), the window menu, File → Close.
 	void CloseTab(long long tabId);
@@ -153,7 +158,9 @@ public:
 	bool IsClosingWindow() const { return m_closingWindow; }
 	// A fetch — a control's (Fetch: a table's rows, a spreadsheet's cells; `params` — the control, its request, the view
 	// it is of) or the pictures of their ids (Picture): the answer is no frame, nothing is drawn or asked, and a refusal is
-	// only false. It speaks to the communicator alone, so a control's own thread may make it.
+	// only false — but the engine's exception (Exception), thrown here in its words: the caller says it where it belongs
+	// (a table's page, by its data view), else the application's loop journals it. It speaks to the communicator alone,
+	// so a control's own thread may make it.
 	bool Fetch(ibProtocol::ibMethod method, const ibProtocolNode& params, ibProtocolNode& answer);
 	// A file of the person's, up to the server in its parts — `file` the id it was given. False: not read, or refused
 	// (said to the person).
@@ -311,8 +318,6 @@ private:
 	// …the questions alone (Settle): each put to the person until none is pending — or the one pending is the window's
 	// up already: it reads it itself, and a value chosen for its cell is handed over (TakeChosen).
 	void Ask();
-	// A value chosen for the cell of the window asking (ChooseValue), when the question says one was — handed to it once.
-	void TakeChosen(const ibProtocolNode& request);
 	// A call refused, said to the person — and a client whose session is gone, closed.
 	void Refused(ibProtocol::ibRefusal refusal, const wxString& error);
 	// …and once a call has settled: the client gone when the server's Exit was done, the calls posted made.

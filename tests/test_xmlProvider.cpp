@@ -57,6 +57,7 @@ TEST(XmlProvider, WriteRead_AllKinds_ComeBackAsThemselves)
 	original.SetValue("number", ibNumber(ibString("123456789012345678901234567890.1234567890123456789")));
 	original.SetValue("date", ibDateTime(2026, 3, 29, 2, 30, 59, 123));
 	original.SetValue("nodate", ibDateTime());
+	original.AddField("key", ibDataValue::Guid(ibGuid(ibString("0f8fad5b-d9cb-469f-a165-70867728950e"))));
 	original.SetValue("Picture", bytes);
 	original.SetRawData(bytes);
 	original.AddField("array", ibDataValue::Array({ ibDataValue::Int(-2), ibDataValue(), ibDataValue::String(ibString(" ")) }));
@@ -83,6 +84,9 @@ TEST(XmlProvider, WriteRead_AllKinds_ComeBackAsThemselves)
 	EXPECT_EQ(loaded.FindField("date")->Kind(), ibDataKind::Date);
 	EXPECT_EQ(loaded.GetValue<ibDateTime>("date").GetValue(), ibDateTime(2026, 3, 29, 2, 30, 59, 123).GetValue());
 	EXPECT_TRUE(loaded.GetValue<ibDateTime>("nodate").IsEmpty());
+	// …and a guid, as its 16 bytes again.
+	EXPECT_EQ(loaded.FindField("key")->Kind(), ibDataKind::Guid);
+	EXPECT_EQ(loaded.FindField("key")->AsGuid(), original.FindField("key")->AsGuid());
 	const ibMemoryBuffer picture = loaded.FindField("Picture")->AsBinary();
 	ASSERT_EQ(picture.GetDataLen(), 3u);
 	EXPECT_EQ(std::memcmp(picture.GetData(), bytes.GetData(), 3), 0);
@@ -118,6 +122,37 @@ TEST(XmlProvider, Write_TheLayout)
 	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"a:b\">x</Field>")));   // a name is a value, not an element's name
 	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"nul\" Kind=\"String\" Encoding=\"base64\">")));
 	EXPECT_TRUE(text.Contains(ibT("<Node Type=\"7\" Id=\"1\"/>")));      // a type with no name — by its number
+}
+
+// The text each kind is written as - a number with a point and every digit, a date to the millisecond with four digits
+// of a year, a yes-or-no, a guid as its text, bytes as base64 - written here as literals, not produced by the writer
+// under test.
+TEST(XmlProvider, Write_TheFormsOfAValue)
+{
+	ibMemoryBuffer bytes;
+	bytes.AppendData("OES", 3);
+	ibDataNode root(1, 5);
+	root.SetValue("big", ibNumber(ibString("1518500.10")));
+	root.SetValue("long", ibNumber(ibString("-123456789012345678901234567890.0000000001")));
+	root.SetValue("yes", true);
+	root.SetValue("no", false);
+	root.SetValue("date", ibDateTime(2026, 3, 29, 2, 30, 59, 7));
+	root.SetValue("year", ibDateTime(1, 1, 2, 0, 0, 0, 0));
+	root.SetValue("nodate", ibDateTime());
+	root.AddField("key", ibDataValue::Guid(ibGuid(ibString("0f8fad5b-d9cb-469f-a165-70867728950e"))));
+	root.SetValue("bytes", bytes);
+	root.SetValue("nobytes", ibMemoryBuffer());
+	const ibString text = Written(root);
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"big\" Kind=\"Number\">1518500.1</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"long\" Kind=\"Number\">-123456789012345678901234567890.0000000001</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"yes\" Kind=\"Bool\">true</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"no\" Kind=\"Bool\">false</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"date\" Kind=\"Date\">2026-03-29 02:30:59.007</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"year\" Kind=\"Date\">0001-01-02 00:00:00.000</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"nodate\" Kind=\"Date\"/>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"key\" Kind=\"Guid\">0f8fad5b-d9cb-469f-a165-70867728950e</Field>")));
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"bytes\" Kind=\"Binary\">T0VT</Field>")));   // base64 of "OES"
+	EXPECT_TRUE(text.Contains(ibT("<Field Name=\"nobytes\" Kind=\"Binary\"></Field>")));
 }
 
 TEST(XmlProvider, Write_Bytes_ReadBackTheSame)
@@ -163,6 +198,7 @@ TEST(XmlProvider, Read_WhatIsNotTheLayout_Refuses)
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field>x</Field></Node>")), node), ibCoreException);       // no Name
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field Name=\"x\" Kind=\"Number\">five</Field></Node>")), node), ibCoreException);
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field Name=\"x\" Kind=\"Bool\">yes</Field></Node>")), node), ibCoreException);
+	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field Name=\"x\" Kind=\"Guid\">five</Field></Node>")), node), ibCoreException);
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field Name=\"x\" Kind=\"Binary\">*</Field></Node>")), node), ibCoreException);
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node><Field Name=\"x\" Kind=\"Other\"/></Node>")), node), ibCoreException);
 	EXPECT_THROW(provider.Read(ibString(ibT("<Node Id=\"one\"/>")), node), ibCoreException);

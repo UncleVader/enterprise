@@ -13,6 +13,7 @@
 #include "frmclient/win/dlgs/queryConstructor/queryConstructor.h" // the Query tab's constructor button
 #include "frmclient/win/dlgs/queryConstructor/queryExpressionDialog.h" // the resource expression editor
 #include "frmclient/win/dlgs/typeSelector.h"              // the product.s type picker — a parameter declares its type
+#include "frmclient/backend/compiler/value.h"             // ibValue::ReadClasses — …offered what the tab answers, named as it named them
 #include "frmclient/win/dlgs/translateConstructor/translateConstructor.h"   // a field's title, every language of it
 #include "frmclient/win/dlgs/queryConstructor/queryConstructorInternal.h" // ibExpressionCellRenderer — the Totals tab's own cell
 #include "core/query/queryPeriodUnits.h"                     // ibPeriodUnits — the engine's own list of period words
@@ -1699,14 +1700,8 @@ void ibComposerSettingsPanel::BuildPanel()
 	// PopulateFieldTrees does once they do.
 	RefreshQueryFields();
 
-	// ⭐ THE NAMES A PARAMETER EXPRESSION MAY CALL, made to exist BEFORE anything can be edited.
-	//
-	// An expression is checked against the module MANAGER (see CheckExpression), and a manager that
-	// has never been compiled carries an empty bytecode — so `CurrentDate()` came back as "procedure
-	// or function not detected", a true statement about an empty world. Compiling it is what fills
-	// it, and it happens HERE, once, because compiling rebuilds modules and refreshes what is bound
-	// to them: from inside a cell editor that same rebuild destroys the renderer mid-call.
-	PrepareModuleContext();
+	// (THE NAMES A PARAMETER EXPRESSION MAY CALL are the server's to make exist: its check compiles the module manager
+	//  before it parents the expression to it — ibCheckExpression. The desktop compiled it here, as the window opened.)
 
 	// (NOTHING IS COPIED HERE ANY MORE. The description this window edits was handed to it BY
 	//  REFERENCE and is edited in place — the shape the designer's other editors have, where the grid
@@ -3740,20 +3735,22 @@ void ibComposerSettingsPanel::ReloadParameters()
 
 // THE TYPE PICKER — the product's own, the same dialog an attribute's Type opens. The cell hands us
 
-// ⭐ THE WINDOW'S OPENING ACT: make sure the names an expression may call EXIST — on the desktop, by compiling the
-// module MANAGER of the composition's configuration. The modules are the server's, and so is compiling them.
-void ibComposerSettingsPanel::PrepareModuleContext()
-{
-}
-
 // COMPILE AN EXPRESSION AND SAY WHY NOT — the ONE check, used by the editor's OK and by the window's. The translator is
-// the server's: a parameter's expression is the designer's to write (the Parameters tab), and the client is not the
-// designer yet — so nothing is said against one here.
-bool ibComposerSettingsPanel::CheckExpression(const wxString& WXUNUSED(expression), wxString& complaint,
-	const ibMetaData* WXUNUSED(metaData))
+// the server's: the tab the configuration is on is asked (fetch {Tab, Request: {Kind: Check, Text}}), and its Error is
+// the complaint (2026-10-29: `1 + (` was accepted without a word). No tab to ask — nothing is said against it.
+bool ibComposerSettingsPanel::CheckExpression(const wxString& expression, wxString& complaint,
+	const ibMetaData* metaData)
 {
 	complaint.clear();
-	return true;
+	if (expression.IsEmpty() || metaData == nullptr)
+		return true;
+	ibProtocolNode request, answer;
+	request.SetValue(ibProtocol::ibView::ibComposer::Kind, static_cast<long long>(ibProtocol::ibView::ibComposer::ibRequest::Check))
+		.SetValue(ibProtocol::ibView::ibComposer::Text, ibString(expression));
+	if (!metaData->Fetch(request, answer))
+		return true;
+	complaint = answer.GetString(ibProtocol::ibView::ibComposer::Error).ToWxString();
+	return complaint.IsEmpty();
 }
 
 // EVERY PARAMETER'S EXPRESSION, checked at once — what the window asks before it closes.
@@ -3786,10 +3783,24 @@ bool ibComposerSettingsPanel::EditParameterType(wxString& text)
 
 	if ((size_t)idx >= m_edited.m_parameters.size())
 		return false;
-	// ⭐ THE REFERENCE FILTER, as asked (Max, 2026-08-28).
+	// ⭐ THE REFERENCE FILTER, as asked (Max, 2026-08-28) — what may stand under it is the tab's to say: the desktop's
+	// picker asked its configuration, and the client has none (fetch {Tab, Request: {Kind: Types}}). Offered nothing,
+	// the picker answers Cancel.
+	std::vector<ibClassID> offered;
+	const ibMetaData* const metaData = GetEditedMetaData();
+	ibProtocolNode request, answer;
+	request.SetValue(ibProtocol::ibView::ibComposer::Kind, static_cast<long long>(ibProtocol::ibView::ibComposer::ibRequest::Types));
+	if (metaData != nullptr && metaData->Fetch(request, answer)) {
+		ibValue::ReadClasses(answer.FindChild(ibProtocol::ibView::ibComposer::Classes));
+		for (const ibProtocolNode& type : answer.GetList(ibProtocol::ibView::ibComposer::Types)) {
+			unsigned long long clsid = 0;
+			if (type.AsString().ToULongLong(&clsid) && clsid != 0)
+				offered.push_back(static_cast<ibClassID>(clsid));
+		}
+	}
 	ibTypeDescription declared = m_edited.m_parameters[idx].m_type;
-	if (!ibShowTypeSelector(this, ibSelectorDataType::ibSelectorDataType_reference, std::vector<ibClassID>(),
-			declared, GetEditedMetaData(), /*allowEdit*/true, /*single*/false))
+	if (!ibShowTypeSelector(this, ibSelectorDataType::ibSelectorDataType_reference, offered,
+			declared, metaData, /*allowEdit*/true, /*single*/false))
 		return false;
 
 	// ⭐ A NEW TYPE BRINGS ITS OWN EMPTY VALUE. What a parameter holds is a value OF its declared type,

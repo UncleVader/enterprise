@@ -36,6 +36,7 @@
 #include "clientDebugger.h"
 #include "clientFrame.h"
 #include "clientInstance.h"
+#include "backend/metadataSerialization.h"
 #include "protocol/protocol.h"
 #include "clientPatch.h"
 
@@ -245,7 +246,7 @@ bool BuildSchema(const ibClientSchema& schema, const std::shared_ptr<ibSession>&
 			done = true;
 		}
 		catch (const ibCoreException& err) {
-			refusal = ibProtocol::ibRefusal::Failed;
+			refusal = ibProtocol::ibRefusal::Exception;
 			error = err.GetErrorDescription();
 		}
 	}).get();
@@ -958,7 +959,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 			done = true;
 		}
 		catch (const ibCoreException& err) {
-			refuse(ibProtocol::ibRefusal::Failed, err.GetErrorDescription());
+			refuse(ibProtocol::ibRefusal::Exception, err.GetErrorDescription());
 		}
 	}
 	else if (method == ibProtocol::ibMethod::Logout) {
@@ -1144,7 +1145,8 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 				if (frame != nullptr && session != nullptr) {
 					// A READ THAT FAILS IS REFUSED IN THE ENGINE'S WORDS — Fetch throws and leaves it to its caller, and
 					// this one let it out of the call: the client was answered a bare 500 (a list whose query could not
-					// be read, 2026-10-28). The person was told by the frame that read the list first (tableBox OnUpdate).
+					// be read, 2026-10-28). The person was told by the frame that read the list first (tableBox OnUpdate);
+					// a read after it is refused as the engine's exception (Exception), which the client raises as its own.
 					session->Submit([frame, controlId, &fetchRequest, &formKey, tabId, &result, &done, &refuse]() {
 						try {
 							if (tabId != 0) {
@@ -1159,7 +1161,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 							}
 						}
 						catch (const ibCoreException& err) {
-							refuse(ibProtocol::ibRefusal::Failed, err.GetErrorDescription());
+							refuse(ibProtocol::ibRefusal::Exception, err.GetErrorDescription());
 						}
 					}).get();
 				}
@@ -1184,7 +1186,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 					ibString text;
 					session->Submit([metaData, value, &format, &text, &done, &refuse]() {
 						try {
-							const ibValue presented = metaData->Deserialize(*value);
+							const ibValue presented = ibDeserializeValue(*value, metaData);
 							// Two statements, not `?:` — ibString and wxString convert both ways, and clang refuses to pick.
 							if (format.IsEmpty())
 								text = presented.GetString();

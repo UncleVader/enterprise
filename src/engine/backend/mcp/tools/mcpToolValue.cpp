@@ -7,7 +7,7 @@
 //
 // ⭐⭐ WHY THESE EXIST. A packed value is how every typed thing travels in this platform: a schema
 // stores its parameters that way, a saved setting stores a filter's right-hand side that way,
-// `SerializeValue` writes that shape and `DeserializeValue` reads it. So a caller could always COPY
+// `JSONString` writes that shape and `JSONValue` reads it. So a caller could always COPY
 // one — take the `Value` out of a report_get answer and hand it back somewhere else — and could not
 // MAKE one. The gap showed up on the smallest possible case: a report wanted a period, JSON has no
 // date, and a date could therefore not be stated at all (Max, 2026-09-06, asking the question that
@@ -25,13 +25,14 @@
 // the EMPTY packed form of that type, which is the shape to fill in and send back.
 //
 // ⭐⭐ AND COVERAGE GROWS WITHOUT THIS FILE CHANGING. It is the configuration's own serialiser
-// underneath (`ibMetaData::Serialize` / `Deserialize`), of which the platform already says:
+// underneath (`ibSerializeValue` / `ibDeserializeValue`), of which the platform already says:
 // "whatever learns to pack itself is in here the day it does, with nothing to add". A new type is
 // CONNECTED there; nothing here is written again for it.
 
 #include "backend/mcp/mcpTool.h"
 
 #include "backend/metadataConfiguration.h"
+#include "backend/metadataSerialization.h"
 #include "core/description/typeDescription.h"
 #include "backend/system/value/valueType.h"
 #include "core/stringUtils.h"                // IsSameAs - how this tree compares text
@@ -109,7 +110,7 @@ public:
 	{
 		return ibMcpText("MAKE A TYPED VALUE, packed - the form every typed thing travels in here. A "
 			"schema stores its parameters this way, a saved setting stores a filter's right-hand "
-			"side this way, and the language's own SerializeValue writes exactly this.\n"
+			"side this way, and the language's own JSONString writes exactly this.\n"
 			  "\n"
 			"WHAT IT IS FOR: a value you could not otherwise state. JSON has a string, a number and "
 			"a flag, and that is all - so a DATE, a REFERENCE, an enumeration member cannot be "
@@ -200,7 +201,7 @@ public:
 		}
 
 		std::shared_ptr<ibDataNode> packed = std::make_shared<ibDataNode>();
-		activeMetaData->Serialize(made, *packed);
+		ibSerializeValue(made, *packed);
 
 		result.AddField(ibT("packed"), ibDataValue::Child(packed));
 		// …and what it came out as, in words, so a caller can see at once whether the type they named
@@ -262,7 +263,7 @@ public:
 			return false;
 		}
 
-		const ibValue read = activeMetaData->Deserialize(*packed);
+		const ibValue read = ibDeserializeValue(*packed, activeMetaData);
 
 		result.SetValue(ibT("text"), read.GetString());
 		result.SetValue(ibT("empty"), read.IsEmpty());

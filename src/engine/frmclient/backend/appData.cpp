@@ -1,10 +1,11 @@
 #include "appData.h"
 
-#include <wx/filename.h>
 #include <wx/utils.h>   // wxLaunchDefaultBrowser, wxYieldIfNeeded
 
 #include "core/diagnostics/journal.h"
 #include "core/fileSystem.h"   // the binary next to this one — RunApplication
+#include "core/localization/dictionary.h"   // ibDictionary::GetProcessLanguage — the base's language, RunApplication
+#include "core/diagnostics/crashGuard.h"   // CurrentPidPortable — whom a debug run goes with
 #include "core/startProcess.h"   // ibStartWebServer
 
 #include "frmclient/backend/mcp/mcpServer.h"
@@ -18,14 +19,15 @@ bool ibApplicationData::DesignerMode() const
 
 long ibApplicationData::RunApplication(const ibString& strAppName, bool searchDebug, bool useManifest) const
 {
-	// Resolve the binary next to this one, as the engine's: a bare name is looked up on PATH and in the working
-	// directory, and it is in neither. Quoted because a resolved path can contain a space and wxExecute splits on those.
-	wxFileName binary = wxFileName::DirName(ibProgramFolder());
-	binary.SetFullName(strAppName);
+	// Resolve the binary next to this one, as the engine's (ibExecutablePath): a bare name is looked up on PATH and in the
+	// working directory, and it is in neither; on macOS it is inside its bundle. Quoted because a resolved path can
+	// contain a space and wxExecute splits on those.
+	ibString executeCmd = ibT('"') + ibExecutablePath(strAppName) + ibT('"');
 
-	ibString executeCmd = binary.FileExists()
-		? (ibT('"') + ibString(binary.GetFullPath()) + ibT('"'))
-		: strAppName;
+	// THE LOCALE IT RUNS IN — the one asked for (--locale), else the base's: the desktop's passed its host's
+	// (ibApplicationHost::GetLocaleName) whether or not it was asked for one; here the language the login answered
+	// (ibLogin::Locale), the process's since. Neither — none passed, the program settles its own.
+	const ibString locale = !m_strLocale.IsEmpty() ? m_strLocale : ibDictionary::GetProcessLanguage();
 
 	// THE WEB SERVER publishes this base — the application server's, or the file base with its debugger — and the
 	// browser opens its page once the server says where it is; a login is the browser's. A base on a DBMS server is no
@@ -39,15 +41,15 @@ long ibApplicationData::RunApplication(const ibString& strAppName, bool searchDe
 		else if (!m_strFile.IsEmpty()) {
 			executeCmd += ibString::Format(ibT(" --file=\"%s\""), m_strFile);
 			if (searchDebug)
-				executeCmd += ibT(" --debug");
+				executeCmd += ibString::Format(ibT(" --debug --owner=%u"), ibCrashGuard::CurrentPidPortable());   // a debug run goes with whoever debugs it
 		}
 		else {
 			ibJournalWarning(ibT("process"), ibT("%s publishes a file base or a base of an application server, not one on a DBMS server"),
 				strAppName);
 			return 0;
 		}
-		if (!m_strLocale.IsEmpty())
-			executeCmd += ibString::Format(ibT(" --locale=%s"), m_strLocale);
+		if (!locale.IsEmpty())
+			executeCmd += ibString::Format(ibT(" --locale=%s"), locale);
 
 		ibString url;
 		const long pid = ibStartWebServer(executeCmd, url, []() { wxYieldIfNeeded(); });
@@ -86,8 +88,8 @@ long ibApplicationData::RunApplication(const ibString& strAppName, bool searchDe
 		executeCmd += ibString::Format(ibT(" --ibuser=%s"), m_strIBUser);
 	if (!m_strIBPassword.IsEmpty())
 		executeCmd += ibString::Format(ibT(" --ibpwd=%s"), m_strIBPassword);
-	if (!m_strLocale.IsEmpty())
-		executeCmd += ibString::Format(ibT(" --locale=%s"), m_strLocale);
+	if (!locale.IsEmpty())
+		executeCmd += ibString::Format(ibT(" --locale=%s"), locale);
 
 	return wxExecute(executeCmd);
 }

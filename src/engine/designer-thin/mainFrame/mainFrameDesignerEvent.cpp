@@ -452,6 +452,7 @@ void ibFrontendMainFrameDesigner::OnUpdateDebugCommand(wxUpdateUIEvent& event)
 #include "frmclient/mainFrame/settings/fontcolorsettingspanel.h"
 #include "frmclient/mainFrame/settings/editorsettingspanel.h"
 #include "frmclient/mainFrame/settings/mcpsettingspanel.h"
+#include "frmclient/mainFrame/output/outputWindow.h"
 
 #include "frmclient/win/dlgs/userList.h"
 
@@ -517,6 +518,13 @@ void ibFrontendMainFrameDesigner::ShowSchema(ibProtocol::ibSchema::ibKind schema
 
 		m_fontColorSettings = dialog.GetFontColorSettingsPanel()->GetSettings();
 		m_editorSettings = dialog.GetEditorSettingsPanel()->GetSettings();
+
+		// …and in force at once, as the desktop's UpdateEditorOptions put them: every document's views told (a module's
+		// sets its editor anew, a form's its Module page), and the output window.
+		for (ibFrontendDocument* const doc : m_docManager->GetDocumentsVector())
+			doc->UpdateAllViews();
+		if (m_outputWindow != nullptr)
+			m_outputWindow->SetFontColorSettings(m_fontColorSettings);
 	}
 
 	SaveOptions();
