@@ -16,6 +16,7 @@
 #include "backend/compiler/procUnit.h"
 #include "backend/appData.h"
 #include "backend/session/session.h"
+#include "backend/backend_localization.h"            // Tstr — the language a caption is read in
 
 #include "systemManagerEnum.h"
 
@@ -351,9 +352,15 @@ short ibValueSystemFunction::Asc(const ibValue& cSource)
 //
 // Since 2026-09-21 the reading itself says so — a source in no format is itself — and this function
 // no longer adds it back by hand.
+//
+// 🛑 NO LANGUAGE NAMED READ THE FIRST ONE WRITTEN. An empty code matches no language, so the reading
+// fell back to the first written, and `Tstr(text)` showed every user the same language whatever
+// theirs was (#612). Left unsaid, the language is the one every caption on the screen is read in.
 ibString ibValueSystemFunction::TStr(const ibValue& cSource, const ibValue& cLanguage)
 {
-	return ibLocalization::GetTranslateGetRawLocText(cLanguage.GetString(), cSource.GetString());
+	const ibString& language = cLanguage.GetString();
+	return ibLocalization::GetTranslateGetRawLocText(
+		!language.IsEmpty() ? language : ibBackendLocalization::GetUserLanguage(), cSource.GetString());
 }
 
 //--- Date and time:
@@ -802,6 +809,7 @@ ibString ibValueSystemFunction::XMLString(const ibValue& value)
 
 	ibXmlProvider provider;
 	provider.SetTypeResolver(ibMetaTypeResolver(activeMetaData));
+	provider.SetTypeLookup(LookupType);   // a value's type by name only where the name reads back as it
 	ibString text;
 	provider.Write(node, text);
 	return text;
@@ -824,19 +832,26 @@ ibValue ibValueSystemFunction::XMLValue(const ibString& text)
 
 ibValue ibValueSystemFunction::Evaluate(const ibString& strExpression)
 {
-	auto* puState = ibSession::GetPUState();
 	ibValue retValue;
-	ibProcUnit::Evaluate(strExpression, puState ? puState->GetCurrentRunContext() : nullptr, retValue, false);
+	if (strExpression.IsEmpty())
+		return retValue;
+
+	// In the kind of run that asked: ordinary work writes, a watch stays a watch. A failure is an error, not a value.
+	if (!ibProcUnit::Evaluate(strExpression, nullptr, retValue, false, ibBackendException::IsEvalMode()))
+		ibBackendException::Error(ibT("%s"), retValue.GetString());
 	return retValue;
 }
 
 void ibValueSystemFunction::Execute(const ibString& strExpression)
 {
-	if (ibBackendException::IsEvalMode())
+	if (ibBackendException::IsEvalMode() || strExpression.IsEmpty())
 		return;
-	auto* puState = ibSession::GetPUState();
+
+	// ⭐ ORDINARY WORK, NOT A WATCH: left to Evaluate's default the scope was a watch's, where a write answers false and
+	// changes nothing. A failure is an error.
 	ibValue retValue;
-	ibProcUnit::Evaluate(strExpression, puState ? puState->GetCurrentRunContext() : nullptr, retValue, true);
+	if (!ibProcUnit::Evaluate(strExpression, nullptr, retValue, true, eval_none))
+		ibBackendException::Error(ibT("%s"), retValue.GetString());
 }
 
 #include "core/formatString.h"

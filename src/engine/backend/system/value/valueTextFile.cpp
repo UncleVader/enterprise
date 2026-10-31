@@ -88,6 +88,27 @@ bool ibTextFromBytes(const void* data, size_t size, ibTextEncoding encoding, ibS
 	return !text.empty();
 }
 
+bool ibTextToBytes(const ibString& text, ibTextEncoding encoding, std::string& bytes)
+{
+	bytes.clear();
+	if (text.empty())
+		return true;
+	if (encoding == ibTextEncoding_UTF8) {
+		bytes = text.ToUtf8();
+		return true;
+	}
+	// ⚠ THE CONVERTER'S OWN BUFFER, not a wxString's mb_str(): that one points into the string it came from, and
+	// over a temporary `wxString(text)` it was gone before it was read — "ab" in UTF-16 came back as two other
+	// letters (2026-10-27).
+	const std::unique_ptr<wxMBConv> conv = ibCreateTextConv(encoding);
+	size_t length = 0;
+	const wxCharBuffer converted = conv->cWC2MB(text.wc_str(), wxNO_LEN, &length);
+	if (length == 0 || length == wxCONV_FAILED)
+		return false;
+	bytes.assign(converted.data(), length);
+	return true;
+}
+
 std::unique_ptr<wxMBConv> ibCreateTextConv(ibTextEncoding encoding)
 {
 	switch (encoding) {
@@ -119,16 +140,12 @@ std::unique_ptr<wxMBConv> ibCreateTextConv(ibTextEncoding encoding)
 	}
 }
 
-namespace {
-
-ibTextEncoding EncodingOf(ibValue** paParams, const long lSizeArray, long at)
+ibTextEncoding ibTextEncodingAt(ibValue** paParams, const long lSizeArray, const long at)
 {
-	if (lSizeArray > at && !paParams[at]->IsEmpty())
-		return paParams[at]->ConvertToEnumValue<ibTextEncoding>();
-	return ibTextEncoding_UTF8;
+	if (lSizeArray <= at || paParams[at]->GetType() == ibValueTypes::TYPE_EMPTY)
+		return ibTextEncoding_UTF8;
+	return paParams[at]->ConvertToEnumValue<ibTextEncoding>();
 }
-
-} // namespace
 
 //////////////////////////////////////////////////////////////////////
 // TextReader
@@ -156,7 +173,7 @@ bool ibValueTextReader::Init(ibValue** paParams, const long lSizeArray)
 {
 	if (lSizeArray < 1)
 		return false;
-	Open(paParams[0]->GetString(), EncodingOf(paParams, lSizeArray, 1));
+	Open(paParams[0]->GetString(), ibTextEncodingAt(paParams, lSizeArray, 1));
 	return true;
 }
 
@@ -246,7 +263,7 @@ bool ibValueTextReader::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 	case enOpen:
 		if (lSizeArray < 1)
 			return false;
-		Open(paParams[0]->GetString(), EncodingOf(paParams, lSizeArray, 1));
+		Open(paParams[0]->GetString(), ibTextEncodingAt(paParams, lSizeArray, 1));
 		return true;
 	case enReadLine: {
 		// THE END OF THE FILE IS Undefined - an empty line is a line.
@@ -316,7 +333,7 @@ bool ibValueTextWriter::Init(ibValue** paParams, const long lSizeArray)
 {
 	if (lSizeArray < 1)
 		return false;
-	Open(paParams[0]->GetString(), EncodingOf(paParams, lSizeArray, 1),
+	Open(paParams[0]->GetString(), ibTextEncodingAt(paParams, lSizeArray, 1),
 		lSizeArray > 2 && paParams[2]->GetBoolean());
 	return true;
 }
@@ -392,7 +409,7 @@ bool ibValueTextWriter::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 	case enOpen:
 		if (lSizeArray < 1)
 			return false;
-		Open(paParams[0]->GetString(), EncodingOf(paParams, lSizeArray, 1),
+		Open(paParams[0]->GetString(), ibTextEncodingAt(paParams, lSizeArray, 1),
 			lSizeArray > 2 && paParams[2]->GetBoolean());
 		return true;
 	case enWrite:

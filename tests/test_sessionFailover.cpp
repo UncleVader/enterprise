@@ -28,6 +28,7 @@
 #include "backend/databaseLayer/connectionPool.h"
 #include "backend/databaseLayer/databaseLayer.h"
 #include "backend/rpc/rpcMessage.h"     // ibRpcParseRequest — a call as the server's port reads it
+#include "backend/utils/passwordHash.hpp"
 #ifdef OES_USE_FIREBIRD
 #include "backend/databaseLayer/firebird/firebirdDatabaseLayer.h"
 #endif
@@ -313,6 +314,62 @@ TEST_F(SessionFailover, DropAndReturnByToken)
 	EXPECT_EQ(patched.result.GetInt(ibProtocol::ibFrame::Frame), frame + 1);
 }
 
+TEST_F(SessionFailover, ABaseWithNoUsersGivesTheAssistantItsChannel)
+{
+	int connection = 0;
+	const Rpc login = g_base->Call(Request(1, "login", PasswordLogin()), &connection);
+	ASSERT_TRUE(login.ok) << login.message;
+
+	// Open access: nobody to keep out, so the assistant's right, closed by default, is open here.
+	ibProtocolNode params;
+	params.SetValue(ibProtocol::ibLogin::Client, login.result.GetString(ibProtocol::ibLogin::Client))
+		.SetValue(ibProtocol::ibMcp::Command, static_cast<int>(ibProtocol::ibMcp::ibCommand::Channel));
+	const Rpc channel = g_base->Call(Request(2, "mcp", params), &connection);
+	EXPECT_TRUE(channel.ok) << channel.message;
+
+	g_base->host->Disconnect(&connection);
+}
+
+TEST_F(SessionFailover, APersonWhoseRolesDoNotGiveTheAssistantHasNoChannel)
+{
+	const ibString password = wxT("right-secret");
+
+	// A user with no role, gone again with the test: the other cases log into a base with no users.
+	struct OneUser {
+		ibGuid guid = wxNewUniqueGuid;
+		~OneUser()
+		{
+			ibApplicationInstanceScope working(g_base->app);
+			ibUserInfo::Delete(guid);
+		}
+	} user;
+	{
+		ibApplicationInstanceScope working(g_base->app);
+		ibUserInfo info;
+		info.m_strUserGuid = user.guid;
+		info.m_strUserName = wxT("clerk");
+		info.m_strUserFullName = wxT("Clerk");
+		info.m_strUserPassword = ibPasswordHash::Hash(password);
+		ASSERT_TRUE(ibUserInfo::Save(info));
+	}
+
+	int connection = 0;
+	ibProtocolNode credentials = PasswordLogin();
+	credentials.SetValue(ibProtocol::ibLogin::User, ibString(wxT("clerk")))
+		.SetValue(ibProtocol::ibLogin::Password, password);
+	const Rpc login = g_base->Call(Request(1, "login", credentials), &connection);
+	ASSERT_TRUE(login.ok) << login.message;
+
+	ibProtocolNode params;
+	params.SetValue(ibProtocol::ibLogin::Client, login.result.GetString(ibProtocol::ibLogin::Client))
+		.SetValue(ibProtocol::ibMcp::Command, static_cast<int>(ibProtocol::ibMcp::ibCommand::Channel));
+	const Rpc refused = g_base->Call(Request(2, "mcp", params), &connection);
+	EXPECT_FALSE(refused.ok);
+	EXPECT_EQ(refused.code, static_cast<long long>(ibProtocol::ibRefusal::NoRight));
+
+	g_base->host->Disconnect(&connection);
+}
+
 TEST_F(SessionFailover, LostCallIsNotExecutedTwice)
 {
 	int connection = 0;
@@ -388,6 +445,26 @@ TEST_F(SessionFailover, WrongTokenIsRefusedAndTheSessionStays)
 	EXPECT_TRUE(still.ok) << still.message;
 }
 
+// The door of every client: a login that comes again too soon is refused as a login is, which asks the person again,
+// and says how long to wait, not that the password is wrong.
+TEST_F(SessionFailover, ALoginThatComesAgainTooSoonIsToldToWait)
+{
+	ibProtocolNode params;
+	params.SetValue(ibProtocol::ibLogin::User, ibString(wxT("nobody")))
+		.SetValue(ibProtocol::ibLogin::Password, ibString(wxT("wrong")))
+		.SetValue(ibProtocol::ibLogin::Protocol, ibProtocol::Version);
+
+	const Rpc wrong = g_base->Call(Request(40, "login", params), nullptr);
+	EXPECT_FALSE(wrong.ok);
+	EXPECT_EQ(wrong.code, 401);
+
+	const Rpc again = g_base->Call(Request(41, "login", params), nullptr);
+	EXPECT_FALSE(again.ok);
+	EXPECT_EQ(again.code, 401);
+	EXPECT_TRUE(again.message.Contains(wxT("try again"))) << again.message;
+	EXPECT_NE(again.message, wrong.message);
+}
+
 TEST_F(SessionFailover, LiveSessionIsNotTakenByToken)
 {
 	int connection = 0;
@@ -425,6 +502,40 @@ TEST_F(SessionFailover, DesignerGetsNoToken)
 	const ibString client = login.result.GetString(ibProtocol::ibLogin::Client);
 	g_base->host->Disconnect(&connection);
 	EXPECT_FALSE(SessionRowExists(client));
+}
+
+// The designer's syntax helper asks the server for the names its articles do not write up, and what one offers.
+TEST_F(SessionFailover, TheSyntaxHelperAsksForATypeAndWhatItOffers)
+{
+	int connection = 0;
+	ibProtocolNode login = PasswordLogin();
+	login.SetValue(ibProtocol::ibLogin::Mode, static_cast<int>(ibProtocol::ibLogin::ibMode::Designer));
+	const Rpc opened = g_base->Call(Request(60, "login", login), &connection);
+	ASSERT_TRUE(opened.ok) << opened.message;
+	const ibString client = opened.result.GetString(ibProtocol::ibLogin::Client);
+
+	const auto ask = [&](long long id, const char* field) {
+		ibProtocolNode args;
+		args.SetValue(field, ibString(wxT("Array")));
+		ibProtocolNode params;
+		params.SetValue(ibProtocol::ibLogin::Client, client);
+		params.SetValue(ibProtocol::ibSchema::Schema, static_cast<int>(ibProtocol::ibSchema::ibKind::Types));
+		params.SetValue(ibProtocol::ibSchema::Args, args);
+		return g_base->Call(Request(id, "schema", params), &connection);
+	};
+
+	const Rpc listed = ask(61, ibProtocol::ibSchema::ibTypes::Query);
+	ASSERT_TRUE(listed.ok) << listed.message;
+	bool found = false;
+	for (const ibProtocolNode& row : listed.result.FindChild(ibProtocol::ibSchema::ibTypes::Types).Children())
+		found = found || row.GetString(ibProtocol::ibSchema::ibTypes::Name) == ibString(wxT("Array"));
+	EXPECT_TRUE(found);
+
+	const Rpc members = ask(62, ibProtocol::ibSchema::ibTypes::Name);
+	ASSERT_TRUE(members.ok) << members.message;
+	EXPECT_FALSE(members.result.FindChild(ibProtocol::ibSchema::ibTypes::Methods).Children().empty());
+
+	g_base->host->Disconnect(&connection);
 }
 
 TEST_F(SessionFailover, NoTokenWithoutASocket)
@@ -762,6 +873,116 @@ TEST(SessionFailoverClient, IdsStayMonotonicAcrossReconnect)
 
 	ASSERT_TRUE(communicator.Call(ibProtocol::ibMethod::Frame, params, result, refusal, error)) << error;
 	EXPECT_EQ(IdOf(raw->sent.back()), 4);
+}
+
+namespace {
+
+// A second connection whose socket can go: a dropped exchange closes it, as the real one's does.
+class ScriptedChannel : public ScriptedConnection {
+public:
+	bool open = true;
+
+	bool Exchange(const ibMemoryBuffer& request, ibProtocolNode& answer, ibProtocol::ibRefusal& refusal,
+		ibString& error) override
+	{
+		const bool exchanged = ScriptedConnection::Exchange(request, answer, refusal, error);
+		open = exchanged;
+		return exchanged;
+	}
+	bool IsOpen() const override { return open; }
+};
+
+// …and the connection that hands those out, in order.
+class ScriptedChannelOwner : public ScriptedConnection {
+public:
+	std::vector<std::unique_ptr<ibProtocolConnection>> channels;
+
+	std::unique_ptr<ibProtocolConnection> OpenChannel(ibString& error) override
+	{
+		if (channels.empty()) {
+			error = wxT("no script");
+			return nullptr;
+		}
+		std::unique_ptr<ibProtocolConnection> channel = std::move(channels.front());
+		channels.erase(channels.begin());
+		return channel;
+	}
+};
+
+ibMemoryBuffer ChannelKey(long long id, const ibString& key)
+{
+	ibProtocolNode result;
+	result.SetValue(ibProtocol::ibMcp::Channel, key);
+	return Answer(id, result);
+}
+
+ibMemoryBuffer McpAnswer(long long id, const ibString& message)
+{
+	ibProtocolNode result;
+	result.SetValue(ibProtocol::ibMcp::Message, message).SetValue(ibProtocol::ibMcp::Status, 200);
+	return Answer(id, result);
+}
+
+int McpCommandOf(const ibMemoryBuffer& packet)
+{
+	return static_cast<int>(NodeOf(packet).FindChild(ibProtocol::ibRpc::Params).GetInt(ibProtocol::ibMcp::Command));
+}
+
+} // namespace
+
+TEST(SessionFailoverClient, AssistantChannelOpensAgainAndALostCallIsNotSentAgain)
+{
+	const int listen = static_cast<int>(ibProtocol::ibMcp::ibCommand::Listen);
+	const int message = static_cast<int>(ibProtocol::ibMcp::ibCommand::Message);
+
+	auto first = std::make_unique<ScriptedChannel>();
+	ScriptedChannel* const firstRaw = first.get();
+	firstRaw->fail = { false, true };
+	firstRaw->answers = { McpAnswer(1, ibString()) };
+
+	// The channel's ids go on across the connections, as the client's do.
+	auto second = std::make_unique<ScriptedChannel>();
+	ScriptedChannel* const secondRaw = second.get();
+	secondRaw->fail = { false, false };
+	secondRaw->answers = { McpAnswer(3, ibString()), McpAnswer(4, wxT("answered")) };
+
+	auto script = std::make_unique<ScriptedChannelOwner>();
+	ScriptedChannelOwner* const raw = script.get();
+	raw->channels.push_back(std::move(first));
+	raw->channels.push_back(std::move(second));
+	raw->fail = { false, false, false };
+	raw->answers = {
+		Packet("{\"id\":1,\"result\":{\"Client\":\"client-1\",\"Protocol\":7,\"Token\":\"tok\","
+			"\"Features\":[\"resume\"],\"Frame\":1,\"Title\":\"Home\"}}"),
+		ChannelKey(2, wxT("key-1")),
+		ChannelKey(3, wxT("key-2")),
+	};
+
+	ibCommunicator communicator(std::move(script));
+	ibProtocolNode result;
+	ibProtocol::ibRefusal refusal = ibProtocol::ibRefusal::None;
+	ibString error;
+	ASSERT_TRUE(communicator.Login(wxT("user"), wxT("secret"), ibProtocol::ibLogin::ibMode::Runtime, result, refusal, error)) << error;
+	ASSERT_TRUE(communicator.ListenMcp([](const ibProtocolNode&) {}, refusal, error)) << error;
+
+	ibProtocolNode params;
+	params.SetValue(ibProtocol::ibMcp::Command, message);
+
+	// The socket goes under the call: false, and the call was offered once.
+	EXPECT_FALSE(communicator.Mcp(params, result, refusal, error));
+	ASSERT_EQ(firstRaw->sent.size(), 2u);
+	EXPECT_EQ(McpCommandOf(firstRaw->sent[0]), listen);
+	EXPECT_EQ(McpCommandOf(firstRaw->sent[1]), message);
+	EXPECT_EQ(raw->sent.size(), 2u);
+
+	// The next call finds another connection, bound by a new key, and goes on that.
+	ASSERT_TRUE(communicator.Mcp(params, result, refusal, error)) << error;
+	EXPECT_EQ(result.GetString(ibProtocol::ibMcp::Message), wxT("answered"));
+	ASSERT_EQ(secondRaw->sent.size(), 2u);
+	EXPECT_EQ(McpCommandOf(secondRaw->sent[0]), listen);
+	EXPECT_EQ(NodeOf(secondRaw->sent[0]).FindChild(ibProtocol::ibRpc::Params).GetString(ibProtocol::ibMcp::Channel), wxT("key-2"));
+	EXPECT_EQ(McpCommandOf(secondRaw->sent[1]), message);
+	EXPECT_EQ(raw->sent.size(), 3u);
 }
 
 namespace {

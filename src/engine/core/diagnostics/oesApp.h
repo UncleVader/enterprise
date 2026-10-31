@@ -41,6 +41,10 @@
 #include <wx/string.h>
 #include <wx/thread.h>
 
+#ifndef __WXMSW__
+#include <signal.h>  // SIGTERM / SIGINT, a request to quit; sigaction, wx's handler read back
+#endif
+
 #include <cstdio>    // stderr, for an assertion raised before the journal is open
 #include <cstdlib>   // EXIT_FAILURE
 #include <exception>
@@ -139,6 +143,23 @@ public:
 		// deliberately ignored — CannotChange is the correct answer on a platform with no such
 		// concept, and it is not a startup failure anywhere.
 		SetAppearance(Appearance::Light);
+
+		// ⭐ SIGTERM AND SIGINT ARE A REQUEST TO QUIT, and the application answers it. Unanswered, the only answer was
+		// the database client's: Firebird's own handler shuts every attachment down and the process lives on — the
+		// window open over a base that is gone, its session registry failing once a second ("invalid database handle")
+		// until somebody killed it, or until a failure took the terminate path (enterprise-thin, 2026-10-29).
+		//
+		// Installed BEFORE DoOnInit opens a base (ibCrashGuard::InstallStopSignals says why). The main loop is woken by
+		// wx's own handler: SetSignalHandler puts it in place and calls OnStopSignal from the loop, and it is read back
+		// to be the wake of the door in core, which sits over it; nothing polls. Windows has no such signal for a window:
+		// a process is asked to go by WM_CLOSE (ibStopProcess).
+#ifndef __WXMSW__
+		if (SetSignalHandler(SIGTERM, &ibWxApp::OnStopSignal) && SetSignalHandler(SIGINT, &ibWxApp::OnStopSignal)) {
+			struct sigaction wxHandler;
+			if (::sigaction(SIGTERM, nullptr, &wxHandler) == 0)
+				ibCrashGuard::InstallStopSignals(wxHandler.sa_handler);
+		}
+#endif
 
 		return DoOnInit();
 	}
@@ -308,6 +329,19 @@ public:
 #endif // wxUSE_ON_FATAL_EXCEPTION
 
 protected:
+
+#ifndef __WXMSW__
+	// SIGTERM / SIGINT, on the main loop: the main window closes, as if the person closed it, except that nobody is
+	// asked anything — the base, the sessions and the journal are let go in order. A signal cannot answer a question.
+	static void OnStopSignal(int)
+	{
+		ibJournalInfo(wxT("start"), wxT("asked to stop by a signal - closing"));
+		if (wxWindow* const top = wxTheApp->GetTopWindow())
+			top->Close(true);
+		else
+			wxTheApp->ExitMainLoop();
+	}
+#endif
 
 	// Startup-error surface. Logs to file + prefers wxMessageBox if the
 	// app has reached an UI-ready state, otherwise falls back to

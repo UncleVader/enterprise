@@ -17,12 +17,13 @@
 #include "core/exception.h"
 #include "core/fdatetime.h"           // ibDateTime — a detached session's end, as this clock reads it
 #include "core/formatString.h"        // ibFormatString — a value presented through Format()'s codes
-#include "backend/mcp/mcpServer.h"      // the base's assistant access — where it listens, with the frame
+#include "frmserver/mcp/mcpServer.h"      // the person's assistant server
 #include "backend/metadataConfiguration.h"
 #include "backend/metaCollection/metaFormObject.h"   // ibBackendCommandItem::Execute
 #include "backend/rpc/rpcMessage.h"
 #include "core/serialize/dataBuilder.h"
 #include "backend/session/session.h"
+#include "backend/session/sessionException.h"
 #include "backend/temp/tempStorage.h"   // the client's files
 #include "backend/userInfo.h"           // users — the names the login window offers
 #include "core/crypto/sessionToken.h"
@@ -384,8 +385,10 @@ ibClientHost::~ibClientHost()
 		std::lock_guard<std::mutex> lock(m_mutex);
 		clients.swap(m_clients);
 	}
-	for (auto& entry : clients)
+	for (auto& entry : clients) {
+		StopMcpServer(*entry.second);
 		entry.second->instance->OnExit();
+	}
 }
 
 ibClientHost* ibClientHost::Find(const ibApplicationInstance* applicationInstance)
@@ -393,6 +396,47 @@ ibClientHost* ibClientHost::Find(const ibApplicationInstance* applicationInstanc
 	std::lock_guard<std::mutex> lock(s_hostsMutex);
 	auto it = s_hosts.find(applicationInstance);
 	return it != s_hosts.end() ? it->second : nullptr;
+}
+
+ibMcpServer* ibClientHost::GetMcpServer(const ibSession* session)
+{
+	ibClientHost* const host = session != nullptr ? Find(session->GetApplicationInstance()) : nullptr;
+	if (host == nullptr)
+		return nullptr;
+
+	std::shared_ptr<Client> found;
+	{
+		std::lock_guard<std::mutex> lock(host->m_mutex);
+		for (const auto& entry : host->m_clients) {
+			if (entry.second->instance->ShareSession().get() == session) {
+				found = entry.second;
+				break;
+			}
+		}
+	}
+	return found != nullptr ? host->GetMcpServer(*found) : nullptr;
+}
+
+ibMcpServer* ibClientHost::GetMcpServer(Client& client)
+{
+	std::lock_guard<std::mutex> lock(client.mcpMutex);
+	if (client.mcpServer == nullptr) {
+		const std::shared_ptr<ibSession> session = client.instance->ShareSession();
+		if (session == nullptr)
+			return nullptr;
+		client.mcpServer = std::make_unique<ibMcpServer>(ib::ClientHostCtorToken{ m_applicationInstance }, session.get());
+	}
+	return client.mcpServer.get();
+}
+
+void ibClientHost::StopMcpServer(Client& client)
+{
+	// In the client's session: what it lets go of is that session's, and a thread going through here may be nobody's.
+	const std::shared_ptr<ibSession> session = client.instance->ShareSession();
+	const ibSessionScope inThisSession(session.get());
+	std::lock_guard<std::mutex> lock(client.mcpMutex);
+	if (client.mcpServer != nullptr)
+		client.mcpServer->Stop();
 }
 
 std::shared_ptr<ibClientHost::Client> ibClientHost::FindClient(const ibString& id) const
@@ -413,6 +457,7 @@ void ibClientHost::RemoveClient(const ibString& id)
 		client = it->second;
 		m_clients.erase(it);
 	}
+	StopMcpServer(*client);
 	client->instance->OnExit();
 }
 
@@ -540,6 +585,7 @@ void ibClientHost::Disconnect(const void* connection)
 	// Who was on this socket, copied out before anyone is classified: a thin client stays, for Resume seconds;
 	// every other kind ends as it always has. The host's destructor does not come through here — it ends them all.
 	std::vector<std::shared_ptr<Client>> matched;
+	std::vector<std::shared_ptr<Client>> transportGone;
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		m_notifiers.erase(connection);
@@ -547,9 +593,22 @@ void ibClientHost::Disconnect(const void* connection)
 			if (entry.second->connection.load(std::memory_order_acquire) == connection)
 				matched.push_back(entry.second);
 			// A debugger's connection takes nobody with it: its client is no longer told the debugger's news.
-			if (entry.second->debugConnection.load(std::memory_order_acquire) == connection)
-				entry.second->debugConnection.store(nullptr, std::memory_order_release);
+			if (entry.second->debugChannel.connection.load(std::memory_order_acquire) == connection)
+				entry.second->debugChannel.connection.store(nullptr, std::memory_order_release);
+			// …nor an assistant's: only nothing is listening to that person's server any more.
+			if (entry.second->mcpChannel.connection.load(std::memory_order_acquire) == connection) {
+				entry.second->mcpChannel.connection.store(nullptr, std::memory_order_release);
+				transportGone.push_back(entry.second);
+			}
 		}
+	}
+	for (const std::shared_ptr<Client>& client : transportGone) {
+		const std::shared_ptr<ibSession> session = client->instance->ShareSession();
+		const ibSessionScope inThisSession(session.get());
+		std::lock_guard<std::mutex> lock(client->mcpMutex);
+		// Unless the client has already opened another in its place: that one is listening.
+		if (client->mcpServer != nullptr && client->mcpChannel.connection.load(std::memory_order_acquire) == nullptr)
+			client->mcpServer->Listen(nullptr);
 	}
 
 	struct Held {
@@ -601,8 +660,10 @@ void ibClientHost::Disconnect(const void* connection)
 				client->connection.store(nullptr, std::memory_order_release);
 		}
 	}
-	for (const std::shared_ptr<Client>& client : gone)
+	for (const std::shared_ptr<Client>& client : gone) {
+		StopMcpServer(*client);
 		client->instance->OnExit();
+	}
 }
 
 bool ibClientHost::LoggedIn(const void* connection) const
@@ -612,7 +673,8 @@ bool ibClientHost::LoggedIn(const void* connection) const
 
 	std::lock_guard<std::mutex> lock(m_mutex);
 	for (const auto& it : m_clients) {
-		if (it.second->connection == connection || it.second->debugConnection == connection)
+		if (it.second->connection == connection || it.second->debugChannel.connection == connection
+			|| it.second->mcpChannel.connection == connection)
 			return true;
 	}
 	return false;
@@ -658,7 +720,20 @@ void ibClientHost::NotifyChanged(const ibClientInstance* instance)
 
 void ibClientHost::NotifyDebug(const ibClientInstance* instance, const ibDataNode& event)
 {
-	// As NotifyChanged — the id and the notifier taken under the lock, sent outside it; the debugger's connection's, and
+	NotifyChannel(instance, &Client::debugChannel, ibProtocol::ibRpc::Debug, event);
+}
+
+void ibClientHost::NotifyMcp(const ibClientInstance* instance, const ibString& message)
+{
+	ibDataNode params;
+	params.SetValue(ibProtocol::ibMcp::Message, message);
+	NotifyChannel(instance, &Client::mcpChannel, ibProtocol::ibRpc::Mcp, params);
+}
+
+void ibClientHost::NotifyChannel(const ibClientInstance* instance, Channel Client::* channel, const char* method,
+	const ibDataNode& params)
+{
+	// As NotifyChanged — the id and the notifier taken under the lock, sent outside it; the channel's connection's, and
 	// told whatever call is being answered: the news is no part of a frame.
 	ibString id;
 	std::function<void(const ibMemoryBuffer& packet)> notify;
@@ -667,7 +742,7 @@ void ibClientHost::NotifyDebug(const ibClientInstance* instance, const ibDataNod
 		for (const auto& [clientId, client] : m_clients) {
 			if (client->instance.get() != instance)
 				continue;
-			const auto found = m_notifiers.find(client->debugConnection.load(std::memory_order_acquire));
+			const auto found = m_notifiers.find(((*client).*channel).connection.load(std::memory_order_acquire));
 			if (found != m_notifiers.end()) {
 				id = clientId;
 				notify = found->second;
@@ -680,7 +755,7 @@ void ibClientHost::NotifyDebug(const ibClientInstance* instance, const ibDataNod
 
 	// The envelope written as NotifyChanged's — the method where an answer's id stands, which is how a connection tells
 	// the news from an answer (ibProtocolConnectionServer).
-	notify(Notification(ibProtocol::ibRpc::Debug, event, id));
+	notify(Notification(method, params, id));
 }
 
 //*******************************************************************************************
@@ -761,7 +836,8 @@ std::optional<ibDataNode> ibClientHost::Call(const ibRpcRequest& given, const vo
 		}
 	} slot;
 	unsigned char callDigest[32] = {};
-	if (request.WantsAnswer() && !tokenLogin && method != ibProtocol::ibMethod::Login && method != ibProtocol::ibMethod::Debug) {
+	if (request.WantsAnswer() && !tokenLogin && method != ibProtocol::ibMethod::Login && method != ibProtocol::ibMethod::Debug
+		&& method != ibProtocol::ibMethod::Mcp) {
 		slot.client = FindClient(request.m_params.GetValue<ibString>(ibProtocol::ibLogin::Client));
 		if (slot.client) {
 			std::unique_lock<std::mutex> lock(slot.client->lock);
@@ -814,7 +890,20 @@ std::optional<ibDataNode> ibClientHost::Call(const ibRpcRequest& given, const vo
 	ibString error;
 	ibJournalStopwatch took;
 	took.Resume();
-	const bool done = Call(method, request.m_params, result, refusal, error, connection, address);
+	// ⚠ A CALL IS ANSWERED, WHATEVER CAME OUT OF IT. What a method does not refuse itself — its session's worker
+	// refused the task (no room for a stack, 2026-10-31) — went past the answer, and the client waited for ever.
+	bool done = false;
+	try {
+		done = Call(method, request.m_params, result, refusal, error, connection, address);
+	}
+	catch (const std::exception& err) {
+		refusal = ibProtocol::ibRefusal::Failed;
+		error = ibString::FromUTF8(err.what());
+	}
+	catch (...) {
+		refusal = ibProtocol::ibRefusal::Failed;
+		error = ibT("the call ended with an exception");
+	}
 	took.Pause();
 
 	// EACH CALL, A LINE — what a client asked, how long it took, why it was refused: the client's side of the work, in
@@ -862,6 +951,15 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 	error.clear();
 	// Why, and its text — said together by every refusal below.
 	const auto refuse = [&refusal, &error](ibProtocol::ibRefusal why, const ibString& text) { refusal = why; error = text; };
+	// THE PROCESS'S MEMORY LIMIT, asked here and not at the work: a refusal takes no fiber. Near it what is new — a client,
+	// a window — is not let in; a little further nothing is done but leaving. Answers whether it refused.
+	const auto refuseIfFull = [&refuse](bool (ibApplicationHost::*question)() const) {
+		const ibApplicationHost* const host = ibApplicationHost::Get();
+		if (host == nullptr || !(host->*question)())
+			return false;
+		refuse(ibProtocol::ibRefusal::NotNow, ibString::Format(ibT("the server is full: it is near its memory limit of %zu MB"), host->GetMemoryLimit()));
+		return true;
+	};
 
 	if (method == ibProtocol::ibMethod::Unknown) {
 		refuse(ibProtocol::ibRefusal::NotFound, ibT("no such method"));
@@ -892,7 +990,12 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 			try {
 				if (client->instance->Login(params.GetValue<ibString>(ibProtocol::ibLogin::User), params.GetValue<ibString>(ibProtocol::ibLogin::Password)))
 					return true;
-				refuse(ibProtocol::ibRefusal::LoginRefused, ibT("the login was refused"));
+				refuse(ibProtocol::ibRefusal::LoginRefused, _("Wrong user or password entered!"));
+			}
+			// Told to wait, the person is still asked: the client's window stays, and says these words.
+			catch (const ibBackendSessionException& err) {
+				refuse(err.GetKind() == ibBackendSessionException::Kind::LoginThrottled ? ibProtocol::ibRefusal::LoginRefused : ibProtocol::ibRefusal::NotNow,
+					err.GetErrorDescription());
 			}
 			catch (const ibCoreException& err) {
 				refuse(ibProtocol::ibRefusal::NotNow, err.GetErrorDescription());
@@ -902,7 +1005,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 		if (protocol < 1) {
 			refuse(ibProtocol::ibRefusal::BadParameter, ibString::Format(ibT("no protocol version %d"), protocol));
 		}
-		else if (logIn()) {
+		else if (!refuseIfFull(&ibApplicationHost::IsMemoryLimitNear) && logIn()) {
 			{
 				std::lock_guard<std::mutex> lock(m_mutex);
 				m_clients[id] = client;
@@ -990,6 +1093,17 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 			refuse(ibProtocol::ibRefusal::NoSession, ibT("no such client"));
 		else
 			done = Debug(*client, params, result, refusal, error, connection);
+	}
+	else if (method != ibProtocol::ibMethod::Close && refuseIfFull(&ibApplicationHost::IsMemoryFull)) {
+		// Said. Closing a window, as Logout above, is how the memory comes back.
+	}
+	else if (method == ibProtocol::ibMethod::Mcp) {
+		// ⭐ BESIDE THE CLIENT'S CALLS, as the debugger's (protocol 7): a tool working does not hold the person's window up.
+		const std::shared_ptr<Client> client = FindClient(params.GetValue<ibString>(ibProtocol::ibLogin::Client));
+		if (client == nullptr)
+			refuse(ibProtocol::ibRefusal::NoSession, ibT("no such client"));
+		else
+			done = Mcp(*client, params, result, refusal, error, connection);
 	}
 	else {
 		const std::shared_ptr<Client> client = FindClient(params.GetValue<ibString>(ibProtocol::ibLogin::Client));
@@ -1083,7 +1197,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 				else if (command == nullptr) {
 					refuse(ibProtocol::ibRefusal::NotFound, ibString::Format(ibT("no command with id %d"), metaId));
 				}
-				else {
+				else if (!refuseIfFull(&ibApplicationHost::IsMemoryLimitNear)) {
 					const ibInterfaceCommandType commandType = static_cast<ibInterfaceCommandType>(type);
 					done = Run(*client, [command, commandType](ibClientFrame*) { command->Execute(commandType); }, since,
 						result, refusal, error);
@@ -1311,6 +1425,9 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 				if (frame == nullptr || session == nullptr) {
 					refuse(ibProtocol::ibRefusal::NoSession, ibT("the client has no session"));
 				}
+				else if (refuseIfFull(&ibApplicationHost::IsMemoryLimitNear)) {
+					// Said.
+				}
 				else if (!params.FindField(ibProtocol::ibFile::File)) {
 					// No file: a NEW document, as the desktop's File → New with a template picked — the template that
 					// opens the Extension.
@@ -1362,7 +1479,7 @@ bool ibClientHost::Call(ibProtocol::ibMethod method, const ibDataNode& params, i
 				bool enabled = false;
 				if (frame == nullptr || session == nullptr)
 					refuse(ibProtocol::ibRefusal::NoSession, ibT("the client has no session"));
-				else if (frame->GetDocumentManager()->GetCommands().count(command) == 0)
+				else if (!frame->GetDocumentManager()->GetCommands().contains(command))
 					refuse(ibProtocol::ibRefusal::NotFound, ibT("no such command"));
 				else {
 					session->Submit([frame, command, &enabled]() { enabled = frame->IsCommandEnabled(command); }).get();
@@ -1410,55 +1527,133 @@ bool ibClientHost::Debug(Client& client, const ibDataNode& params, ibDataNode& r
 			refuse(ibProtocol::ibRefusal::NoSession, ibT("the client is not connected"));
 			return false;
 		}
-		const std::vector<unsigned char> raw = ibSessionToken::Generate();
-		unsigned char digest[ibSessionToken::kDigest];
-		if (raw.size() != ibSessionToken::kBytes || !ibSessionToken::Hash(raw.data(), raw.size(), digest)) {
-			refuse(ibProtocol::ibRefusal::Failed, ibT("the key could not be drawn"));
-			return false;
-		}
-		{
-			std::lock_guard<std::mutex> lock(m_mutex);
-			std::memcpy(client.channelDigest, digest, ibSessionToken::kDigest);
-			client.hasChannelKey = true;
-		}
-		// …ending in this server's route, as the token does: the second connection is carried to the same server.
-		result.SetValue(ibProtocol::ibDebug::Channel,
-			ibSessionToken::WithRoute(ibSessionToken::Hex(raw.data(), raw.size()), m_route));
-		return true;
+		return DrawChannelKey(client.debugChannel, result, refusal, error);
 	}
 
-	if (command == ibProtocol::ibDebug::ibCommand::Listen) {
-		// THE KEY PRESENTED, on the connection it binds — compared as its digest, in constant time, and taken: a key binds
-		// once. A connection without a notifier is bound all the same, and is told nothing.
-		unsigned char raw[ibSessionToken::kBytes];
-		unsigned char digest[ibSessionToken::kDigest];
-		ibString key;
-		unsigned route = 0;
-		ibSessionToken::SplitRoute(params.GetValue<ibString>(ibProtocol::ibDebug::Channel), key, route);
-		const bool read = connection != nullptr
-			&& ibSessionToken::ParseHex(key, raw)
-			&& ibSessionToken::Hash(raw, ibSessionToken::kBytes, digest);
-		bool bound = false;
-		{
-			std::lock_guard<std::mutex> lock(m_mutex);
-			if (read && client.hasChannelKey && ibSessionToken::DigestEqual(client.channelDigest, digest)) {
-				client.hasChannelKey = false;
-				client.debugConnection.store(connection, std::memory_order_release);
-				bound = true;
-			}
-		}
-		if (!bound)
-			refuse(ibProtocol::ibRefusal::LoginRefused, ibT("the channel was refused"));
-		return bound;
-	}
+	if (command == ibProtocol::ibDebug::ibCommand::Listen)
+		return BindChannel(client.debugChannel, params.GetValue<ibString>(ibProtocol::ibDebug::Channel), connection, refusal, error);
 
 	// …the rest by the connection the debugger listens on, or by the client's own.
-	if (!holder && (connection == nullptr || client.debugConnection.load(std::memory_order_acquire) != connection)) {
+	if (!holder && (connection == nullptr || client.debugChannel.connection.load(std::memory_order_acquire) != connection)) {
 		refuse(ibProtocol::ibRefusal::NoSession, ibT("the client is not connected"));
 		return false;
 	}
 	client.instance->Touch();
 	return debugger->Command(command, params, result, refusal, error);
+}
+
+bool ibClientHost::Mcp(Client& client, const ibDataNode& params, ibDataNode& result, ibProtocol::ibRefusal& refusal,
+	ibString& error, const void* connection)
+{
+	const auto refuse = [&refusal, &error](ibProtocol::ibRefusal why, const ibString& text) { refusal = why; error = text; };
+	const ibProtocol::ibMcp::ibCommand command = static_cast<ibProtocol::ibMcp::ibCommand>(params.GetValue<std::int32_t>(ibProtocol::ibMcp::Command));
+
+	// ⭐ IN THE CLIENT'S SESSION — held for the call, and bound: metadata, rights and the configuration answer as for the
+	// person, whose connection this is. Held: a client going mid-call does not take the session from under a tool.
+	const std::shared_ptr<ibSession> session = client.instance->ShareSession();
+	ibClientFrame* const frame = client.instance->GetFrame();
+	if (session == nullptr || frame == nullptr) {
+		refuse(ibProtocol::ibRefusal::NoSession, ibT("the client has no session"));
+		return false;
+	}
+	const ibSessionScope inThisSession(session.get());
+
+	// The one question a menu item asks too (ibSchemaMcpServer::AccessRight): a person whose roles do not give the assistant
+	// has no channel to it either.
+	if (!frame->IsSchemaAllowed(ibProtocol::ibSchema::ibKind::McpServer)) {
+		refuse(ibProtocol::ibRefusal::NoRight, ibT("the person's roles do not give the assistant"));
+		return false;
+	}
+
+	if (command == ibProtocol::ibMcp::ibCommand::Channel) {
+		if (!MayCall(client.connectionless, client.connection.load(std::memory_order_acquire),
+			client.resumeDeadlineMs.load(std::memory_order_acquire), connection)) {
+			refuse(ibProtocol::ibRefusal::NoSession, ibT("the client is not connected"));
+			return false;
+		}
+		return DrawChannelKey(client.mcpChannel, result, refusal, error);
+	}
+
+	ibMcpServer* const server = GetMcpServer(client);
+	if (server == nullptr) {
+		refuse(ibProtocol::ibRefusal::NoSession, ibT("the client has no session"));
+		return false;
+	}
+
+	if (command == ibProtocol::ibMcp::ibCommand::Listen) {
+		if (!BindChannel(client.mcpChannel, params.GetValue<ibString>(ibProtocol::ibMcp::Channel), connection, refusal, error))
+			return false;
+		const ibClientInstance* const instance = client.instance.get();
+		server->Listen([this, instance](const ibString& message) { NotifyMcp(instance, message); });
+		return true;
+	}
+
+	if (command != ibProtocol::ibMcp::ibCommand::Message) {
+		refuse(ibProtocol::ibRefusal::NotFound, ibT("the assistant has no such command"));
+		return false;
+	}
+	if (connection == nullptr || client.mcpChannel.connection.load(std::memory_order_acquire) != connection) {
+		refuse(ibProtocol::ibRefusal::NoSession, ibT("the client is not connected"));
+		return false;
+	}
+	client.instance->Touch();
+
+	std::int32_t status = 0;
+	const ibString answer = server->Call(params.GetValue<ibString>(ibProtocol::ibMcp::Message),
+		params.GetValue<ibString>(ibProtocol::ibMcp::ProtocolVersion), params.GetValue<ibString>(ibProtocol::ibMcp::Method),
+		params.GetValue<ibString>(ibProtocol::ibMcp::Name), status);
+	result.SetValue(ibProtocol::ibMcp::Message, answer);
+	result.SetValue(ibProtocol::ibMcp::Status, status);
+	return true;
+}
+
+bool ibClientHost::DrawChannelKey(Channel& channel, ibDataNode& result, ibProtocol::ibRefusal& refusal, ibString& error)
+{
+	const std::vector<unsigned char> raw = ibSessionToken::Generate();
+	unsigned char digest[ibSessionToken::kDigest];
+	if (raw.size() != ibSessionToken::kBytes || !ibSessionToken::Hash(raw.data(), raw.size(), digest)) {
+		refusal = ibProtocol::ibRefusal::Failed;
+		error = ibT("the key could not be drawn");
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		std::memcpy(channel.digest, digest, ibSessionToken::kDigest);
+		channel.hasKey = true;
+	}
+	// …ending in this server's route, as the token does: the second connection is carried to the same server.
+	result.SetValue(ibProtocol::ibDebug::Channel,
+		ibSessionToken::WithRoute(ibSessionToken::Hex(raw.data(), raw.size()), m_route));
+	return true;
+}
+
+bool ibClientHost::BindChannel(Channel& channel, const ibString& given, const void* connection,
+	ibProtocol::ibRefusal& refusal, ibString& error)
+{
+	// THE KEY PRESENTED, on the connection it binds — compared as its digest, in constant time, and taken: a key binds
+	// once. A connection without a notifier is bound all the same, and is told nothing.
+	unsigned char raw[ibSessionToken::kBytes];
+	unsigned char digest[ibSessionToken::kDigest];
+	ibString key;
+	unsigned route = 0;
+	ibSessionToken::SplitRoute(given, key, route);
+	const bool read = connection != nullptr
+		&& ibSessionToken::ParseHex(key, raw)
+		&& ibSessionToken::Hash(raw, ibSessionToken::kBytes, digest);
+	bool bound = false;
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		if (read && channel.hasKey && ibSessionToken::DigestEqual(channel.digest, digest)) {
+			channel.hasKey = false;
+			channel.connection.store(connection, std::memory_order_release);
+			bound = true;
+		}
+	}
+	if (!bound) {
+		refusal = ibProtocol::ibRefusal::LoginRefused;
+		error = ibT("the channel was refused");
+	}
+	return bound;
 }
 
 //*******************************************************************************************
@@ -1489,7 +1684,21 @@ bool ibClientHost::Run(Client& client, std::function<void(ibClientFrame*)> work,
 		ibClientInstance* const instance = client.instance.get();
 		client.unsettled = session->Submit([instance, work]() { work(instance->GetFrame()); }).share();
 	}
-	Settle(client);
+	try {
+		Settle(client);
+	}
+	catch (const std::exception& err) {
+		client.answering.store(false, std::memory_order_release);
+		refusal = ibProtocol::ibRefusal::Failed;
+		error = ibString::FromUTF8(err.what());
+		return false;
+	}
+	catch (...) {
+		client.answering.store(false, std::memory_order_release);
+		refusal = ibProtocol::ibRefusal::Failed;
+		error = ibT("the client's work ended with an exception");
+		return false;
+	}
 	const std::int64_t settled = NowMs();
 
 	// The frame drawn on the worker — inside the waiting work when it waits for a response (it runs the session's
@@ -1570,7 +1779,7 @@ bool ibClientHost::Run(Client& client, std::function<void(ibClientFrame*)> work,
 			for (const ibDataNode& tab : tabs->Children())
 				open.insert(static_cast<std::int32_t>(tab.GetMetaId()));
 		for (auto it = client.views.begin(); it != client.views.end();)
-			it = open.count(it->first) != 0 ? std::next(it) : client.views.erase(it);
+			it = open.contains(it->first) ? std::next(it) : client.views.erase(it);
 	}
 
 	client.sent = std::move(drawn);
@@ -1583,18 +1792,18 @@ void ibClientHost::Settle(Client& client)
 		return;
 	for (;;) {
 		if (client.unsettled.wait_for(std::chrono::milliseconds(20)) == std::future_status::ready) {
+			const std::shared_future<void> work = client.unsettled;
+			client.unsettled = std::shared_future<void>();
 			try {
-				client.unsettled.get();
+				work.get();
 			}
-			catch (const std::exception& err) {
-				ibJournalInfo(ibT("client"), ibT("the client's work ended with an exception: %s"), ibString::FromUTF8(err.what()));
-			}
-			catch (...) {
+			catch (const ibCoreException& err) {
 				// A failure of the work reported itself where it happened — to the frame's messages, which the
 				// client receives with the frame.
-				ibJournalInfo(ibT("client"), ibT("the client's work ended with an exception"));
+				ibJournalInfo(ibT("client"), ibT("the client's work ended with an exception: %s"), err.GetErrorDescription());
 			}
-			client.unsettled = std::shared_future<void>();
+			// …and anything else told nobody — the worker refused the task, and it never ran (no room for a stack,
+			// 2026-10-31): it goes to the caller, or the client is answered a frame as if the work were done.
 			return;
 		}
 		ibClientFrame* const frame = client.instance->GetFrame();
@@ -1609,13 +1818,7 @@ void ibClientHost::DrawFrame(ibClientFrame* frame, ibDataNode& state, ibDataNode
 	const std::int64_t began = NowMs();
 	state.SetValue(ibProtocol::ibFrame::Title, frame->GetTitle());
 	state.SetValue(ibProtocol::ibFrame::Status, frame->GetStatusText());
-	// …and the base's assistant access by where it listens, empty while it does not — the bottom bar's lamp, the
-	// McpServer schema's Endpoint.
-	const ibApplicationInstance* const applicationInstance = frame->GetSession()->GetApplicationInstance();
 	const ibMetaData* const metaData = frame->GetSession()->GetMetaData();
-	const ibMcpServer* const assistant = applicationInstance != nullptr
-		? ibApplicationInstance::GetMcpServer(applicationInstance) : nullptr;
-	state.SetValue(ibProtocol::ibFrame::Endpoint, assistant != nullptr ? assistant->GetEndpoint() : ibString());
 	// The language the session reads text in — drawn on its worker, so its own: a caption sent whole (an inspector's
 	// Synonym) is read by the client in it, as the desktop's grid read it in the configuration's.
 	state.SetValue(ibProtocol::ibFrame::Language, ibBackendLocalization::GetUserLanguage());

@@ -48,10 +48,23 @@ export class Control extends HTMLElement {
 		this.context = /** @type {any} */ (null);
 		/** @type {HTMLElement} where its colours go — the field, not the row with the caption beside it */
 		this.lookTarget = this;
+		/** @type {Promise<unknown>} its first drawing, done — a table's rows and a sheet's cells come after the frame */
+		this.drawing = Promise.resolve();
 	}
 
 	/** The first drawing. @param {ProtocolNode} node */
 	build(node) {}
+
+	/**
+	 * Its first drawing done, and that of every control under it, each with the components it is drawn with come and drawn
+	 * too (a component is loaded the first time it is met, and draws itself after that): what the form shows is what it
+	 * will go on showing.
+	 */
+	async settled() {
+		const controls = [this, ...this.querySelectorAll('*')].filter((element) => element instanceof Control);
+		await Promise.all(controls.map((control) => /** @type {Control} */ (control).drawing));
+		await componentsDrawn(this);
+	}
 
 	/**
 	 * Brought up to the node in place; false — it cannot be, and is drawn anew. The default stands as long as the
@@ -145,6 +158,16 @@ export class UnknownControl extends Control {
 	}
 }
 customElements.define('oes-unknown', UnknownControl);
+
+/**
+ * The components under an element come and drawn: one is loaded the first time it is met, and draws itself after that.
+ * @param {Element} element
+ */
+export async function componentsDrawn(element) {
+	const components = [...element.querySelectorAll('*')].filter((one) => one.localName.startsWith('wa-'));
+	await Promise.all([...new Set(components.map((one) => one.localName))].map((tag) => customElements.whenDefined(tag)));
+	await Promise.all(components.map((one) => /** @type {any} */ (one).updateComplete));
+}
 
 /**
  * The node folded into the element that stood for it (or none): the element that stands for it now.

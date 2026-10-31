@@ -114,7 +114,7 @@
       <WarningLevel>Level4</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CRT_SECURE_NO_DEPRECATE=1;_CRT_NON_CONFORMING_SWPRINTFS=1;_SCL_SECURE_NO_WARNINGS=1;__WXMSW__;_UNICODE;_WINDOWS;WXUSINGDLL;NOPCH;SMALL_TRANSLATE;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;TIXML_USE_TICPP;DONT_USE_DATABASE_LAYER_EXCEPTIONS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CRT_SECURE_NO_DEPRECATE=1;_CRT_NON_CONFORMING_SWPRINTFS=1;_SCL_SECURE_NO_WARNINGS=1;__WXMSW__;_UNICODE;_WINDOWS;WXUSINGDLL;NOPCH;SMALL_TRANSLATE;TIXML_USE_TICPP;DONT_USE_DATABASE_LAYER_EXCEPTIONS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(oes3rdParty)wxWidgets\lib\vc_dll\mswu;$(oes3rdParty)wxWidgets\include;$(oesEngine)\core;.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -165,7 +165,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_DEPRECATE=1;_CRT_NON_CONFORMING_SWPRINTFS=1;_SCL_SECURE_NO_WARNINGS=1;__WXMSW__;NDEBUG;_UNICODE;_WINDOWS;WXUSINGDLL;NOPCH;SMALL_TRANSLATE;BUILD_WINDOWS;wxDEBUG_LEVEL=0;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;TIXML_USE_TICPP;DONT_USE_DATABASE_LAYER_EXCEPTIONS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_DEPRECATE=1;_CRT_NON_CONFORMING_SWPRINTFS=1;_SCL_SECURE_NO_WARNINGS=1;__WXMSW__;NDEBUG;_UNICODE;_WINDOWS;WXUSINGDLL;NOPCH;SMALL_TRANSLATE;BUILD_WINDOWS;wxDEBUG_LEVEL=0;TIXML_USE_TICPP;DONT_USE_DATABASE_LAYER_EXCEPTIONS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(oes3rdParty)wxWidgets\lib\vc_dll\mswu;$(oes3rdParty)wxWidgets\include;$(oesEngine)\core;.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -214,7 +214,6 @@
     <ClCompile Include="docManager\templates\docViewDataReportFile.cpp" />
     <ClCompile Include="docManager\templates\docViewModuleEditor.cpp" />
     <ClCompile Include="docManager\templates\docViewFormEditor.cpp" />
-    <ClCompile Include="docManager\templates\docViewAssistant.cpp" />
     <ClCompile Include="docManager\templates\docViewCommonAttribute.cpp" />
     <ClCompile Include="docManager\templates\docViewFunctionalOption.cpp" />
     <ClCompile Include="docManager\templates\docViewComposer.cpp" />
@@ -276,7 +275,6 @@
     <ClInclude Include="docManager\templates\docViewDataReportFile.h" />
     <ClInclude Include="docManager\templates\docViewModuleEditor.h" />
     <ClInclude Include="docManager\templates\docViewFormEditor.h" />
-    <ClInclude Include="docManager\templates\docViewAssistant.h" />
     <ClInclude Include="docManager\templates\docViewCommonAttribute.h" />
     <ClInclude Include="docManager\templates\docViewFunctionalOption.h" />
     <ClInclude Include="docManager\templates\docViewComposer.h" />

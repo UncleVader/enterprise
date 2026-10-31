@@ -31,9 +31,6 @@
     <Filter Include="logger">
       <UniqueIdentifier>{fff455ab-3c8d-40ac-96c6-886fc7e01630}</UniqueIdentifier>
     </Filter>
-    <Filter Include="mcp">
-      <UniqueIdentifier>{9047548b-5914-4dc5-9f68-0cb257b06510}</UniqueIdentifier>
-    </Filter>
     <Filter Include="memory">
       <UniqueIdentifier>{3e658492-3710-4562-a676-5eecced213a9}</UniqueIdentifier>
     </Filter>
@@ -96,6 +93,9 @@
     </ClCompile>
     <ClCompile Include="core.cpp" />
     <ClCompile Include="crypto\fieldCipher.cpp">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\dataHash.cpp">
       <Filter>crypto</Filter>
     </ClCompile>
     <ClCompile Include="crypto\sessionToken.cpp">
@@ -330,6 +330,9 @@
     <ClInclude Include="crypto\fieldCipher.h">
       <Filter>crypto</Filter>
     </ClInclude>
+    <ClInclude Include="crypto\dataHash.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
     <ClInclude Include="crypto\sessionToken.h">
       <Filter>crypto</Filter>
     </ClInclude>
@@ -424,9 +427,6 @@
     </ClInclude>
     <ClInclude Include="logger\loggerQuery.h">
       <Filter>logger</Filter>
-    </ClInclude>
-    <ClInclude Include="mcp\mcpSettings.h">
-      <Filter>mcp</Filter>
     </ClInclude>
     <ClInclude Include="memory\lz\lzhuf.h">
       <Filter>memory\lz</Filter>
