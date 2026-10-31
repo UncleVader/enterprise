@@ -595,6 +595,9 @@
     <ClInclude Include="system\value\valueBinaryData.h">
       <Filter>system\value</Filter>
     </ClInclude>
+    <ClInclude Include="system\value\valueDataHashing.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
     <ClInclude Include="system\value\valueTextFile.h">
       <Filter>system\value</Filter>
     </ClInclude>
@@ -841,6 +844,9 @@
       <Filter>plugin</Filter>
     </ClInclude>
     <ClInclude Include="session\session.h">
+      <Filter>session</Filter>
+    </ClInclude>
+    <ClInclude Include="session\sessionThrottle.h">
       <Filter>session</Filter>
     </ClInclude>
     <ClInclude Include="session\sessionHolder.h">
@@ -1918,6 +1924,9 @@
     <ClCompile Include="system\value\valueBinaryData.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
+    <ClCompile Include="system\value\valueDataHashing.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
     <ClCompile Include="system\value\valueTextFile.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
@@ -2229,6 +2238,9 @@
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\sessionParameters.cpp">
+      <Filter>session</Filter>
+    </ClCompile>
+    <ClCompile Include="session\sessionThrottle.cpp">
       <Filter>session</Filter>
     </ClCompile>
     <ClCompile Include="session\sessionHolder.cpp">

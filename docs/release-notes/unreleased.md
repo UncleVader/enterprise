@@ -19,14 +19,18 @@ Since [v2.0.0-preview.1](v2.0.0-preview.1.md).
 
 ## Script language
 
+- **`Tstr(text)` without a language reads the user's language.** It read the first language
+  written in the text, so every user saw the same one. A language the text does not carry still
+  falls back to the first written; a named language is read as before.
 - **XML: `XMLReader`, `XMLWriter`, `XMLNamespaceContext`, `XMLNodeType`.** A script reads a document
   node by node and writes one, to a file or to a string, in UTF-8, UTF-16, windows-1251 or cp866.
   The parser is expat, built into the engine; an external entity is refused, not read. A file the
   writer could not write is raised at `Close`.
 - **`XMLString(value)` and `XMLValue(xml)`: a value as XML and back.** The value is packed the way
   `JSONString` packs it, but the XML keeps each field's kind, so a date or a number comes back
-  exactly, as the type the text names. A reference inside a structure or an array does not come
-  back yet. `Guid` and `BinaryData` now pack themselves too; a Guid takes its 16 bytes and is
+  exactly, as the type the text names. The type is said once, by XML Schema's `xsi:type`, and a
+  number, a string, a boolean or a date is the element's text; a date outside the years 1 to 9999 is
+  refused. A reference inside a structure or an array does not come back yet. `Guid` and `BinaryData` now pack themselves too; a Guid takes its 16 bytes and is
   written as its text.
 - **`Format` spells a date out and pads a number.** A date pattern takes `d`/`dd`, `ddd`/`dddd`
   (the weekday), `M`/`MM`, `MMM`/`MMMM` (the month's name, after a day in the genitive in ru and
@@ -39,8 +43,76 @@ Since [v2.0.0-preview.1](v2.0.0-preview.1.md).
   the empty date, where a date taken as a number is seconds: two of them apart are the time between,
   to the millisecond.
 - **An enumeration manager answers `EmptyRef()`**, as a catalog's, a document's and a chart's do.
+- **Hashing: `DataHashing` and `HashFunction`.** `New DataHashing(HashFunction.SHA256)` takes strings
+  (as UTF-8), `BinaryData` and files and gives `HashSum`, a `BinaryData`; MD5, SHA1, SHA256, SHA384
+  and SHA512. A second argument, the key, makes it an HMAC. The sum can be read midway.
+- **Bytes from text and back, and as hex.** `New BinaryData(text, encoding [, byteOrderMark])` holds the
+  bytes a text spells, `data.GetString(encoding)` reads them back. `HexString(data)` and `HexValue(text)`
+  write them as hex and read them, `Base64String(data)` and `Base64Value(text)` as base64. `String(data)`
+  and `New BinaryData(text)` stay base64, and now skip line breaks. Text that is not base64 or hex is
+  refused, not read as no bytes.
+- **An encoding is a member of `TextEncoding`.** `TextReader` and `TextWriter` took a string or another
+  enumeration's member without a word; now it is refused, as `HTTPRequest` already refused a string.
+
+## The browser client
+
+- **The start**: the thin client's splash, with arrows and the stage of the start under it, is up from the first paint;
+  a login asked takes its place, and it stays until the first window has its rows. The window's title has the OES logo
+  beside the configuration's name.
+- **The start page**: the forms the configuration places on it, live, in its columns, with sashes to drag between them.
+- **A form comes whole**: one just opened is shown once it has its rows and its fields can be seen, the one before staying up
+  meanwhile, and it replaces that one in a single frame, its tab with it. The splash stays until the first window has its
+  rows, however long they take. The tabs are no longer drawn anew by every answer.
+- **A table's columns fold into their row only in a narrow window**; anywhere else those that do not fit scroll sideways.
+- **A text too long loses its middle**, in a table's cell and its header, as the thin client's cell: the first letters and the
+  last stay.
+- **Denser on a mouse**: a field, a row, a tool, the window's title and a table's header take about two thirds of the height
+  they took. A touch screen keeps its targets.
+- **A table's three view modes**: List, Hierarchy with the folders it stands in frozen over the rows, and Tree with
+  expanders. View mode on the bar asks which.
+- **A table's selection mode**: the row, or the cell with its row tinted.
+- **A table takes the thin client's keys and clicks**: the arrows, Page Up and Down, Home and End, Tab, F2, Space and Enter, and
+  in a tree the arrows sideways and + - *. A second click on the cursor's cell opens its editor, and the table takes the focus
+  as its form opens.
+- **A table draws its rows as the thin client does**: the row's picture and the expander in the first column, a group's caption
+  across the whole line, a flag as a tick, the header and the footer in as many lines as the table says. A column is dragged by
+  its header.
+- **A cell's editor is a field's**, in look and in buttons, and a column that takes no typing still opens for its buttons.
+- **A hidden column in a group drawn as one is not drawn**, and such a group keeps its columns' footers.
+- **A dialog moves by its title**, as a window on a desktop.
+- **Escape closes what stands on top**: a cell's editor, a menu, a dialog, then the active tab, asking first about what is left
+  to save.
+- **Help → About** is drawn: the build, the base, the application, the user, the locale, the plugins.
 
 ## Fixes
+
+- **A module nobody has compiled yet is compiled once.** Sessions entering a base together, with the
+  bytecode cache empty, each compiled the same modules. The first now holds a lock in the database,
+  the others wait and read what it saved; if it fails, the next one compiles.
+
+- **Sessions logging in together no longer bring the web server down.** Each visitor rewrote the MCP
+  server's settings as if it owned the process.
+
+- **The process has a memory limit.** `MemoryLimit` in `backend.conf`, in megabytes; 0 is none but the
+  operating system's. At 80% no new client or window is let in, at 90% nothing is done but closing a
+  window and logging out, and the person is told the server is full. On Windows the system refuses
+  past the limit. On Linux only the refusals stand: set `MemoryMax` on the service.
+
+- **A Firebird connection caches 4 MB of pages, not 32.** Most of the memory of a busy server was this
+  cache, committed at connect and hardly touched.
+
+- **A password can no longer be guessed at full speed.** After a failed login, the next one for that
+  name from that address waits 1 second, then 2, 4, up to a minute; one address may try 30 times, then
+  once a second. The person is told how long to wait, and the audit event is `login_throttled`. Behind
+  a proxy that hides the client's address only the wait per name applies.
+
+- **The syntax helper finds the platform's types and enumerations.** A search for `Array`, `Structure`,
+  `AccumulationRecordType` or `QueryResult` came back empty. The server's registry is now asked: the
+  designer's pane lists them in Index and Search and shows what one offers, `syntax_search` answers with
+  `types`, and `syntax_get` takes such a name. One that has an article still shows the article.
+
+- **A value read from JSON no longer gains a `type` field.** The type's name the JSON view writes
+  beside a value's type came back as a field, one more on each round.
 
 - **A selection reads a row's standard attributes.** `Catalogs.X.Select()` and the selections of the
   charts published only `Ref` and the attributes a person added, so reading `Code`, `Description`,
@@ -51,6 +123,8 @@ Since [v2.0.0-preview.1](v2.0.0-preview.1.md).
   Оплат" showed nothing and only "%Оплат%" worked. The value is now wrapped as `%value%`, as the
   same condition already was in memory; a `%` or `_` typed into the value is still a wildcard. The
   query language's own `LIKE` is unchanged and takes its pattern as written.
+- **A floating-point column read from PostgreSQL does not depend on the machine's locale.** The server
+  writes such a number with a dot, and it was parsed by the locale's rules, where the separator may be a comma.
 - **A server whose base and `backend.conf` name no language speaks US English**, not the language of
   the machine it runs on, so the same server answers the same words everywhere. A language named
   and not installed on the machine falls back to US English too.

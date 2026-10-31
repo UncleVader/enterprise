@@ -200,10 +200,8 @@ void ibCompileCode::PrepareModuleData()
 	for (auto& contextValue : m_listContextValue) {
 		m_rootContext->AddVariable(contextValue.first, 0, true, true);
 		ibClassID clsid = 0;
-		if (contextValue.second.m_value) {
-			contextValue.second.m_value->InvalidateNames();
+		if (contextValue.second.m_value)
 			clsid = contextValue.second.m_value->GetClassType();
-		}
 		stampOnContext(contextValue.first, [&](ibCompileContext::ibVariable& v) {
 			v.m_clsid = clsid;
 		});
@@ -215,7 +213,6 @@ void ibCompileCode::PrepareModuleData()
 
 		ibValue* contextValue = pair.second.m_value;
 		wxASSERT(contextValue);
-		contextValue->InvalidateNames();
 
 		// adding variables from context
 		for (unsigned int i = 0; i < contextValue->GetNProps(); i++) {
@@ -2385,7 +2382,7 @@ bool ibCompileCode::CompileBlock(ibCompileContext* context)
 					// 0 is legitimate (a label as the first statement of a body), so
 					// `> 0` would miss a genuine duplicate there, and operator[] would
 					// insert the key while asking. Ask whether it is declared.
-					if (context->m_listLabelDef.find(nextLexem.m_strData) != context->m_listLabelDef.end()) {
+					if (context->m_listLabelDef.contains(nextLexem.m_strData)) {
 						Refuse(ibScriptError_IdentifierDuplicate, nextLexem.m_strData);// duplicate label definitions occurred
 						return false;
 					}
@@ -3682,7 +3679,7 @@ ibParamUnit ibCompileCode::FindConst(const ibValue& constData)
 	ibParamUnit variable;
 	variable.m_numArray = DEF_VAR_CONST;
 
-	if (m_listHashConst.find(strConstant) != m_listHashConst.end()) {
+	if (m_listHashConst.contains(strConstant)) {
 		variable.m_numIndex = m_listHashConst.at(strConstant) - 1;
 	}
 	else {
