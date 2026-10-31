@@ -1,5 +1,7 @@
 #include "sessionRegistry.h"
+#include "sessionException.h"
 #include "sessionPolicy.h"
+#include "sessionThrottle.h"
 #include "designerExclusivePolicy.h"
 #include "serviceExclusivePolicy.h"
 
@@ -14,7 +16,9 @@
 #include "workerPool.h"
 #include "workerPoolHeadless.h"
 #include "backend/lock/lockManager.h"
+#include "backend/logger/logger.h"   // Audit — a login told to wait
 #include "backend/temp/tempStorage.h"
+#include "core/diagnostics/crashGuard.h"   // IsStopRequested — a failure once the process was told to stop is the stop
 #include "core/diagnostics/debugTrace.h"   // ibTraceToFile — Die's reason must survive a GUI build
 
 #include <chrono>
@@ -89,7 +93,8 @@ constexpr int  kSilentSeconds     = static_cast<int>(
 // state, they exist for the duration of appData.
 
 ibSessionRegistry::ibSessionRegistry(ib::AppDataCtorToken owner)
-	: m_applicationInstance(owner.GetApplicationInstance())
+	: m_applicationInstance(owner.GetApplicationInstance()),
+	m_authThrottle(std::make_unique<ibAuthThrottle>())
 {
 	// Its own writes go through its base's pool — reached down the chain once, here, where the pool already
 	// stands (the base builds it first), and never asked of "the current one" from the registry thread.
@@ -871,7 +876,7 @@ ibSessionRegistry* ibSessionRegistry::ForDebugThread()
 bool ibSessionRegistry::IsDebugThread(std::thread::id tid) const
 {
 	std::shared_lock<std::shared_mutex> lk(m_debugMtx);
-	return m_debugThreads.find(tid) != m_debugThreads.end();
+	return m_debugThreads.contains(tid);
 }
 
 void ibSessionRegistry::EnterDebugLoop(ibSession* s)
@@ -1238,7 +1243,29 @@ void ibSessionRegistry::Attach(const std::shared_ptr<ibSession>& session, const 
 	// is written here until ProcessAttach announces it.
 	if (m_applicationInstance != nullptr) {
 		ibSessionScope scope(session.get());
-		req.accepted = m_applicationInstance->Login(user, password, req.info);
+		const ibString& address = session->Identity().m_address;
+		const ibAuthThrottle::Decision decision = m_authThrottle->Begin(user, address, ibAuthThrottle::Clock::now());
+		if (!decision.m_allowed) {
+			try {
+				if (ibLog) ibLog->Audit(ibT("auth"), ibT("login_throttled"),
+				                        ibString::Format(ibT("user=%s address=%s reason=%s retry_after=%d"), user, address,
+				                                         decision.m_reason == ibAuthThrottle::Reason::Address ? ibT("address") : ibT("account"),
+				                                         decision.m_retryAfterSec));
+			} catch (...) {}
+			ibBackendSessionException::Throw(ibBackendSessionException::Kind::LoginThrottled,
+				ibBackendException::Format(_("Too many failed logins: try again in %d s."), decision.m_retryAfterSec));
+		}
+		try {
+			req.accepted = m_applicationInstance->Login(user, password, req.info);
+		}
+		catch (...) {
+			m_authThrottle->Cancel(user, address);
+			throw;
+		}
+		if (req.accepted)
+			m_authThrottle->Succeed(user, address);
+		else
+			m_authThrottle->Fail(user, address, ibAuthThrottle::Clock::now());
 	}
 	Submit(std::move(req), ibPriority::Normal);
 }
@@ -1892,7 +1919,7 @@ size_t ibSessionRegistry::SettleSilentPeers(const std::vector<ibString>& peers)
 		return 0;
 	std::set<ibString> still;   // named rows that are there and have not moved yet
 	for (const ibString& peer : peers)
-		if (first.count(peer) != 0)
+		if (first.contains(peer))
 			still.insert(peer);
 
 	using clock = std::chrono::steady_clock;
@@ -2489,7 +2516,12 @@ void ibSessionRegistry::Die(const ibString& why)
 	// be left lying, and it does not matter, because the rows are stale rows and the next
 	// process's eager sweep DELETEs them — the same idempotence the soft path above relies
 	// on. Say it and leave quietly; the reason is recorded either way.
-	if (m_stop.load(std::memory_order_acquire)) {
+	//
+	// …AND THE PROCESS'S STOP COUNTS AS THIS ONE'S. A SIGTERM reaches Firebird's client too, which shuts every
+	// attachment down at once (its own handler, beside the program's), so the statement fails before the program has
+	// come round to Stop() and set m_stop — the same ordinary exit, a moment earlier (enterprise-thin, 2026-10-29:
+	// SIGTERM, this FATAL, then SIGABRT).
+	if (m_stop.load(std::memory_order_acquire) || ibCrashGuard::IsStopRequested()) {
 		m_submitCv.notify_all();
 		return;
 	}

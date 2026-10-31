@@ -38,6 +38,7 @@
     <ClInclude Include="backend_diagnostic.h" />
     <ClInclude Include="session\designerExclusivePolicy.h" />
     <ClInclude Include="session\serviceExclusivePolicy.h" />
+    <ClInclude Include="session\sessionThrottle.h" />
     <ClInclude Include="session\sessionException.h" />
     <ClInclude Include="session\session.h" />
     <ClInclude Include="session\sessionHolder.h" />
@@ -371,6 +372,7 @@
     <ClInclude Include="system\value\valueColour.h" />
     <ClInclude Include="system\value\valueEvent.h" />
     <ClInclude Include="system\value\valueBinaryData.h" />
+    <ClInclude Include="system\value\valueDataHashing.h" />
     <ClInclude Include="system\value\valueTextFile.h" />
     <ClInclude Include="system\value\valueHttp.h" />
     <ClInclude Include="system\value\valueSecureConnection.h" />
@@ -424,6 +426,7 @@
     <ClCompile Include="session\designerExclusivePolicy.cpp" />
     <ClCompile Include="session\serviceExclusivePolicy.cpp" />
     <ClCompile Include="session\session.cpp" />
+    <ClCompile Include="session\sessionThrottle.cpp" />
     <ClCompile Include="session\sessionException.cpp" />
     <ClCompile Include="session\sessionParameters.cpp" />
     <ClCompile Include="session\sessionHolder.cpp" />
@@ -905,6 +908,7 @@
     <ClCompile Include="system\value\valueDatabaseResultSet.cpp" />
     <ClCompile Include="system\value\valueEvent.cpp" />
     <ClCompile Include="system\value\valueBinaryData.cpp" />
+    <ClCompile Include="system\value\valueDataHashing.cpp" />
     <ClCompile Include="system\value\valueTextFile.cpp" />
     <ClCompile Include="system\value\valueHttp.cpp" />
     <ClCompile Include="system\value\valueSecureConnection.cpp" />

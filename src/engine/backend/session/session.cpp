@@ -723,10 +723,13 @@ void ibSession::Teardown()
 	// The run's state only, not Cancel(): every session passes through here, a rented read once per scrolled
 	// page, and a close that is not a forced one lets a statement it is waiting on finish (OnClose).
 	m_procUnitState.m_runState = ibRunState::Cancelled;
-	{
+	// No memory to queue the task (the process at its limit) is no place to wait behind: as when the five seconds run out.
+	try {
 		std::future<void> drained = Submit([] {});
 		if (drained.valid())
 			drained.wait_for(std::chrono::seconds(5));
+	}
+	catch (const std::bad_alloc&) {
 	}
 	// Idle again: the teardown below still runs script-visible
 	// handlers (per-kind hooks, module OnDestroy through DestroyRoot),
@@ -1268,7 +1271,7 @@ void ibSession::BindSessionToThread(ibSession* s, std::thread::id tid)
 {
 	std::unique_lock<std::shared_mutex> lk(s_currentMutex);
 	if (s != nullptr)
-		// weak_from_this is C++17, doesn't throw if the session isn't
+		// weak_from_this doesn't throw if the session isn't
 		// yet wrapped in a shared_ptr — returns expired weak_ptr in
 		// that case. All ibSession instances are made via make_shared
 		// in the registry's typed factory, so by the time anyone calls

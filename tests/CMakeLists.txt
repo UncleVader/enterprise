@@ -39,6 +39,7 @@ add_executable(oes_tests
     test_dictionary.cpp
     test_driverDates.cpp
     test_formatString.cpp
+    test_tstr.cpp
     test_blockSyntaxLINQ.cpp
     test_scriptFoldCode.cpp
     test_byteCodeAOT.cpp
@@ -103,6 +104,7 @@ add_executable(oes_tests
     test_spreadsheetDocument.cpp
     test_spreadsheetDescriptionNode.cpp
     bench_spreadsheet.cpp
+    bench_xmlValue.cpp
     test_queryAccessPolicy.cpp
     test_queryParity.cpp
     test_queryJoinParity.cpp
@@ -179,9 +181,11 @@ add_executable(oes_tests
     test_passwordHash.cpp
     test_launchTicket.cpp
     test_loginName.cpp
+    test_sessionThrottle.cpp
     test_programFolder.cpp
     test_md5.cpp
     test_sha256.cpp
+    test_dataHashing.cpp
     test_stringUtils.cpp
     test_guid.cpp
     test_dbTransaction.cpp
@@ -199,6 +203,7 @@ add_executable(oes_tests
     test_fiberTrust.cpp
     test_fiberFp.cpp
     test_fiberStack.cpp
+    test_stopSignals.cpp
     test_typeFamilyAdjust.cpp
     test_eventHandler.cpp
     test_functionalOption.cpp

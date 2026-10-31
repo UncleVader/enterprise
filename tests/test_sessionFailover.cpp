@@ -388,6 +388,26 @@ TEST_F(SessionFailover, WrongTokenIsRefusedAndTheSessionStays)
 	EXPECT_TRUE(still.ok) << still.message;
 }
 
+// The door of every client: a login that comes again too soon is refused as a login is, which asks the person again,
+// and says how long to wait, not that the password is wrong.
+TEST_F(SessionFailover, ALoginThatComesAgainTooSoonIsToldToWait)
+{
+	ibProtocolNode params;
+	params.SetValue(ibProtocol::ibLogin::User, ibString(wxT("nobody")))
+		.SetValue(ibProtocol::ibLogin::Password, ibString(wxT("wrong")))
+		.SetValue(ibProtocol::ibLogin::Protocol, ibProtocol::Version);
+
+	const Rpc wrong = g_base->Call(Request(40, "login", params), nullptr);
+	EXPECT_FALSE(wrong.ok);
+	EXPECT_EQ(wrong.code, 401);
+
+	const Rpc again = g_base->Call(Request(41, "login", params), nullptr);
+	EXPECT_FALSE(again.ok);
+	EXPECT_EQ(again.code, 401);
+	EXPECT_TRUE(again.message.Contains(wxT("try again"))) << again.message;
+	EXPECT_NE(again.message, wrong.message);
+}
+
 TEST_F(SessionFailover, LiveSessionIsNotTakenByToken)
 {
 	int connection = 0;
@@ -425,6 +445,40 @@ TEST_F(SessionFailover, DesignerGetsNoToken)
 	const ibString client = login.result.GetString(ibProtocol::ibLogin::Client);
 	g_base->host->Disconnect(&connection);
 	EXPECT_FALSE(SessionRowExists(client));
+}
+
+// The designer's syntax helper asks the server for the names its articles do not write up, and what one offers.
+TEST_F(SessionFailover, TheSyntaxHelperAsksForATypeAndWhatItOffers)
+{
+	int connection = 0;
+	ibProtocolNode login = PasswordLogin();
+	login.SetValue(ibProtocol::ibLogin::Mode, static_cast<int>(ibProtocol::ibLogin::ibMode::Designer));
+	const Rpc opened = g_base->Call(Request(60, "login", login), &connection);
+	ASSERT_TRUE(opened.ok) << opened.message;
+	const ibString client = opened.result.GetString(ibProtocol::ibLogin::Client);
+
+	const auto ask = [&](long long id, const char* field) {
+		ibProtocolNode args;
+		args.SetValue(field, ibString(wxT("Array")));
+		ibProtocolNode params;
+		params.SetValue(ibProtocol::ibLogin::Client, client);
+		params.SetValue(ibProtocol::ibSchema::Schema, static_cast<int>(ibProtocol::ibSchema::ibKind::Types));
+		params.SetValue(ibProtocol::ibSchema::Args, args);
+		return g_base->Call(Request(id, "schema", params), &connection);
+	};
+
+	const Rpc listed = ask(61, ibProtocol::ibSchema::ibTypes::Query);
+	ASSERT_TRUE(listed.ok) << listed.message;
+	bool found = false;
+	for (const ibProtocolNode& row : listed.result.FindChild(ibProtocol::ibSchema::ibTypes::Types).Children())
+		found = found || row.GetString(ibProtocol::ibSchema::ibTypes::Name) == ibString(wxT("Array"));
+	EXPECT_TRUE(found);
+
+	const Rpc members = ask(62, ibProtocol::ibSchema::ibTypes::Name);
+	ASSERT_TRUE(members.ok) << members.message;
+	EXPECT_FALSE(members.result.FindChild(ibProtocol::ibSchema::ibTypes::Methods).Children().empty());
+
+	g_base->host->Disconnect(&connection);
 }
 
 TEST_F(SessionFailover, NoTokenWithoutASocket)
