@@ -6,9 +6,10 @@
 
 #include "backend/backend_exception.h"
 #include "backend/compiler/compileModule.h"     // ibCompileModule — the contextual compile
+#include "backend/compiler/scriptComplete.h"    // ibCheckMethodCalls — the walk asked about each call
 #include "backend/metaData.h"                   // ibCompileValueCache::FindCompileModule
 #include "backend/metaCollection/metaObject.h"  // ibValueMetaObject::GetMetaData
-#include "backend/moduleInfo.h"                 // ibRuntimeModuleDataObject::GetCompileModule
+#include "backend/moduleInfo.h"                 // ibRuntimeModuleDataObject::CreateCompiler
 #include "backend/moduleManager/moduleManager.h" // ibValueModuleManager — the context a snippet parents to
 #include "backend/session/session.h"            // ibSession::EditModuleManagerFor
 
@@ -70,14 +71,16 @@ std::vector<ibDiagnostic> CollectFrom(Compile compile)
 //
 // ⚠ NULL IS ORDINARY: a plugin checking a text with no configuration open gets the old behaviour, which is the most that
 // can honestly be said about a text with no home.
-void ParentToModuleManager(ibCompileCode& compiler, const ibMetaData* metaData)
+//
+// What comes back is the parent the compiler now stands under: the caller holds it for as long as it compiles and reads.
+std::unique_ptr<ibCompileModule> ParentToModuleManager(ibCompileCode& compiler, const ibMetaData* metaData)
 {
 	if (metaData == nullptr)
-		return;
+		return nullptr;
 	ibValueModuleManager* const manager = ibSession::EditModuleManagerFor(metaData);
-	ibCompileModule* const context = manager != nullptr ? manager->GetCompileModule() : nullptr;
+	std::unique_ptr<ibCompileModule> context = manager != nullptr ? manager->CreateCompiler() : nullptr;
 	if (context == nullptr)
-		return;
+		return nullptr;
 
 	// 🛑 …AND IT HAS TO HAVE BEEN COMPILED. A manager nobody compiled carries an EMPTY bytecode, so parenting to it buys
 	// nothing: `CurrentDate()` comes back as "procedure or function not detected" — a true statement about an empty
@@ -94,7 +97,8 @@ void ParentToModuleManager(ibCompileCode& compiler, const ibMetaData* metaData)
 			error.GetErrorDescription());
 	}
 
-	compiler.SetParent(context);
+	compiler.SetParent(context.get());
+	return context;
 }
 
 } // namespace
@@ -117,7 +121,7 @@ std::vector<ibDiagnostic> ibCheckScript(const ibString& text, const ibString& mo
 		// compile that both reports AND continues, and continuing is precisely what a raise cannot
 		// do: it leaves the loop that has to keep going (Max, 2026-09-07: *"any publication is an
 		// exception — an exit from the loop, and you need to continue it"*).
-		ParentToModuleManager(compiler, metaData);
+		const std::unique_ptr<ibCompileModule> context = ParentToModuleManager(compiler, metaData);
 
 		compiler.Compile(text);
 	});
@@ -140,7 +144,7 @@ std::vector<ibDiagnostic> ibCheckExpression(const ibString& expression, const ib
 			: ibT("Function ") + kCheckFunctionName + ibT("() Return ") + expression + ibT("; EndFunction");
 
 		ibCompileCode compiler(kModuleName, ibT("check"), false);
-		ParentToModuleManager(compiler, metaData);
+		const std::unique_ptr<ibCompileModule> context = ParentToModuleManager(compiler, metaData);
 		compiler.Compile(wrapped);
 
 		// ⭐⭐ COMPILING IS NOT ENOUGH — the wrapper declares nothing and takes no parameters, so EVERY named local in it is a
@@ -191,15 +195,20 @@ ibScriptCheckAnswer ibCheckModule(const ibValueMetaObject* metaObject)
 	if (!cache->FindCompileModule(metaObject, dataRef) || dataRef == nullptr)
 		return answer;
 
-	ibCompileModule* compileModule = dataRef->GetCompileModule();
+	const std::unique_ptr<ibCompileModule> compileModule = dataRef->CreateCompiler();
 	if (compileModule == nullptr)
 		return answer;
 
-	// THE BUTTON'S OWN ROAD — ibCodeEditor::SyntaxControl compiles exactly this,
+	// THE BUTTON'S OWN ROAD — the designer's Syntax control asks exactly this,
 	// so the module is checked against the metaobject that owns it and every
 	// name it can legitimately see resolves.
 	answer.m_diagnostics = CollectFrom([&] { compileModule->Compile(); });
 	answer.m_outcome = ibScriptCheckOutcome::Checked;
+
+	// ⭐ …AND THE TEXT THAT COMPILED IS ASKED ABOUT ITS METHOD CALLS, which the compile cannot judge: a method is looked
+	// up by name when it runs (scriptComplete.h, ibCheckMethodCalls; #646).
+	if (answer.m_diagnostics.empty())
+		answer.m_diagnostics = ibCheckMethodCalls(compileModule->m_translateCode.GetBuffer(), metaObject);
 	return answer;
 }
 

@@ -11,9 +11,9 @@ This file gives an AI assistant (Claude Code or similar) the context needed to w
 **"Cross-platform" here is measured, not aspirational.** The platform core — metadata, the
 language and its compiler, the bytecode interpreter, the query engine, the database layer and the
 form layer — builds from one code base and runs an **identical suite** under three toolchains on
-two architectures: MSVC on Windows x64, GCC on Linux x64, and Apple Clang on macOS 14 **arm64**.
-Every application (`enterprise-thin`, `designer-thin`, `appserver`, `launcher`, `codeRunner`, `simplePlugin`)
-links on every platform.
+two architectures: MSVC on Windows x64, GCC on Linux x64, and Apple Clang on macOS 15 **arm64**.
+Every application (`enterprise-thin`, `designer-thin`, `appserver`, `webserver`, `appcluster`, `launcher`,
+`codeRunner`, `simplePlugin`) links on every platform.
 
 The suite GROWS, so the number here is a reading and not a property: **919** on 2026-08-03 when
 the three jobs first agreed, **1166** on 2026-08-07 (1197 `TEST` cases live in `tests/`; CI's
@@ -49,7 +49,7 @@ The runtime executes compiled bytecode, renders forms through wxWidgets, and sto
 
 ```
 enterprise/
-├── enterprise.sln           # MSBuild solution (18 C++ projects; folders: services / exec / plugins / 3rdparty)
+├── enterprise.sln           # MSBuild solution (19 C++ projects; folders: services / exec / plugins / 3rdparty)
 ├── Common.props             # Shared output paths and macros
 ├── ConfigurationDefs.props  # Per-configuration preprocessor defines
 ├── CLAUDE.md                # This file
@@ -67,7 +67,7 @@ enterprise/
 │       │                     # and is simply EMPTY for everyone else — the build never needs it, and
 │       │                     # CI fetches every submodule .gitmodules names but this one. The map below is inside it.
 │       ├── ui-palette.md         # Interior-design palette — source of truth for UI colours
-│       ├── uikit.md              # Custom-drawn UI engine (wxUniversal fork + Luna theme)
+│       ├── gui.md            # The desktop's user interface library — custom-drawn engine (wxUniversal fork + Luna), its controls, layout
 │       ├── query-engine-layers.md # THE FLOOR PLAN — L1–L5 taxonomy, one house (read first for the query arc)
 │       ├── data-composer.md      # L5 — declarative composition over the query language
 │       ├── table-model.md        # tables/lists/trees — ibDataViewModel + ibValueModel + RunComposerPage (fetch = web road)
@@ -97,7 +97,7 @@ enterprise/
 │       ├── spreadsheet-editor.md # the grid behind templates and report output
 │       ├── sheet-formats.md      # reading/writing foreign tables — xlsx in and out, docx out, the registry
 │       ├── printing.md           # Print / Print Preview — the two roads, pagination, what is NOT built
-│       ├── system-functions.md   # the global script API — 94 functions + 6 procedures
+│       ├── system-functions.md   # the global script API — 106 functions + 8 procedures (2026-11-05)
 │       ├── database-modes.md     # file vs server base — where each puts its artefacts
 │       ├── debugger-architecture.md # TCP transport, why the debuggee is the server
 │       ├── technology-journal.md # ibJournal — the engine's running commentary (wxLog* lives in one file)
@@ -115,7 +115,7 @@ enterprise/
 │       ├── designer-editors.md   # code / role / interface editors
 │       ├── wx-fork.md            # forked + vendored widget layer (dataview, grid, charts)
 │       ├── pictures.md           # three picture kinds, one description
-│       ├── serialization-io.md   # ibWriter/ibReader, chunks, compression (⚠ licensing)
+│       ├── serialization-io.md   # ibWriterMemory/ibReaderMemory, chunks, compression (⚠ licensing)
 │       ├── ROADMAP.md            # state of the platform — landed / in flight / not built
 │       ├── naming-plan.md        # PLAN — file/folder renames (nothing applied)
 │       ├── metaobject-naming.md  # PLAN — user-visible taxonomy: designer labels, script names, tree order
@@ -128,9 +128,11 @@ enterprise/
         │                    #   ibDateTime/ibGuid, fileSystem, serialize (dataBuilder, JSON), ibCoreException,
         │                    #   ibLocalization, build stamp; wx base only
         ├── backend/         # backend.dll  — engine, compiler, DB, metadata, debugger; links core
-        ├── protocol/        # protocol.dll — the client protocol: protocol.h (names/numbers, no deps) + the talking side
+        ├── protocol/        # protocol.dll — the client protocol: protocol.h (names/numbers, no deps; the designer's messages in protocolDesigner.h) + the talking side
         ├── frmserver/       # frmserver.dll — server-side forms, the client host; includes protocol.h only
-        ├── frmclient/       # frmclient.dll — the thin client's graphics library; links core and protocol
+        ├── gui/         # gui.dll  — the desktop's user interface: the root is the API (gui.h, typeconv, dateconv); univ/ the
+        │                    #   custom-drawn engine and all that inherits it (ctrl, dataview, grid, theme); links core
+        ├── frmclient/       # frmclient.dll — the thin client's graphics library and its communicator; links core, protocol, gui
         ├── fileserver/      # fileserver.dll — a file base loaded into the thin client's process
         ├── enterprise-thin/ # enterprise-thin.exe (thin client)
         ├── webserver/       # webserver.exe (the bases' transport for browsers: the site + the client protocol)
@@ -180,13 +182,13 @@ The compiler is a single-pass recursive descent parser with a deferred-call-reso
 
 ### 4. Two-DLL Architecture
 
-`backend.dll` has zero UI code. The wxWidgets GUI is the clients': `frmclient.dll` under `enterprise-thin` and `designer-thin`, and `launcher` / `codeRunner` on wx directly. The forms are `frmserver.dll`'s, which reaches the engine through abstract C++ interfaces exported by `backend.dll` and a client through the protocol. This allows the backend to run headless (daemon, codeRunner, service mode).
+`backend.dll` has zero UI code. The wxWidgets GUI is the clients': `frmclient.dll` under `enterprise-thin` and `designer-thin`, `launcher` on `gui.dll` (the desktop's user interface library, which frmclient places too), and `codeRunner` on wx directly. The forms are `frmserver.dll`'s, which reaches the engine through abstract C++ interfaces exported by `backend.dll` and a client through the protocol. This allows the backend to run headless (daemon, codeRunner, service mode).
 
 Under both sits **`core.dll`** (`src/engine/core/`, `CORE_API` / `CORE_EXPORTS` and the platform `__IBMSW__` / `__IBOSX__` / `__IBGTK__` in `coreApi.h`; its text is `ibString` throughout — UTF-16, `ibChar` = `char16_t` on every OS, `wc_str()` its one wide boundary — and of wx it keeps the base for `ibString`'s conversion, `_()`, `wxFileConfig`, zip and zlib): what the engine and its clients mean by the same words — ids and `ibValueTypes` (`core/types.h`), `ibVariant` (`core/variant.h`, the one value type: a primitive or a counted reference, its lifecycle, serialization and compare, no base, no factory — the engine's `ibValue` adds the runtime and the factory, the thin client's a small factory; `ibVariantPtr<T>` in `core/variant_ptr.h`), `clsid.h`, `ibString` (+ pool), `ibNumber`, `ibDateTime`, `ibGuid`, `ibFormatString`, `fileSystem/` (`ibReader`/`ibWriter`, lz), `serialize/` (`ibDataNode`, the binary provider; `provider/` — JSON, XML, files), `json/` and `xml/` (the formats' text), `ibCoreException`, `ibLocalization`, `diagnostics/` (the technology journal — one per process — and the crash guard), `description/` (the schemas both sides share — source path, command path, calc schedule, choice link, home page; ids and nodes, never a value), `query/` (the query language's words: keywords, scalar calls, unfold, balance role), `graphics/` (`ibPicture`, `ibFont`, `ibColour`, `ibPoint`/`ibSize`/`ibRect` — data; the conversion to wx is each side's), `ibProgramFolder` (`fileSystem.h` — where `backend.conf`, `lang/`, `plugins/`, `_fb/` and the other programs are looked for: the executable's folder, or on macOS the one that holds the `.app`, never `Contents/MacOS`) and `ibDiagnosticFolder` (where the journal, the dumps and `oes-debug.log` go: the same folder, except `~/Library/Logs/OES` for a program running from a macOS bundle), `GetBuildId`/`GetBuildStamp`. It reads no base, runs no script, draws no window.
 
 - Chain: core → backend → frmserver ⇄ protocol ⇄ frmclient → enterprise-thin; fileserver = backend + frmserver inside the client process.
-- backend links core PUBLIC; every project that links `backend.lib` also links `core.lib`; protocol links core; frmclient links core + protocol. `protocol.h` itself stays dependency-free.
-- Not in core: `typeconv` (fonts/colours), frmclient's `dataProtocol` seam, a value's storage.
+- backend links core PUBLIC; every project that links `backend.lib` also links `core.lib`; protocol links core; gui links core; frmclient links core + protocol + gui. `protocol.h` itself stays dependency-free.
+- Not in core: `typeconv` (fonts/colours — `gui/typeconv.h`), frmclient's `dataProtocol` seam, a value's storage.
 - Same class names as before the move; `backend/backend_core.h` includes the core headers (it is the remnant of the engine's original "core"). frmclient's `backend/backend_core.h` / `backend.h` / `backend_exception.h` are facades that include core.
 
 ### 5. Throw-By-Value Exception Pattern
@@ -289,7 +291,7 @@ unit.CallAsFunc(ibT("FunctionName"), result, arg1, arg2);
 ### Creating a Form
 
 ```cpp
-ibBackendValueForm* form = ibBackendValueForm::CreateNewForm(
+ibFormPtr<ibBackendValueForm> form = ibBackendValueForm::CreateNewForm(   // born held — never keep it in a T*
     ibFormRequest(),    // name, window key (m_formGuid — empty to auto-generate), choice condition
     metaFormObject,     // const ibValueMetaObjectFormBase* (creator), or nullptr
     ownerControl,       // ibBackendControlFrame* or nullptr
@@ -369,20 +371,24 @@ bin\Win32\Debug\enterprise-thin.exe --file=F:\projects\oes-bin\examples\fb_test3
 
 `--file=` is the **folder**, not a `.fdb`. Started with no `--file`, no `--srv` and no `--address`, the
 designer asks for the folder with a picker. Server bases take `--srv` / `--db` / `--usr` / `--pwd`
-instead, a base an application server serves `--address=oes://server[:port]/<base>`; the full list is
+instead, a base an application server serves `--address=oes://server[:port]/<base>`, a web server's publication
+`--address=` its link as the browser shows it (`https://server/<base>/`); the full list is
 `OnInitCmdLine` in each `mainApp.cpp` (`address`, `trusted`, `file`, `srv`, `dbport`, `db`, `user`,
 `password`, `ibuser`, `ibpwd`, `locale`).
 
 ### The MCP server — how an assistant reaches the platform
 
-**It is the base's (`backend/mcp`, held by `ibApplicationInstance`), so it lives in the process that
-opens the base:** `designer-thin.exe` on a file base (fileserver opens the base in the designer's own
-process), `appserver.exe` for a base it serves when the base's settings switch it on (its port is
-`McpPort` in `server.conf`). Nothing answers until that process is running with a configuration
-open — a refused connection means the process is not up, not that the feature is missing. The
-designer's listens on `http://127.0.0.1:7374/` (default; the address, the port and the token are
-in the designer's own MCP settings, kept per user in the base). The token is minted once, on first
-enable, and never regenerated behind anyone's back.
+**The port is the client's; the tools are the engine's.** The thin client opens the port on the person's
+own machine (`frmclient/backend/mcp/mcpServer.h`) — the designer on `http://127.0.0.1:7374/`, the
+application on 7375 (`ibPort::Assistant`, `core/net/ports.h`) — and carries every message, as it is,
+over a connection of its own (`ibProtocol::ibMcp`) to the engine's MCP server (`frmserver/mcp`, one per
+client, `ibClientHost::GetMcpServer`): in the designer's own process for a file base (fileserver), in the
+application server for a base it serves. What a message means, the tools and their rights are all the
+engine's. Nothing answers until that client is running with a configuration open — a refused
+connection means the process is not up, not that the feature is missing. The port is off until a person
+turns it on; the address, the port and the token are in the client's MCP settings, kept on that machine
+for that person. The token is made the first time the settings are read and never made again behind
+anyone's back.
 
 **The first call must be `chat_say`.** Every other verb is refused until an assistant has said who
 it is, what it sees and what it means to do — because the person at that designer is watching a
@@ -436,10 +442,11 @@ value, its manager and its commands carry no `Metadata` infix (`catalogObject.cp
 **Everything a metaobject contributes to the database SCHEMA goes in
 `<metatype>MetadataSchema.cpp`** — `ContributeTables` plus the `m_beforeChange` / `m_afterChange`
 rules attached to the tables it declares — so the schema story for a metatype is one file, not a
-section of a large one. Four today, and a metatype has one only when it declares something of its
-own: `commonObjectSchema.cpp` (the record / enum / register / hierarchy families — where a catalog's
-and a document's tables come from), `accumulationRegisterMetadataSchema.cpp`,
-`chartOfAccountsMetadataSchema.cpp`, `constantMetadataSchema.cpp`. Full aspect table:
+section of a large one. A metatype has one only when it declares something of its own:
+`commonObjectSchema.cpp` (the record / enum / register / hierarchy families — where a catalog's
+and a document's tables come from), `metaStoredValueObjectSchema.cpp` (the stored-value family's
+column in `sys_const` — a constant, a functional option), and `accountingRegister`, `accumulationRegister`, `calculationRegister`,
+`chartOfAccounts`, `chartOfCalculationTypes`, `chartOfCharacteristicTypesMetadataSchema.cpp`. Full aspect table:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) § `src/engine/backend/metaCollection/`.
 
 ---
@@ -502,19 +509,27 @@ designer sees everything it EDITS; a composer answers as the application whereve
 was ever written (read from the value column's raw type tag — the decoded value of an untagged cell is
 its type's empty, a False). Reached as `FunctionalOptions.<Name>.Get()` ([docs/public/functional-options.md](docs/public/functional-options.md)).
 
-Six further registered metatypes are **not** top-level business objects: `ExternalDataProcessor`,
-`ExternalReport`, `Composer` (2026-08-20, `MD_CMPS` — a **data composer declared inside a report**,
-beside its forms and templates: what to read and how to fold it. The report names one of them
-`DefaultComposer`, and a report that declares one needs no form — the generated form is a gridbox
-bound to that composer. Embedded and external reports both have them, being the same metaobject.
-See [docs/private/report-engine.md](docs/private/report-engine.md) §4f),
+A report's **composer** — a data composer declared inside the report: what to read and how to fold it — is
+a `Template` of the `Composer` kind. What a template holds is ONE `ibTemplateDescription`
+(core/description/templateDescription.h): its kind and the live schema of that kind, written by the schema's own
+`*Memory` with the kind added; the other kind's schema asked for raises (2026-11-03; a composer was a metatype of
+its own, `MD_CMPS`, whose file nodes are read as templates). What a template of a kind DOES — its events, its
+menu, the value code is handed — is the kind's `ibTemplateProvider` (metaTemplateObject.h), not an `if` in the
+template. The kind is chosen in a dialog when the template is added, as a form's is, and once — under any
+owner, a document's or a data processor's too; `GetTemplate(name)` returns a fresh composition. The report names one
+of them `DefaultComposer`, and a report that declares one needs no form — the generated form is a gridbox
+bound to that composer. Embedded and external reports both have them, being the same metaobject. See
+[docs/private/report-engine.md](docs/private/report-engine.md) §4f.
+
+Other registered metatypes are **not** top-level business objects either; among them `ExternalDataProcessor`,
+`ExternalReport`,
 `AccountDimensionKindsTable` (renamed from `SubcontoKindsTable` on 2026-08-12 —
 *subconto* was a calque; the concept is an **account dimension**, and its KIND is a
 characteristic. The CLSID key `MD_SKTB` stayed, being an opaque body key rather than a name),
 `AccumulationRegisterTotals` (the totals table became a
 metaobject in its own right on 2026-07-29, rather than a bit on the register's id), and
-`ConstantValueColumn` (same day: a constant stopped BEING a column of `sys_const` and now HAS one —
-it derives `ibValueMetaObjectGenericData`, so the form layer no longer casts it into a class it does
+`ConstantColumn` (`ibValueMetaObjectConstantColumn`; same day: a constant stopped BEING a column of `sys_const` and now HAS one —
+it derives `ibValueMetaObjectAttributeBase`, so the form layer no longer casts it into a class it does
 not derive from).
 
 ---
@@ -532,12 +547,13 @@ that tree to bytes (and reads it back).
   bytes, the same in memory, in storage and on the client protocol's WebSocket (its layout in
   `dataBuilder.h`'s header). This is the round-trip path (Write + Read).
 - **`ibJsonProvider`** (`serialize/provider/jsonProvider.{h,cpp}`) — JSON. `Write` emits JSON for
-  diff/inspection; `Read` is a full parser that reads MESSAGES, never a configuration: MCP and
-  the client protocol's HTTP `POST` parse every JSON-RPC request through it (`rpc/rpcMessage.cpp`,
-  before any login), as does the thin client (`frmclient/backend/serialize/dataProtocol.cpp`), so it
-  refuses nesting past `ibJsonProvider::kMaxNesting` (256). The view is lossy by design (Date → ISO
-  string, the type by name with a synthetic `TypeDesc`), so Write→Read is not a round trip — use
-  `ibBinaryProvider`, or `ibXmlProvider` for text.
+  diff/inspection; `Read` is a full parser: MCP and the client protocol's HTTP `POST` parse every
+  JSON-RPC request through it (`rpc/rpcMessage.cpp`, before any login), as does the thin client
+  (`frmclient/backend/serialize/dataProtocol.cpp`), so it refuses nesting past
+  `ibJsonProvider::kMaxNesting` (256); `ibFileProvider` reads a configuration's node files through it.
+  The view is lossy by design (Date → ISO string, Guid → its text, the type by name with a synthetic
+  `TypeDesc`): a typed reader gets a date or a guid back from its text, but Write→Read does not give
+  the same bytes — use `ibBinaryProvider`, or `ibXmlProvider` for text.
   A type is named only by the injected `SetTypeResolver` (no built-in fallback — the
   engine's resolvers, e.g. `ibMetaTypeResolver`, name built-in types from the static
   registry); `SetTypeLookup` supplies the name→clsid inverse. Tests: `tests/test_jsonProvider.cpp`.
@@ -583,12 +599,12 @@ See `docs/private/serialization-io.md` §4a.
 
 ## Compiler Quick Reference
 
-- **Opcodes:** defined in `src/engine/core/compiler/codeDef.h` as `OPER_*` enumerators. Call-family: `OPER_CALL` (stack-frame named call), `OPER_CALL_CLOSURE` (named call with heap-promoted frame — callee has an inner lambda capturing locals), `OPER_CALL_METHOD` (per-class method dispatched by name string), `OPER_CALL_LINQ` (universal pipeline op dispatched by `ibLinqMethod` enum id, no string lookup), `OPER_CALL_LAMBDA` (dynamic call — target read from a slot at runtime, must wrap an `ibValueFunction`). Lambda body fences `OPER_LFUNC` (the active materialiser) / `OPER_ENDLFUNC`. (`OPER_FUNC_PTR` is retired — `OPER_LFUNC` materialises the lambda value.) The ternary `?(cond, a, b)` has no opcode of its own: it compiles as If does (`OPER_IF`, the chosen branch writes the result, `OPER_GOTO` over the other), so only the chosen branch runs — a call or a raise in the other one does not happen. (`OPER_ITER`, which computed both, is gone — 2026-10-09.)
+- **Opcodes:** defined in `src/engine/core/compiler/codeDef.h` as `OPER_*` enumerators. Call-family: `OPER_CALL` (named call — its frame is the call, whatever lambdas the body makes), `OPER_CALL_METHOD` (per-class method dispatched by name string), `OPER_CALL_LINQ` (universal pipeline op dispatched by `ibLinqMethod` enum id, no string lookup), `OPER_CALL_LAMBDA` (dynamic call — target read from a slot at runtime, must wrap an `ibValueFunction`). Lambda body fences `OPER_LFUNC` (the active materialiser) / `OPER_ENDLFUNC`. (`OPER_FUNC_PTR` is retired — `OPER_LFUNC` materialises the lambda value.) The ternary `?(cond, a, b)` has no opcode of its own: it compiles as If does (`OPER_IF`, the chosen branch writes the result, `OPER_GOTO` over the other), so only the chosen branch runs — a call or a raise in the other one does not happen. (`OPER_ITER`, which computed both, is gone — 2026-10-09.)
 - **Keywords:** 63, defined as `KEY_*` enumerators (`KEY_IF`=0 … `KEY_RESTRICT`) in the same file — includes access modifiers (`Public`/`Private`/`Protected`), the memoisation modifier (`Cached` — a SECOND axis that combines with an access one, legal on a Function only), preprocessor (`#Define`/`#Ifdef`/…), the LINQ block (`From`/`Where`/`Select`/`Join`/`Group`/…) and the access-policy filter (`Restrict`). The matching token strings are `s_listKeyWord[]` in `translateCode.cpp`, in lock-step index order with the enum.
-- **Built-in globals:** 94 functions + 6 procedures = 100 as of 2026-09-04, registered in `ibSystemManager` (`src/engine/backend/system/systemManager.cpp`); count drifts as features land — grep `AppendFunc\|AppendProc` for the live total
-- **Syntax modes:** VES (`If…Then…EndIf`, Visual-Basic-style, a legacy business-scripting dialect) and CES (`if (…) { … }`, C-flavoured); both compile to the same bytecode. Mode is process-global on `ibCompileCode::SetCodeStyle()` / `GetCodeStyle()`. **CES is the default** for new configurations (2026-05-10); existing serialised configs preserve their stored Syntax. Wire token in metadata enum still reads `vbs` for back-compat — user-visible label is `ves`.
-- **Anonymous functions:** `Function(args) ... EndFunction` and `Procedure(args) ... EndProcedure` (or CES `Function(args) { … }`) work as expressions — assignable to slots, callable through variables. Backed by `ibValueFunction` (inline class in `procUnit.cpp` near `ibValueIterator`, CLSID `VL_FUNC`). Lambda's compile-context return kind is `RETURN_LAMBDA_FUNCTION` / `RETURN_LAMBDA_PROCEDURE` (`compileCode.h`). Eval-in-lambda resolves outer frames via splice in `CompileExpression` (lambda-shim's `m_pppArrayList[1..]` → eval's `[2..]`). **Closure capture landed 2026-05-11..12** (per-frame heap promotion): the compiler marks the enclosing function `m_needsHeapFrame` and emits `OPER_CALL_CLOSURE`; at runtime the lambda holds `std::vector<std::shared_ptr<ibRunContext>> m_capturedFrames` and outer-function locals resolve at depth ≥ 1. See `docs/private/lambda.md`, `docs/private/closure-capture.md`.
-- **Debugger port:** 1650 (`defaultDebuggerPort` in `src/engine/backend/debugger/debugDefs.h`)
+- **Built-in globals:** 106 functions + 8 procedures = 114 as of 2026-11-05, registered in `ibValueSystemFunction` (`src/engine/backend/system/systemManager.cpp`); count drifts as features land — grep `AppendFunc\|AppendProc` for the live total
+- **Syntax modes:** VES (`If…Then…EndIf`, Visual-Basic-style, a legacy business-scripting dialect) and CES (`if (…) { … }`, C-flavoured); both compile to the same bytecode. The mode is the session's (`ibCompileState`, `compiler/compileState.h` — its configuration's, taken when its runtime is built; a thread with no session has its own): a process may hold bases written in different syntaxes. **CES is the default** for new configurations (2026-05-10); existing serialised configs preserve their stored Syntax. Wire token in metadata enum still reads `vbs` for back-compat — user-visible label is `ves`.
+- **Anonymous functions:** `Function(args) ... EndFunction` and `Procedure(args) ... EndProcedure` (or CES `Function(args) { … }`) work as expressions — assignable to slots, callable through variables. Backed by `ibValueFunction` (`compiler/procUnitLambda.h`, CLSID `VL_FUNC`). Lambda's compile-context return kind is `RETURN_LAMBDA_FUNCTION` / `RETURN_LAMBDA_PROCEDURE` (`compileCode.h`). Eval-in-lambda resolves outer frames via splice in `CompileExpression` (lambda-shim's `m_pppArrayList[1..]` → eval's `[2..]`). **Closure capture: a lambda takes the variables it references, not the frames** (2026-11-03; it took whole frames from 2026-05-11). The compiler lists them in `ibByteFunction::m_listCaptured` as (depth, slot) — depth 0 on the function they live in, which makes them cells (heap `ibValue`s) on entry (`ibRunContext::Capture`), depth ≥ 1 on each lambda that takes them; at runtime the lambda holds, per outer frame, an `ibRunCaptureContext` with just those cells, and outer-function locals resolve at depth ≥ 1 as before. See `docs/private/lambda.md`, `docs/private/closure-capture.md`.
+- **Debugger ports:** 7700–7709 (`ibPort::Debugger`, `src/engine/core/net/ports.h`) — every process that can be debugged listens on the first free one, the designer looks in all of them
 
 ### Bytecode resolver (kind-driven, AOT-ready)
 

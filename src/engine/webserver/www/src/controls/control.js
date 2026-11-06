@@ -40,6 +40,11 @@ export function defineControl(type, control) {
 }
 
 export class Control extends HTMLElement {
+	// THE BACKGROUND ITS KIND IS GIVEN WHEN ITS AUTHOR PICKS NONE, as the server saves it (frmserver's
+	// ibDefaultStyleBGColour; a kind of its own says its own), and the theme's for it — what a control naming it is painted.
+	/** @type {[string, string]} */
+	static platformBackground = ['rgb(250,247,240)', 'var(--oes-form-bg)'];
+
 	constructor() {
 		super();
 		/** @type {ProtocolNode} the node it was last brought up to, without its children */
@@ -90,7 +95,7 @@ export class Control extends HTMLElement {
 
 	/**
 	 * How wide its label is, for the column it stands in (controls/labels.js); null — it takes no part. The thin
-	 * client's question of a control with a label beside it (ibControlDynamicBorder::CalculateLabelSize).
+	 * client's question of a control with a title beside it (ibControl::GetTitleExtent).
 	 * @returns {number | null}
 	 */
 	calculateLabelSize() {
@@ -98,7 +103,7 @@ export class Control extends HTMLElement {
 	}
 
 	/**
-	 * The column's width, given to its label (ibControlDynamicBorder::ApplyLabelSize).
+	 * The column's width, given to its label (ibControl::SetTitleWidth).
 	 * @param {number} width
 	 */
 	applyLabelSize(width) {}
@@ -136,8 +141,10 @@ export class Control extends HTMLElement {
 		else
 			this.removeAttribute('title');
 
-		this.lookTarget.style.color = colour(node.ForegroundColour);
-		this.lookTarget.style.backgroundColor = colour(node.BackgroundColour);
+		const [text, background] = themedPair(colour(node.ForegroundColour), colour(node.BackgroundColour),
+			/** @type {typeof Control} */ (this.constructor).platformBackground);
+		this.lookTarget.style.color = text;
+		this.lookTarget.style.backgroundColor = background;
 		applyFont(this, node.Font);
 
 		// A stored minimum raises a floor; it does not lower one — max() keeps the stylesheet's own floor too.
@@ -257,6 +264,40 @@ function withoutChildren(node) {
  */
 function sameEntries(node, previous) {
 	return JSON.stringify(withoutChildren(node)) === JSON.stringify(previous);
+}
+
+// THE PLATFORM'S OWN LOOK OF A CONTROL - what a control is given when its author picks no colour (frmserver's
+// ibDefaultStyleFGColour; the background its kind's, Control.platformBackground). A form saves it as any colour, so it
+// comes as one: a control that names it is painted with the theme's (styles/tokens.css), which is it in the light theme
+// and a dark one in the dark.
+const defaultText = 'rgb(63,92,119)';
+
+/**
+ * A control's two colours as they are painted. Both the platform's own look (or none): the theme's. One of them the
+ * author's: the author chose it against the light theme's other side, so that side is what it gets - the platform's
+ * colour as saved, or the light paper when the form names none - and the pair reads as the author saw it.
+ * @param {string} text @param {string} background
+ * @param {[string, string]} platform its kind's background as saved, and the theme's for it (Control.platformBackground)
+ * @returns {[string, string]}
+ */
+function themedPair(text, background, [platformBackground, themedBackground]) {
+	const ownText = text !== '' && text !== defaultText;
+	const ownBackground = background !== '' && background !== platformBackground;
+	if (!ownText && !ownBackground)
+		return [text === '' ? '' : 'var(--oes-form-text)', background === '' ? '' : themedBackground];
+	return [text || 'var(--oes-paper-text)', background || 'var(--oes-paper)'];
+}
+
+/**
+ * A cell's text colour and fill, either perhaps unnamed. A fill named with no ink is read with the light theme's dark
+ * ink, in any theme: the author chose it against that one, and the theme's light ink on yellow is not read. Ink named
+ * alone stays alone: the fill under it is the row's - the current row, the current cell, a text spilled over its
+ * neighbours - and papering it would break them.
+ * @param {string} text @param {string} fill
+ * @returns {[string, string]}
+ */
+export function onFill(text, fill) {
+	return [text || (fill ? 'var(--oes-paper-text)' : ''), fill];
 }
 
 /** A colour's text, `r,g,b` as a form writes it; '' when it names none. @param {string | undefined} text */

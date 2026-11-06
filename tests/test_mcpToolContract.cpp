@@ -395,6 +395,29 @@ TEST(McpToolContract, TheEnvelope_TakesItsArgumentsAsAnObject)
 	EXPECT_EQ(targetType->AsString(), wxT("string"));
 }
 
+// ⭐ A QUERY THAT IS A TOOL'S NAME FINDS THAT TOOL (#646). As words, a verb whose name the descriptions around it say -
+// `code_run`, `compose_run` - scored below the shorter neighbours that mention it and was cut by the bar; the search
+// answered every verb but the one asked for.
+TEST(McpToolContract, TheSearch_AnswersAToolsNameWithThatTool)
+{
+	const ibMcpTool* search = ibFindMcpTool(wxT("mcp_search"));
+	ASSERT_NE(search, nullptr);
+
+	ibDataNode params;
+	params.SetValue(ibT("query"), ibString(wxT("compose_run")));
+	params.SetValue(ibT("schema"), false);
+	ibDataNode result;
+	ibString refusal;
+	ASSERT_TRUE(search->Call(params, result, refusal)) << refusal.ToStdString();
+
+	auto tools = result.FindField(ibT("tools"));
+	ASSERT_TRUE(tools);
+	ASSERT_EQ(tools->Kind(), ibDataKind::Array);
+	ASSERT_EQ(tools->AsArray().size(), 1u);
+	ASSERT_TRUE(tools->AsArray().front().AsChild());
+	EXPECT_EQ(tools->AsArray().front().AsChild()->GetValue<ibString>(ibT("name")), wxT("compose_run"));
+}
+
 TEST(McpToolContract, EveryRequiredArgument_IsAlsoDeclared)
 {
 	// ⭐ THE ONE THAT MATTERS MOST. A schema that REQUIRES a name it never
@@ -561,18 +584,29 @@ TEST(McpToolContract, EveryNameSaidInADescription_IsANameThatExists)
 	}
 }
 
-// Who may be offered a tool: what changes the configuration is the designer's alone, what reads data needs the roles to
-// give that too, and what shows the schema is anybody's the assistant is given to.
+// Who may be offered a tool: what changes the configuration is the designer's alone, what acts in a person's window the
+// application's alone, and the rest is anybody's the assistant is given to.
 TEST(McpToolContract, ToolMode_IsWhatItWasRegisteredAs)
 {
 	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("metadata_create"))), ibMcpToolMode::Designer);
 	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("client_call"))), ibMcpToolMode::Designer);
-	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("compose_run"))), ibMcpToolMode::Data);
-	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("value_pack"))), ibMcpToolMode::Data);
-	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("value_unpack"))), ibMcpToolMode::Data);
+	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("form_get"))), ibMcpToolMode::Designer);
+	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("window_run"))), ibMcpToolMode::Runtime);
+	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("report_show"))), ibMcpToolMode::Runtime);
+	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("compose_run"))), ibMcpToolMode::Common);
 	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("compose_settings"))), ibMcpToolMode::Common);
 	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("metadata_get"))), ibMcpToolMode::Common);
 	EXPECT_EQ(ibGetMcpToolMode(ibFindMcpTool(wxT("syntax_search"))), ibMcpToolMode::Common);
+}
+
+// What touches the records says so, and the call then needs the roles to give them to the assistant; what shows the
+// schema does not.
+TEST(McpToolContract, IsDataAssistant_IsSaidByWhatTouchesTheRecords)
+{
+	for (const wxChar* const name : { wxT("compose_run"), wxT("value_pack"), wxT("value_unpack"), wxT("window_run"), wxT("report_show") })
+		EXPECT_TRUE(ibFindMcpTool(name)->IsDataAssistant()) << name;
+	for (const wxChar* const name : { wxT("compose_settings"), wxT("metadata_get"), wxT("syntax_search") })
+		EXPECT_FALSE(ibFindMcpTool(name)->IsDataAssistant()) << name;
 }
 
 TEST(McpToolContract, EveryTool_SaysWhatItIsDoingInAPersonsWords)
@@ -852,7 +886,7 @@ TEST(McpClipboard, ASlot_KeepsWhatWasPutInItUntilItIsReplaced)
 	slot.m_kind = ibMcpClipboardKind::Metadata;
 	slot.m_name = wxT("GoodsReceipt");
 	slot.m_what = wxT("Document");
-	slot.m_payload.SetValue(wxT("marker"), ibString(wxT("first")));
+	slot.m_payload.SetValue(ibT("marker"), ibString(wxT("first")));
 
 	// The SAME slot is handed back — a copy would make copy/paste two verbs over
 	// two different things.
@@ -934,18 +968,18 @@ TEST(MetadataBind, ASharedNameResolvesAmongTheBindingsCandidates) {
 	const auto bind = [&](auto setTarget, bool remove, ibString& refusal) {
 		ibDataNode params;
 		ibDataNode result;
-		params.SetValue(wxT("id"), (std::int32_t)document->GetMetaID());
-		params.SetValue(wxT("property"), ibString(wxT("ListRegisterRecord")));
+		params.SetValue(ibT("id"), (std::int32_t)document->GetMetaID());
+		params.SetValue(ibT("property"), ibString(wxT("ListRegisterRecord")));
 		setTarget(params);
 		if (remove)
-			params.SetValue(wxT("remove"), true);
+			params.SetValue(ibT("remove"), true);
 		const bool ok = tool->Call(params, result, refusal);
 		return ok;
 	};
 
 	ibString refusal;
 	ASSERT_TRUE(bind([&](ibDataNode& params) {
-		params.SetValue(wxT("target"), ibString(wxT("Cars")));
+		params.SetValue(ibT("target"), ibString(wxT("Cars")));
 	}, false, refusal)) << refusal.ToStdString();
 
 	ibValueMetaObjectRegisterData* asRegister = dynamic_cast<ibValueMetaObjectRegisterData*>(registerOne);
@@ -955,7 +989,7 @@ TEST(MetadataBind, ASharedNameResolvesAmongTheBindingsCandidates) {
 
 	refusal.clear();
 	EXPECT_TRUE(bind([&](ibDataNode& params) {
-		params.SetValue(wxT("target"), ibString(wxT("AccumulationRegister.Cars")));
+		params.SetValue(ibT("target"), ibString(wxT("AccumulationRegister.Cars")));
 	}, false, refusal)) << refusal.ToStdString();
 
 	ibValueMetaObject* registerTwo = cfg->CreateMetaObject(g_metaAccumulationRegisterCLSID, root, false);
@@ -964,7 +998,7 @@ TEST(MetadataBind, ASharedNameResolvesAmongTheBindingsCandidates) {
 
 	refusal.clear();
 	EXPECT_FALSE(bind([&](ibDataNode& params) {
-		params.SetValue(wxT("target"), ibString(wxT("Cars")));
+		params.SetValue(ibT("target"), ibString(wxT("Cars")));
 	}, false, refusal));
 	EXPECT_TRUE(refusal.Contains(ibString::Format(wxT("#%ld"), (long)registerOne->GetMetaID())));
 	EXPECT_TRUE(refusal.Contains(ibString::Format(wxT("#%ld"), (long)registerTwo->GetMetaID())));
@@ -972,7 +1006,7 @@ TEST(MetadataBind, ASharedNameResolvesAmongTheBindingsCandidates) {
 
 	refusal.clear();
 	ASSERT_TRUE(bind([&](ibDataNode& params) {
-		params.SetValue(wxT("target"), ibString::Format(wxT("%ld"), (long)registerTwo->GetMetaID()));
+		params.SetValue(ibT("target"), ibString::Format(wxT("%ld"), (long)registerTwo->GetMetaID()));
 	}, false, refusal)) << refusal.ToStdString();
 
 	ibValueMetaObjectRegisterData* second = dynamic_cast<ibValueMetaObjectRegisterData*>(registerTwo);
@@ -981,7 +1015,7 @@ TEST(MetadataBind, ASharedNameResolvesAmongTheBindingsCandidates) {
 
 	refusal.clear();
 	ASSERT_TRUE(bind([&](ibDataNode& params) {
-		params.SetValue(wxT("target"), (std::int32_t)registerTwo->GetMetaID());
+		params.SetValue(ibT("target"), (std::int32_t)registerTwo->GetMetaID());
 	}, true, refusal)) << refusal.ToStdString();
 	EXPECT_FALSE(second->GetRegisterRecorder()->GetTypeDesc().ContainType(documentRef));
 }

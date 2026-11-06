@@ -16,8 +16,8 @@
 #include <wx/xml/xml.h>
 
 #include "frmclient/backend/backend_mainFrame.h"   // the frame an object asks for its inspector's selection
+#include "frmclient/communicator.h"
 #include "frmclient/docView/docView.h"
-#include "protocol/communicator.h"
 #include "frmclient/mainFrame/settings/editorsettings.h"
 #include "frmclient/mainFrame/settings/fontcolorsettings.h"
 #include "frmclient/mainFrame/settings/keybinder.h"
@@ -228,11 +228,6 @@ protected:
 	// A question, put to the person; what they answered in `response` (nothing — cancelled). The base asks what both
 	// modes are asked; a mode's window asks its own (the designer's restructure ledger) and leaves the rest to the base.
 	virtual void ShowRequest(const ibProtocolNode& request, ibProtocolNode& response);
-
-	// THE DOCUMENT OF A TAB THE SERVER RAISED, by the tab's Kind (DrawTabs) — the desktop doc template's CreateDocument for
-	// a tab, as it has no template. The base makes what both modes have (a form, the journal) and the runtime's start page;
-	// a mode's window makes its own (the designer's tree of an external file) and leaves the rest to the base.
-	virtual ibTabDocument* CreateDocument(ibProtocol::ibView::ibKind kind, long long tabId);
 
 	// The File and Edit menus — the desktop's, the doc manager's commands — and the bar they start it. A mode's window
 	// makes its own menu (the designer's Help) and calls this.

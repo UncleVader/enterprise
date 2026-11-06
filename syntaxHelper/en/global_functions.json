@@ -32,7 +32,7 @@
         "global_functions"
       ],
       "signature": "Number(value: any)",
-      "description": "Converts a value to a number. A string is parsed; a boolean gives 1 or 0; a value with no numeric reading gives zero rather than raising. The result is an exact decimal — this platform's numbers are not binary floating point, so money arithmetic does not drift.",
+      "description": "Converts a value to a number. A string is read whole — a number, with spaces around it if any; \"234,8\" or \"12x\" raises \"Cannot convert string to number\". A boolean gives 1 or 0; another value with no numeric reading gives zero rather than raising. The result is an exact decimal — this platform's numbers are not binary floating point, so money arithmetic does not drift.",
       "syntax_block": "Number(value: any)",
       "parameters": "value — a value of any type.",
       "return_descr": "Number.",
@@ -89,7 +89,7 @@
         "global_functions"
       ],
       "signature": "Round(num : number, number, roundMode)",
-      "description": "Rounds a number to the given number of decimal places. The rounding RULE is the third argument and it changes results on exact halves: Round15as20 (the default) sends a half away from zero, so 1.5 becomes 2; Round15as10 keeps a half down, so 1.5 becomes 1 and only .6 and above go up. State the rule explicitly wherever the figure is reconciled against another system.",
+      "description": "Rounds a number to the given number of decimal places. The rounding RULE is the third argument and it changes results on exact halves: Round15as20 (the default) sends a half away from zero, so 1.5 becomes 2; Round15as10 sends an exact half towards zero, so 1.5 becomes 1, while anything past the half goes up (1.51 and 1.6 become 2). State the rule explicitly wherever the figure is reconciled against another system.",
       "syntax_block": "Round(num : number, number, roundMode)",
       "parameters": "num — the number. number — decimal places (default 0). roundMode — RoundMode.Round15as20 (default) or RoundMode.Round15as10.",
       "return_descr": "Number, rounded.",
@@ -400,6 +400,25 @@
       "example": "Message(StrReplace(\"a-b-c\", \"-\", \"+\"));   // a+b+c",
       "availability": "Thin client, Server",
       "see_also": ["fn.Find", "fn.StrCountOccur"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.StrSplit",
+      "name_local": "StrSplit",
+      "name_en": "StrSplit",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "description": "Splits a string into an array of parts at its separators. Each CHARACTER of separators is a separator of its own. A line of a delimited file becomes its fields.",
+      "syntax_block": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "parameters": "str — the string to split. separators — the characters that separate, each on its own (\",;\" splits at a comma and at a semicolon). includeBlank — keep the empty parts (two separators side by side, or one at an end); true by default.",
+      "return_descr": "Array of strings. A string with no separator in it is one part; the separators are not in the parts.",
+      "example": "var fields = StrSplit(\"2020-01-02|Client 1|5\", \"|\");   // [\"2020-01-02\", \"Client 1\", \"5\"]\nvar words = StrSplit(\"a,,b\", \",\", false);              // [\"a\", \"b\"]",
+      "availability": "Thin client, Server",
+      "see_also": ["fn.Find", "fn.Mid", "fn.StrReplace"],
       "reviewed": true
     },
     {
@@ -1153,9 +1172,9 @@
         "global_functions"
       ],
       "signature": "WriteJSON(writer : JSONWriter, value : any)",
-      "description": "Writes a value through a JSONWriter - the reference system's spelling of `writer.WriteValue(value)`. A Structure, a Container or an Array goes out whole, to any depth; what has no JSON form (a reference, a table) is refused by the name of its type and leaves nothing behind.",
+      "description": "Writes a value through a JSONWriter - the reference system's spelling of `writer.WriteValue(value)`. A Structure, a Map or an Array goes out whole, to any depth; what has no JSON form (a reference, a table) is refused by the name of its type and leaves nothing behind.",
       "syntax_block": "WriteJSON(writer : JSONWriter, value : any)",
-      "parameters": "writer — a JSONWriter; value — a String, Number, Boolean, Date, Null, Undefined, or a Structure / Container / Array of those.",
+      "parameters": "writer — a JSONWriter; value — a String, Number, Boolean, Date, Null, Undefined, or a Structure / Map / Array of those.",
       "return_descr": "Nothing.",
       "example": "line = New Structure();\nline.Insert(\"item\", \"x\");\nwriter = New JSONWriter();\nWriteJSON(writer, line);\nMessage(writer.Close());",
       "availability": "Thin client, Server",
@@ -1272,7 +1291,7 @@
         "global_functions"
       ],
       "signature": "SetStatus(text : string)",
-      "description": "Puts a line of text in the window's status bar — progress for work that takes a while, without interrupting anybody. Does nothing under an evaluation.",
+      "description": "Puts a line of text in the window's status bar — progress for work that takes a while, without interrupting anybody. In a background job, which has no window, the line is the job's activity: Active Users and `code_status` show it. Does nothing under an evaluation.",
       "syntax_block": "SetStatus(text : string)",
       "parameters": "text — the line to show.",
       "return_descr": "Nothing.",
@@ -1399,6 +1418,25 @@
         "fn.IsEmptyValue",
         "fn.IsNull"
       ],
+      "reviewed": true
+    },
+    {
+      "id": "fn.FillPropertyValues",
+      "name_local": "FillPropertyValues",
+      "name_en": "FillPropertyValues",
+      "kind": "system_procedure",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "description": "Fills the receiver's properties with the values of the source's properties of the same names - a structure, a row, an object alike. Nothing is added to the receiver.",
+      "syntax_block": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "parameters": "receiver — the value whose properties are filled. source — the value they are read from. list — the names to fill, separated by commas; when empty, every property the source has and the receiver can take; a name only one of them has is passed over. A name the list gives that either side does not have, or the receiver cannot write, is refused as receiver.Name = source.Name would be. exclude — names left out, separated by commas.",
+      "return_descr": "",
+      "example": "var from = New Structure(\"Code, Description, Price\", \"001\", \"Bolt\", 5);\nvar to = New Structure(\"Description, Price\", \"\", 0);\nFillPropertyValues(to, from);              // to.Description = \"Bolt\", to.Price = 5\nFillPropertyValues(to, from, \"Price\");     // Price only\nFillPropertyValues(to, from, , \"Price\");   // all but Price",
+      "availability": "Thin client, Server",
+      "see_also": ["fn.ValueIsFilled"],
       "reviewed": true
     },
     {
@@ -1833,7 +1871,7 @@
       "syntax_block": "GetCommonForm(name : string, owner : any, id : guid)",
       "parameters": "name — the common form's name. owner — the owning window (optional). id — a key that identifies this form, so asking twice reuses one window (optional).",
       "return_descr": "The form.",
-      "example": "form = GetCommonForm(\"Settings\");\nform.Open();",
+      "example": "form = GetCommonForm(\"Settings\");\nform.Show();",
       "availability": "Thin client, Server",
       "see_also": ["fn.ShowCommonForm", "fn.ActiveWindow", "fn.GetCommonTemplate"],
       "reviewed": true
@@ -2111,14 +2149,14 @@
         "global_context",
         "global_functions"
       ],
-      "signature": "RunBackground(procedure : string, args : array)",
-      "description": "Starts a procedure in the background and returns a handle to the started job, without waiting for it. The arguments are an Array, flattened into the procedure's positional parameters — anything else non-empty is refused by name rather than treated as \"no arguments\", which would start the procedure with the wrong signature and fail deep inside it. Raises when the application is not running.",
-      "syntax_block": "RunBackground(procedure : string, args : array)",
-      "parameters": "procedure — the name of the procedure to run. args — an Array of its arguments (may be empty).",
+      "signature": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "description": "Starts a procedure in the background and returns a handle to the started job, without waiting for it. The arguments are an Array, flattened into the procedure's positional parameters — anything else non-empty is refused by name rather than treated as \"no arguments\", which would start the procedure with the wrong signature and fail deep inside it. While a job of the same procedure under the same key is still running, a second one is refused — the guard a \"run it now\" button needs against a double click. Raises when the application is not running.",
+      "syntax_block": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "parameters": "procedure — ModuleName.MethodName, a public method of a common module. args — an Array of its arguments (may be empty). key — the caller's name for the work. description — what the job is, as a person reads it.",
       "return_descr": "The background job that was started.",
       "example": "args = New Array();\nargs.Add(BegOfMonth(WorkingDate()));\njob = RunBackground(\"RecalculateTotals\", args);",
       "availability": "Thin client, Server",
-      "see_also": ["fn.RunJob", "fn.RunScheduledJobs"],
+      "see_also": ["fn.RunJob", "fn.RunScheduledJobs", "cls.BackgroundJobs", "cls.BackgroundJob"],
       "reviewed": true
     }
   ]

@@ -32,10 +32,7 @@
 #include "frmclient/backend/appData.h"
 #include "frmclient/backend/mcp/mcpServer.h"   // the assistant's port, up and down with the window
 #include "frmclient/docView/docManager.h"
-#include "frmclient/docView/docViewAssistant.h"   // the assistant's tab — a view the server holds
 #include "frmclient/docView/templates/docViewFile.h"
-#include "frmclient/docView/templates/docViewAuditLog.h"   // the journal's tab — a view of its own (the tab's Kind)
-#include "frmclient/docView/templates/docViewHomePage.h"   // the start page's tab — its forms, laid out
 #include "frmclient/artProvider/artProvider.h"
 #include "frmclient/visualView/visualHostClient.h"
 #include "frmclient/win/picture.h"
@@ -53,14 +50,14 @@
 #include "frmclient/backend/serialize/dataProtocol.h"   // a value as the server's question carries it
 #include "frmclient/backend/metaCollection/metaObject.h"  // the inspector's rows an answer brought, kept for their object
 #include "frmclient/backend/backend_localization.h"     // the session's language — the frame says it
-#include "frmclient/visualView/ctrl/typeControl.h"      // ibTypeControlFactory::SimpleChoice — the calculator, the calendar
+#include "frmclient/visualView/ctrl/typeControl.h"      // ibTypeControlFactory::ChooseValue — the calculator, the calendar, the list
 #include "frmclient/visualView/ctrl/frame.h"            // ibControlFrame — what they are drawn over
-#include "frmclient/win/ctrls/controlTextEditor.h"      // ibControlTextEditor — the field they drop under
+#include "gui/univ/ctrl/textCtrl.h"                   // ibTextCtrl — the field they drop under
 #include "frmclient/backend/composition/dataComposer.h"
 #include "frmclient/win/ctrls/tableView.h"
-#include "frmclient/win/ctrls/floatingNotebook.h"
-#include "frmclient/win/theme/luna_tabart.h"
-#include "frmclient/win/theme/luna_dockart.h"
+#include "gui/univ/ctrl/floatingNotebook.h"
+#include "gui/univ/theme/luna_tabart.h"
+#include "gui/univ/theme/luna_dockart.h"
 
 namespace {
 
@@ -220,12 +217,13 @@ void AppendMenuItems(wxMenu& menu, const std::vector<ibProtocolNode>& items, std
 	}
 }
 
-// A FIELD'S VALUE FOR THE SERVER'S QUESTION — what the desktop's SimpleChoice is drawn over: the value the question carries,
-// the one chosen kept, and the wait ended when the calculator or the calendar goes (ibProtocol::ibRequest::ibKind::SimpleChoice).
-class ibSimpleChoiceHolder : public ibControlFrame {
+// A FIELD'S VALUE FOR THE SERVER'S QUESTION — what the desktop's SimpleChoice and QuickChoice are drawn over: the value the
+// question carries, the one chosen kept, and the wait ended when the calculator, the calendar or the list goes
+// (ibProtocol::ibRequest::ibKind::SimpleChoice; a Choice asked Quick).
+class ibChoiceHolder : public ibControlFrame {
 public:
 
-	explicit ibSimpleChoiceHolder(const ibValue& value) : m_value(value) {}
+	explicit ibChoiceHolder(const ibValue& value) : m_value(value) {}
 
 	virtual bool GetControlValue(ibValue& pvarControlVal) const override { pvarControlVal = m_value; return true; }
 	virtual bool SetControlValue(const ibValue& varControlVal = ibValue()) override {
@@ -245,7 +243,6 @@ public:
 			m_loop->Exit();
 	}
 
-	const ibValue& GetValue() const { return m_value; }
 	bool HasChosen() const { return m_hasChosen; }
 	const ibValue& GetChosen() const { return m_chosen; }
 
@@ -272,7 +269,7 @@ private:
 wxWindow* FocusedEditor(wxWindow* otherwise)
 {
 	for (wxWindow* window = wxWindow::FindFocus(); window != nullptr; window = window->GetParent()) {
-		if (wxDynamicCast(window, ibControlTextEditor) != nullptr)
+		if (wxDynamicCast(window, ibTextCtrl) != nullptr)
 			return window;
 	}
 	return wxWindow::FindFocus() != nullptr ? wxWindow::FindFocus() : otherwise;
@@ -971,6 +968,21 @@ void ibFrontendMainFrame::ShowSchema(ibProtocol::ibSchema::ibKind schema, const 
 	else if (schema == ibProtocol::ibSchema::ibKind::Debugging || schema == ibProtocol::ibSchema::ibKind::McpServer) {
 		ShowOptions(schema, shown);
 	}
+	else if (schema == ibProtocol::ibSchema::ibKind::Style) {
+		// The person's theme - the three, the one in force chosen; another chosen is kept by the server as theirs, and
+		// the browser paints with it. This window does not yet: the thin client's dark look is still to come.
+		const wxString choices[] = { _("As the system is set"), _("Light"), _("Dark") };
+		wxSingleChoiceDialog dialog(this, _("The theme the interface is painted in:"), _("Theme"), WXSIZEOF(choices), choices);
+		const long long theme = shown.GetInt(ibProtocol::ibSchema::ibStyle::Theme, 0);
+		dialog.SetSelection(theme >= 0 && theme < static_cast<long long>(WXSIZEOF(choices)) ? static_cast<int>(theme) : 0);
+		if (dialog.ShowModal() != wxID_OK || dialog.GetSelection() == theme)
+			return;
+		ibProtocolNode params, answer;
+		params.SetValue(ibProtocol::ibSchema::Schema, static_cast<long long>(schema));
+		params.SetValue(ibProtocol::ibSchema::Command, static_cast<long long>(ibProtocol::ibSchema::ibCommand::Save));
+		params.Child(ibProtocol::ibSchema::Args).SetValue(ibProtocol::ibSchema::ibStyle::Theme, static_cast<long long>(dialog.GetSelection()));
+		Call(ibProtocol::ibMethod::Schema, params, answer);
+	}
 }
 
 void ibFrontendMainFrame::ShowOptions(ibProtocol::ibSchema::ibKind schema, const ibProtocolNode& shown)
@@ -1225,17 +1237,6 @@ void ibFrontendMainFrame::DrawTemplates(const ibProtocolNode& templates)
 	}
 }
 
-ibTabDocument* ibFrontendMainFrame::CreateDocument(ibProtocol::ibView::ibKind kind, long long tabId)
-{
-	if (kind == ibProtocol::ibView::ibKind::AuditLog)
-		return new ibAuditLogDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::HomePage)
-		return new ibHomePageDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Assistant)
-		return new ibAssistantDocument(tabId);
-	return new ibFormVisualDocument(tabId);
-}
-
 void ibFrontendMainFrame::DrawTabs(const ibProtocolNode& tabs)
 {
 	wxAuiMDIClientWindow* const client = GetClientWindow();
@@ -1246,8 +1247,8 @@ void ibFrontendMainFrame::DrawTabs(const ibProtocolNode& tabs)
 	m_drawing = true;
 	client->Freeze();
 
-	// EACH TAB A DOCUMENT THE SERVER RAISED — made here, with no template (ibTabDocument), by the tab's Kind: a form, or a
-	// view of its own; its view in a tab of the window (CreateChildFrame).
+	// EACH TAB A DOCUMENT THE SERVER RAISED — made here, with no template, by the tab's Kind (ibTabDocument::Make): a form,
+	// or a view of its own; its view in a tab of the window (CreateChildFrame).
 	std::set<long long> drawn;
 	for (const ibProtocolNode& tab : tabs.Children()) {
 		const long long id = tab.GetId();
@@ -1265,7 +1266,7 @@ void ibFrontendMainFrame::DrawTabs(const ibProtocolNode& tabs)
 		// …and a tab closing is not opened again — its form went with the window it was shown in (ibDialogDocChildFrame).
 		if (m_tabsClosing.contains(id))
 			continue;
-		ibTabDocument* const opened = CreateDocument(static_cast<ibProtocol::ibView::ibKind>(tab.GetInt(ibProtocol::ibFrame::ibTab::Kind)), id);
+		ibTabDocument* const opened = ibTabDocument::Make(static_cast<ibProtocol::ibView::ibKind>(tab.GetInt(ibProtocol::ibFrame::ibTab::Kind)), id);
 		m_documents[id] = opened;
 		opened->SetTitle(title);
 		const wxBitmap icon = ibProtocolPicture(tab, ibProtocol::ibFrame::ibTab::Icon);
@@ -1566,6 +1567,22 @@ void ibFrontendMainFrame::ShowRequest(const ibProtocolNode& request, ibProtocolN
 				ticked.Add(static_cast<int>(i));
 			}
 		}
+		// QUICK — the desktop's ibTypeControlFactory::QuickChoice, no window: the items dropped under the field pressed, each
+		// standing for its order; the one picked answered by its Id, a list dismissed with none.
+		if (request.GetBool(ibProtocol::ibRequest::ibChoice::Quick)) {
+			ibChooseValueRequest offered;
+			for (std::size_t i = 0; i < items.size(); ++i)
+				offered.m_values.emplace_back(static_cast<int>(i));
+			offered.m_captions = captions;
+			offered.m_selected = ticked.IsEmpty() ? wxNOT_FOUND : selected;
+			ibChoiceHolder holder{ ibValue() };
+			if (ibTypeControlFactory::ChooseValue(&holder, offered, FocusedEditor(this)))
+				holder.Wait();
+			const int picked = holder.HasChosen() ? holder.GetChosen().GetInteger() : -1;
+			if (picked >= 0 && picked < static_cast<int>(items.size()))
+				response.SetValue(ibProtocol::ibRequest::ibChoice::Id, items[picked].GetInt(ibProtocol::ibRequest::ibChoice::Id));
+			break;
+		}
 		// SEVERAL — the desktop's wxMultiChoiceDialog, those Selected ticked; cancelled — answered with no Ids.
 		if (request.GetBool(ibProtocol::ibRequest::ibChoice::Multiple)) {
 			wxMultiChoiceDialog dialog(parent, request.GetString(ibProtocol::ibRequest::ibChoice::Caption), request.GetString(ibProtocol::ibRequest::ibChoice::Caption),
@@ -1650,8 +1667,8 @@ void ibFrontendMainFrame::ShowRequest(const ibProtocolNode& request, ibProtocolN
 		// under the field pressed; the value chosen is the answer, a window closed with none — none.
 		ibDataNode stored;
 		ibReadProtocolNode(request.FindChild(ibProtocol::ibRequest::ibSimpleChoice::Value), stored);
-		ibSimpleChoiceHolder holder(ibValue::FromNode(stored));
-		if (ibTypeControlFactory::SimpleChoice(&holder, holder.GetValue().GetClassType(), FocusedEditor(this)))
+		ibChoiceHolder holder(ibValue::FromNode(stored));
+		if (ibTypeControlFactory::ChooseValue(&holder, {}, FocusedEditor(this)))
 			holder.Wait();
 		if (holder.HasChosen()) {
 			ibDataNode chosen;

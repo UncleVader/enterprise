@@ -21,10 +21,10 @@ protocol between them; neither half is called a frontend.
 
 | Part | Holds |
 |---|---|
-| `protocol` | the contract — `protocol.h`: every name and number of the wire, depending on nothing — and the library of the sides that talk it: the wire's node, the connections (a server's socket, a file base in process), the communicator, the protocol's journal |
+| `protocol` | the contract — `protocol.h`: every name and number of the wire, depending on nothing, with the designer's own messages beside it in `protocolDesigner.h` — and the library of the sides that talk it: the wire's node, the connections (a server's socket, a file base in process), the protocol's journal |
 | `frmserver` | the server side: sessions, forms, the configuration's documents, the client host. It includes the contract only |
 | `core` | under both the engine and the client: ids and value kinds, string, number, date, guid, the node with its JSON and binary forms, the refusal (`ibCoreException`), the translation engine (`ibLocalization`), the format string, the schemas (`description/`), a colour and a font as data, the table's model view (`tabular/`); of wx, the base only |
-| `frmclient` | the client's graphics library: the main window, the document/view skeleton, the controls, the editors. It links `core` and `protocol` |
+| `frmclient` | the client's graphics library: the communicator that keeps the frame it was answered, the main window, the document/view skeleton, the controls, the editors. It links `core` and `protocol` |
 | `fileserver` | a file base in the client's process — the engine loaded beside the window |
 | `enterprise-thin` | the runtime's window and its document manager |
 | `designer-thin` | the designer's window and its document manager |
@@ -77,9 +77,12 @@ The desktop's document/view, without its metadata part. Four classes take other 
 `ibFrontendView`, `ibFrontendDocManager`, `ibFrontendDocTemplate` — because a file base puts the server's own in the
 same process, and wx keeps one class table.
 
-- **A server's tab is a bridge document.** One invisible template makes one for each tab the frame has. It holds the
+- **A server's tab is a bridge document.** One is made for each tab the frame has, with no template. It holds the
   tab's id and nothing of the document: its title, and whether it may be saved, undone or closed now, are read from the
   tab; save, undo, redo and close are calls.
+- **A tab's Kind picks its document.** Each document registers for its Kind at the bottom of its source
+  (`TAB_DOCUMENT_REGISTER`); a form's tab names no Kind and gets a form's. A control is made the same way, by its
+  node's type (`CONTROL_REGISTER`); a type nobody registered stands as a placeholder.
 - **A file goes to the server, by two calls.** `upload` puts it into the session's temporary storage and `open` makes
   the document of it by its id — the server works with ids, not files. An external data processor or report runs its
   form; a text or a spreadsheet is the server's document of its own template. The client's document goes once it has
@@ -103,11 +106,13 @@ same process, and wx keeps one class table.
   The form's root carries its own properties (`Title`, `Orient`, …); the tree's captions are the server's.
 - **The desktop's windows, drawn here, decided there.** The list settings window (`ListSettings`, a table's Filter
   command), the report's settings window (`ComposerSettings`, a report's Settings command), the calculator and
-  calendar (`SimpleChoice`), the error window over a script's failure (`Error`), the schedule's editor (`Schedule`)
+  calendar (`SimpleChoice`), a reference's quick choice (`Choice`, `Quick`), the error window over a script's failure (`Error`), the schedule's editor (`Schedule`)
   and a script's printed sheet (`Print`) are the desktop's, copied. The client draws them over what the request
   carries; the server reads, checks and puts on what comes back.
 - **The desktop's controls.** Besides fields, tables, buttons and the rest: notebooks and their pages, radio buttons,
-  sliders, gauges, HTML boxes. A chart box is drawn empty.
+  sliders, gauges, HTML boxes. A chart box is drawn empty. A button's picture stands where its `PictureLocation` says;
+  as a tile (`PictureLocation = Tile`) it stacks its picture, large, over its caption and the `Note` under them, and
+  fills what its sizer gives it. A button whose `View` is `Hyperlink` has no face and no frame, its caption underlined.
 - **The focus brings its tab up.** A click into a form whose tab is not selected (the notebook split in two) selects
   it, as the desktop's did.
 

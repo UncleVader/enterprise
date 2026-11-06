@@ -118,6 +118,10 @@ public:
 	virtual bool OnPropertyChanging(ibProperty* property, const ibVariant& newValue);
 	virtual void OnPropertyChanged(ibProperty* property, const ibVariant& oldValue, const ibVariant& newValue);
 
+	// Declares this chart's tables, and adds to the base's check of its table what a predefined characteristic must
+	// declare (#278): its Type, filled in. Body in chartOfCharacteristicTypesMetadataSchema.cpp.
+	virtual void ContributeTables(class ibSchemaSnapshot& out) const override;
+
 protected:
 
 	//get type desc
@@ -234,7 +238,7 @@ private:
 	// and empty is an ERROR rather than "everything the contour allows". Without that, a
 	// characteristic with no type would let a value of any kind into a slot the kind was supposed
 	// to narrow — which is the whole purpose of this second tier.
-	ibPropertyContainer<>* m_propertyAttributeType = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("Type"), _("Type"), _("The type of this characteristic's values - chosen from the chart's Types of characteristics. A field typed by this characteristic holds values of this type only. Required."), g_valueTypeDescriptionCLSID, /*fillCheck*/ true, ibValue(), ibItemMode::ibItemMode_Item));
+	ibPropertyPredefined<>* m_propertyAttributeType = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("Type"), _("Type"), _("The type of this characteristic's values - chosen from the chart's Types of characteristics. A field typed by this characteristic holds values of this type only. Required."), g_valueTypeDescriptionCLSID, /*fillCheck*/ true, ibValue(), ibItemMode::ibItemMode_Item));
 
 	friend class ibValueRecordDataObjectChartOfCharacteristicTypes;
 	friend class ibMetaData;
@@ -272,6 +276,7 @@ public:
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);
 
+	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
 
 	//support source data

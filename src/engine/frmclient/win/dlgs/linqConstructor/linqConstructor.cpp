@@ -10,13 +10,13 @@
 #include "frmclient/backend/compiler/value.h"   // ibValue::GetIconGroup - a field's picture
 #include "frmclient/artProvider/artProvider.h"   // wxART_FRONTEND and the product's own pictures
 #include "frmclient/mainFrame/mainFrame.h"       // the editor settings the block is coloured with
-#include "frmclient/win/ctrls/dataview/dataview.h"   // ibDataViewListCtrl - the platform's list, edited in place
-#include "frmclient/win/ctrls/dataview/dataviewEditOnActivate.h"   // …opened by a double-click
+#include "gui/univ/dataview/dataview.h"   // ibDataViewListCtrl - the platform's list, edited in place
+#include "gui/univ/dataview/dataviewEditOnActivate.h"   // …opened by a double-click
 #include "frmclient/win/dlgs/callbackDropTarget.h"   // a drop is the arrow's verb, reached by the mouse
 #include "frmclient/win/editor/codeEditor/codeEditor.h"   // the block, coloured as the module is
 #include "frmclient/docView/tabDocument.h"               // the module's tab — what the compiler is asked through
 #include "frmclient/win/picture.h"                       // ibProtocolPicture — a kind's picture, by its id
-#include "protocol/protocol.h"                           // ibProtocol::ibView::ibModule::ibLinq
+#include "protocol/protocolDesigner.h"                           // ibProtocol::ibView::ibModule::ibLinq
 #include "protocol/protocolNode.h"
 
 #include <wx/artprov.h>
@@ -166,7 +166,7 @@ ibDialogLinqConstructor::ibDialogLinqConstructor(wxWindow* parent, const wxStrin
 	const auto makeList = [&](wxWindow* page) {
 		ibDataViewListCtrl* list = new ibDataViewListCtrl(page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
 			wxDV_ROW_LINES | wxDV_SINGLE);
-		list->Bind(wxEVT_DATAVIEW_ITEM_VALUE_CHANGED, [this](ibDataViewEvent&) { ShowResult(); });
+		list->Bind(ibEVT_DATAVIEW_ITEM_VALUE_CHANGED, [this](ibDataViewEvent&) { ShowResult(); });
 		ibDataViewEditOnActivate(list);   // a double-click opens the cell - the constructors' one way
 		return list;
 	};

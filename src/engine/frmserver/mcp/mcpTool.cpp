@@ -21,6 +21,8 @@
 #include "backend/backend_localization.h"                      // a caption is an array by language
 #include "backend/metaCollection/metaLanguageObject.h"         // …and the languages are the config's own
 #include "backend/metaCollection/metaModuleObject.h"           // ibValueMetaObjectModuleBase — the module behind an id
+#include "backend/metaCollection/metaRoleObject.h"             // what an account's role is called
+#include "backend/metaCollection/metaTemplateObject.h"         // ibValueMetaObjectTemplate — the composer behind an id
 
 #include "core/stringTokenizer.h"   // a query is words, and the finder counts how many of them landed
 #include <wx/regex.h>     // …unless it is written as a pattern, which is also a way to ask
@@ -271,22 +273,43 @@ bool ibIsMcpToolOffered(const ibMcpTool* tool)
 	if (mode == ibMcpToolMode::Common)
 		return true;
 
-	const ibSession* const session = ibSession::Current();
-	if (session == nullptr)
+	if (ibSession::Current() == nullptr)
 		return false;
-	if (!ibIsMcpInApplication())
-		return true;
-	if (mode == ibMcpToolMode::Designer)
-		return false;
-
-	const ibMetaDataConfigurationBase* const metaData = session->GetMetaData();
-	return metaData != nullptr && metaData->AccessRight_DataAssistant();
+	return ibIsMcpInApplication() == (mode == ibMcpToolMode::Runtime);
 }
 
 bool ibIsMcpInApplication()
 {
 	const ibSession* const session = ibSession::Current();
 	return session != nullptr && !IsDesignerSessionKind(session->GetKind());
+}
+
+std::vector<ibString> ibMcpRoleNames(const ibUserInfo& who)
+{
+	const ibSession* const session = ibSession::Current();
+	const ibMetaDataConfigurationBase* const metaData = session != nullptr ? session->GetMetaData() : nullptr;
+
+	std::vector<ibString> names;
+	for (const ibUserInfo::ibUserRole& role : who.m_roleArray) {
+		const ibValueMetaObjectRole* const object = metaData != nullptr
+			? metaData->FindAnyObjectByFilter<ibValueMetaObjectRole>(role.m_miRoleId) : nullptr;
+		ibString name = object != nullptr ? object->GetName()
+			: ibString::Format(ibMcpText("role %d, no longer in the configuration"), static_cast<int>(role.m_miRoleId));
+		if (role.m_mode == ibRoleCompositionMode_Intersection)
+			name << ibMcpText(" (restricting)");
+		names.push_back(std::move(name));
+	}
+	return names;
+}
+
+ibString ibMcpLanguageName(const ibUserInfo& who)
+{
+	const ibSession* const session = ibSession::Current();
+	if (const ibMetaDataConfigurationBase* const metaData = session != nullptr ? session->GetMetaData() : nullptr)
+		for (const auto object : metaData->GetAnyArrayObject<ibValueMetaObjectLanguage>(g_metaLanguageCLSID))
+			if (object->GetDocPath() == who.m_strLanguageGuid)
+				return object->GetName();
+	return who.m_strLanguageCode;
 }
 
 void ibRegisterMcpTool(const ibMcpTool* tool, ibMcpToolMode mode)
@@ -310,7 +333,7 @@ void ibRegisterMcpTool(const ibMcpTool* tool, ibMcpToolMode mode)
 }
 
 // The application app_run started — see the header. An atomic, because the tools that wait on the
-// application run off the main thread (NeedsMainThread), and app_run on it.
+// application run on the connection's thread (IsSessionTask), and app_run as the session's task.
 static std::atomic<long>& StartedApplication()
 {
 	static std::atomic<long> s_pid{ 0 };
@@ -421,8 +444,8 @@ namespace {
 // valid pattern must not be re-attempted three hundred times.
 const wxRegEx* CompiledQuery(const ibString& query)
 {
-	// ⚠ PER THREAD. Tools run on the main thread or on the delivery thread depending on what they
-	// need, and a shared cache here would be two searches writing one pointer. A regular
+	// ⚠ PER THREAD. Tools run on the session's worker or on the connection's thread depending on what
+	// they need, and a shared cache here would be two searches writing one pointer. A regular
 	// expression compiles in microseconds, so a second copy costs nothing worth measuring.
 	//
 	// ⚠ AND THE OBJECT IS HELD BY VALUE, not through a pointer. A heap block that lives to the end
@@ -1336,7 +1359,18 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 		}
 		else {
 			const ibDataValue value = property->GetNodeValue();
-			entry->SetValue(ibT("kind"), KindOf(value));
+			const bool metaObject = value.Kind() == ibDataKind::Child && value.AsChild()
+				&& value.AsChild()->FindField(ibT("Id"));
+
+			// ⭐ A METAOBJECT THAT HOLDS A TYPE IS SAID AS THE TYPE. A code's, a description's, a number's type is chosen on
+			// the owner and written into the attribute's node (ibPropertyPredefinedType, #646), so it was named below and
+			// not unfolded, {"name": "Code", "id": …}: the type metadata_set_type had just placed read back as nothing, and
+			// its own "read one, change it, send it back" could not be followed (2026-11-05). Asked of the node, as
+			// metadata_set_type finds the holder - a node with no type in it is a structure - and said as a type property
+			// says one, with the attribute's id beside it: what metadata_set_type takes.
+			ibTypeDescription held;
+			const bool typed = metaObject && ibTypeDescriptionMemory::ReadNode(value, held) && held.GetClsidCount() > 0;
+			entry->SetValue(ibT("kind"), typed ? ibString(ibT("type")) : KindOf(value));
 
 			// ⚠ A STRUCTURE IS NAMED, NOT UNFOLDED. A property whose value is a nested metaobject —
 			// a catalog's Code, Description, Ref, its two modules — writes ITSELF whole when asked
@@ -1352,9 +1386,14 @@ void ibMcpSayProperties(const ibPropertyObject* object, ibDataNode& node,
 			// a caption, a type, a picture, a command binding, a field binding, a list's whole Settings —
 			// and each was rescued by a cast of its own above, the property's class named here one at a
 			// time (2026-10-28). Anything else is said as the property writes it: the shape that goes back.
-			const bool metaObject = value.Kind() == ibDataKind::Child && value.AsChild()
-				&& value.AsChild()->FindField(ibT("Id"));
-			if (metaObject) {
+			if (typed) {
+				ibDataValue described;
+				ibTypeDescriptionMemory::WriteNode(described, held);
+				entry->AddField(ibT("value"), described);
+				if (auto id = value.AsChild()->FindField(ibT("Id")))
+					entry->AddField(ibT("id"), *id);
+			}
+			else if (metaObject) {
 
 				const ibDataNode held = *value.AsChild();
 				ibDataNode& shown = entry->Child(ibT("value"));
@@ -1417,6 +1456,24 @@ ibValueMetaObject* ibMcpObjectNamed(const ibDataNode& params, ibString& refusal,
 	}
 
 	return object;
+}
+
+ibValueMetaObjectTemplate* ibMcpComposerNamed(const ibDataNode& params, ibString& refusal,
+	const ibString& field)
+{
+	ibValueMetaObject* object = ibMcpObjectNamed(params, refusal, field);
+	if (object == nullptr)
+		return nullptr;
+
+	ibValueMetaObjectTemplate* composer = object->ConvertToType<ibValueMetaObjectTemplate>();
+	if (composer == nullptr || composer->GetTemplateDesc().GetType() != ibTemplateType::Composer) {
+		refusal = ibString::Format(
+			ibMcpText("'%s' is not a composer - a template of the composer kind is, under a report or any other "
+				  "object; metadata_get on its owner lists it among its children."), object->GetName());
+		return nullptr;
+	}
+
+	return composer;
 }
 
 // ⭐ WHAT THE CALL CARRIED, WHEN THE TOOL HAS NOTHING BETTER TO SHOW.
@@ -1579,13 +1636,14 @@ std::vector<ibString> ibMcpComplaints(ibValueMetaObject* object)
 
 	// ⭐ AND THE OTHER HALF IS NOT HERE. Some metatypes complain into this ledger;
 	// others say it through the message pane (a chart of accounts with no chart of
-	// characteristic types does), and that road ends at the designer's main
-	// window, which records it. Reading it belongs to messages_read, on the side
-	// that has a window — not to a second collector in the backend saying the same
+	// characteristic types does), and that road ends in the frame of the session
+	// this runs in — the person's designer window. Nothing on this side keeps it:
+	// messages_read, which read the desktop window's record, went with the desktop
+	// front (2026-10-27), and a second collector in the backend would say the same
 	// thing twice.
 	//
-	// The probe below therefore FILLS BOTH: whatever it says through the pane is
-	// recorded by the window as it passes, and is there to be read a moment later.
+	// The probe below therefore FILLS BOTH: the ledger is read here, and whatever
+	// it says through the pane is shown to the person at the designer.
 	try {
 		object->OnSaveMetaObject(0);
 	}
@@ -1620,7 +1678,7 @@ void ibMcpReportComplaints(ibDataNode& result, ibValueMetaObject* object)
 	result.SetValue(ibT("incompleteNote"),
 		ibMcpText("The change was made. The object still reports this, and the configuration cannot "
 		  "be saved to the database until it stops. Some objects complain through the "
-		  "message pane instead - messages_read has those."));
+		  "message pane instead - those reach the designer's window, not this answer."));
 }
 
 // ⭐⭐ THE SAME DOOR A MOUSE CLICK USES — and it is the platform's, not this server's.
@@ -1990,18 +2048,15 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 		return false;
 	}
 
-	// A VALUE IS EITHER A SCALAR OR A SHAPE. The parser puts scalars in the field
-	// area and objects in the properties area as a child, so both are looked for —
-	// a caller sending back what it read should not have to know which it holds.
+	// A VALUE IS EITHER A SCALAR OR A SHAPE — one field either way: a node's fields and its children are one set, a
+	// child a field of its own kind (dataBuilder.h, FindChild).
 	ibDataValue value;
-	if (auto scalar = params.FindField(ibMcpValueArgument().Name()))
-		value = *scalar;
-	else if (auto composite = params.FindChild(ibMcpValueArgument().Name())) {
-		value = ibDataValue::Child(std::make_shared<ibDataNode>(*composite));
-		// …and a picture's id comes back as the digits this door sent out — turned into a number here,
-		// because the property stores one (mcpTool.h, ibMcpPictureIdAsText).
-		ibMcpPictureIdAsNumber(value);
-	}
+	if (auto given = params.FindField(ibMcpValueArgument().Name()))
+		value = *given;
+	// …and a picture's id comes back as the digits this door sent out — turned into a number here, because the property
+	// stores one (mcpTool.h, ibMcpPictureIdAsText). Asked of a shape found as a child alone, it was asked of none since
+	// the two sets became one: a picture of the engine's was refused in the shape form_control gives it (2026-11-02).
+	ibMcpPictureIdAsNumber(value);
 
 	// 🛑⭐⭐ A CAPTION IN ONE LANGUAGE, WHERE THE CONFIGURATION DECLARES SEVERAL, IS REFUSED — every
 	// session meets this door, which is the only way every session knows the rule (Max, 2026-09-10:
@@ -2069,7 +2124,7 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 			const auto named = ibMetaTypeResolver(owner);
 
 			ibString holds;
-			for (const ibClassID& clsid : asType->GetValueAsTypeDesc().m_listTypeClass) {
+			for (const ibClassID& clsid : asType->GetValueAsTypeDesc().GetClsidList()) {
 				const ibString word = named(clsid);
 				if (word.IsEmpty())
 					continue;
@@ -2081,6 +2136,16 @@ bool ibMcpSetProperty(ibProperty* property, const ibDataNode& params,
 				  "DynamicList, as type_list names them - when a field of its kind may hold it. A length, a "
 				  "precision and scale, a composite: metadata_set_type. It holds %s now."),
 				name, holds.IsEmpty() ? ibMcpText("nothing") : holds);
+			return false;
+		}
+
+		// ⭐ AND THE IMAGE A CONFIGURATION'S PICTURE OBJECT HOLDS has a verb too: picture_set takes it as base64
+		// PNG bytes or as SVG, and measures it itself - the {Name, Buffer, Width, Height} it reads back in is not
+		// a shape to assemble by hand (#190).
+		if (dynamic_cast<const ibPropertyExternalPicture*>(property) != nullptr) {
+			refusal = refused + ibT(' ') + ibString::Format(
+				ibMcpText("'%s' is the image itself: picture_set takes it, with `data` (base64 PNG bytes) or "
+				  "`svg`, and a `name`."), name);
 			return false;
 		}
 

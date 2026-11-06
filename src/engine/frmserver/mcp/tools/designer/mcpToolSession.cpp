@@ -172,16 +172,8 @@ private:
 
 		std::vector<ibDataValue> roles;
 
-		for (const ibUserInfo::ibUserRole& role : info.m_roleArray) {
-
-			// ⭐ THE MODE TRAVELS WITH THE ROLE. A RESTRICTING role grants nothing of its own and
-			// only subtracts, so a name on its own reads as "may do this" when it may mean the
-			// exact opposite — see role_rights, which reports the same distinction.
-			roles.push_back(ibDataValue::String(
-				role.m_mode == ibRoleCompositionMode_Intersection
-					? role.m_strRoleName + ibMcpText(" (restricting)")
-					: role.m_strRoleName));
-		}
+		for (const ibString& name : ibMcpRoleNames(info))
+			roles.push_back(ibDataValue::String(name));
 
 		into.AddField(ibT("roles"), ibDataValue::Array(roles));
 
@@ -192,7 +184,7 @@ private:
 				ibMcpText("No roles are assigned - nothing narrows what this account may do."));
 
 		if (info.IsSetLanguage()) {
-			into.SetValue(ibT("language"), info.m_strLanguageName);
+			into.SetValue(ibT("language"), ibMcpLanguageName(info));
 			into.SetValue(ibT("languageCode"), info.m_strLanguageCode);
 		}
 	}
@@ -313,8 +305,9 @@ public:
 			"before something that needs the installation to itself, and to free a lock whose "
 			"holder has walked away (lock_list names the session). It is a SIGNAL: the process "
 			"that owns the session acts on it within a few seconds, so the row does not vanish "
-			"the instant this returns. Refuses to disconnect the session this server is running "
-			"in.");
+			"the instant this returns, and a runtime stopped at a breakpoint does not act on it until it runs "
+			"on - app_stop ends an application started from here. Refuses to disconnect the session this "
+			"server is running in.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override

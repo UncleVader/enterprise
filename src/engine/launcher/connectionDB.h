@@ -3,79 +3,67 @@
 
 #include <wx/artprov.h>
 #include <wx/string.h>
-#include <wx/stattext.h>
 #include <wx/gdicmn.h>
 #include <wx/font.h>
 #include <wx/colour.h>
 #include <wx/settings.h>
-#include <wx/textctrl.h>
 #include <wx/sizer.h>
-#include <wx/button.h>
 #include <wx/bitmap.h>
 #include <wx/image.h>
 #include <wx/icon.h>
 #include <wx/frame.h>
-#include <wx/radiobut.h>
-#include <wx/filepicker.h>
 
 #include <wx/wx.h>
 #include "core/localization/dictionary.h"   // _() — the dialog's words
+#include "launcher.h"                       // ibListInfo — what the dialog edits
+#include "gui/univ/ctrl/radioButton.h"  // the dialog's controls — the kit's, as the launcher's window (launcher.h)
+#include "gui/univ/ctrl/textCtrl.h"
 
 class ibDialogConnection : public wxDialog {
-	wxStaticText* m_staticTextName;
-	wxTextCtrl* m_textCtrlName;
+	ibStaticText* m_staticTextName;
+	ibTextCtrl* m_textCtrlName;
 
-	wxRadioButton* m_radioFile;
-	wxRadioButton* m_radioServer;
+	ibRadioButton* m_radioFile;
+	ibRadioButton* m_radioServer;
+	ibRadioButton* m_radioWeb;
 
-	// File mode controls
-	wxStaticText* m_staticTextFilePath;
-	wxDirPickerCtrl* m_dirPickerFile;
+	// File mode controls — the base's folder, typed or chosen in the system's folder dialog
+	ibStaticText* m_staticTextFilePath;
+	ibTextCtrl* m_textCtrlFilePath;
+	ibButton* m_buttonFilePath;
 
-	// Server mode controls
-	wxStaticText* m_staticTextServer;
-	wxTextCtrl* m_textCtrlServer;
-	wxStaticText* m_staticTextPort;
-	wxTextCtrl* m_textCtrlPort;
-	wxStaticText* m_staticTextUser;
-	wxTextCtrl* m_textCtrlUser;
-	wxStaticText* m_staticTextPassword;
-	wxTextCtrl* m_textCtrlPassword;
-	wxStaticText* m_staticTextDataBase;
-	wxTextCtrl* m_textCtrlDataBase;
+	// Server mode controls — the cluster, server[:port], and the base's name in it
+	ibStaticText* m_staticTextServer;
+	ibTextCtrl* m_textCtrlServer;
+	ibStaticText* m_staticTextDataBase;
+	ibTextCtrl* m_textCtrlDataBase;
+
+	// Web mode controls — the publication's link, as the browser's address bar shows it
+	ibStaticText* m_staticTextAddress;
+	ibTextCtrl* m_textCtrlAddress;
 
 	wxBoxSizer* m_sizerFileMode;
 	wxBoxSizer* m_sizerServerMode;
+	wxBoxSizer* m_sizerWebMode;
 
-	wxButton* m_buttonTestConnection;
-	wxButton* m_buttonSaveConnection;
+	ibButton* m_buttonTestConnection;
+	ibButton* m_buttonSaveConnection;
 
 	void UpdateModeVisibility();
 
 public:
 
-	void InitConnection(
-		const wxString &strName,
-		bool bFileMode,
-		const wxString& strFilePath,
-		const wxString &strServer, const wxString& strPort,
-		const wxString& strDatabase,
-		const wxString& strUser, const wxString& strPassword
-	);
+	void InitConnection(const wxString& strName, const ibListInfo& info);
 
 	ibDialogConnection(wxWindow* parent, wxWindowID id = wxID_ANY, const wxString& title = _("Configure connect"), const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxSize(500, 320), long style = wxSYSTEM_MENU | wxCLOSE_BOX | wxCAPTION | wxCLIP_CHILDREN | wxTAB_TRAVERSAL);
 
-	bool IsFileMode() const { return m_radioFile->GetValue(); }
 	wxString GetNameIB() const { return m_textCtrlName->GetValue(); }
-	wxString GetFilePath() const { return m_dirPickerFile->GetPath(); }
-	wxString GetServer() const { return m_textCtrlServer->GetValue(); }
-	wxString GetPort() const { return m_textCtrlPort->GetValue(); }
-	wxString GetDBName() const { return m_textCtrlDataBase->GetValue(); }
-	wxString GetUser() const { return m_textCtrlUser->GetValue(); }
-	wxString GetPassword() const { return m_textCtrlPassword->GetValue(); }
+	// The connection as the dialog's fields say it.
+	ibListInfo GetListInfo() const;
 
 protected:
 	void OnModeChanged(wxCommandEvent& event);
+	void FilePathOnButtonClick(wxCommandEvent& event);
 	void TestConnectionOnButtonClick(wxCommandEvent& event);
 	void SaveConnectionOnButtonClick(wxCommandEvent& event);
 };

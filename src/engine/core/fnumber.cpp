@@ -440,7 +440,7 @@ namespace
 	// conversion, since digits, sign, decimal point and exponent marker are all ASCII and fit in a
 	// single code unit of either.
 	template <class Char>
-	bool TryParseString(const Char* p, ibNumber::BigImpl& out)
+	bool TryParseString(const Char* p, ibNumber::BigImpl& out, const Char** end = nullptr)
 	{
 		out.limbs.clear();
 		out.negative = false;
@@ -520,6 +520,8 @@ namespace
 		ibNumber::BigImpl::TrimMag(out.limbs);
 		out.negative = negative && !out.IsZero();
 		out.exp = exp10;
+		if (end != nullptr)
+			*end = p;   // the first character the number did not take
 		return true;
 	}
 }
@@ -561,15 +563,7 @@ void ibNumber::StoreHeap(SharedBig* p) noexcept
 
 // ---- ctors / dtor / assignment -------------------------------------------------------
 
-ibNumber::ibNumber() noexcept
-	: m_payload(PackImmediate(0, 0))
-{
-}
-
-ibNumber::ibNumber(int v) noexcept
-	: m_payload(PackImmediate(v, 0))
-{
-}
+// The int and unsigned int constructors, the copies and the moves are in fnumber.h.
 
 // The two signed 64-bit spellings share one body. `long` and `long long` are different
 // TYPES even when they are the same width, so both need their own constructor — see the
@@ -595,12 +589,6 @@ ibNumber::ibNumber(long long v) noexcept
 	: m_payload(0)
 {
 	FromSigned64(static_cast<int64_t>(v));
-}
-
-ibNumber::ibNumber(unsigned int v) noexcept
-	: m_payload(PackImmediate(static_cast<int64_t>(v), 0))
-{
-	// unsigned int max == 2^32 - 1 fits trivially in 47-bit immediate mantissa.
 }
 
 // Unsigned twin of FromSigned64 — same reason for two constructors over one body.
@@ -630,12 +618,18 @@ ibNumber::ibNumber(unsigned long long v) noexcept
 	FromUnsigned64(static_cast<uint64_t>(v));
 }
 
+// ⭐ A DOUBLE IS THE DECIMAL IT STANDS FOR: fifteen significant digits (DBL_DIG, numeric_limits<double>::digits10 - the
+// digits a double carries through itself), as SQLite and a spreadsheet spell one. Seventeen are the double's OWN
+// precision, not the decimal's: 0.43 came in as 0.42999999999999999 through every door that hands a double over - a
+// database's floating column or expression, an OLE VT_R8, an ODBC SQL_DOUBLE - and its tail rode into every sum made
+// of it, where the server's SUM, rounded once, answered 33.43 (#646, 2026-11-05). What a double computes over
+// decimals rounds back to the decimal result at fifteen; the computations seeded here converge on their own.
 ibNumber::ibNumber(double v)
 	: m_payload(PackImmediate(0, 0))
 {
 	if (!std::isfinite(v)) return;  // NaN / Inf collapse to zero.
 	wchar_t buf[64];
-	const int n = std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.17g", v);
+	const int n = std::swprintf(buf, sizeof(buf) / sizeof(buf[0]), L"%.15g", v);
 	if (n <= 0)
 		return;
 
@@ -666,41 +660,9 @@ ibNumber::ibNumber(const ibString& s)
 }
 
 // A heap-tier number is SHARED: one more owner of its BigImpl, nothing copied.
-ibNumber::ibNumber(const ibNumber& o) noexcept
-	: m_payload(o.m_payload)
+void ibNumber::Hold() const noexcept
 {
-	if (IsHeap())
-		Shared()->m_refCount.fetch_add(1, std::memory_order_relaxed);
-}
-
-ibNumber::ibNumber(ibNumber&& o) noexcept
-	: m_payload(o.m_payload)
-{
-	o.m_payload = PackImmediate(0, 0);
-}
-
-ibNumber::~ibNumber()
-{
-	Clear();
-}
-
-ibNumber& ibNumber::operator=(const ibNumber& o) noexcept
-{
-	if (this == &o) return *this;
-	if (o.IsHeap())
-		o.Shared()->m_refCount.fetch_add(1, std::memory_order_relaxed);   // first — `o` may share ours
-	Clear();
-	m_payload = o.m_payload;
-	return *this;
-}
-
-ibNumber& ibNumber::operator=(ibNumber&& o) noexcept
-{
-	if (this == &o) return *this;
-	Clear();
-	m_payload = o.m_payload;
-	o.m_payload = PackImmediate(0, 0);
-	return *this;
+	Shared()->m_refCount.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ibNumber::Clear() noexcept
@@ -1022,6 +984,18 @@ ibNumber& ibNumber::operator/=(const ibNumber& rhs)
 
 ibNumber ibNumber::operator-() const
 {
+	// An immediate number negates in its word; a zero is (0, 0), as StoreBig stores it, and only -2^46 has no
+	// immediate opposite and goes below.
+	if (IsImmediate()) {
+		const int64_t m = -ImmMantissa();
+		const int e = m == 0 ? 0 : ImmExp();
+		if (CanBeImmediate(m, e)) {
+			ibNumber r;
+			r.StoreImmediate(m, e);
+			return r;
+		}
+	}
+
 	BigImpl b;
 	LoadBig(b);
 	b.ChangeSign();
@@ -1034,6 +1008,15 @@ ibNumber ibNumber::operator-() const
 // (see ibNumber::Compare there), so a caller resolves `i < n` without a call.
 int ibNumber::CompareBig(const ibNumber& rhs) const
 {
+	// ⭐ TWO AMOUNTS ARE COMPARED WHERE THEY ARE ADDED (#646): both immediate, brought to one exponent as + and - bring
+	// them (TryImmAligned). Only integers were compared without building two heap numbers, so a report's sort by an
+	// amount or a price allocated on every comparison: 15-18% of a compose_run over 100 000 turnovers (Debug samples,
+	// 2026-11-04).
+	int64_t am, bm;
+	int32_t exp10;
+	if (TryImmAligned(rhs, am, bm, exp10))
+		return (am > bm) - (am < bm);
+
 	BigImpl a, b;
 	LoadBig(a);
 	rhs.LoadBig(b);
@@ -1041,7 +1024,7 @@ int ibNumber::CompareBig(const ibNumber& rhs) const
 	return a.Compare(b);
 }
 
-bool ibNumber::IsZero() const
+bool ibNumber::IsZero() const noexcept
 {
 	if (IsImmediate()) return ImmMantissa() == 0;
 	return HeapPtr()->IsZero();
@@ -1049,6 +1032,9 @@ bool ibNumber::IsZero() const
 
 int64_t ibNumber::ToInt64() const
 {
+	if (IsImmediateInteger())
+		return ImmMantissa();   // an immediate integer is its mantissa — ToInt (fnumber.h) says why it is asked first
+
 	BigImpl b;
 	LoadBig(b);
 	if (b.exp > 0) {
@@ -1072,7 +1058,8 @@ int64_t ibNumber::ToInt64() const
 	return out;
 }
 
-int ibNumber::ToInt() const
+// Cold half only — the immediate integer is read in the header (see ibNumber::ToInt there).
+int ibNumber::ToIntBig() const
 {
 	BigImpl b;
 	LoadBig(b);
@@ -1096,7 +1083,8 @@ int ibNumber::ToInt() const
 	return static_cast<int>(v);
 }
 
-unsigned int ibNumber::ToUInt() const
+// …and of ToUInt.
+unsigned int ibNumber::ToUIntBig() const
 {
 	BigImpl b;
 	LoadBig(b);
@@ -1122,6 +1110,11 @@ unsigned int ibNumber::ToUInt() const
 
 int ibNumber::ToSigned64(int64_t& out) const
 {
+	if (IsImmediateInteger()) {   // ToInt (fnumber.h) says why it is asked first
+		out = ImmMantissa();
+		return 0;
+	}
+
 	BigImpl b;
 	LoadBig(b);
 	if (b.exp < 0) {
@@ -1145,7 +1138,7 @@ float ibNumber::ToFloat() const
 	return static_cast<float>(ToDouble());
 }
 
-void ibNumber::SetZero()
+void ibNumber::SetZero() noexcept
 {
 	Clear();
 }
@@ -1236,7 +1229,7 @@ ibNumber ibNumber::operator++(int)
 	return prev;
 }
 
-bool ibNumber::IsSign() const
+bool ibNumber::IsSign() const noexcept
 {
 	if (IsImmediate()) return ImmMantissa() < 0;
 	return HeapPtr()->negative;
@@ -1260,13 +1253,20 @@ ibNumber ibNumber::Abs() const
 	return r;
 }
 
-void ibNumber::FromInt(int v)
+void ibNumber::FromInt(int v) noexcept
 {
 	*this = ibNumber(v);
 }
 
 int ibNumber::ToUnsigned64(uint64_t& out) const
 {
+	if (IsImmediateInteger()) {   // ToInt (fnumber.h) says why it is asked first
+		const int64_t v = ImmMantissa();
+		if (v < 0) return 1;   // negative — overflow for unsigned, as below
+		out = static_cast<uint64_t>(v);
+		return 0;
+	}
+
 	BigImpl b;
 	LoadBig(b);
 	if (b.negative) return 1; // negative — overflow for unsigned
@@ -1521,6 +1521,14 @@ ibNumber ibNumber::Exp() const
 
 ibNumber& ibNumber::operator%=(const ibNumber& rhs)
 {
+	// Two immediate integers: one int64 remainder, the dividend's sign — what the long division below leaves, with
+	// no BigImpl on the heap. A zero divisor goes below, as before.
+	int64_t am, bm;
+	if (TryImmInts(rhs, am, bm) && bm != 0) {
+		StoreImmediate(am % bm, 0);
+		return *this;
+	}
+
 	BigImpl a, b;
 	LoadBig(a);
 	rhs.LoadBig(b);
@@ -1540,6 +1548,17 @@ double ibNumber::ToDouble() const
 	// 1. Shrink magnitude to <= 2 limbs by dividing off 10^9 chunks; bump exp.
 	// 2. Convert remaining 64-bit magnitude to double (lossy if > 2^53).
 	// 3. Multiply by 10^exp via std::pow (one fp multiply, sub-ulp for typical exp).
+	//
+	// An immediate number takes the same steps on its mantissa — 47 bits, already within two limbs — with no BigImpl
+	// and no vector on the way (ToInt, fnumber.h, says why): the magnitude, the power, the sign, as below.
+	if (IsImmediate()) {
+		const int64_t m = ImmMantissa();
+		double d = static_cast<double>(m < 0 ? -m : m);
+		const int e = ImmExp();
+		if (e != 0) d *= std::pow(10.0, e);
+		return m < 0 ? -d : d;
+	}
+
 	BigImpl b;
 	LoadBig(b);
 
@@ -1964,11 +1983,21 @@ void ibNumber::ToString(const Format& fmt, ibString& out) const
 
 bool ibNumber::FromString(const ibString& s)
 {
+	size_t length = 0;
+	return FromString(s, length);
+}
+
+bool ibNumber::FromString(const ibString& s, size_t& length)
+{
 	BigImpl big;
-	if (!TryParseString(s.c_str(), big)) {
+	const ibChar* const begin = s.c_str();
+	const ibChar* end = begin;
+	if (!TryParseString(begin, big, &end)) {
 		Clear();
+		length = 0;
 		return false;
 	}
+	length = static_cast<size_t>(end - begin);
 	StoreBig(std::move(big));
 	return true;
 }
@@ -2164,6 +2193,16 @@ void ibNumber::From128Bytes(const uint8_t bytes[16])
 		         | (static_cast<uint32_t>(bytes[i * 4 + 1]) <<  8)
 		         | (static_cast<uint32_t>(bytes[i * 4 + 2]) << 16)
 		         | (static_cast<uint32_t>(bytes[i * 4 + 3]) << 24);
+	}
+
+	// ⭐ WHAT FITS 64 BITS TAKES THE 64-BIT ROAD (#646): the high half is only the low half's sign spread out. A SUM over a
+	// NUMERIC comes back from Firebird as INT128 whatever its size, and decoding each one into limbs made a vector per
+	// number - 5% of a report over 100 000 turnovers (2026-11-04, Debug).
+	const uint32_t spread = (limbs[1] & 0x80000000u) != 0 ? 0xFFFFFFFFu : 0u;
+	if (limbs[2] == spread && limbs[3] == spread) {
+		Clear();
+		FromSigned64(static_cast<int64_t>((static_cast<uint64_t>(limbs[1]) << 32) | limbs[0]));
+		return;
 	}
 
 	const bool negative = (limbs[3] & 0x80000000u) != 0;

@@ -91,7 +91,7 @@ git submodule update --init --recursive
 
 The `--recursive` flag is required because wxWidgets itself contains submodules.
 
-**A CMake configure fetches what is missing.** wxWidgets, cpp-httplib, Mbed TLS, nlohmann/json, Asio, llhttp, LodePNG, NanoSVG and Expat are
+**A CMake configure fetches what is missing.** wxWidgets, cpp-httplib, Mbed TLS, nlohmann/json, Asio, llhttp, LodePNG, NanoSVG, Expat and date are
 each checked before use, and one that is not there is fetched with `git submodule update --init --recursive` for
 that path (three attempts); only a tree with no git, or no network, stops with the command to run. A
 checkout that fetched less than the tree needs - an older workflow, a partial clone - still builds.
@@ -107,6 +107,10 @@ carries the generated C sources; built as the static `llhttp` target, linked int
 (`core/graphics/picture.h`) have LodePNG (`<lodepng.h>`, one source, `LODEPNG_NO_COMPILE_DISK`; the static `lodepng`
 target, `core/graphics/lodepng/lodepng.vcxproj` in the solution, linked into core only). SVG is the core's too:
 NanoSVG (`<nanosvg/src/nanosvg.h>`, header only, compiled in `core/graphics/picture.cpp` — `ibPicture::FromSvg`).
+Time zones are the system's on Linux and macOS: the core reads the zoneinfo files through the date library
+(`src/3rdparty/date`, built there alone), so a server needs the `tzdata` package; nothing is shipped. Windows has
+them in the C++ runtime.
+
 XML is the core's as well: Expat (`<expat.h>`, tag `R_2_9_0`; the static `expat` target, its configuration
 `core/xml/expat/expat_config.h`, `core/xml/expat/expat.vcxproj` in the solution, linked into core only), read and
 written through `core/xml/xmlText.h`.
@@ -204,8 +208,8 @@ project that links `backend.lib` also links `core.lib`.
 
 **Resources (Windows).** Every program and library has a `<name>.rc` that names itself — description, file name,
 `VFT_APP` or `VFT_DLL`, a program's icon — and includes `core/version.rc2`, the one version resource: company,
-product, copyright, and the version, which is the platform's (`OES_VERSION_MAJOR/MINOR/RELEASE` in `core/build.h`,
-the same three `version_oes_last` is made of). Every program also merges `core/program.manifest` into the manifest
+product, copyright, and the version, which is the platform's (`OES_VERSION_MAJOR/MINOR/RELEASE` in `core/build.h`).
+Every program also merges `core/program.manifest` into the manifest
 the linker makes: Windows 10 and later, long paths. The linker adds asInvoker, wx the common controls 6 (its
 `defs.h`); per-monitor DPI awareness is not declared — wx's default. The vcxproj compiles them; CMake does not.
 `webserver.exe` is the web server: the site and the client protocol for browsers. `protocol.dll`, `frmserver.dll`, `frmclient.dll`, `fileserver.dll`, `enterprise-thin.exe` and
@@ -319,7 +323,7 @@ The root `CMakeLists.txt` adds fifteen engine subdirectories, each with its own
 |---|---|
 | core | shared lib (`CORE_EXPORTS`; of wx, `wx::base` only; plus libuuid / CoreFoundation for `guid.cpp`) |
 | backend | shared lib (`BACKEND_EXPORTS`, links `core` PUBLIC) |
-| protocol | shared lib (`PROTOCOL_EXPORTS`) — does not link `core` |
+| protocol | shared lib (`PROTOCOL_EXPORTS`, links `core` PUBLIC — the journal is one per process) |
 | frmserver | shared lib (`FRMSERVER_EXPORTS`) |
 | fileserver | shared lib (`FILESERVER_EXPORTS`) |
 | frmclient | shared lib (`FRMCLIENT_EXPORTS`, links `core` + `protocol`) |
@@ -447,17 +451,19 @@ Paths use the `oesPlatform` macro (`Win32` for `x86`, `Win64` for `x64`):
 ## Continuous integration
 
 `.github/workflows/ci.yml` (added 2026-08-02) runs on pushes to `develop` / `master`, on PRs into
-`develop`, and on demand (`workflow_dispatch`). Nine jobs:
+`develop`, and on demand (`workflow_dispatch`). Ten jobs:
 
 | Job | Runner | What it proves |
 |---|---|---|
+| **Review rules** | ubuntu-22.04 | The change keeps the rules a script can check: `.github/lint.sh` over the commits between the base and the head, before any build ([development.md](development.md)). |
+| **Tests (browser client)** | ubuntu-22.04 | The browser client's own modules (`src/engine/webserver/www`) in a real browser (Chromium through Playwright), the server a fake in the page (`tests/web`). Nothing to build, so a change to the page is heard within a minute. |
 | **Tests (Linux, Debug)** | ubuntu-22.04 | The backend suite (`oes_tests`) passes. The primary signal. |
 | **Build (Windows, x64 Debug)** | windows-2022 | The shipping platform still compiles under MSVC, and the suite passes there too. |
 | **Dialect (PostgreSQL, Debug)** | ubuntu-22.04 | A second DBMS actually executes, against a `postgres:16` service container. The connection arrives through the environment and the target skips itself when `OES_PG_USER` is unset — which is what lets the same binary be a no-op on a developer machine. |
 | **Firebird (Linux, Debug)** | ubuntu-22.04 | Firebird actually executes. The pinned Firebird 5 kit (`.github/firebird-kit-linux.sh`, the one the nightly package ships) is laid out as `_fb/` beside `oes_tests`, and the `Firebird*` tests run through the embedded engine — no server. The tests skip where no client loads; here a skip FAILS the job, since a kit that stopped loading would otherwise leave it green. Added 2026-09-22. |
 | **Tests (Linux, ASan + UBSan)** | ubuntu-22.04 | The suite of *Tests (Linux, Debug)* built with `-DOES_SANITIZE=address,undefined`: no use after free, no overflow, no undefined behaviour, and — LeakSanitizer rides in with ASan on Linux — no leak at exit. Leak detection is off while BUILDING, because `gtest_discover_tests` runs each binary then. **Not blocking yet** (`continue-on-error`): the first runs are a harvest; the job becomes blocking once it is fixed. Added 2026-09-22. |
 | **Tests (Linux, TSan)** | ubuntu-24.04 | No data race in the code a fiber can race. `oes_tests` built with `-DOES_SANITIZE=thread` and run on the suites that park a fiber, share a session, pool a connection, take a lock or run the job manager (`WorkerPool*`, `Fiber*`, `SessionHolder`, `SessionDbLayer`, `ConnectionPool`, `SocketLockFix`, `JobManager`, `JobSchedule`) — not the whole backend. The fiber switch is assembly TSan cannot see, so `ibFiber` tells it which fiber runs (`__tsan_switch_to_fiber`). **Blocking**: a race in our code fails the job; `.github/tsan-suppressions.txt` takes third-party code only, each line with its reason. GCC 13, hence the newer runner: GCC 11's libtsan reports a double lock of a destroyed mutex when a fiber locks a mutex on the calling thread's stack, and GCC 13 does not. Added 2026-10-10. |
-| **Tests (macOS 14, arm64, Debug)** | macos-14 | The third toolchain, and a different CPU with it: AArch64 (unsigned `char`, a weaker memory model, its own alignment), Apple libc++ rather than libstdc++, and wx against Cocoa instead of GTK — including the `APPLE` branch of `guid.cpp` (CFUUID) that nothing else compiles. Added 2026-08-03. |
+| **Tests (macOS 15, arm64, Debug)** | macos-15 | The third toolchain, and a different CPU with it: AArch64 (unsigned `char`, a weaker memory model, its own alignment), Apple libc++ rather than libstdc++, and wx against Cocoa instead of GTK — including the `APPLE` branch of `guid.cpp` (CFUUID) that nothing else compiles. Added 2026-08-03; on macos-15 since 2026-11-06, when GitHub retired macos-14. |
 | **Benchmarks (Linux, Release) — record only** | ubuntu-22.04 | The only job that builds Release. It runs on `develop` and `master` (and on demand), never on a PR, and **gates nothing** — `|| true`, no threshold: a benchmark that fails CI on a shared runner becomes a flaky test nobody trusts. A performance figure is worth what it is worth next to the commit it belongs to, so develop pays the ~16 minutes of building wx from scratch. |
 
 The three general jobs (Linux, Windows, macOS) each also run a **Build the applications** step.
@@ -539,7 +545,7 @@ under `…/releases/download/nightly/`:
 |---|---|---|
 | `oes-nightly-windows-x64.zip` | windows-2022, `windows-x64-release` | Nothing: Firebird (`_fb/`), the PostgreSQL client, the MSVC runtime and the translations are inside. |
 | `oes-nightly-linux-x64.tar.gz` | ubuntu-22.04, `linux-release` | Ubuntu 22.04 / Debian 12 or newer, GTK 3; `libpq` for a server base. Firebird 5 is inside. |
-| `oes-nightly-macos-arm64.dmg` | macos-14, `macos-release` | Apple Silicon. Firebird 5 is inside. Signed ad hoc only, so every file arrives quarantined: once, after dragging the folder to Applications, `find /Applications/OES -exec xattr -d com.apple.quarantine {} \; 2>/dev/null`. Right-click → Open is not enough — it lets one app through while the launcher starts the others — and macOS 15 no longer offers it. |
+| `oes-nightly-macos-arm64.dmg` | macos-15, `macos-release` | Apple Silicon, macOS 14 or later (`CMAKE_OSX_DEPLOYMENT_TARGET` in the preset: unset, the programs would ask for the runner's own macOS). Firebird 5 is inside. Signed ad hoc only, so every file arrives quarantined: once, after dragging the folder to Applications, `find /Applications/OES -exec xattr -d com.apple.quarantine {} \; 2>/dev/null`. Right-click → Open is not enough — it lets one app through while the launcher starts the others — and macOS 15 no longer offers it. |
 
 **Firebird 5 on Linux and macOS comes from the official release, pinned in the workflow** (5.0.4, the
 URLs hard-coded): no distribution ships version 5 (Ubuntu 22.04 and Debian 12 have 3, which cannot open

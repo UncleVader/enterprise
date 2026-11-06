@@ -50,6 +50,18 @@ std::vector<ibValueControl*> ibValueForm::GetControlList() const
 	return list;
 }
 
+#include "frmserver/visualView/ctrl/typeControl.h"
+
+ibValueControl* ibValueForm::FindControlByAttributeId(const ibMetaID& id) const
+{
+	for (ibValueControl* control : GetControlList()) {
+		const ibTypeControlFactory* factory = dynamic_cast<const ibTypeControlFactory*>(control);
+		if (factory != nullptr && factory->GetSourceDesc().GetFirst() == id)
+			return control;
+	}
+	return nullptr;
+}
+
 std::shared_ptr<ibValueIteratorState> ibValueForm::ibValueFormCollectionControl::CreateIterator()
 {
 	using ListT = std::vector<ibValueControl*>;
@@ -61,14 +73,14 @@ std::shared_ptr<ibValueIteratorState> ibValueForm::ibValueFormCollectionControl:
 			if (m_it == m_list.end()) return false;
 			ibValue controlValue(*m_it);
 			current = ibValue(static_cast<ibValue*>(
-				new ibValueContainer::ibValueReturnContainer(
+				new ibValueMap::ibValueKeyValue(
 					(*m_it)->GetControlName(), controlValue)));
 			return true;
 		}
 		void Reset() override { m_it = m_list.begin(); m_started = false; }
 		bool PeekSample(ibValue& current) const override {
 			current = ibValue(static_cast<ibValue*>(
-				new ibValueContainer::ibValueReturnContainer()));
+				new ibValueMap::ibValueKeyValue()));
 			return true;
 		}
 	private:

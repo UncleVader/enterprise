@@ -39,7 +39,7 @@ export class Questions {
 		/** where the person last pressed — a menu is asked there */
 		this.pointer = { x: 0, y: 0 };
 		/**
-		 * @type {Element | null} the field the person last pressed in — a calculator or a calendar drops under it. Taken
+		 * @type {Element | null} the field the person last pressed in — a calculator, a calendar or a list drops under it. Taken
 		 * at the press: a table's cell editor is gone by the time the question comes, its cell is not.
 		 */
 		this.pressed = null;
@@ -98,18 +98,49 @@ export class Questions {
 			request, closed !== undefined ? { Button: closed.code } : null);
 	}
 
-	/** @param {ProtocolNode} request */
+	/**
+	 * One of a list, as the thin client asks it (wxSingleChoiceDialog): the one Selected chosen to begin with, else the
+	 * first; OK — or a double click on an item — answers with it, Cancel and closing with none. SEVERAL (Multiple, the
+	 * thin client's wxMultiChoiceDialog): each ticked or not, those Selected ticked to begin with; OK answers with the
+	 * ticked ones' Ids in the order offered — none ticked, none.
+	 * @param {ProtocolNode} request
+	 */
 	choice(request) {
+		if (request.Quick === true) {
+			this.quickChoice(request);
+			return;
+		}
 		const items = request.NodeChildren ?? [];
+		const several = request.Multiple === true;
 		const list = document.createElement('div');
 		list.className = 'choice-list';
-		const dialog = this.dialog(request.Caption ?? '', '', [{ caption: 'Cancel', answer: {} }], request);
+		const ticked = several ? items.filter((item) => item.Selected === true) : [];
+		const first = items.find((item) => item.Selected === true) ?? items[0];
+		/** @type {{Id?: number, Ids?: number[]}} */
+		const answer = several ? { Ids: ticked.map((item) => item.Id) } : first !== undefined ? { Id: first.Id } : {};
+		const dialog = this.dialog(request.Caption ?? '', '', [
+			{ caption: 'OK', answer, preferred: true },
+			{ caption: 'Cancel', answer: {} },
+		], request);
+		/** @type {HTMLInputElement[]} */
+		const inputs = [];
 		for (const item of items) {
-			const button = document.createElement('wa-button');
-			button.setAttribute('appearance', 'plain');
-			button.textContent = item.Caption ?? '';
-			button.addEventListener('click', () => this.answer(dialog, request, { Id: item.Id }));
-			list.append(button);
+			const label = document.createElement('label');
+			const input = document.createElement('input');
+			input.type = several ? 'checkbox' : 'radio';
+			input.name = 'choice';
+			input.checked = several ? ticked.includes(item) : item === first;
+			input.addEventListener('change', () => {
+				if (several)
+					answer.Ids = items.filter((_, at) => inputs[at].checked).map((one) => one.Id);
+				else
+					answer.Id = item.Id;
+			});
+			inputs.push(input);
+			label.append(input, item.Caption ?? '');
+			if (!several)
+				label.addEventListener('dblclick', () => this.answer(dialog, request, { Id: item.Id }));
+			list.append(label);
 		}
 		dialog.querySelector('.text')?.replaceWith(list);
 	}
@@ -172,6 +203,42 @@ export class Questions {
 			// Sent as a number again: exact while it has no more than 15 digits, as a field's figures do.
 			? calculator(numberText(value.v), (chosen) => take(Number(chosen)))
 			: calendar(String(value.v ?? ''), take));
+		this.dropUnder(popup);
+	}
+
+	/**
+	 * A choice asked Quick: a reference's items, or those that match what was typed, dropped under the field pressed and
+	 * as wide as it (the thin client's quick choice). A click or Enter picks one, answered by its Id; the arrows go
+	 * between them. Dismissed — a press outside it, Escape — it is answered with no Id.
+	 * @param {ProtocolNode} request
+	 */
+	quickChoice(request) {
+		const items = request.NodeChildren ?? [];
+		const { popup, pick } = this.popup(request, 'popup-menu quick-choice');
+		const buttons = menuItems(items, (id) => pick({ Id: id }));
+		popup.append(...buttons);
+		popup.addEventListener('keydown', (/** @type {KeyboardEvent} */ event) => {
+			const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+			if (step === 0)
+				return;
+			event.preventDefault();
+			const at = buttons.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+			buttons[Math.max(0, Math.min(buttons.length - 1, at + step))]?.focus();
+		});
+		if (this.pressed?.isConnected)
+			popup.style.minWidth = `${this.pressed.getBoundingClientRect().width}px`;
+		this.dropUnder(popup);
+		const selected = items.findIndex((item) => item.Selected === true);
+		buttons[selected]?.classList.add('selected');
+		(buttons[selected] ?? buttons[0])?.focus();
+	}
+
+	/**
+	 * A popup shown under the field pressed, its right edge on the field's (the thin client's); above it when there is
+	 * no room below, and where the person pressed when the field is gone.
+	 * @param {any} popup
+	 */
+	dropUnder(popup) {
 		popup.showPopover();
 		const under = this.pressed?.isConnected
 			? this.pressed.getBoundingClientRect() : new DOMRect(this.pointer.x, this.pointer.y, 0, 0);

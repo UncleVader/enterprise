@@ -3,20 +3,20 @@
 
 #include <wx/artprov.h>
 #include <wx/string.h>
-#include <wx/listbox.h>
 #include <wx/gdicmn.h>
 #include <wx/font.h>
 #include <wx/colour.h>
 #include <wx/settings.h>
-#include <wx/stattext.h>
 #include <wx/sizer.h>
 #include <wx/bitmap.h>
 #include <wx/image.h>
 #include <wx/icon.h>
-#include <wx/button.h>
 #include <wx/frame.h>
 #include <wx/bmpbndl.h>
 #include "core/localization/dictionary.h"   // _() — the dialog's words
+#include "gui/univ/ctrl/button.h"       // the window's controls — the kit's (gui.h)
+#include "gui/univ/ctrl/listBox.h"
+#include "gui/univ/ctrl/staticText.h"
 
 // ⭐ THE LAUNCHER'S OWN PICTURES. It links the backend alone, so the frontend's art provider — which answers the
 // stock ids in the set's manner in the designer and the running application — never reaches it, and a stock id
@@ -25,29 +25,36 @@
 enum class ibLauncherPicture { Enterprise, Designer, Web, Add, Edit, Delete, Exit };
 wxBitmapBundle ibGetLauncherPicture(ibLauncherPicture which);
 
-struct CListInfo {
-	bool m_bFileMode = false;
-	wxString m_strFilePath;
-	wxString m_strServer;
-	wxString m_strDatabase;
-	wxString m_strUser;
-	wxString m_strPassword;
-	wxString m_strPort;
+// HOW A BASE IS REACHED — the three a client knows: a file base, opened in its own process; a base of the server
+// cluster, over its port; a web server's publication, by the link a browser shows for it. The last two are one road
+// in the client (--address, protocol/connectionServer.h), the same protocol the server speaks.
+enum class ibLauncherConnection { File, Server, Web };
+
+struct ibListInfo {
+	ibLauncherConnection m_connection = ibLauncherConnection::File;
+	wxString m_strFilePath;   // File: the base's folder
+	wxString m_strServer;     // Server: the cluster, server[:port] — the port left out is the cluster's own…
+	wxString m_strDatabase;   // …and the base's name in it
+	wxString m_strAddress;    // Web: the publication's link, copied from the browser's address bar
+
+	// The address a client is started on (--address): the cluster's oes://server[:port]/<base>, the web's link as it
+	// is written; empty for a file base.
+	wxString GetAddress() const;
 };
 
 class ibFrameLauncher : public wxFrame {
 
-	wxListBox* m_listIBwnd;
-	wxStaticText* m_staticDBName;
-	wxButton* m_buttonEnterprise;
-	wxButton* m_buttonDesigner;
-	wxButton* m_buttonWeb;
-	wxButton* m_buttonAdd;
-	wxButton* m_buttonEdit;
-	wxButton* m_buttonDelete;
-	wxButton* m_buttonExit;
+	ibListBox* m_listIBwnd;
+	ibStaticText* m_staticDBName;
+	ibButton* m_buttonEnterprise;
+	ibButton* m_buttonDesigner;
+	ibButton* m_buttonWeb;
+	ibButton* m_buttonAdd;
+	ibButton* m_buttonEdit;
+	ibButton* m_buttonDelete;
+	ibButton* m_buttonExit;
 
-	std::vector<std::pair<wxString, CListInfo>> m_listInfoBase;
+	std::vector<std::pair<wxString, ibListInfo>> m_listInfoBase;
 
 public:
 

@@ -27,6 +27,8 @@
 #include "backend/logger/logger.h"                   // the registration journal — the durable channel
 #include "backend/job/jobManager.h"                  // ibBackgroundRun — keeps what a windowless run says
 
+#include <algorithm>                                  // FillPropertyValues — whether a name is left out
+
 //--- Basic:
 bool ibValueSystemFunction::Boolean(const ibValue& cValue)
 {
@@ -80,20 +82,24 @@ ibNumber ibValueSystemFunction::Round(const ibValue& cValue, int precision, ibRo
 	ibNumber fNumber = cValue.GetNumber();
 	if (precision > MAX_PRECISION_NUMBER) precision = MAX_PRECISION_NUMBER;
 
-	// ibNumber::Round implements half-away-from-zero. The Round15as20 mode matches
-	// that exactly; the default mode is "round half down" (only digits >= 6 round
-	// up). Approximated by subtracting 0.4 of the last kept place's unit before
-	// rounding for the default mode — equivalent to old ttmath behaviour.
-	if (mode == ibRoundMode::ibRoundMode_Round15as20) {
+	// ibNumber::Round sends a half away from zero, which IS Round15as20.
+	if (mode == ibRoundMode::ibRoundMode_Round15as20)
 		return fNumber.Round(precision);
-	}
 
-	// Default: round half down. Build adjustment = 0.4 * 10^-precision and shrink
-	// magnitude so anything < .5 stays down, .5..<.6 rounds down, .6..<1 rounds up.
-	ibNumber adjust = ibNumber(4);
-	for (int i = 0; i < precision + 1; ++i) adjust /= ibNumber(10);
-	if (fNumber.IsSign()) fNumber += adjust;
-	else                  fNumber -= adjust;
+	// ⭐ ROUND15AS10 DIFFERS ON ONE INPUT ONLY: AN EXACT HALF, which goes towards zero (1.5 → 1, -1.5 → -1).
+	// Past the half the number goes away as in the other mode (1.6 → 2, 1.51 → 2). It used to be
+	// approximated by taking 0.4 of the last place off before rounding, which moved the threshold to .9:
+	// 1.6 came out 1, against the help's own words.
+	ibNumber shifted = fNumber;
+	shifted.ShiftDecimal(precision);   // the kept places become the whole part — exactly, no division
+	ibNumber kept = shifted.Trunc();
+	ibNumber half(5);
+	half.ShiftDecimal(-1);
+	const ibNumber dropped = shifted - kept;
+	if (dropped == half || dropped == -half) {
+		kept.ShiftDecimal(-precision);
+		return kept;
+	}
 	return fNumber.Round(precision);
 }
 
@@ -264,6 +270,27 @@ int ibValueSystemFunction::StrLineCount(const ibValue& cSource)
 		}
 	}
 	return lines;
+}
+
+// The parts of a text between its separators. Each CHARACTER of `separators` is one, so ",;" cuts at a comma and
+// at a semicolon alike. An empty part - two separators side by side, or one at an end - is kept unless
+// includeBlank is false; with no separator in the text the whole text is the one part.
+std::vector<ibValue> ibValueSystemFunction::StrSplit(const ibValue& cSource, const ibValue& cSeparators, bool includeBlank)
+{
+	const ibString src = cSource.GetString();
+	const ibString separators = cSeparators.GetString();
+
+	std::vector<ibValue> parts;
+	size_t from = 0;
+	while (true) {
+		const size_t at = src.find_first_of(separators, from);
+		const size_t end = at == ibString::npos ? src.length() : at;
+		if (includeBlank || end > from)
+			parts.emplace_back(src.substr(from, end - from));
+		if (at == ibString::npos)
+			return parts;
+		from = at + 1;
+	}
 }
 
 ibString ibValueSystemFunction::StrGetLine(const ibValue& cValue, unsigned int nLine)
@@ -641,6 +668,10 @@ void ibValueSystemFunction::SetStatus(const ibString& sStatus)
 	// the reasoning behind dropping the wxIsMainThread() guard.
 	if (auto* frame = ibSession::CurrentFrame())
 		frame->SetStatusText(sStatus);
+	// …and with no window, the background run's activity, as Message is its lines: where the run has got to, what
+	// code_status and Active Users read (#646).
+	else if (ibBackgroundRun* const run = ibBackgroundRun::Current())
+		run->Activity(sStatus);
 }
 
 void ibValueSystemFunction::ClearMessage()
@@ -718,6 +749,58 @@ bool ibValueSystemFunction::IsNull(const ibValue& cData)
 bool ibValueSystemFunction::ValueIsFilled(const ibValue& cData)
 {
 	return !cData.IsEmpty();
+}
+
+// ⭐ A VALUE'S PROPERTIES FILLED FROM ANOTHER'S, BY NAME (#300) — through the doors an assignment takes,
+// `receiver.Name = source.Name`: a name found by each value's own lookup (a structure's keys whatever their case), read
+// where it is readable, written where it is writable. With no list it fills what both sides have and the receiver can
+// take, and passes over the rest; a list is asked for, so a name it gives is refused as the assignment would refuse
+// it. `exclude` is found as the source finds a name. Nothing is added to the receiver.
+void ibValueSystemFunction::FillPropertyValues(ibValue& receiver, ibValue& source, const ibString& list, const ibString& exclude)
+{
+	const auto namesOf = [](const ibString& text) {
+		std::vector<ibString> names;
+		for (const ibValue& part : StrSplit(ibValue(text), ibValue(ibString(ibT(","))), false)) {
+			const ibString name = TrimAll(part);
+			if (!name.IsEmpty())
+				names.push_back(name);
+		}
+		return names;
+	};
+	const std::vector<ibString> excluded = namesOf(exclude);
+	const auto isExcluded = [&](long from) {
+		return std::any_of(excluded.begin(), excluded.end(),
+			[&](const ibString& name) { return source.FindProp(name) == from; });
+	};
+	const auto copy = [&](long from, long to) {
+		ibValue value;
+		if (source.GetPropVal(from, value))
+			receiver.SetPropVal(to, value);
+	};
+
+	const std::vector<ibString> listed = namesOf(list);
+	if (!listed.empty()) {
+		for (const ibString& name : listed) {
+			const long from = source.FindProp(name);
+			if (from >= 0 && isExcluded(from))
+				continue;
+			const long to = receiver.FindProp(name);
+			if (from < 0 || to < 0)
+				ibBackendCoreException::Error(ibScriptError_MemberNotFound, name);
+			if (!source.IsPropReadable(from))
+				ibBackendCoreException::Error(ibScriptError_PropNotReadable, name);
+			if (!receiver.IsPropWritable(to))
+				ibBackendCoreException::Error(ibScriptError_PropNotWritable, name);
+			copy(from, to);
+		}
+		return;
+	}
+
+	for (long from = 0; from < source.GetNProps(); ++from) {
+		const long to = receiver.FindProp(source.GetPropName(from));
+		if (to >= 0 && !isExcluded(from) && source.IsPropReadable(from) && receiver.IsPropWritable(to))
+			copy(from, to);
+	}
 }
 
 namespace {
@@ -1016,7 +1099,7 @@ ibValue ibValueSystemFunction::GetCommonForm(const ibFormRequest& request, ibBac
 			activeMetaData->FindAnyObjectByFilter<ibValueMetaObjectCommonForm>(request.m_formName, g_metaCommonFormCLSID);
 
 		if (creator != nullptr)
-			return creator->GetObjectForm(ownerControl, unique ? ((ibGuid)*unique) : ibGuid());
+			return creator->GetObjectForm(ibFormRequest(ibString(), unique ? ((ibGuid)*unique) : ibGuid()), ownerControl);
 	}
 
 	ibBackendCoreException::Error(_("Common form not found '%s'"), request.m_formName);
@@ -1040,11 +1123,11 @@ ibValue ibValueSystemFunction::GetCommonTemplate(const ibString& strTemplateName
 {
 	if (!strTemplateName.IsEmpty()) {
 
-		const ibValueMetaObjectCommonSpreadsheet* creator =
-			activeMetaData->FindAnyObjectByFilter<ibValueMetaObjectCommonSpreadsheet>(strTemplateName, g_metaCommonTemplateCLSID);
+		const ibValueMetaObjectCommonTemplate* creator =
+			activeMetaData->FindAnyObjectByFilter<ibValueMetaObjectCommonTemplate>(strTemplateName, g_metaCommonTemplateCLSID);
 
 		if (creator != nullptr)
-			return new ibValueSpreadsheetDocument(creator->GetSpreadsheetDesc());
+			return creator->GetTemplateProvider().GetDataValue(creator->GetTemplateDesc(), creator->GetMetaData());
 	}
 
 	// ⭐⭐ AN EDITOR WORKING OUT WHAT IS AT A CARET IS NOT ASKING FOR THIS TEMPLATE — it is asking
@@ -1123,7 +1206,8 @@ bool ibValueSystemFunction::RunJob(const ibString& strJobName)
 #include "backend/system/value/valueArray.h"
 #include "backend/system/value/valueBackgroundJob.h"
 
-ibValue ibValueSystemFunction::RunBackground(const ibString& strProcedureName, ibValue* pArgs)
+ibValue ibValueSystemFunction::RunBackground(const ibString& strProcedureName, ibValue* pArgs,
+	const ibString& strKey, const ibString& strDescription)
 {
 	// Starting work from a watch expression would be a side effect of LOOKING at
 	// something — the same reason the transaction verbs guard on this.
@@ -1157,6 +1241,10 @@ ibValue ibValueSystemFunction::RunBackground(const ibString& strProcedureName, i
 
 	// StartBackground gates the arguments and throws on a mutable one, so a bad
 	// call lands here, on the caller's stack, with the script's try/except as the
-	// natural handling point.
-	return new ibValueBackgroundJob(manager->StartBackground(strProcedureName, args));
+	// natural handling point. So does a key still held by an active run of the same procedure.
+	ibBackgroundRequest request;
+	request.m_method = strProcedureName;
+	request.m_key = strKey;
+	request.m_description = strDescription;
+	return new ibValueBackgroundJob(manager->StartBackground(request, args));
 }

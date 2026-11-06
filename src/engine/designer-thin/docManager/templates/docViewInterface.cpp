@@ -1,6 +1,7 @@
 #include "docViewInterface.h"
 
 #include "designer-thin/win/editor/interfaceEditor/interfaceEditor.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibCheckTree
 
 // ----------------------------------------------------------------------------
 // ibInterfaceEditView implementation
@@ -59,3 +60,5 @@ ibFrontendView* ibInterfaceEditDocument::DoCreateView()
 {
 	return new ibInterfaceEditView();
 }
+
+TAB_DOCUMENT_REGISTER(ibInterfaceEditDocument, ibProtocol::ibView::ibKind::Interface)

@@ -38,6 +38,7 @@ add_executable(oes_tests
     test_fdatetime.cpp
     test_dictionary.cpp
     test_driverDates.cpp
+    test_timeZone.cpp
     test_formatString.cpp
     test_tstr.cpp
     test_blockSyntaxLINQ.cpp
@@ -58,12 +59,14 @@ add_executable(oes_tests
     test_jobManager.cpp
     test_jobSchedule.cpp
     test_choiceLinkDescription.cpp
+    test_style.cpp
     test_module_manager_split.cpp
     # test_pagingRamTable.cpp  # API-rotted (ibValueModelTableBase renamed) — excluded until updated
     test_blobCompression.cpp
     test_firebirdLease.cpp
     test_firebirdBatchInsert.cpp
     test_firebirdDates.cpp
+    test_firebirdNumbers.cpp
     test_firebirdZoneRules.cpp
     test_logger.cpp
     test_dbTaxonomy.cpp
@@ -72,6 +75,8 @@ add_executable(oes_tests
     test_metadataPasteIdentity.cpp
     test_propertySerialized.cpp
     test_metadataTree.cpp
+    test_predefinedCells.cpp
+    test_codeLengthApply.cpp
     test_numberPeriodicity.cpp
     test_pictureVersion.cpp
     test_commonAttribute.cpp
@@ -99,6 +104,7 @@ add_executable(oes_tests
     test_compositionSettings.cpp
     test_rpcMessage.cpp
     test_mcpToolContract.cpp
+    test_mcpPersonNames.cpp
     test_backupRestore.cpp
     test_spreadsheetCompose.cpp
     test_spreadsheetDocument.cpp
@@ -186,6 +192,7 @@ add_executable(oes_tests
     test_md5.cpp
     test_sha256.cpp
     test_dataHashing.cpp
+    test_comObject.cpp
     test_stringUtils.cpp
     test_guid.cpp
     test_dbTransaction.cpp
@@ -210,7 +217,10 @@ add_executable(oes_tests
     test_metadataMove.cpp
     test_sectionInterfaceItems.cpp
     test_debugServer.cpp
+    test_debugClient.cpp
     test_commonModuleCheck.cpp
+    test_configCheckRegisters.cpp
+    test_mcpPictureSet.cpp
     test_lockRace.cpp
     test_clientListener.cpp
 )
@@ -538,6 +548,38 @@ set_target_properties(oes_job_tenancy_test PROPERTIES
 oes_discover_tests(oes_job_tenancy_test)
 
 # ---------------------------------------------------------------------------
+# Scheduled and background jobs at run time — BackgroundJobs, ScheduledJobs' verbs (integration scope).
+# The same bring-up as the tenancy target, plus a configuration run in memory and sys_job.
+#   cmake --build build --target oes_job_runtime_test --config Debug
+#   ./bin/oes_job_runtime_test
+# ---------------------------------------------------------------------------
+add_executable(oes_job_runtime_test test_jobRuntime.cpp)
+
+target_link_libraries(oes_job_runtime_test
+    PRIVATE
+        backend
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(oes_job_runtime_test PRIVATE OES_TESTING)
+
+target_include_directories(oes_job_runtime_test PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/src/engine"
+    "${CMAKE_SOURCE_DIR}/src/engine/backend"
+)
+
+set_target_properties(oes_job_runtime_test PROPERTIES
+    CXX_STANDARD          20
+    CXX_STANDARD_REQUIRED ON
+    BUILD_RPATH            "${CMAKE_BINARY_DIR}/bin"
+    INSTALL_RPATH          "${CMAKE_BINARY_DIR}/bin"
+)
+
+oes_discover_tests(oes_job_runtime_test)
+
+# ---------------------------------------------------------------------------
 # Several bases in one process (ibApplicationHost) — integration scope.
 #
 # Opens two bases in the test process, each with its own in-memory SQLite, and
@@ -582,6 +624,7 @@ oes_discover_tests(oes_multi_base_test)
 # ---------------------------------------------------------------------------
 add_executable(oes_protocol_test
     test_clientFrameApply.cpp
+    test_connectionAddress.cpp
     test_sessionFailover.cpp
 )
 
@@ -612,6 +655,43 @@ set_target_properties(oes_protocol_test PROPERTIES
 )
 
 oes_discover_tests(oes_protocol_test)
+
+# ---------------------------------------------------------------------------
+# The communicator — the client's side of the protocol, in the GUI client's library (frmclient) — against a connection
+# scripted in the test. Its own target: the protocol's links no GUI of the client's, and the client's library is no
+# neighbour of the engine's in one test (its stand-ins carry the engine's class names), so no backend here.
+#   cmake --build build --target oes_client_test --config Debug
+#   ./bin/oes_client_test
+# ---------------------------------------------------------------------------
+add_executable(oes_client_test
+    test_communicator.cpp
+)
+
+target_link_libraries(oes_client_test
+    PRIVATE
+        frmclient
+        protocol
+        wx::core
+        wx::base
+        GTest::gtest
+        GTest::gtest_main
+)
+
+target_compile_definitions(oes_client_test PRIVATE OES_TESTING)
+
+target_include_directories(oes_client_test PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/src/engine"
+)
+
+set_target_properties(oes_client_test PROPERTIES
+    CXX_STANDARD          20
+    CXX_STANDARD_REQUIRED ON
+    BUILD_RPATH            "${CMAKE_BINARY_DIR}/bin"
+    INSTALL_RPATH          "${CMAKE_BINARY_DIR}/bin"
+)
+
+oes_discover_tests(oes_client_test)
 
 # ---------------------------------------------------------------------------
 # PostgreSQL dialect — EXECUTED against a real server (integration scope).

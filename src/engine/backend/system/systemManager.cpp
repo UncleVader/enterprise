@@ -135,7 +135,11 @@ enum
 	enHexString,
 	enHexValue,
 	enBase64String,
-	enBase64Value
+	enBase64Value,
+	//--- A string cut into parts: at the END, for the same reason.
+	enStrSplit,
+	//--- A value's properties filled from another's: at the END, for the same reason.
+	enFillPropertyValues
 };
 
 void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
@@ -261,7 +265,7 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	//--- Jobs: keep last, matching the enRunScheduledJobs..enRunJob enum tail.
 	helper.AppendFunc(ibT("RunScheduledJobs"), ibT("RunScheduledJobs()"));
 	helper.AppendFunc(ibT("RunJob"), 1, ibT("RunJob(name : string)"));
-	helper.AppendFunc(ibT("RunBackground"), 2, ibT("RunBackground(procedure : string, args : array)"));
+	helper.AppendFunc(ibT("RunBackground"), 4, ibT("RunBackground(procedure : string, args : array, key : string, description : string)"));
 	//--- …and value-as-text last, matching the enJSONString / enJSONValue tail above.
 	helper.AppendFunc(ibT("JSONString"), 1, ibT("JSONString(value : any)"));
 	helper.AppendFunc(ibT("JSONValue"), 1, ibT("JSONValue(json : string)"));
@@ -271,9 +275,13 @@ void ibValueSystemFunction_BindNames(ibValue::ibMemberTable& helper, const ibVal
 	helper.AppendFunc(ibT("HexValue"), 1, ibT("HexValue(text : string)"));
 	helper.AppendFunc(ibT("Base64String"), 1, ibT("Base64String(data : BinaryData)"));
 	helper.AppendFunc(ibT("Base64Value"), 1, ibT("Base64Value(text : string)"));
+	helper.AppendFunc(ibT("StrSplit"), 3, ibT("StrSplit(str : string, separators : string, includeBlank = true : boolean)"));
+	helper.AppendProc(ibT("FillPropertyValues"), 4,
+		ibT("FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)"));
 };
 
 #include "backend/compiler/enumUnit.h"
+#include "backend/system/value/valueArray.h"        // StrSplit
 #include "backend/system/value/valueBinaryData.h"   // HexString / HexValue, Base64String / Base64Value
 #include "backend/system/value/valueGuid.h"
 #include "backend/system/value/valueJson.h"   // ReadJSON / WriteJSON
@@ -416,7 +424,9 @@ bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetVa
 		case enRunJob: pvarRetValue = RunJob(paParams[0]->GetString()); return true;
 		case enRunBackground:
 			pvarRetValue = RunBackground(paParams[0]->GetString(),
-				lSizeArray > 1 ? paParams[1] : nullptr);
+				lSizeArray > 1 ? paParams[1] : nullptr,
+				lSizeArray > 2 ? paParams[2]->GetString() : ibString(),
+				lSizeArray > 3 ? paParams[3]->GetString() : ibString());
 			return true;
 		case enJSONString: pvarRetValue = JSONString(*paParams[0]); return true;
 		case enJSONValue: pvarRetValue = JSONValue(paParams[0]->GetString()); return true;
@@ -426,6 +436,8 @@ bool ibValueSystemFunction::CallAsFunc(const long lMethodNum, ibValue& pvarRetVa
 		case enHexValue: pvarRetValue = ibValueBinaryData::HexValue(paParams[0]->GetString()); return true;
 		case enBase64String: pvarRetValue = ibValueBinaryData::Base64String(*paParams[0]); return true;
 		case enBase64Value: pvarRetValue = ibValueBinaryData::Base64Value(paParams[0]->GetString()); return true;
+		case enStrSplit: pvarRetValue = new ibValueArray(StrSplit(*paParams[0], *paParams[1],
+			lSizeArray > 2 ? paParams[2]->GetBoolean() : true)); return true;
 		case enEvaluate: pvarRetValue = Evaluate(paParams[0]->GetString()); return true;
 		case enExecute: Execute(paParams[0]->GetString()); return true;
 		case enFormat: pvarRetValue = Format(*paParams[0], paParams[1]->GetString()); return true;
@@ -534,6 +546,12 @@ bool ibValueSystemFunction::CallAsProc(const long lMethodNum, ibValue** paParams
 		case enBeginTransaction: BeginTransaction(); return true;
 		case enCommitTransaction: CommitTransaction(); return true;
 		case enRollBackTransaction: RollBackTransaction(); return true;
+			//--- A value's properties filled from another's: a procedure, so it is called here, never as a function.
+		case enFillPropertyValues:
+			FillPropertyValues(*paParams[0], *paParams[1],
+				lSizeArray > 2 ? paParams[2]->GetString() : ibString(),
+				lSizeArray > 3 ? paParams[3]->GetString() : ibString());
+			return true;
 		}
 	}
 	else
@@ -545,6 +563,15 @@ bool ibValueSystemFunction::CallAsProc(const long lMethodNum, ibValue** paParams
 			ShowCommonForm(ibFormRequest(paParams[0]->GetString()),
 				lSizeArray > 1 ? paParams[1]->ConvertToType<ibBackendControlFrame>() : nullptr,
 				lSizeArray > 2 ? paParams[2]->ConvertToType<ibValueGuid>() : nullptr);
+			return true;
+			// In the designer these are deliberately nothing — no running configuration's messages, journal or
+			// transaction — and a call to one is done, not refused.
+		case enMessage:
+		case enWriteJournalEvent:
+		case enSetExclusive:
+		case enBeginTransaction:
+		case enCommitTransaction:
+		case enRollBackTransaction:
 			return true;
 		}
 	}

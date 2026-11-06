@@ -1,0 +1,817 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.ScheduledJobs",
+      "name_local": "ScheduledJobs",
+      "name_en": "ScheduledJobs",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "ScheduledJobs.Predefined | ScheduledJobs.Parameterized.<Name>",
+      "description": "The scheduled jobs of the configuration - two kinds, each behind its own fork. Predefined is every predefined job, as a collection of JobSettings: declared in the designer, existing once, its live settings kept in the base. Parameterized.<Name> is a parameterized job's manager: its jobs are the rows of its table, selected, found and executed like a catalog's.",
+      "syntax_block": "for each Job in ScheduledJobs.Predefined { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "for each Job in ScheduledJobs.Predefined {\n    Message(Job.Name + \": \" + Job.Schedule);\n}",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "mgr.ParameterizedJob.LastJob",
+        "cls.BackgroundJobs"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings",
+      "name_local": "JobSettings",
+      "name_en": "JobSettings",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings",
+      "description": "One predefined job's live settings - an element of ScheduledJobs.Predefined. Never made with New. A job the base has no settings for reads as it is declared. Write stores the switch and the schedule in the base and applies them to the running schedule at once.",
+      "syntax_block": "for each Job in ScheduledJobs.Predefined { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "for each Job in ScheduledJobs.Predefined {\n    if (Job.Active and Job.Schedule.Interval < 60) {\n        Job.Active = False;\n        Job.Write();\n    }\n}",
+      "availability": "Server",
+      "see_also": [
+        "cls.ScheduledJobs",
+        "cls.JobSettings.Write",
+        "cls.JobSettings.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Name",
+      "name_local": "Name",
+      "name_en": "Name",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Name",
+      "description": "The job's name, as the configuration declares it. Read-only.",
+      "syntax_block": "Message(Job.Name);",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.Name);",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Active",
+      "name_local": "Active",
+      "name_en": "Active",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Active",
+      "description": "Whether the schedule runs the job. Off, it can still be run by hand with Execute. Stored by Write.",
+      "syntax_block": "Job.Active = False;",
+      "parameters": "",
+      "return_descr": "Boolean.",
+      "example": "Job.Active = False;\nJob.Write();",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Write"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Schedule",
+      "name_local": "Schedule",
+      "name_en": "Schedule",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Schedule",
+      "description": "When the job runs, as a JobSchedule. Reading it gives a copy: change it, assign it back, then Write. Anything but a JobSchedule is refused.",
+      "syntax_block": "Job.Schedule = Schedule;",
+      "parameters": "",
+      "return_descr": "JobSchedule.",
+      "example": "Schedule = Job.Schedule;\nSchedule.Interval = 600;\nJob.Schedule = Schedule;\nJob.Write();",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.NextRun"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.LastRun",
+      "name_local": "LastRun",
+      "name_en": "LastRun",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.LastRun",
+      "description": "When the job last ran on this base, by any process - the empty date if never. Read-only.",
+      "syntax_block": "When = Job.LastRun;",
+      "parameters": "",
+      "return_descr": "Date.",
+      "example": "Message(Job.LastRun);",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastJob",
+        "cls.JobSettings.Computer"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.LastJob",
+      "name_local": "LastJob",
+      "name_en": "LastJob",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.LastJob",
+      "description": "The job's last pass in this application, as a BackgroundJob - its State, Begin, End and Error(). Undefined when no pass ran here; when it last ran anywhere is LastRun. A pass another process took instead leaves nothing here. Read-only.",
+      "syntax_block": "Last = Job.LastJob;",
+      "parameters": "",
+      "return_descr": "BackgroundJob or Undefined.",
+      "example": "Last = Job.LastJob;\nif (Last <> Undefined and Last.State = BackgroundJobState.Failed) { Message(Last.Error()); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.BackgroundJob",
+        "mgr.ParameterizedJob.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Computer",
+      "name_local": "Computer",
+      "name_en": "Computer",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Computer",
+      "description": "Which computer ran the job last. Read-only.",
+      "syntax_block": "Message(Job.Computer);",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.Name + \": \" + Job.Computer);",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastRun"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.NextRun",
+      "name_local": "NextRun",
+      "name_en": "NextRun",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.NextRun",
+      "description": "When the job is due next, worked out from its schedule and its last run each time it is read - nothing stores it. Read-only.",
+      "syntax_block": "Message(Job.NextRun);",
+      "parameters": "",
+      "return_descr": "Date.",
+      "example": "Message(Job.Name + \": \" + Job.NextRun);",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Schedule"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Read",
+      "name_local": "Read",
+      "name_en": "Read",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Read()",
+      "description": "Reads the settings again from the base - another session may have changed them. False when the base has none for this job yet: then the job reads as declared.",
+      "syntax_block": "Job.Read();",
+      "parameters": "",
+      "return_descr": "Boolean.",
+      "example": "Job.Read();\nMessage(Job.Active);",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Write"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Write",
+      "name_local": "Write",
+      "name_en": "Write",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Write()",
+      "description": "Stores Active and Schedule in the base and applies them to the running schedule at once. Raised when the base did not take them - a setting that was not stored is not answered with True.",
+      "syntax_block": "Job.Write();",
+      "parameters": "",
+      "return_descr": "Boolean.",
+      "example": "Job.Active = True;\nJob.Write();",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Read"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Execute",
+      "name_local": "Execute",
+      "name_en": "Execute",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Execute()",
+      "description": "Runs the job now, whatever its schedule and its switch say. False when the job is not registered in this application or is already running.",
+      "syntax_block": "Job.Execute();",
+      "parameters": "",
+      "return_descr": "Boolean.",
+      "example": "if (Job.Execute()) { Message(\"started\"); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "mgr.ParameterizedJob.LastJob",
+      "name_local": "LastJob",
+      "name_en": "LastJob",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "ScheduledJobs.Parameterized.<Name>.LastJob(job : reference)",
+      "description": "The last pass of one row of the job in this application, as a BackgroundJob - the same answer a predefined job's LastJob gives. Undefined when no pass of the row ran here. Needs the right to read the job.",
+      "syntax_block": "Last = ScheduledJobs.Parameterized.Exchange.LastJob(Row);",
+      "parameters": "job - a reference to a row of this job.",
+      "return_descr": "BackgroundJob or Undefined.",
+      "example": "Last = ScheduledJobs.Parameterized.Exchange.LastJob(Row);\nif (Last <> Undefined and Last.State = BackgroundJobState.Failed) { Message(Last.Error()); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.ScheduledJobs",
+        "cls.JobSettings.LastJob",
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs",
+      "name_local": "BackgroundJobs",
+      "name_en": "BackgroundJobs",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs",
+      "description": "Where the application's runs are found again: every background job RunBackground started and every pass of a scheduled job, while it runs and among the last 256 after it ended. It starts nothing - a job is started with RunBackground.",
+      "syntax_block": "Jobs = BackgroundJobs.GetBackgroundJobs(Filter);",
+      "parameters": "",
+      "return_descr": "",
+      "example": "Job = RunBackground(\"Exchange.Upload\", New Array(), \"upload\", \"Upload to the warehouse\");\nId = Job.UUID;\n// …later, or from another session\nJob = BackgroundJobs.FindByUUID(Id);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJobs.GetBackgroundJobs",
+        "cls.BackgroundJobs.FindByUUID",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs.GetBackgroundJobs",
+      "name_local": "GetBackgroundJobs",
+      "name_en": "GetBackgroundJobs",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs.GetBackgroundJobs([filter : Structure])",
+      "description": "The runs, oldest first, as an Array of BackgroundJob. The filter names BackgroundJob's properties: State, Key, Description, MethodName and UUID are equal-to; Begin keeps the runs begun at or after it, End those ended at or before it. A name that is not a property of BackgroundJob is refused with its name.",
+      "syntax_block": "Jobs = BackgroundJobs.GetBackgroundJobs(Filter);",
+      "parameters": "filter - a Structure of the properties above; left out, every run.",
+      "return_descr": "Array of BackgroundJob.",
+      "example": "Running = BackgroundJobs.GetBackgroundJobs(New Structure(\"Key, State\", \"upload\", BackgroundJobState.Active));",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs.FindByUUID",
+      "name_local": "FindByUUID",
+      "name_en": "FindByUUID",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs.FindByUUID(uuid : UUID | string)",
+      "description": "The run with this UUID, or Undefined - a run that ended long ago is let go. A value that is not a UUID is refused.",
+      "syntax_block": "Job = BackgroundJobs.FindByUUID(Id);",
+      "parameters": "uuid - a UUID, or its text.",
+      "return_descr": "BackgroundJob or Undefined.",
+      "example": "Job = BackgroundJobs.FindByUUID(Id);\nif (Job <> Undefined and Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "cls.BackgroundJob.UUID"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob",
+      "name_local": "BackgroundJob",
+      "name_en": "BackgroundJob",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob",
+      "description": "One run - started by RunBackground, or a pass of a scheduled job (LastJob). Never made with New. Dropping it stops nothing: the run finishes on its own.",
+      "syntax_block": "Job = RunBackground(\"Totals.Recalculate\", New Array());",
+      "parameters": "",
+      "return_descr": "",
+      "example": "Job = RunBackground(\"Totals.Recalculate\", New Array());\nJob.Wait(30000);\nif (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "enum.BackgroundJobState",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.State",
+      "name_local": "State",
+      "name_en": "State",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.State",
+      "description": "Where the run stands: Active while it runs, then Completed, Failed or Cancelled. Read-only.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Begin",
+      "name_local": "Begin",
+      "name_en": "Begin",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Begin",
+      "description": "When the run began. Read-only.",
+      "syntax_block": "Message(Job.Begin);",
+      "parameters": "",
+      "return_descr": "Date.",
+      "example": "Message(Job.Begin);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.End",
+      "name_local": "End",
+      "name_en": "End",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.End",
+      "description": "When the run ended; the empty date while it runs. Read-only.",
+      "syntax_block": "Message(Job.End);",
+      "parameters": "",
+      "return_descr": "Date.",
+      "example": "Message(Job.End);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Key",
+      "name_local": "Key",
+      "name_en": "Key",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Key",
+      "description": "The key it was started under - RunBackground's third argument; empty when none was given. Read-only.",
+      "syntax_block": "Message(Job.Key);",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.Key);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Description",
+      "name_local": "Description",
+      "name_en": "Description",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Description",
+      "description": "What the run is, as a person reads it: RunBackground's fourth argument, or the name of the scheduled job a pass belongs to. Read-only.",
+      "syntax_block": "Message(Job.Description);",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.Description);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.MethodName",
+      "name_local": "MethodName",
+      "name_en": "MethodName",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.MethodName",
+      "description": "The method it runs - ModuleName.MethodName; empty for a pass of a scheduled job. Read-only.",
+      "syntax_block": "Message(Job.MethodName);",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.MethodName);",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.UUID",
+      "name_local": "UUID",
+      "name_en": "UUID",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.UUID",
+      "description": "The run's name - its session's, the row Active Users shows; what BackgroundJobs.FindByUUID is asked with. Read-only.",
+      "syntax_block": "Id = Job.UUID;",
+      "parameters": "",
+      "return_descr": "UUID.",
+      "example": "Id = Job.UUID;",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJobs.FindByUUID"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.IsComplete",
+      "name_local": "IsComplete",
+      "name_en": "IsComplete",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.IsComplete()",
+      "description": "True once the run has ended, whichever way.",
+      "syntax_block": "Done = Job.IsComplete();",
+      "parameters": "",
+      "return_descr": "Boolean.",
+      "example": "if (Job.IsComplete()) { Message(Job.State); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.Wait"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Wait",
+      "name_local": "Wait",
+      "name_en": "Wait",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Wait([timeoutMs : number])",
+      "description": "Waits for the run to end, at most the timeout in milliseconds; 0 or none waits for the end. Answers IsComplete(): False means the time ran out, not that the run failed.",
+      "syntax_block": "Done = Job.Wait(60000);",
+      "parameters": "timeoutMs - milliseconds to wait at most.",
+      "return_descr": "Boolean.",
+      "example": "if (not Job.Wait(60000)) { Message(\"still running\"); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Result",
+      "name_local": "Result",
+      "name_en": "Result",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Result()",
+      "description": "What the method returned. Empty while the run goes on, and empty after it if it failed - Error() tells the two apart.",
+      "syntax_block": "Value = Job.Result();",
+      "parameters": "",
+      "return_descr": "Any.",
+      "example": "if (Job.Wait(30000) and Job.State = BackgroundJobState.Completed) { Message(Job.Result()); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.Error"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Error",
+      "name_local": "Error",
+      "name_en": "Error",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Error()",
+      "description": "What the run failed with; empty when it did not fail.",
+      "syntax_block": "Text = Job.Error();",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "if (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState.Failed"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Activity",
+      "name_local": "Activity",
+      "name_en": "Activity",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Activity()",
+      "description": "What the run is doing now - the same line Active Users shows; empty once it ended.",
+      "syntax_block": "Message(Job.Activity());",
+      "parameters": "",
+      "return_descr": "String.",
+      "example": "Message(Job.Activity());",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Cancel",
+      "name_local": "Cancel",
+      "name_en": "Cancel",
+      "kind": "procedure",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Cancel()",
+      "description": "Asks the run to stop. Its code stops at the next step it takes; a run waiting on another system notices when that answers. A run that stopped this way is Cancelled, not Failed.",
+      "syntax_block": "Job.Cancel();",
+      "parameters": "",
+      "return_descr": "",
+      "example": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Server",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState.Cancelled"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState",
+      "name_local": "BackgroundJobState",
+      "name_en": "BackgroundJobState",
+      "kind": "enum_type",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Active, .Completed, .Failed, .Cancelled",
+      "description": "Where a run stands - BackgroundJob.State. Cancelled is not Failed: the run did nothing wrong, somebody asked it to stop.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Completed) { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "if (Job.State <> BackgroundJobState.Active) { Message(Job.State); }",
+      "availability": "Server",
+      "see_also": [
+        "enum.BackgroundJobState.Active",
+        "enum.BackgroundJobState.Completed",
+        "enum.BackgroundJobState.Failed",
+        "enum.BackgroundJobState.Cancelled",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Active",
+      "name_local": "Active",
+      "name_en": "Active",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Active",
+      "description": "The run is going on.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Active) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Active) { Message(Job.Activity()); }",
+      "availability": "Server",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Completed",
+      "name_local": "Completed",
+      "name_en": "Completed",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Completed",
+      "description": "The run ended without an error.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Completed) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Completed) { Message(Job.Result()); }",
+      "availability": "Server",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Failed",
+      "name_local": "Failed",
+      "name_en": "Failed",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Failed",
+      "description": "The run ended with an error - Error() says which.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Failed) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Server",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.Error"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Cancelled",
+      "name_local": "Cancelled",
+      "name_en": "Cancelled",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Cancelled",
+      "description": "The run was asked to stop and stopped.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Cancelled) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Cancelled) { Message(Job.Description); }",
+      "availability": "Server",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.Cancel"
+      ],
+      "reviewed": false
+    }
+  ]
+}

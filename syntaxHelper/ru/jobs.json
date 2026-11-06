@@ -1,0 +1,817 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.ScheduledJobs",
+      "name_local": "ScheduledJobs",
+      "name_en": "ScheduledJobs",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "ScheduledJobs.Predefined | ScheduledJobs.Parameterized.<Name>",
+      "description": "Регламентные задания конфигурации — два вида, каждый за своей развилкой. Predefined — все предопределённые задания как коллекция JobSettings: объявлены в конфигураторе, существуют один раз, живые настройки хранятся в базе. Parameterized.<Name> — менеджер параметризуемого задания: его задания — строки его таблицы, выбираются, ищутся и выполняются как у справочника.",
+      "syntax_block": "for each Job in ScheduledJobs.Predefined { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "for each Job in ScheduledJobs.Predefined {\n    Message(Job.Name + \": \" + Job.Schedule);\n}",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "mgr.ParameterizedJob.LastJob",
+        "cls.BackgroundJobs"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings",
+      "name_local": "JobSettings",
+      "name_en": "JobSettings",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings",
+      "description": "Живые настройки одного предопределённого задания — элемент ScheduledJobs.Predefined. Через New не создаётся. Задание, для которого в базе ещё нет настроек, читается так, как объявлено. Write сохраняет выключатель и расписание в базе и сразу применяет их к работающему расписанию.",
+      "syntax_block": "for each Job in ScheduledJobs.Predefined { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "for each Job in ScheduledJobs.Predefined {\n    if (Job.Active and Job.Schedule.Interval < 60) {\n        Job.Active = False;\n        Job.Write();\n    }\n}",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.ScheduledJobs",
+        "cls.JobSettings.Write",
+        "cls.JobSettings.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Name",
+      "name_local": "Name",
+      "name_en": "Name",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Name",
+      "description": "Имя задания, как его объявляет конфигурация. Только чтение.",
+      "syntax_block": "Message(Job.Name);",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.Name);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Active",
+      "name_local": "Active",
+      "name_en": "Active",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Active",
+      "description": "Запускает ли задание расписание. Выключенное задание всё равно можно запустить вручную через Execute. Сохраняется методом Write.",
+      "syntax_block": "Job.Active = False;",
+      "parameters": "",
+      "return_descr": "Булево.",
+      "example": "Job.Active = False;\nJob.Write();",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Write"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Schedule",
+      "name_local": "Schedule",
+      "name_en": "Schedule",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Schedule",
+      "description": "Когда выполняется задание, значением JobSchedule. При чтении отдаётся копия: измените её, присвойте обратно, затем Write. Всё, кроме JobSchedule, отвергается.",
+      "syntax_block": "Job.Schedule = Schedule;",
+      "parameters": "",
+      "return_descr": "JobSchedule.",
+      "example": "Schedule = Job.Schedule;\nSchedule.Interval = 600;\nJob.Schedule = Schedule;\nJob.Write();",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.NextRun"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.LastRun",
+      "name_local": "LastRun",
+      "name_en": "LastRun",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.LastRun",
+      "description": "Когда задание последний раз выполнялось на этой базе, любым процессом; пустая дата, если ни разу. Только чтение.",
+      "syntax_block": "When = Job.LastRun;",
+      "parameters": "",
+      "return_descr": "Дата.",
+      "example": "Message(Job.LastRun);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastJob",
+        "cls.JobSettings.Computer"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.LastJob",
+      "name_local": "LastJob",
+      "name_en": "LastJob",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.LastJob",
+      "description": "Последний проход задания в этом приложении, значением BackgroundJob — его State, Begin, End и Error(). Undefined, если здесь проходов не было; когда задание выполнялось где угодно — LastRun. Проход, который вместо этого взял другой процесс, здесь следа не оставляет. Только чтение.",
+      "syntax_block": "Last = Job.LastJob;",
+      "parameters": "",
+      "return_descr": "BackgroundJob или Undefined.",
+      "example": "Last = Job.LastJob;\nif (Last <> Undefined and Last.State = BackgroundJobState.Failed) { Message(Last.Error()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.BackgroundJob",
+        "mgr.ParameterizedJob.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Computer",
+      "name_local": "Computer",
+      "name_en": "Computer",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Computer",
+      "description": "На каком компьютере задание выполнялось последний раз. Только чтение.",
+      "syntax_block": "Message(Job.Computer);",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.Name + \": \" + Job.Computer);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastRun"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.NextRun",
+      "name_local": "NextRun",
+      "name_en": "NextRun",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.NextRun",
+      "description": "Когда задание выполнится в следующий раз — вычисляется из расписания и последнего запуска при каждом чтении, нигде не хранится. Только чтение.",
+      "syntax_block": "Message(Job.NextRun);",
+      "parameters": "",
+      "return_descr": "Дата.",
+      "example": "Message(Job.Name + \": \" + Job.NextRun);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Schedule"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Read",
+      "name_local": "Read",
+      "name_en": "Read",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Read()",
+      "description": "Перечитывает настройки из базы — их мог изменить другой сеанс. Ложь, если в базе для этого задания настроек ещё нет: тогда задание читается так, как объявлено.",
+      "syntax_block": "Job.Read();",
+      "parameters": "",
+      "return_descr": "Булево.",
+      "example": "Job.Read();\nMessage(Job.Active);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Write"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Write",
+      "name_local": "Write",
+      "name_en": "Write",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Write()",
+      "description": "Сохраняет Active и Schedule в базе и сразу применяет их к работающему расписанию. Если база их не приняла, вызывается исключение — на несохранённую настройку не отвечают Истиной.",
+      "syntax_block": "Job.Write();",
+      "parameters": "",
+      "return_descr": "Булево.",
+      "example": "Job.Active = True;\nJob.Write();",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.Read"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.JobSettings.Execute",
+      "name_local": "Execute",
+      "name_en": "Execute",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "JobSettings.Execute()",
+      "description": "Запускает задание сейчас, что бы ни говорили его расписание и выключатель. Ложь, если задание не зарегистрировано в этом приложении или уже выполняется.",
+      "syntax_block": "Job.Execute();",
+      "parameters": "",
+      "return_descr": "Булево.",
+      "example": "if (Job.Execute()) { Message(\"запущено\"); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.JobSettings",
+        "cls.JobSettings.LastJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "mgr.ParameterizedJob.LastJob",
+      "name_local": "LastJob",
+      "name_en": "LastJob",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "ScheduledJobs.Parameterized.<Name>.LastJob(job : reference)",
+      "description": "Последний проход одной строки задания в этом приложении, значением BackgroundJob — тот же ответ, что даёт LastJob предопределённого задания. Undefined, если проходов этой строки здесь не было. Нужно право на чтение задания.",
+      "syntax_block": "Last = ScheduledJobs.Parameterized.Exchange.LastJob(Row);",
+      "parameters": "job — ссылка на строку этого задания.",
+      "return_descr": "BackgroundJob или Undefined.",
+      "example": "Last = ScheduledJobs.Parameterized.Exchange.LastJob(Row);\nif (Last <> Undefined and Last.State = BackgroundJobState.Failed) { Message(Last.Error()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.ScheduledJobs",
+        "cls.JobSettings.LastJob",
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs",
+      "name_local": "BackgroundJobs",
+      "name_en": "BackgroundJobs",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs",
+      "description": "Где снова находятся запуски приложения: каждое фоновое задание, запущенное RunBackground, и каждый проход регламентного задания — пока он идёт и среди последних 256 после окончания. Сам ничего не запускает — задание запускается через RunBackground.",
+      "syntax_block": "Jobs = BackgroundJobs.GetBackgroundJobs(Filter);",
+      "parameters": "",
+      "return_descr": "",
+      "example": "Job = RunBackground(\"Exchange.Upload\", New Array(), \"upload\", \"Выгрузка на склад\");\nId = Job.UUID;\n// …позже или из другого сеанса\nJob = BackgroundJobs.FindByUUID(Id);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJobs.GetBackgroundJobs",
+        "cls.BackgroundJobs.FindByUUID",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs.GetBackgroundJobs",
+      "name_local": "GetBackgroundJobs",
+      "name_en": "GetBackgroundJobs",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs.GetBackgroundJobs([filter : Structure])",
+      "description": "Запуски, от старых к новым, Массивом BackgroundJob. Отбор называет свойства BackgroundJob: State, Key, Description, MethodName и UUID сравниваются на равенство; Begin оставляет запуски, начатые не раньше него, End — закончившиеся не позже него. Имя, которое не является свойством BackgroundJob, отвергается с указанием этого имени.",
+      "syntax_block": "Jobs = BackgroundJobs.GetBackgroundJobs(Filter);",
+      "parameters": "filter — Структура из свойств выше; если не указан — все запуски.",
+      "return_descr": "Массив BackgroundJob.",
+      "example": "Running = BackgroundJobs.GetBackgroundJobs(New Structure(\"Key, State\", \"upload\", BackgroundJobState.Active));",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJobs.FindByUUID",
+      "name_local": "FindByUUID",
+      "name_en": "FindByUUID",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobs.FindByUUID(uuid : UUID | string)",
+      "description": "Запуск с этим UUID или Undefined — давно закончившийся запуск отпускается. Значение, которое не является UUID, отвергается.",
+      "syntax_block": "Job = BackgroundJobs.FindByUUID(Id);",
+      "parameters": "uuid — UUID или его текст.",
+      "return_descr": "BackgroundJob или Undefined.",
+      "example": "Job = BackgroundJobs.FindByUUID(Id);\nif (Job <> Undefined and Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "cls.BackgroundJob.UUID"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob",
+      "name_local": "BackgroundJob",
+      "name_en": "BackgroundJob",
+      "kind": "collection",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob",
+      "description": "Один запуск — начатый RunBackground или проход регламентного задания (LastJob). Через New не создаётся. Если отпустить значение, ничего не остановится: запуск доработает сам.",
+      "syntax_block": "Job = RunBackground(\"Totals.Recalculate\", New Array());",
+      "parameters": "",
+      "return_descr": "",
+      "example": "Job = RunBackground(\"Totals.Recalculate\", New Array());\nJob.Wait(30000);\nif (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJobs",
+        "enum.BackgroundJobState",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.State",
+      "name_local": "State",
+      "name_en": "State",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.State",
+      "description": "Где находится запуск: Active, пока идёт, затем Completed, Failed или Cancelled. Только чтение.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Begin",
+      "name_local": "Begin",
+      "name_en": "Begin",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Begin",
+      "description": "Когда запуск начался. Только чтение.",
+      "syntax_block": "Message(Job.Begin);",
+      "parameters": "",
+      "return_descr": "Дата.",
+      "example": "Message(Job.Begin);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.End",
+      "name_local": "End",
+      "name_en": "End",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.End",
+      "description": "Когда запуск закончился; пустая дата, пока он идёт. Только чтение.",
+      "syntax_block": "Message(Job.End);",
+      "parameters": "",
+      "return_descr": "Дата.",
+      "example": "Message(Job.End);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Key",
+      "name_local": "Key",
+      "name_en": "Key",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Key",
+      "description": "Ключ, с которым запуск начат, — третий аргумент RunBackground; пусто, если не указан. Только чтение.",
+      "syntax_block": "Message(Job.Key);",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.Key);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "fn.RunBackground"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Description",
+      "name_local": "Description",
+      "name_en": "Description",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Description",
+      "description": "Что это за запуск, как его читает человек: четвёртый аргумент RunBackground или имя регламентного задания, чей это проход. Только чтение.",
+      "syntax_block": "Message(Job.Description);",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.Description);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.MethodName",
+      "name_local": "MethodName",
+      "name_en": "MethodName",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.MethodName",
+      "description": "Какой метод выполняется — ИмяМодуля.ИмяМетода; пусто у прохода регламентного задания. Только чтение.",
+      "syntax_block": "Message(Job.MethodName);",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.MethodName);",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.UUID",
+      "name_local": "UUID",
+      "name_en": "UUID",
+      "kind": "property",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.UUID",
+      "description": "Имя запуска — имя его сеанса, строка в «Активных пользователях»; по нему спрашивают BackgroundJobs.FindByUUID. Только чтение.",
+      "syntax_block": "Id = Job.UUID;",
+      "parameters": "",
+      "return_descr": "UUID.",
+      "example": "Id = Job.UUID;",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJobs.FindByUUID"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.IsComplete",
+      "name_local": "IsComplete",
+      "name_en": "IsComplete",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.IsComplete()",
+      "description": "Истина, когда запуск закончился, как бы он ни закончился.",
+      "syntax_block": "Done = Job.IsComplete();",
+      "parameters": "",
+      "return_descr": "Булево.",
+      "example": "if (Job.IsComplete()) { Message(Job.State); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.Wait"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Wait",
+      "name_local": "Wait",
+      "name_en": "Wait",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Wait([timeoutMs : number])",
+      "description": "Ждёт окончания запуска не дольше таймаута в миллисекундах; 0 или без аргумента — до конца. Отвечает IsComplete(): Ложь значит, что время вышло, а не что запуск упал.",
+      "syntax_block": "Done = Job.Wait(60000);",
+      "parameters": "timeoutMs — сколько миллисекунд ждать самое большее.",
+      "return_descr": "Булево.",
+      "example": "if (not Job.Wait(60000)) { Message(\"ещё выполняется\"); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Result",
+      "name_local": "Result",
+      "name_en": "Result",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Result()",
+      "description": "Что вернул метод. Пусто, пока запуск идёт, и пусто после, если он упал, — различает их Error().",
+      "syntax_block": "Value = Job.Result();",
+      "parameters": "",
+      "return_descr": "Произвольный.",
+      "example": "if (Job.Wait(30000) and Job.State = BackgroundJobState.Completed) { Message(Job.Result()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "cls.BackgroundJob.Error"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Error",
+      "name_local": "Error",
+      "name_en": "Error",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Error()",
+      "description": "С какой ошибкой запуск упал; пусто, если не упал.",
+      "syntax_block": "Text = Job.Error();",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "if (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState.Failed"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Activity",
+      "name_local": "Activity",
+      "name_en": "Activity",
+      "kind": "method",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Activity()",
+      "description": "Чем запуск занят сейчас — та же строка, что в «Активных пользователях»; пусто после окончания.",
+      "syntax_block": "Message(Job.Activity());",
+      "parameters": "",
+      "return_descr": "Строка.",
+      "example": "Message(Job.Activity());",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "cls.BackgroundJob.Cancel",
+      "name_local": "Cancel",
+      "name_en": "Cancel",
+      "kind": "procedure",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJob.Cancel()",
+      "description": "Просит запуск остановиться. Его код остановится на следующем шаге; запуск, ждущий другую систему, заметит, когда та ответит. Остановленный так запуск — Cancelled, а не Failed.",
+      "syntax_block": "Job.Cancel();",
+      "parameters": "",
+      "return_descr": "",
+      "example": "if (Job.State = BackgroundJobState.Active) { Job.Cancel(); }",
+      "availability": "Сервер",
+      "see_also": [
+        "cls.BackgroundJob",
+        "enum.BackgroundJobState.Cancelled"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState",
+      "name_local": "BackgroundJobState",
+      "name_en": "BackgroundJobState",
+      "kind": "enum_type",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Active, .Completed, .Failed, .Cancelled",
+      "description": "Где находится запуск — BackgroundJob.State. Cancelled — не Failed: запуск ничего не сделал не так, его попросили остановиться.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Completed) { }",
+      "parameters": "",
+      "return_descr": "",
+      "example": "if (Job.State <> BackgroundJobState.Active) { Message(Job.State); }",
+      "availability": "Сервер",
+      "see_also": [
+        "enum.BackgroundJobState.Active",
+        "enum.BackgroundJobState.Completed",
+        "enum.BackgroundJobState.Failed",
+        "enum.BackgroundJobState.Cancelled",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Active",
+      "name_local": "Active",
+      "name_en": "Active",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Active",
+      "description": "Запуск идёт.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Active) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Active) { Message(Job.Activity()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Completed",
+      "name_local": "Completed",
+      "name_en": "Completed",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Completed",
+      "description": "Запуск закончился без ошибки.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Completed) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Completed) { Message(Job.Result()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.State"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Failed",
+      "name_local": "Failed",
+      "name_en": "Failed",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Failed",
+      "description": "Запуск закончился с ошибкой — какой, говорит Error().",
+      "syntax_block": "if (Job.State = BackgroundJobState.Failed) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Failed) { Message(Job.Error()); }",
+      "availability": "Сервер",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.Error"
+      ],
+      "reviewed": false
+    },
+    {
+      "id": "enum.BackgroundJobState.Cancelled",
+      "name_local": "Cancelled",
+      "name_en": "Cancelled",
+      "kind": "system_enum",
+      "category_keys": [
+        "global_context",
+        "runtime",
+        "jobs"
+      ],
+      "signature": "BackgroundJobState.Cancelled",
+      "description": "Запуск попросили остановиться, и он остановился.",
+      "syntax_block": "if (Job.State = BackgroundJobState.Cancelled) { }",
+      "parameters": "",
+      "return_descr": "BackgroundJobState.",
+      "example": "if (Job.State = BackgroundJobState.Cancelled) { Message(Job.Description); }",
+      "availability": "Сервер",
+      "see_also": [
+        "enum.BackgroundJobState",
+        "cls.BackgroundJob.Cancel"
+      ],
+      "reviewed": false
+    }
+  ]
+}

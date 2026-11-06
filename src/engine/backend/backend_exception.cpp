@@ -209,6 +209,12 @@ static ibString gs_listErrorString[] =
 	// on its first word - true, and no help: the author wrote a Select and was told about a semicolon.
 	_("Nothing can follow a group without a name: its answer is the groups themselves, each with Key and Values. "
 	  "To go on - Select, Where, OrderBy - name the group: '%s <name>'."),//ibScriptError_LinqAfterUnnamedGroup
+
+	// --- runtime, appended — lock-step with the enum ----
+	// A PROCEDURE THE VALUE DID NOT CARRY OUT was silence: a value that registered it and answered false - no
+	// CallAsProc at all, or its case written in CallAsFunc - did nothing, and the module went on (2026-11-03:
+	// COMObject.AddEventHandler, ComSafeArray.SetValue, Lock and Unlock of every object).
+	_("The procedure '%s' was not carried out by this value"),//ibScriptError_ProcedureNotDone
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -437,7 +443,9 @@ ibString ibBackendException::ProcessExceptionError(const ibString& strFileName,
 		// Null when no scope is active or session has no UI.
 		auto* frame = ibSession::CurrentFrame();
 
-		if (frame != nullptr) {
+		// Not while one is reporting already, or while the code's caller takes the failure itself (window_run: an
+		// assistant's mistake goes back to the assistant, not in front of the person).
+		if (frame != nullptr && !IsErrorOutputProcessing()) {
 			// The call-stack TEXT, rendered from the record above.
 			ibString strStackMessage;
 			for (std::size_t i = 0; i < diagnostic.m_stack.size(); i++) {

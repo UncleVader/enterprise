@@ -1,6 +1,7 @@
 #include "docViewRole.h"
 
 #include "designer-thin/win/editor/roleEditor/roleEditor.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibCheckTree
 
 // ----------------------------------------------------------------------------
 // ibRoleEditView implementation
@@ -59,3 +60,5 @@ ibFrontendView* ibRoleEditDocument::DoCreateView()
 {
 	return new ibRoleEditView();
 }
+
+TAB_DOCUMENT_REGISTER(ibRoleEditDocument, ibProtocol::ibView::ibKind::Role)

@@ -200,9 +200,9 @@ void ibValueHttpRequest_BindNames(ibValue::ibMemberTable& helper, const ibValue*
 	helper.AppendProp(ibT("ResourceAddress"), true, true, wxNOT_FOUND);
 	helper.AppendProp(ibT("Headers"), true, true, wxNOT_FOUND);
 
-	helper.AppendFunc(ibT("SetBodyFromString"), 2, ibT("SetBodyFromString(text : string, encoding : TextEncoding = UTF8)"));
+	helper.AppendFunc(ibT("SetBodyFromString"), 2, ibT("SetBodyFromString(text : string, encoding : TextEncoding | string = UTF8)"));
 	helper.AppendFunc(ibT("SetBodyFromBinaryData"), 1, ibT("SetBodyFromBinaryData(data : binaryData)"));
-	helper.AppendFunc(ibT("GetBodyAsString"), 1, ibT("GetBodyAsString(encoding : TextEncoding = UTF8)"));
+	helper.AppendFunc(ibT("GetBodyAsString"), 1, ibT("GetBodyAsString(encoding : TextEncoding | string = UTF8)"));
 	helper.AppendFunc(ibT("GetBodyAsBinaryData"), ibT("GetBodyAsBinaryData()"));
 }
 
@@ -319,7 +319,7 @@ void ibValueHttpResponse_BindNames(ibValue::ibMemberTable& helper, const ibValue
 	helper.AppendProp(ibT("StatusCode"), true, false, wxNOT_FOUND);
 	helper.AppendProp(ibT("Headers"), true, false, wxNOT_FOUND);
 
-	helper.AppendFunc(ibT("GetBodyAsString"), 1, ibT("GetBodyAsString(encoding : TextEncoding = UTF8)"));
+	helper.AppendFunc(ibT("GetBodyAsString"), 1, ibT("GetBodyAsString(encoding : TextEncoding | string = UTF8)"));
 	helper.AppendFunc(ibT("GetBodyAsBinaryData"), ibT("GetBodyAsBinaryData()"));
 }
 
@@ -489,7 +489,7 @@ ibValue ibValueHttpConnection::Send(ibHttpMethod method, const ibValueHttpReques
 	// ⚠ A HEADER THAT WOULD BREAK THE MESSAGE IS REFUSED HERE, BY NAME - a script that filled a Structure from a
 	// file needs to know WHICH entry it was.
 	bool authorized = false;
-	for (const auto& entry : request.Headers().Entries()) {
+	for (const auto& entry : request.Headers().Values()) {
 		const ibString key = entry.key.GetString();
 		const std::string field = ibHttpUtf8(key);
 		if (!ibHttpIsToken(field))
@@ -638,7 +638,7 @@ ibValue ibValueHttpConnection::Send(ibHttpMethod method, const ibValueHttpReques
 			value = wxString::From8BitData(field.second.data(), field.second.size());
 		const long held = headers->FindProp(key);
 		if (held >= 0 && !key.IsSameAs(ibT("Set-Cookie"), false))
-			value = headers->Entries()[static_cast<size_t>(held)].value.GetString() + ibT(", ") + value;
+			value = headers->Values()[static_cast<size_t>(held)].value.GetString() + ibT(", ") + value;
 		headers->SetAt(ibValue(key), ibValue(value));
 	}
 

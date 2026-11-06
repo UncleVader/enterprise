@@ -40,7 +40,7 @@ public:
 	public:
 
 		// No default ctor — the ibRuntimeModuleDataObject base requires the owning
-		// value's helper + a compile module (no default descriptor ctor exists).
+		// value's helper + the module (no default descriptor ctor exists).
 		//
 		// The manager is not optional. A unit compiles against its parent's scope, so
 		// one built without a manager can only fail to resolve every name outside
@@ -176,7 +176,7 @@ public:
 	};
 
 	// "Data" global — the QUERYABLE-source mirror of "Metadata" (L4-2). The same
-	// member shape (kind namespaces -> a Name-keyed structure), but the leaves are
+	// member shape (kind namespaces -> a by-name collection, metaObjectCollection.h), but the leaves are
 	// ibValueQueryable values (the source the text query language reads through) —
 	// the QUERYABLE kinds only (records with a data-reference, registers,
 	// constants; no modules / forms / reports). Lazy by contract: vending a
@@ -266,11 +266,11 @@ public:
 	// agnostic.
 	virtual ibValueModuleUnit* FindCommonModule(const ibValueMetaObjectCommonModule* commonModule) const = 0;
 
-	//associated map — globals are the compile module's extern variables (single
-	// source; m_listGlConstValue registry removed). Values are owned by
+	//associated map — globals are the extern binds (single source;
+	// m_listGlConstValue registry removed). Values are owned by
 	// m_metaManager / m_listCommonModuleManager, the map only references them.
-	virtual std::map<ibString, ibValue*>& GetGlobalVariables() { return m_compileModule->m_listExternValue; }
-	virtual std::map<ibString, ibContextVar>& GetContextVariables() { return m_compileModule->m_listContextValue; }
+	virtual std::map<ibString, ibValue*>& GetGlobalVariables() { return m_binds->m_listExternValue; }
+	virtual std::map<ibString, ibContextVar>& GetContextVariables() { return m_binds->m_listContextValue; }
 
 	//return external module
 	virtual ibValue* GetObjectValue() const { return nullptr; }
@@ -285,6 +285,10 @@ public:
 
 protected:
 
+	// The main module's scope objects — made, bound and held by the one, unbound and let go by the other.
+	void BindContextManagers();
+	void UnbindContextManagers();
+
 	//global manager
 	ibValuePtr<ibValue> m_objectManager;
 
@@ -294,9 +298,10 @@ protected:
 	// global data manager — the "Data" queryable-source root (L4-2)
 	ibValuePtr<ibValueDataUnit> m_dataManager;
 
-	// the context types' objects (EnumManager / SystemManager) — made for this manager as its main module comes up,
-	// held while it is up: the compile module's context binds only reference them
-	std::vector<ibValue> m_listContextManager;
+	// the objects of the main module's scope (EnumManager / SystemManager, PictureLib) under the names they are bound
+	// by — made for this manager as its main module comes up, held while it is up: the compile module's binds only
+	// reference them
+	std::vector<std::pair<ibString, ibValue>> m_listContextManager;
 
 	friend class ibMetaDataConfiguration;
 	friend class ibMetaDataDataProcessor;
@@ -348,10 +353,10 @@ public:
 	virtual bool DestroyMainModule() override = 0;
 
 	//start common module
-	virtual bool StartMainModule(bool force = false) = 0;
+	virtual bool StartMainModule(const ibRuntimeRequest& request = ibRuntimeRequest()) = 0;
 
 	//exit common module
-	virtual bool ExitMainModule(bool force = false) = 0;
+	virtual bool ExitMainModule(const ibRuntimeRequest& request = ibRuntimeRequest()) = 0;
 
 	// common modules — runtime-side mutation API. Metadata's
 	// AddCommonModule/RenameCommonModule/RemoveCommonModule forwards
@@ -425,10 +430,10 @@ public:
 	virtual bool DestroyMainModule();
 
 	//start common module
-	virtual bool StartMainModule(bool force = false);
+	virtual bool StartMainModule(const ibRuntimeRequest& request = ibRuntimeRequest());
 
 	//exit common module
-	virtual bool ExitMainModule(bool force = false);
+	virtual bool ExitMainModule(const ibRuntimeRequest& request = ibRuntimeRequest());
 
 };
 

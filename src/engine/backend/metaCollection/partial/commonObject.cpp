@@ -14,6 +14,8 @@
 
 #include "backend/metaCollection/partial/reference/reference.h"
 #include "backend/metaCollection/partial/declaredPresentation.h"   // how a reference reads in the designer
+#include "backend/system/value/composition/valueComposerField.h"   // ibMaterializeCompositionValue - a declared line's cell, made live
+#include "backend/metadataSerialization.h"                         // ibDeserializeValue - that cell, read with its configuration
 
 //***********************************************************************
 //*								 metaData                               *
@@ -43,7 +45,7 @@ ibFormPtr<ibBackendValueForm> ibValueMetaObjectGenericData::GetGenericForm(const
 }
 #pragma endregion
 #pragma region _form_creator_h_
-ibFormPtr<ibBackendValueForm> ibValueMetaObjectGenericData::CreateObjectForm(const ibValueMetaObjectFormBase* metaForm, const ibUniqueKey& formGuid) const
+ibFormPtr<ibBackendValueForm> ibValueMetaObjectGenericData::CreateObjectForm(const ibValueMetaObjectFormBase* metaForm, const ibFormRequest& request) const
 {
 	// ⭐⭐ ONE PLACE MAKES A FORM'S SOURCE, and it is asked by the KIND of form — which is what it
 	// switched on all along (`metaObject->GetTypeForm()`), so handing it the metaform was handing it a
@@ -52,9 +54,12 @@ ibFormPtr<ibBackendValueForm> ibValueMetaObjectGenericData::CreateObjectForm(con
 	// in the same file (Max, 2026-09-23: "you gave it already — you have to change it all the way").
 	const ibFormID form_id = metaForm != nullptr ? metaForm->GetTypeForm() : defaultFormType;
 
-	const ibSourcePtr<ibSourceDataObject> source = CreateSourceObject(ibCreateRequest(), form_id);   // held across the build
+	const ibSourcePtr<ibSourceDataObject> source = CreateSourceObject(request.m_create, form_id);   // held across the build
+
+	ibFormRequest formRequest = request;
+	formRequest.m_formName = metaForm != nullptr ? metaForm->GetName() : ibString();
 	return CreateAndBuildForm(
-		ibFormRequest(metaForm != nullptr ? metaForm->GetName() : ibString(), formGuid),
+		formRequest,
 		form_id,
 		nullptr,
 		source
@@ -102,9 +107,9 @@ ibFormPtr<ibBackendValueForm> ibValueMetaObjectGenericData::CreateAndBuildForm(c
 #pragma endregion
 #pragma region _template_builder_h_
 
-ibValueSpreadsheetDocument* ibValueMetaObjectGenericData::GetTemplate(const ibString& strTemplateName) const
+ibValue ibValueMetaObjectGenericData::GetTemplate(const ibString& strTemplateName) const
 {
-	ibValueMetaObjectSpreadsheetBase* creator = nullptr;
+	ibValueMetaObjectTemplateBase* creator = nullptr;
 
 	if (!strTemplateName.IsEmpty()) {
 
@@ -112,18 +117,15 @@ ibValueSpreadsheetDocument* ibValueMetaObjectGenericData::GetTemplate(const ibSt
 
 		if (creator == nullptr) {
 			ibBackendCoreException::Error(_("Template not found '%s'"), strTemplateName);
-			return nullptr;
+			return ibValue();
 		}
 
-		ibValueSpreadsheetDocument* valueSpreadsheetDocument =
-			new ibValueSpreadsheetDocument(creator->GetSpreadsheetDesc());
-
-		valueSpreadsheetDocument->InvalidateNames();
-		return valueSpreadsheetDocument;
+		// A fresh value of its kind — the provider of the kind makes it (ibTemplateProvider).
+		return creator->GetTemplateProvider().GetDataValue(creator->GetTemplateDesc(), creator->GetMetaData());
 	}
 
 	ibBackendCoreException::Error(_("Template not found!"));
-	return nullptr;
+	return ibValue();
 }
 
 #pragma endregion
@@ -459,6 +461,34 @@ bool ibValueMetaObjectRecordDataRef::GenerateDataDesc(const ibValueDataObject* o
 	const ibString& second = field.GetString();
 	out.append(parameter.m_separator).append(second.c_str(), second.Len());
 	return true;
+}
+
+ibValue ibValueMetaObjectRecordDataRef::GenerateIdentifier(const ibNumber& counter, const ibString& prefix) const
+{
+	const ibValueMetaObjectAttributeBase* attribute = GetAttributeForCode();
+	if (attribute == nullptr)
+		return ibValue();
+
+	if (attribute->ContainType(ibValueTypes::TYPE_NUMBER))
+		return counter;
+
+	if (attribute->ContainType(ibValueTypes::TYPE_STRING)) {
+		// "<prefix><zero-padded number>" — width derived from the attribute's length.
+		// Defensive else: if length was shrunk in the designer below
+		// what the prefix already takes, drop the prefix and pad the
+		// number to prefix-width so the output keeps a stable size.
+		// Uses ibNumber::Format directly — no int64 cap, big counters OK.
+		const size_t prefLen = prefix.length();
+		const size_t totLen  = (size_t)attribute->GetTypeDesc().GetLength();
+		ibNumber::Format fmt;
+		fmt.minIntDigits = (int)((prefLen < totLen) ? totLen - prefLen : prefLen);
+		return (prefLen < totLen ? prefix : ibString()) + counter.ToString(fmt);
+	}
+
+	wxASSERT_MSG(false, "m_metaAttribute->GetClsidList() != ibValueTypes::TYPE_NUMBER"
+		"|| m_metaAttribute->GetClsidList() != ibValueTypes::TYPE_STRING");
+
+	return wxEmptyValue;
 }
 
 //***********************************************************************
@@ -1050,9 +1080,9 @@ bool ibValueMetaObjectRecordDataHierarchyMutableRef::GenerateDataDesc(const ibVa
 			out = empty;
 			return true;
 		}
-		for (const auto& item : GetPredefinedValueArray())
-			if (item != nullptr && item->GetPredefinedGuid() == objValue->GetGuid()) {
-				out = ibDeclaredTypeName(this) + ibT(".") + item->GetPredefinedName();
+		for (const ibPredefinedItemDescription& item : GetPredefinedValueArray())
+			if (item.m_guid == objValue->GetGuid()) {
+				out = ibDeclaredTypeName(this) + ibT(".") + item.m_name;
 				return true;
 			}
 	}
@@ -1105,133 +1135,7 @@ ibValuePtr<ibValueRecordDataObjectHierarchyRef> ibValueMetaObjectRecordDataHiera
 	return created;
 }
 
-//***************************************************************************
-//*                       Predefined values                                 *
-//***************************************************************************
-
-#define predefinedBlock 0x1234532
-
-//append predefined value
-void ibValueMetaObjectRecordDataHierarchyMutableRef::AppendPredefinedValue(const ibString& strPredefinedName,
-	const ibString& strCode, const ibString& strDescription,
-	bool valueIsFolder, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent)
-{
-	m_predefinedObjectVector.emplace_back(
-		new ibPredefinedValueObject(wxNewUniqueGuid, strPredefinedName,
-			strCode, strDescription, valueIsFolder, valueParent));
-
-	m_metaData->Modify(true);
-}
-
-void ibValueMetaObjectRecordDataHierarchyMutableRef::SetPredefinedValue(const ibGuid& predefinedGuid,
-	const ibString& strPredefinedName,
-	const ibString& strCode, const ibString& strDescription,
-	bool valueIsFolder, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent)
-{
-	wxObjectDataPtr<ibPredefinedValueObject> foundedPredefinedValue = FindPredefinedValue(predefinedGuid);
-
-	if (foundedPredefinedValue != nullptr) {
-		
-		foundedPredefinedValue->m_strPredefinedName = strPredefinedName;
-		foundedPredefinedValue->m_strCode = strCode;
-		foundedPredefinedValue->m_strDescription = strDescription;
-		foundedPredefinedValue->m_valueIsFolder = valueIsFolder;
-		foundedPredefinedValue->m_valueParent = valueParent;
-		
-		m_metaData->Modify(true);
-		return;
-	}
-
-	m_predefinedObjectVector.emplace_back(
-		new ibPredefinedValueObject(predefinedGuid, strPredefinedName,
-			strCode, strDescription, valueIsFolder, valueParent));
-
-	m_metaData->Modify(true);
-}
-
-void ibValueMetaObjectRecordDataHierarchyMutableRef::DeletePredefinedValue(const ibGuid& predefinedGuid) {
-	
-	std::erase_if(m_predefinedObjectVector,
-		[predefinedGuid](const auto value) { return predefinedGuid == value->GetPredefinedGuid(); });
-
-	m_metaData->Modify(true);
-}
-
-//***************************************************************************
-//*                       Save & load metaData                              *
-//***************************************************************************
-
-bool ibValueMetaObjectRecordDataHierarchyMutableRef::WriteData(ibDataNode& node) const
-{
-	// predefined values -> an Array of Child{ guid, name, code, description, isFolder, parent — its guid, absent at the top }
-	std::vector<ibDataValue> predefined;
-	for (const auto& value : m_predefinedObjectVector) {
-		auto pv = std::make_shared<ibDataNode>();
-		pv->SetValue(ibT("Guid"), value->GetPredefinedGuid());
-		pv->SetValue(ibT("Name"), value->GetPredefinedName());
-		pv->SetValue(ibT("Code"), value->GetPredefinedCode());
-		pv->SetValue(ibT("Description"), value->GetPredefinedDescription());
-		pv->SetValue(ibT("IsFolder"), (bool)value->IsPredefinedFolder());
-		if (value->GetPredefinedParent() != nullptr)
-			pv->SetValue(ibT("Parent"), value->GetPredefinedParent()->GetPredefinedGuid());
-		predefined.push_back(ibDataValue::Child(pv));
-	}
-	node.SetProperty(ibT("Predefined"), ibDataValue::Array(predefined));
-
-	node.SetProperty(m_propertyAttributePredefined->GetName(), m_propertyAttributePredefined->GetNodeValue());
-	node.SetProperty(m_propertyAttributeCode->GetName(), m_propertyAttributeCode->GetNodeValue());
-	node.SetProperty(m_propertyAttributeDescription->GetName(), m_propertyAttributeDescription->GetNodeValue());
-	node.SetProperty(m_propertyAttributeParent->GetName(), m_propertyAttributeParent->GetNodeValue());
-	node.SetProperty(m_propertyAttributeIsFolder->GetName(), m_propertyAttributeIsFolder->GetNodeValue());
-	// A property absent from this pair does not survive the session that set it, and the failure is
-	// silent because the default keeps working.
-	node.SetProperty(m_propertyHierarchyType->GetName(), m_propertyHierarchyType->GetNodeValue());
-	node.SetProperty(m_propertyDataPresentation->GetName(), m_propertyDataPresentation->GetNodeValue());
-
-	return ibValueMetaObjectRecordDataMutableRef::WriteData(node);
-}
-
-bool ibValueMetaObjectRecordDataHierarchyMutableRef::ReadData(const ibDataNode& node)
-{
-	const ibDataValue predefinedVal = node.GetProperty(ibT("Predefined"));
-	if (predefinedVal.Kind() == ibDataKind::Array) {
-		// The parent is linked once every item is read: an item edited to sit under a later one stands before it.
-		std::vector<std::pair<wxObjectDataPtr<ibPredefinedValueObject>, ibGuid>> parents;
-		for (const ibDataValue& item : predefinedVal.AsArray()) {
-			const auto pv = item.AsChild();
-			if (!pv)
-				continue;
-			const ibGuid valueGuid = pv->GetValue<ibGuid>(ibT("Guid"));
-			ibString valueName = pv->GetValue<ibString>(ibT("Name"));
-			ibString valueCode = pv->GetValue<ibString>(ibT("Code"));
-			ibString valueDescription = pv->GetValue<ibString>(ibT("Description"));
-			const bool valueIsFolder = pv->GetValue<bool>(ibT("IsFolder"));
-			m_predefinedObjectVector.emplace_back(
-				new ibPredefinedValueObject(valueGuid, valueName, valueCode, valueDescription, valueIsFolder));
-			if (pv->Has(ibT("Parent")))
-				parents.emplace_back(m_predefinedObjectVector.back(), pv->GetValue<ibGuid>(ibT("Parent")));
-		}
-		for (const auto& parent : parents)
-			parent.first->m_valueParent = FindPredefinedValue(parent.second);
-	}
-
-	m_propertyAttributePredefined->SetNodeValue(node.GetProperty(m_propertyAttributePredefined->GetName()));
-	m_propertyAttributeCode->SetNodeValue(node.GetProperty(m_propertyAttributeCode->GetName()));
-	m_propertyAttributeDescription->SetNodeValue(node.GetProperty(m_propertyAttributeDescription->GetName()));
-	m_propertyAttributeParent->SetNodeValue(node.GetProperty(m_propertyAttributeParent->GetName()));
-	m_propertyAttributeIsFolder->SetNodeValue(node.GetProperty(m_propertyAttributeIsFolder->GetName()));
-
-	m_propertyHierarchyType->SetNodeValue(node.GetProperty(m_propertyHierarchyType->GetName()));
-	// Restate it on the Parent field at once: everything that asks what a parent may be asks the
-	// FIELD, so a configuration loaded and never edited must already say what it declares.
-	ApplyHierarchyType();
-
-	// Absent from a configuration saved before it existed: the kind's own default stands (SetNodeValue
-	// leaves an empty value alone) - Description for a catalog, Code for a chart of accounts.
-	m_propertyDataPresentation->SetNodeValue(node.GetProperty(m_propertyDataPresentation->GetName()));
-
-	return ibValueMetaObjectRecordDataMutableRef::ReadData(node);
-}
+// The predefined items — declared, checked, written and read — are commonObjectPredefined.cpp's.
 
 //***********************************************************************
 //*                           read & save events                        *
@@ -1542,7 +1446,7 @@ bool ibValueMetaObjectRegisterData::OnSaveMetaObject(int flags)
 	// chart of accounts' missing binding — the message belongs in the pane under the editor, the save
 	// refuses, and no exception leaves the configuration write transaction open.
 	if (HasRecorder() && (*m_propertyAttributeRecorder)->IsEmptyTypeDesc()) {
-		// Into the LEDGER — see the note in metaComposerObject.cpp: one road for a refusal, read by
+		// Into the LEDGER — see the note in metaTemplateObject.cpp: one road for a refusal, read by
 		// whoever asked. Printed here it also stayed on the screen after a probe that only asked.
 		RestructureError(ibString::Format(
 			_("%s: no recorder - declare a document that posts into this register, or it can never be written to"), GetName()));
@@ -1896,8 +1800,8 @@ void ibValueManagerDataObjectPredefined::FillPredefined(ibMemberTable& helper) c
 	wxASSERT(valueMetaObject);
 
 	//fill custom values
-	for (const auto& object : valueMetaObject->GetPredefinedValueArray()) {
-		helper.AppendProp(object->GetPredefinedName(), true, false);
+	for (const ibPredefinedItemDescription& object : valueMetaObject->GetPredefinedValueArray()) {
+		helper.AppendProp(object.m_name, true, false);
 	}
 }
 
@@ -1911,11 +1815,11 @@ bool ibValueManagerDataObjectPredefined::GetPropVal(const long lPropNum, ibValue
 	const ibValueMetaObjectRecordDataHierarchyMutableRef* valueMetaObject = GetMetaObject();
 	wxASSERT(valueMetaObject);
 
-	const auto& predefinedValue =
+	const ibPredefinedItemDescription* const predefinedValue =
 		valueMetaObject->FindPredefinedValue(m_members.GetPropName(lPropNum));
 	if (predefinedValue == nullptr)
 		return false;
-	pvarPropVal = ibValueReferenceDataObject::Create(valueMetaObject, predefinedValue->GetPredefinedGuid());
+	pvarPropVal = ibValueReferenceDataObject::Create(valueMetaObject, predefinedValue->m_guid);
 	return true;
 }
 
@@ -2274,7 +2178,7 @@ bool ibValueRecordDataObject::GetPropVal(const long lPropNum, ibValue& pvarPropV
 
 bool ibValueRecordDataObject::CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray)
 {
-	const long lMethodAlias = m_members.GetPropAlias(lMethodNum);
+	const long lMethodAlias = m_members.GetMethodAlias(lMethodNum);
 	if (lMethodAlias == eProcUnit) {
 		return ibRuntimeModuleDataObject::ExecAsProc(
 			GetMethodName(lMethodNum), paParams, lSizeArray
@@ -2286,7 +2190,7 @@ bool ibValueRecordDataObject::CallAsProc(const long lMethodNum, ibValue** paPara
 
 bool ibValueRecordDataObject::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
-	const long lMethodAlias = m_members.GetPropAlias(lMethodNum);
+	const long lMethodAlias = m_members.GetMethodAlias(lMethodNum);
 	if (lMethodAlias == eProcUnit) {
 		return ibRuntimeModuleDataObject::ExecAsFunc(
 			GetMethodName(lMethodNum), pvarRetValue, paParams, lSizeArray
@@ -2358,8 +2262,8 @@ bool ibValueRecordDataObjectExt::InitializeObject()
 		ibValueModuleManager* moduleManager = ibSession::EditModuleManagerFor(m_metaObject->GetMetaData());
 		wxASSERT(moduleManager);
 
-		// Imperative: parent first, then lazy compile + runtime slot
-		// pick up parent automatically on creation.
+		// Imperative: parent first, then compile + runtime slot
+		// pick up parent automatically.
 		ibRuntimeModuleDataObject::SetParent(moduleManager);
 		BindContextVariable(thisObject, this);
 		InitializeRuntime();
@@ -2465,7 +2369,7 @@ bool ibValueRecordDataObjectRef::InitializeObject(const ibGuid& copyGuid)
 		return false;
 	}
 
-	// Parent the object's compile module to the module manager whose context it
+	// Parent the object's module to the module manager whose context it
 	// should see — designer manager in the Designer, session root mm at runtime.
 	ibValueModuleManager* moduleManager = ibSession::EditModuleManagerFor(m_metaObject->GetMetaData());
 	wxASSERT(moduleManager);
@@ -2547,9 +2451,7 @@ bool ibValueRecordDataObjectRef::InitializeObject(ibValueRecordDataObjectRef* so
 		wxASSERT(m_procUnit == nullptr);
 		InitializeRuntime();
 		// Re-apply descriptor SetParent so cascade picks up the now-
-		// existent procUnit and wires its parent too. Compile-side
-		// parent is already set from the first call above — rewriting
-		// to the same value.
+		// existent procUnit and wires its parent too.
 		ibRuntimeModuleDataObject::SetParent(moduleManager);
 		Execute();
 		// OnCopy / Filling run user script with side effects. Skip them under a
@@ -2974,6 +2876,45 @@ void ibValueRecordDataObjectHierarchyRef::PrepareEmptyObject(const ibValueRecord
 // virtual dispatch lets the same body serve all three.
 //----------------------------------------------------------------------
 
+namespace {
+
+// ⭐ THE LINES A PREDEFINED ITEM'S DECLARATION HOLDS ARE THE CONFIGURATION'S, NOT THE PERSON'S — an account's analytics.
+// Lines 1..K of a section stand as declared (the cells it declares; a column it leaves out is the data's); a person adds
+// after them. A write that removed, moved or changed one of them is refused here (WriteObject). A line is its position
+// (the seed writes the declared ones at 1..K), so a removed or moved line shows as a changed one: what stands at N is
+// compared with what the declaration holds at N.
+void CheckPredefinedTables(const ibValueRecordDataObjectHierarchyRef& object)
+{
+	const ibValueMetaObjectRecordDataHierarchyMutableRef* const metaObject = object.GetMetaObject();
+	const ibGuid guid = object.GetGuid();
+	const ibPredefinedItemDescription* const predefined = metaObject->FindPredefinedValue(guid);
+	if (predefined == nullptr)
+		return;
+
+	const ibMetaData* const metaData = metaObject->GetMetaData();
+	const auto& tables = predefined->m_tables;
+	for (const auto table : metaObject->GetGenericTableArrayObject()) {
+		const auto declared = tables.find(table->GetMetaID());
+		ibValue held;
+		ibValueTabularSectionDataObjectBase* section = nullptr;
+		if (declared == tables.end() || !object.GetValueByMetaID(table->GetMetaID(), held) || !held.ConvertToValue(section))
+			continue;
+		for (std::size_t idx = 0; idx < declared->second.size(); idx++) {
+			bool kept = static_cast<long>(idx) < section->GetRowCount();
+			for (auto cell = declared->second[idx].begin(); kept && cell != declared->second[idx].end(); ++cell) {
+				ibValue value;   // a column the configuration no longer has is not asked
+				if (section->GetValueByMetaID(section->GetItem(static_cast<long>(idx)), cell->first, value))
+					kept = value.CompareValueEQ(ibMaterializeCompositionValue(ibDeserializeValue(cell->second.m_value, metaData), metaData));
+			}
+			if (!kept)
+				ibBackendCoreException::Error(_("%s: line %i of the %s list is declared by the configuration and cannot be removed, moved or changed"),
+					object.GetSourceCaption(), static_cast<int>(idx) + 1, table->GetSynonym());
+		}
+	}
+}
+
+} // namespace
+
 bool ibValueRecordDataObjectHierarchyRef::WriteObject()
 {
 	ibConnectionScope scope = ibSession::Current()->OpenConnectionScope();
@@ -3006,6 +2947,10 @@ bool ibValueRecordDataObjectHierarchyRef::WriteObject()
 		if (standartProcessing.GetBoolean())
 			GenerateUniqueIdentifier(prefix.GetString());
 	}
+
+	// After the handlers, which may have touched the lines too; the designer writes no data (DeleteObject).
+	if (!appData->DesignerMode())
+		CheckPredefinedTables(*this);
 
 	if (!SaveData())
 		return refuse(_("%s: failed to save the object data"));
@@ -3288,10 +3233,9 @@ void ibValueRecordDataObjectRecorderRef::InitRegisterRecords()
 }
 
 // RegisterRecords — EXPORTED context variable, bound BEFORE the base compiles so
-// the module resolves it. SetParent first so the lazily-built compile module gets
-// the scope chain; the base re-SetParents (idempotent), binds ThisObject and
-// compiles. The bind is the single source for both designer (compile module only —
-// m_binder null) and runtime (binder). Shared by all recorder/document-like objects.
+// the module resolves it. The base re-SetParents (idempotent), binds ThisObject and
+// compiles. The bind is the single source for both designer (a compile chain) and
+// runtime (binder). Shared by all recorder/document-like objects.
 bool ibValueRecordDataObjectRecorderRef::InitializeObject(const ibGuid& copyGuid)
 {
 	ibRuntimeModuleDataObject::SetParent(ibSession::EditModuleManagerFor(m_metaObject->GetMetaData()));

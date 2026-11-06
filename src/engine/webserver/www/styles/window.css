@@ -490,7 +490,7 @@ oes-homepage {
 	height: 12px;
 	border-radius: 50%;
 	background: var(--oes-message-information);
-	color: #fff;
+	color: var(--oes-on-colour);
 	font: 700 9px/12px var(--oes-font-ui);
 	text-align: center;
 	transform: translateY(1px);
@@ -562,7 +562,7 @@ oes-homepage {
 	padding: 0.375rem 1rem;
 	border-radius: 0 0 6px 6px;
 	background: var(--oes-message-warning);
-	color: #fff;
+	color: var(--oes-on-colour);
 	font-weight: 600;
 	z-index: 9;
 }
@@ -574,7 +574,7 @@ oes-homepage {
 	place-content: center;
 	gap: 1rem;
 	padding: 1rem;
-	background: rgb(255 255 255 / 0.9);
+	background: var(--oes-veil);
 	text-align: center;
 	z-index: 10;
 }
@@ -591,9 +591,27 @@ wa-dialog.answered-only::part(close-button) {
 	display: none;
 }
 
+/* One of a list or several (the thin client's wxSingleChoiceDialog, wxMultiChoiceDialog): an item a line, its mark before
+   its caption; a long list scrolls inside the dialog. */
 .choice-list {
 	display: grid;
-	gap: 0.25rem;
+	gap: 0.125rem;
+	max-height: 60dvh;
+	overflow: auto;
+}
+
+.choice-list label {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.25rem 0.5rem;
+	border-radius: var(--wa-border-radius-s, 3px);
+	cursor: pointer;
+	user-select: none;
+}
+
+.choice-list label:hover {
+	background: var(--oes-table-row-hover-bg);
 }
 
 /* A popup menu the server asks — where the person pressed; a submenu opens in place, indented. */
@@ -609,7 +627,7 @@ wa-dialog.answered-only::part(close-button) {
 	color: var(--oes-text);
 	border: 1px solid var(--oes-border);
 	border-radius: 6px;
-	box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+	box-shadow: 0 4px 16px var(--oes-shadow-strong);
 	font: 0.875rem var(--oes-font-ui);
 }
 
@@ -671,6 +689,25 @@ wa-dialog.answered-only::part(close-button) {
 	padding-left: 2.25rem;
 }
 
+/* A quick choice — a menu's items dropped under the field pressed, the one the field holds marked. */
+.quick-choice {
+	min-width: 0;
+	max-height: min(80dvh, calc(var(--oes-touch) * 8 + 0.5rem));
+}
+
+.quick-choice button {
+	padding-left: 0.75rem;
+}
+
+.quick-choice button.selected {
+	font-weight: 600;
+}
+
+.quick-choice button:focus-visible {
+	outline: none;
+	background: var(--oes-table-row-hover-bg);
+}
+
 /* A number's calculator and a date's calendar — dropped under the field pressed, the keys a finger's size. */
 .simple-choice {
 	position: fixed;
@@ -681,7 +718,7 @@ wa-dialog.answered-only::part(close-button) {
 	color: var(--oes-text);
 	border: 1px solid var(--oes-border);
 	border-radius: 6px;
-	box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+	box-shadow: 0 4px 16px var(--oes-shadow-strong);
 	font: 0.875rem var(--oes-font-ui);
 }
 
@@ -745,6 +782,13 @@ wa-dialog.answered-only::part(close-button) {
 }
 
 /* About: the platform and its build centred over the blocks, as the thin client's window. */
+/* Tools → Theme...: the three, one under the other. */
+.themes {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
 .about {
 	--width: 30rem;
 }

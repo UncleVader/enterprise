@@ -249,7 +249,7 @@ bool ibValueModelTable::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue,
 	case enFindRows: {
 		// ConvertToValue, not ConvertToType: it CHECKS what the argument is (a string handed in by mistake is
 		// answered with the message below), where the raw cast has no way to say "not one of these".
-		ibValueContainer* filter = nullptr;
+		ibValueMap* filter = nullptr;
 		if (paParams[0] == nullptr || !paParams[0]->ConvertToValue(filter))
 			ibBackendCoreException::Error(_("FindRows expects a Structure of column = value"));
 		pvarRetValue = FindRows(*filter);
@@ -446,12 +446,12 @@ bool ibValueModelTable::ibValueModelTableColumnCollection::CallAsFunc(const long
 	{
 	case enAddColumn:
 	{
-		// ⚠ NO TYPE GIVEN MEANS NO TYPE. `AddColumn("A")` used to build a string column, so a number
+		// ⚠ NO TYPE GIVEN MEANS ANY. `AddColumn("A")` used to build a string column, so a number
 		// written into the cell came back as text, and a filter compared it as text. A table built
 		// that way — the usual way in ported code — then stringified every number and date.
 		//
-		// An omitted type, and Undefined passed as the type, name nothing: the cell keeps the value
-		// that was written. A caller who wants the old text comparison passes
+		// An omitted type, and Undefined passed as the type, name none, and the column is its own default,
+		// Any: the cell keeps the value that was written. A caller who wants the old text comparison passes
 		// `TypeDescription("String")`. A type that is neither a Type nor a TypeDescription still
 		// refuses, as it did.
 		ibTypeDescription type;
@@ -507,7 +507,10 @@ ibValueModelTable::ibValueModelTableColumnCollection::ibValueModelTableColumnInf
 	// The property variants ARE the storage (no parallel members) — seed them from the ctor args.
 	m_propertyName->SetValue(colName);
 	m_propertyCaption->SetValue(caption);
-	m_propertyType->SetValue(typeDescription);
+	// A type not given leaves the column's own, Any (m_propertyType): a caller that names none — a script's
+	// AddColumn, a query's output whose type is not certain — gets a column that keeps what is written.
+	if (typeDescription.IsOk())
+		m_propertyType->SetValue(typeDescription);
 }
 
 ibValueModelTable::ibValueModelTableColumnCollection::ibValueModelTableColumnInfo::~ibValueModelTableColumnInfo() {
@@ -664,40 +667,8 @@ long ibValueModelTable::AppendRow(const std::vector<std::pair<ibMetaID, ibValue>
 
 void ibValueModelTable::SortValue(const ibDataViewColumnItem& column, bool ascending)
 {
-	if (!column.IsOk() || ibBackendException::IsEvalMode())
-		return;
-
-	// ⭐⭐ A SORT CHANGES THE DATA — the rows are re-seated, and that is the order the table then IS (Max,
-	// 2026-08-29: moving and sorting change the rows physically; a filter, a grouping or a setting is a layer
-	// ABOVE them and dies with the window). The composer's own sort is dropped again at the end: the rows now
-	// SIT in this order, and a read-order left on top would go on answering over them.
-	//
-	// L5-2 says WHAT the order is — nothing here compares — and the rows are then placed into it with the
-	// storage's own move. Sorting lives on L5, not in a loop.
-	ibDataRamComposer& composer = GetModelComposer();
-	composer.ClearSorts();
-	composer.Sort(column.m_name, ascending);
-	Storage().SetColumns(GetColumnCollection());
-	const std::vector<long> order = composer.ComputeOrder();
-	composer.ClearSorts();
-
-	// The rows in their new sequence, taken BEFORE anything moves — every move shifts the indices under it.
-	std::vector<ibComposerNode*> seated;
-	seated.reserve(order.size());
-	for (const long index : order)
-		if (ibComposerNode* node = Storage().GetNode(index))
-			seated.push_back(node);
-
-	// ⚠ Rows a FILTER hides are not in the order, so they come to rest AFTER the sorted ones, keeping their
-	// own relative order among themselves. Sorting what is shown cannot avoid saying something about what is not.
-	for (size_t position = 0; position < seated.size(); ++position) {
-		const long current = Storage().IndexOf(seated[position]);
-		if (current >= 0 && current != static_cast<long>(position))
-			Storage().MoveValue(this, seated[position],
-				static_cast<int>(static_cast<long>(position) - current), /*notify*/ false);
-	}
-
-	NotifyReset();
+	if (!ibBackendException::IsEvalMode())
+		SortRows(column, ascending);
 }
 
 // The columns a comma-separated list names, in the order it names them - asked alike by GroupBy and FillValues.
@@ -780,13 +751,13 @@ void ibValueModelTable::GroupBy(const ibString& groupColumns, const ibString& su
 	NotifyReset();   // the new rows' cells were written past the model - see FillValues
 }
 
-ibValue ibValueModelTable::FindRows(const ibValueContainer& filter)
+ibValue ibValueModelTable::FindRows(const ibValueMap& filter)
 {
 	// The filter's columns are resolved FIRST: a name that is not a column is a mistake worth seeing, and
 	// "no rows" would be the wrong way to say it.
 	struct Term { ibMetaID m_id; ibValue m_value; bool m_indexed; };
 	std::vector<Term> terms;
-	for (const auto& entry : filter.Entries()) {
+	for (const auto& entry : filter.Values()) {
 		const ibString name = entry.key.GetString();
 		const ibValueModelColumnCollection::ibValueModelColumnInfo* const colInfo =
 			m_tableColumnCollection != nullptr ? m_tableColumnCollection->GetColumnByName(name) : nullptr;

@@ -188,8 +188,7 @@
     <ClInclude Include="metaCollection\metaCommonAttributeObject.h" />
     <ClInclude Include="metaCollection\metaObjectComposite.h" />
     <ClInclude Include="metaCollection\metaFormObject.h" />
-    <ClInclude Include="metaCollection\metaComposerObject.h" />
-    <ClInclude Include="metaCollection\metaSpreadsheetObject.h" />
+    <ClInclude Include="metaCollection\metaTemplateObject.h" />
     <ClInclude Include="metaCollection\metaModuleObject.h" />
     <ClInclude Include="metaCollection\metaDiff.h" />
     <ClInclude Include="metaCollection\metaGroups.h" />
@@ -294,11 +293,13 @@
     <ClInclude Include="metadataDataProcessor.h" />
     <ClInclude Include="metadataReport.h" />
     <ClInclude Include="moduleInfo.h" />
+    <ClInclude Include="moduleManager\metaObjectCollection.h" />
     <ClInclude Include="moduleManager\moduleManager.h" />
     <ClInclude Include="moduleManager\moduleManagerExt.h" />
     <ClInclude Include="objCtor.h" />
     <ClInclude Include="propertyManager\propertyManager.h" />
     <ClInclude Include="propertyManager\propertyObject.h" />
+    <ClInclude Include="propertyManager\propertyMembers.h" />
     <ClInclude Include="propertyManager\property\eventControl.h" />
     <ClInclude Include="propertyManager\property\eventAction.h" />
     <ClInclude Include="propertyManager\property\propertyBoolean.h" />
@@ -307,7 +308,6 @@
     <ClInclude Include="propertyManager\property\propertyEnum.h" />
     <ClInclude Include="propertyManager\property\propertyFont.h" />
     <ClInclude Include="propertyManager\property\propertyForm.h" />
-    <ClInclude Include="propertyManager\property\propertyComposition.h" />
     <ClInclude Include="propertyManager\property\propertyDataComposition.h" />
     <ClInclude Include="propertyManager\property\propertyDynamicList.h" />
     <ClInclude Include="propertyManager\property\propertyDynamicSource.h" />
@@ -333,7 +333,7 @@
     <ClInclude Include="propertyManager\property\propertySource.h" />
     <ClInclude Include="propertyManager\property\propertyString.h" />
     <ClInclude Include="propertyManager\property\propertyFormat.h" />
-    <ClInclude Include="propertyManager\property\propertySpreadsheet.h" />
+    <ClInclude Include="propertyManager\property\propertyTemplate.h" />
     <ClInclude Include="propertyManager\property\propertyType.h" />
     <ClInclude Include="propertyManager\property\variant\variantAction.h" />
     <ClInclude Include="propertyManager\property\variant\variantComposition.h" />
@@ -351,7 +351,7 @@
     <ClInclude Include="propertyManager\property\variant\variantRecord.h" />
     <ClInclude Include="propertyManager\property\variant\variantCommandSource.h" />
     <ClInclude Include="propertyManager\property\variant\variantSource.h" />
-    <ClInclude Include="propertyManager\property\variant\variantSpreadsheet.h" />
+    <ClInclude Include="propertyManager\property\variant\variantTemplate.h" />
     <ClInclude Include="propertyManager\property\variant\variantTranslate.h" />
     <ClInclude Include="propertyManager\property\variant\variantType.h" />
     <ClInclude Include="roleHelper.h" />
@@ -365,6 +365,7 @@
     <ClInclude Include="system\systemManager.h" />
     <ClInclude Include="system\systemManagerEnum.h" />
     <ClInclude Include="system\value\valueArray.h" />
+    <ClInclude Include="system\value\valueList.h" />
     <ClInclude Include="system\value\valueColour.h" />
     <ClInclude Include="system\value\valueEvent.h" />
     <ClInclude Include="system\value\valueBinaryData.h" />
@@ -379,7 +380,8 @@
     <ClInclude Include="system\value\valueXml.h" />
     <ClInclude Include="system\value\valueJob.h" />
     <ClInclude Include="system\value\valueMap.h" />
-    <ClInclude Include="system\value\valueOLE.h" />
+    <ClInclude Include="system\value\valueCOM.h" />
+    <ClInclude Include="system\value\valueSafeArray.h" />
     <ClInclude Include="system\value\valuePicture.h" />
     <ClInclude Include="system\value\valuePoint.h" />
     <ClInclude Include="system\value\valuePointInTime.h" />
@@ -401,6 +403,7 @@
     <ClInclude Include="utils\dataVersion.hpp" />
     <ClInclude Include="valueInfo.h" />
     <ClInclude Include="value_cast.h" />
+    <ClInclude Include="value_collection.h" />
     <ClInclude Include="value_ptr.h" />
   </ItemGroup>
   <ItemGroup>
@@ -552,12 +555,9 @@
     <ClCompile Include="metaCollection\metaFormObjectMenu.cpp" />
     <ClCompile Include="metaCollection\metaFormObjectProperty.cpp" />
     <ClCompile Include="metaCollection\metaFormObject_res.cpp" />
-    <ClCompile Include="metaCollection\metaComposerObject.cpp" />
-    <ClCompile Include="metaCollection\metaComposerObjectMenu.cpp" />
-    <ClCompile Include="metaCollection\metaComposerObject_res.cpp" />
-    <ClCompile Include="metaCollection\metaSpreadsheetObject.cpp" />
-    <ClCompile Include="metaCollection\metaSpreadsheetObjectMenu.cpp" />
-    <ClCompile Include="metaCollection\metaSpreadsheetObject_res.cpp" />
+    <ClCompile Include="metaCollection\metaTemplateObject.cpp" />
+    <ClCompile Include="metaCollection\metaTemplateObjectMenu.cpp" />
+    <ClCompile Include="metaCollection\metaTemplateObject_res.cpp" />
     <ClCompile Include="metaCollection\metaSectionObject.cpp" />
     <ClCompile Include="metaCollection\metaCommandObject.cpp" />
     <ClCompile Include="metaCollection\metaCommandObjectMenu.cpp" />
@@ -650,6 +650,7 @@
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadata.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadataMenu.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadataProperty.cpp" />
+    <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadataSchema.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadata_res.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesObject.cpp" />
     <ClCompile Include="metaCollection\partial\calculationRegisterRecalculationMetadata.cpp" />
@@ -683,6 +684,7 @@
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadata.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadataMenu.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadataProperty.cpp" />
+    <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadataSchema.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadata_res.cpp" />
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesObject.cpp" />
     <ClCompile Include="metaCollection\partial\constantManager.cpp" />
@@ -764,6 +766,7 @@
     <ClCompile Include="metaCollection\partial\commonObjectModel.cpp" />
     <ClCompile Include="metaCollection\partial\commonObjectProperty.cpp" />
     <ClCompile Include="metaCollection\partial\commonObjectMetaQuery.cpp" />
+    <ClCompile Include="metaCollection\partial\commonObjectPredefined.cpp" />
     <ClCompile Include="metaCollection\partial\commonObjectSchema.cpp" />
     <ClCompile Include="metaCollection\partial\commonObjectRefQuery.cpp" />
     <ClCompile Include="metaCollection\partial\commonObjectManagerQuery.cpp" />
@@ -790,6 +793,7 @@
     <ClCompile Include="metadataReport.cpp" />
     <ClCompile Include="metadataReportFactory.cpp" />
     <ClCompile Include="moduleInfo.cpp" />
+    <ClCompile Include="moduleManager\metaObjectCollection.cpp" />
     <ClCompile Include="moduleManager\moduleManager.cpp" />
     <ClCompile Include="moduleManager\moduleManagerEvent.cpp" />
     <ClCompile Include="moduleManager\moduleManagerExt.cpp" />
@@ -808,7 +812,6 @@
     <ClCompile Include="propertyManager\property\propertyEnum.cpp" />
     <ClCompile Include="propertyManager\property\propertyFont.cpp" />
     <ClCompile Include="propertyManager\property\propertyForm.cpp" />
-    <ClCompile Include="propertyManager\property\propertyComposition.cpp" />
     <ClCompile Include="propertyManager\property\propertyDataComposition.cpp" />
     <ClCompile Include="propertyManager\property\propertyDynamicList.cpp" />
     <ClCompile Include="propertyManager\property\propertyDynamicSource.cpp" />
@@ -834,7 +837,7 @@
     <ClCompile Include="propertyManager\property\propertySource.cpp" />
     <ClCompile Include="propertyManager\property\propertyString.cpp" />
     <ClCompile Include="propertyManager\property\propertyStringExt.cpp" />
-    <ClCompile Include="propertyManager\property\propertySpreadsheet.cpp" />
+    <ClCompile Include="propertyManager\property\propertyTemplate.cpp" />
     <ClCompile Include="propertyManager\property\propertyType.cpp" />
     <ClCompile Include="propertyManager\property\variant\variantAction.cpp" />
     <ClCompile Include="propertyManager\property\variant\variantDynamicSource.cpp" />
@@ -851,7 +854,7 @@
     <ClCompile Include="propertyManager\property\variant\variantSize.cpp" />
     <ClCompile Include="propertyManager\property\variant\variantRecord.cpp" />
     <ClCompile Include="propertyManager\property\variant\variantSource.cpp" />
-    <ClCompile Include="propertyManager\property\variant\variantSpreadsheet.cpp" />
+    <ClCompile Include="propertyManager\property\variant\variantTemplate.cpp" />
     <ClCompile Include="propertyManager\property\variant\variantType.cpp" />
     <ClCompile Include="roleHelper.cpp" />
     <ClCompile Include="interfaceHelper.cpp" />
@@ -861,6 +864,7 @@
     <ClCompile Include="system\systemManagerEnum.cpp" />
     <ClCompile Include="system\systemManagerFunc.cpp" />
     <ClCompile Include="system\value\valueArray.cpp" />
+    <ClCompile Include="system\value\valueList.cpp" />
     <ClCompile Include="system\value\valueColour.cpp" />
     <ClCompile Include="system\value\valueDatabasePrepareStatement.cpp" />
     <ClCompile Include="system\value\valueDatabaseResultSet.cpp" />
@@ -877,7 +881,8 @@
     <ClCompile Include="system\value\valueXml.cpp" />
     <ClCompile Include="system\value\valueJob.cpp" />
     <ClCompile Include="system\value\valueMap.cpp" />
-    <ClCompile Include="system\value\valueOLE.cpp" />
+    <ClCompile Include="system\value\valueCOM.cpp" />
+    <ClCompile Include="system\value\valueSafeArray.cpp" />
     <ClCompile Include="system\value\valuePicture.cpp" />
     <ClCompile Include="system\value\valuePoint.cpp" />
     <ClCompile Include="system\value\valuePointInTime.cpp" />
@@ -903,6 +908,7 @@
     <ClCompile Include="utils\passwordHash.cpp" />
     <ClCompile Include="utils\dataVersion.cpp" />
     <ClCompile Include="value_cast.cpp" />
+    <ClCompile Include="value_collection.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="databaseLayer\postgres\engine\dll\libcrypto-3-x64.dll">

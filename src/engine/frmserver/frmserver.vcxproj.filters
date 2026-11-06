@@ -322,6 +322,9 @@
     <ClCompile Include="schema\about.cpp">
       <Filter>schema</Filter>
     </ClCompile>
+    <ClCompile Include="schema\style.cpp">
+      <Filter>schema</Filter>
+    </ClCompile>
     <ClCompile Include="schema\activeUser.cpp">
       <Filter>schema</Filter>
     </ClCompile>
@@ -403,7 +406,7 @@
     <ClCompile Include="win\dlgs\formEditor.cpp">
       <Filter>win\dlgs</Filter>
     </ClCompile>
-    <ClCompile Include="win\dlgs\formSelector.cpp">
+    <ClCompile Include="win\dlgs\kindSelector.cpp">
       <Filter>win\dlgs</Filter>
     </ClCompile>
     <ClCompile Include="win\dlgs\generation.cpp">
@@ -440,6 +443,9 @@
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\buttonEvent.cpp">
+      <Filter>visualView\ctrl</Filter>
+    </ClCompile>
+    <ClCompile Include="visualView\ctrl\buttonProperty.cpp">
       <Filter>visualView\ctrl</Filter>
     </ClCompile>
     <ClCompile Include="visualView\ctrl\button_res.cpp">
@@ -811,6 +817,9 @@
     <ClInclude Include="schema\about.h">
       <Filter>schema</Filter>
     </ClInclude>
+    <ClInclude Include="schema\style.h">
+      <Filter>schema</Filter>
+    </ClInclude>
     <ClInclude Include="schema\activeUser.h">
       <Filter>schema</Filter>
     </ClInclude>
@@ -895,7 +904,7 @@
     <ClInclude Include="win\dlgs\formEditor.h">
       <Filter>win\dlgs</Filter>
     </ClInclude>
-    <ClInclude Include="win\dlgs\formSelector.h">
+    <ClInclude Include="win\dlgs\kindSelector.h">
       <Filter>win\dlgs</Filter>
     </ClInclude>
     <ClInclude Include="win\dlgs\generation.h">

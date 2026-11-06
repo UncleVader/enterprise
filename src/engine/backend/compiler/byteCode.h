@@ -275,14 +275,16 @@ struct ibByteCode {
 		// helpers (IsContextMethod / IsExport).
 		ibFnKind  m_kind         = ibFnKind::Local;
 
-		// Closure capture — true when this function contains at least
-		// one inner lambda (any nesting depth). Set on the compile-side
-		// ibFunction during lambda body parse, mirrored here at compile
-		// finalize. At Phase B runtime drives heap-allocation of the
-		// frame on function entry so escaping lambdas can hold a
-		// shared_ptr to it; until Phase B lands, the field is a no-op
-		// marker (Phase A is compile-only).
-		bool      m_needsHeapFrame = false;
+		// ⭐⭐ THE VARIABLES A LAMBDA TAKES — (depth, slot) as the body addresses them, sorted by depth,
+		// each once:
+		//   - depth 0 — this function's own variables a lambda inside it references: the frame makes
+		//     them cells on entry (ibRunContext::Enter);
+		//   - depth 1 and further — for a lambda, the outer variables it takes: the ones it references,
+		//     and the ones a lambda inside it does, which is made while this one runs and takes them out
+		//     of what this one took (OPER_LFUNC, ibRunCaptureContext).
+		// Filled by the compiler's GetVariable. Until 2026-11-03 this was `m_needsHeapFrame`: the frame
+		// was built on the heap and a lambda took it whole, with every variable in it.
+		std::vector<ibParamRunUnit> m_listCaptured;
 
 		// `Cached` — the result is kept per argument tuple, on the ProcUnit
 		// that owns this function. THE LIFETIME IS OWNERSHIP, not a clock:
@@ -298,7 +300,7 @@ struct ibByteCode {
 		// this says otherwise (compileCode.cpp's two arity checks read it).
 		//
 		// ⚠ THE THIRD FLAG ON THIS RECORD TO BE FORGOTTEN BY THE RECONSTRUCTION PATH,
-		// after m_needsHeapFrame and m_valueCached above — and the symptom is the
+		// after m_needsHeapFrame (now m_listCaptured) and m_valueCached above — and the symptom is the
 		// same shape every time: the compile-context registration set it, the
 		// bytecode did not carry it, and everything worked until a build resolved
 		// the name through bytecode instead. Here that made `Max(3, 9)` answer
@@ -380,7 +382,7 @@ struct ibByteCode {
 			  m_lVarCount(src.m_lVarCount),
 			  m_returnClsid(src.m_clsid),
 			  m_kind(src.m_kind),
-			  m_needsHeapFrame(src.m_needsHeapFrame),
+			  m_listCaptured(src.m_listCaptured),
 			  m_valueCached(src.m_valueCached),
 			  m_valueVariadic(src.m_valueVariadic),
 			  m_strRealName(src.m_strRealName),
@@ -456,7 +458,7 @@ public:
 	// in a parent walk, so scoped bindings (ThisForm / ThisObject) are
 	// reachable iff they live on a real ancestor — exactly the legit
 	// case. Cross-entity isolation through value chain access
-	// (`Catalogs.X.CreateElement().ThisObject`) is enforced at the
+	// (`Catalogs.X.CreateItem().ThisObject`) is enforced at the
 	// runtime OPER_GET_A handler / autocomplete / debugger, each of which asks
 	// the VALUE through IsPropScoped - NOT here, and not from a copy on the
 	// variable: that copy existed, rode into the AOT blob, and was read by no one.
@@ -624,17 +626,17 @@ public:
 	// ----------------------------------------------------------------
 	// Process-wide bytecode registry — keyed by descriptor GUID
 	// (m_id). Populated by ibRuntimeModuleDataObject::Compile after
-	// every successful compile or cache load; cleared by descriptor
-	// teardown. Lookup is shared-locked, mutation is unique-locked.
+	// every successful compile or cache load; cleared by Reset and by
+	// descriptor teardown. Lookup is shared-locked, mutation is unique-locked.
 	//
 	// Used by ResolveAndVerifyDependencies (below) to walk
 	// m_dependencyIds and reach the live target ibByteCode for each
 	// dep, then verify the snapshotted m_dependencyVersions still
 	// matches the dep's current m_version.
 	// ----------------------------------------------------------------
-	static void Register(ibByteCode* bc);
+	BACKEND_API static void Register(ibByteCode* bc);
 	static void Unregister(const ibGuid& descId);
-	static ibByteCode* Find(const ibGuid& descId);
+	BACKEND_API static ibByteCode* Find(const ibGuid& descId);
 
 	// Walk m_dependencyIds, look each up via Find, populate
 	// m_dependencies with live pointers, and verify
@@ -644,25 +646,7 @@ public:
 	// graph moved underneath) and recompiles from source.
 	bool ResolveAndVerifyDependencies();
 
-	void Reset() {
-		m_id = ibGuid();
-		m_descriptorClsid = 0;
-		m_lStartModule = 0;
-		m_lVarCount = 0;
-		m_strModuleName = ibEmptyString;
-		m_bCompile = false;
-		m_bExpressionOnly = false;
-		m_parent = nullptr;
-		m_listCode.clear();
-		m_listConst.clear();
-		m_listVar.clear();
-		m_listFunc.clear();
-		m_dependencies.clear();
-		m_dependencyIds.clear();
-		m_dependencyVersions.clear();
-		m_version = ibGuid();
-		m_numCaretInstruction = -1;
-	}
+	BACKEND_API void Reset();
 
 	//Attributes:
 
@@ -839,6 +823,11 @@ public:
 	// m_parentRef (index into this vector, populated at compile
 	// finalize).
 	std::vector<ibByteCodeVarInfo> m_listVar;
+	// An eval block's variables a lambda in it references — depth-0 entries, as
+	// ibByteFunction::m_listCaptured has them: the block's frame has no function to
+	// carry them, and makes them cells when it is built (ibProcUnit::Evaluate). A
+	// module leaves it empty: its frame outlives every lambda made in it.
+	std::vector<ibParamRunUnit>    m_listCaptured;
 	// Unified function table — m_kind discriminates {Local, Export,
 	// ContextMethod}. Replaces the historical trio
 	// m_listFunc / m_listExportFunc / m_listContextFunc. Storage is a

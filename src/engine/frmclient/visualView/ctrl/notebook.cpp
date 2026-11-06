@@ -8,7 +8,7 @@
 #include "frmclient/visualView/pageWindow.h"
 #include "frmclient/visualView/visualHostClient.h"   // a designer's host selects and moves by it
 #include "frmclient/win/picture.h"
-#include "frmclient/win/theme/luna_tabart.h"
+#include "gui/univ/theme/luna_tabart.h"
 
 namespace {
 
@@ -209,3 +209,6 @@ ibValueNotebook* ibValueNotebookPage::GetNotebook() const
 {
 	return dynamic_cast<ibValueNotebook*>(GetParent());
 }
+
+CONTROL_REGISTER(ibValueNotebook, ibProtocol::ibForm::ibType::Notebook)
+CONTROL_REGISTER(ibValueNotebookPage, ibProtocol::ibForm::ibType::NotebookPage)

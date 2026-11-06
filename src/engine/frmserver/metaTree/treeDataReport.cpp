@@ -1,12 +1,12 @@
 #include "treeDataReport.h"
 
-#include "backend/metaCollection/metaComposerObject.h"   // the report's composers, as rows
 #include "backend/backend_picture.h"                     // ibBackendPicture::SendPicture — the root's picture, by its id
 #include "core/serialize/dataBuilder.h"
 
 #include "frmserver/client/clientFrame.h"
 #include "frmserver/client/propertyInspector.h"   // the header's rows
 #include "frmserver/docView/docView.h"            // the file's document — its title
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibSchema::ibMetaData
 
 ibDataReportTree::ibDataReportTree(ibClientFrame* frame, ibMetaDocument* docParent)
 	: ibMetaTreeBase(frame), m_docParent(docParent)
@@ -38,8 +38,8 @@ void ibDataReportTree::OnDraw(ibDataNode& root)
 		FillData(root);
 }
 
-// THE DESKTOP'S GROUPS, IN ITS ORDER — a report is a data processor plus its composers, LAST, exactly as in the
-// configuration's tree (ibConfigurationTree::AddReportItem): one report, one order, wherever it is opened from.
+// THE DESKTOP'S GROUPS, IN ITS ORDER — a report is a data processor, its composers among its templates, exactly as in
+// the configuration's tree (ibConfigurationTree::AddDataProcessorItem): one report, one order, wherever it is opened from.
 void ibDataReportTree::FillData(ibDataNode& root)
 {
 	ibValueMetaObjectReport* commonMetadata = m_metaData->GetReport();
@@ -82,7 +82,7 @@ void ibDataReportTree::FillData(ibDataNode& root)
 	// forms
 	ibDataNode& forms = AppendGroupItem(root, g_metaFormCLSID, _("Forms"));
 	for (auto metaForm : commonMetadata->GetFormArrayObject()) {
-		if (metaForm->IsDeleted() || metaForm == m_askedForm)   // gone, or not made yet: its kind is being asked
+		if (metaForm->IsDeleted() || metaForm == m_askedObject)   // gone, or not made yet: its kind is being asked
 			continue;
 		AppendItem(forms, metaForm);
 	}
@@ -92,19 +92,11 @@ void ibDataReportTree::FillData(ibDataNode& root)
 	for (auto metaCommand : commonMetadata->GetCommandArrayObject())
 		AppendCommandNode(commands, metaCommand);
 
-	// templates
+	// templates — a spreadsheet's and a composer's alike
 	ibDataNode& templates = AppendGroupItem(root, g_metaTemplateCLSID, _("Templates"));
 	for (auto metaTemplates : commonMetadata->GetTemplateArrayObject()) {
-		if (metaTemplates->IsDeleted())
+		if (metaTemplates->IsDeleted() || metaTemplates == m_askedObject)   // gone, or not made yet: its kind is being asked
 			continue;
 		AppendItem(templates, metaTemplates);
-	}
-
-	// composers
-	ibDataNode& composers = AppendGroupItem(root, g_metaComposerCLSID, _("Composers"));
-	for (auto metaComposer : commonMetadata->GetComposerArrayObject()) {
-		if (metaComposer->IsDeleted())
-			continue;
-		AppendItem(composers, metaComposer);
 	}
 }

@@ -1,6 +1,7 @@
 #include "docViewModuleEditor.h"
 #include "frmclient/mainFrame/mainFrame.h"
 #include "designer-thin/win/editor/codeEditor/codeEditorDesigner.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibModule
 
 enum {
 	wxID_ADD_COMMENTS = wxID_HIGHEST + 10000,
@@ -199,7 +200,15 @@ bool ibModuleEditDocument::Save()
 	ibCodeEditor* codeEditor = GetCodeEditor();
 	if (codeEditor != nullptr)
 		codeEditor->SaveModule();
-	return ibTabDocument::Save();
+	return m_documentParent != nullptr ? m_documentParent->Save() : ibTabDocument::Save();
+}
+
+bool ibModuleEditDocument::SaveAs()
+{
+	ibCodeEditor* codeEditor = GetCodeEditor();
+	if (codeEditor != nullptr)
+		codeEditor->SaveModule();
+	return m_documentParent != nullptr ? m_documentParent->SaveAs() : ibTabDocument::SaveAs();
 }
 
 void ibModuleEditDocument::DrawView(const ibProtocolNode& view, const ibProtocolNode& patch)
@@ -268,3 +277,5 @@ ibFrontendView* ibModuleEditDocument::DoCreateView()
 {
 	return new ibModuleEditView();
 }
+
+TAB_DOCUMENT_REGISTER(ibModuleEditDocument, ibProtocol::ibView::ibKind::Module)

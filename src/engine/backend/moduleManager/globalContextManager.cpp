@@ -4,56 +4,56 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "globalContextManager.h"
-#include "backend/system/value/valueMap.h"
 #include "backend/system/value/valueJob.h"   // ScheduledJobs.Predefined — the collection, its row and the schedule
+#include "backend/system/value/valueBackgroundJob.h"   // BackgroundJobs
 
 
 #include "backend/objCtor.h"
+#include "metaObjectCollection.h"
 
-constexpr ibClassID g_valueGlobalContextStructureManagerCLSID = system_to_clsid("MG_SYAM");
+constexpr ibClassID g_valueManagerCollectionCLSID = system_to_clsid("MG_SYAM");
 
-class ibValueGlobalContextStructureManager : public ibValueStructure {
-	public:
+// Catalogs, Documents, … — the MANAGERS of one metatype, one per object that has one (metaObjectCollection.h).
+class ibValueManagerCollection : public ibValueMetaObjectCollection {
+public:
 
-	// Its own id — the structure it derives from answers with the structure's (valueMap.h). Not
-	// m_clsid below: that is the kind of metadata it manages.
-	virtual ibClassID GetClassType() const override { return g_valueGlobalContextStructureManagerCLSID; }
-
-	ibValueGlobalContextStructureManager() : m_metaData(nullptr), m_clsid(0) {}
-	ibValueGlobalContextStructureManager(const ibClassID& clsid, ibMetaData* metaData)
-		: ibValueStructure(true), m_metaData(metaData), m_clsid(clsid) {
-
-		for (const auto object : m_metaData->GetAnyArrayObject(clsid)) {
-			ibCtorMetaValueType* so = m_metaData->GetTypeCtor(object, ibCtorObjectMetaType::ibCtorObjectMetaType_Manager);
-			if (so == nullptr)
-				continue;
-			const ibValue createdValue = so->CreateObject();
-			// TWO OBJECTS MAY SHARE A NAME while a configuration is being edited (it is refused only when
-			// saved), so a repeated name is put, not inserted: one of them holds it, and which does not matter.
-			ibValueStructure::SetAt(object->GetName(), createdValue);
-		}
+	ibValueManagerCollection() : ibValueMetaObjectCollection(nullptr), m_clsid(0) {}
+	ibValueManagerCollection(const ibClassID& clsid, ibMetaData* metaData)
+		: ibValueMetaObjectCollection(metaData), m_clsid(clsid) {
+		for (const auto object : m_metaData->GetAnyArrayObject(clsid))
+			if (m_metaData->GetTypeCtor(object, ibCtorObjectMetaType::ibCtorObjectMetaType_Manager) != nullptr)
+				m_listValue.push_back(object);
 	}
 
-	virtual ibString GetClassName() const {
-		ibCtorAbstractType* so = m_metaData->GetAvailableCtor(m_clsid);
+	// Its own id, not the registry's. Not m_clsid below: that is the kind of metadata it manages.
+	virtual ibClassID GetClassType() const override { return g_valueManagerCollectionCLSID; }
+
+	virtual ibString GetClassName() const override {
+		ibCtorAbstractType* so = m_metaData != nullptr ? m_metaData->GetAvailableCtor(m_clsid) : nullptr;
 		if (so != nullptr)
 			return so->GetClassName() + ibT("Manager");
-		return ibValueStructure::GetClassName();
+		return ibValueMetaObjectCollection::GetClassName();
 	}
 
-	virtual ibString GetString() const {
-		ibCtorAbstractType* so = m_metaData->GetAvailableCtor(m_clsid);
+	virtual ibString GetString() const override {
+		ibCtorAbstractType* so = m_metaData != nullptr ? m_metaData->GetAvailableCtor(m_clsid) : nullptr;
 		if (so != nullptr)
 			return so->GetClassName() + ibT("Manager");
-		return ibValueStructure::GetString();
+		return ibValueMetaObjectCollection::GetString();
+	}
+
+protected:
+
+	// The object's manager, made for the asking; an empty element — the editor's sample of a walk — has none.
+	virtual ibValue ElementValue(ibValueMetaObject* const& object) const override {
+		ibCtorMetaValueType* const so = object != nullptr
+			? m_metaData->GetTypeCtor(object, ibCtorObjectMetaType::ibCtorObjectMetaType_Manager) : nullptr;
+		return so != nullptr ? so->CreateObject() : ibValue();
 	}
 
 private:
 
-	ibMetaData* m_metaData;
-
 	ibClassID m_clsid;
-
 };
 
 
@@ -71,24 +71,48 @@ private:
 // would put the platform's own member and a configuration's job in one namespace, where the first
 // job called Predefined shadows the way to reach every other one. Naming both sides also says
 // which kind one is looking at, which is the question a reader of the script actually has.
-class ibValueScheduledJobsManager : public ibValueStructure {
-public:
-	ibValueScheduledJobsManager(ibMetaData* metaData)
-		: ibValueStructure(true)   // read-only: the forks are the platform's, not a caller's map
-	{
-		ibValuePtr<ibValuePredefinedJobs> predefined(new ibValuePredefinedJobs(metaData));
-		ibValueStructure::Insert(ibT("Predefined"), predefined);
+//
+// Two forks and nothing more, so the door is a value with two properties, not a Structure: a structure is a
+// map somebody fills, and counting or walking this one answered about the platform's own members. A fork is
+// made when it is read, as every manager the global context hands out is — Predefined reads the base afresh.
+void ibValueScheduledJobsManager_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
+{
+	helper.AppendProp(ibT("Predefined"));
+	helper.AppendProp(ibT("Parameterized"));
+}
 
-		// The parameterized fork is the SAME parameterised manager every other metatype gets —
-		// handed this metatype's clsid. Nothing about jobs is special on this side, and that is
-		// the point: a job's rows select exactly like a catalog's.
-		ibValuePtr<ibValueGlobalContextStructureManager> parameterized(
-			new ibValueGlobalContextStructureManager(g_metaParameterizedJobCLSID, metaData));
-		ibValueStructure::Insert(ibT("Parameterized"), parameterized);
+class ibValueScheduledJobsManager : public ibValueStaticMembers<&ibValueScheduledJobsManager_BindNames> {
+public:
+	ibValueScheduledJobsManager() : ibValueStaticMembers(ibValueTypes::TYPE_VALUE, true), m_metaData(nullptr) {}
+	explicit ibValueScheduledJobsManager(ibMetaData* metaData)
+		: ibValueStaticMembers(ibValueTypes::TYPE_VALUE, true), m_metaData(metaData) {}
+
+	virtual ibString GetString() const override { return ibT("ScheduledJobsManager"); }
+
+	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override {
+		switch (lPropNum) {
+		case enPredefined:
+			pvarPropVal = new ibValuePredefinedJobs(m_metaData);
+			return true;
+		case enParameterized:
+			// The SAME parameterised manager every other metatype gets — handed this metatype's clsid.
+			// Nothing about jobs is special on this side, and that is the point: a job's rows select
+			// exactly like a catalog's.
+			pvarPropVal = new ibValueManagerCollection(g_metaParameterizedJobCLSID, m_metaData);
+			return true;
+		}
+		return false;
 	}
 
-	virtual ibString GetClassName() const { return ibT("ScheduledJobsManager"); }
-	virtual ibString GetString() const { return ibT("ScheduledJobsManager"); }
+private:
+
+	// In the order the binder appends them.
+	enum Prop {
+		enPredefined,
+		enParameterized,
+	};
+
+	ibMetaData* m_metaData;
 };
 
 enum
@@ -111,7 +135,8 @@ enum
 	enSequences,
 	enScheduledJobs,
 	enSessionParameters,
-	enFunctionalOptions
+	enFunctionalOptions,
+	enBackgroundJobs
 };
 
 void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
@@ -142,6 +167,9 @@ void ibValueGlobalContextManager::FillMembers(ibMemberTable& helper) const
 	// Whether a part of the configuration is used in this base — `FunctionalOptions.<Name>.Get()`. Each
 	// option IS a constant, so the manager a name yields is the constant's own (metaFunctionalOptionObject.h).
 	helper.AppendProp(ibT("FunctionalOptions"));
+	// Work running on its own, found again — `BackgroundJobs.GetBackgroundJobs(…)`, `FindByUUID(…)`; started by
+	// RunBackground. Not metadata: the jobs are the base's, whatever the configuration declares.
+	helper.AppendProp(ibT("BackgroundJobs"));
 }
 
 #include "backend/metaCollection/metaSessionParameterObject.h"   // the metatype AND the value it yields
@@ -153,52 +181,52 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 	switch (lPropNum)
 	{
 	case enConstants:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaConstantCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaConstantCLSID, m_metaData);
 		return true;
 	case enCatalogs:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaCatalogCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaCatalogCLSID, m_metaData);
 		return true;
 	case enDocuments:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaDocumentCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaDocumentCLSID, m_metaData);
 		return true;
 	case enEnumerations:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaEnumerationCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaEnumerationCLSID, m_metaData);
 		return true;
 	case enDataProcessors:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaDataProcessorCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaDataProcessorCLSID, m_metaData);
 		return true;
 	case enExternalDataProcessors:
 		pvarPropVal = new ibValueManagerDataObjectExternalDataProcessor();
 		return true;
 	case enReports:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaReportCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaReportCLSID, m_metaData);
 		return true;
 	case enExternalReports:
 		pvarPropVal = new ibValueManagerDataObjectExternalReport();
 		return true;
 	case enInformationRegisters:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaInformationRegisterCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaInformationRegisterCLSID, m_metaData);
 		return true;
 	case enAccumulationRegisters:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaAccumulationRegisterCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaAccumulationRegisterCLSID, m_metaData);
 		return true;
 	case enChartsOfCharacteristicTypes:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaChartOfCharacteristicTypesCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaChartOfCharacteristicTypesCLSID, m_metaData);
 		return true;
 	case enChartsOfAccounts:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaChartOfAccountsCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaChartOfAccountsCLSID, m_metaData);
 		return true;
 	case enAccountingRegisters:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaAccountingRegisterCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaAccountingRegisterCLSID, m_metaData);
 		return true;
 	case enChartsOfCalculationTypes:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaChartOfCalculationTypesCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaChartOfCalculationTypesCLSID, m_metaData);
 		return true;
 	case enCalculationRegisters:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaCalculationRegisterCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaCalculationRegisterCLSID, m_metaData);
 		return true;
 	case enSequences:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaSequenceCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaSequenceCLSID, m_metaData);
 		return true;
 	case enScheduledJobs:
 		pvarPropVal = new ibValueScheduledJobsManager(m_metaData);
@@ -207,7 +235,10 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 		pvarPropVal = new ibValueSessionParameters(m_metaData);
 		return true;
 	case enFunctionalOptions:
-		pvarPropVal = new ibValueGlobalContextStructureManager(g_metaFunctionalOptionCLSID, m_metaData);
+		pvarPropVal = new ibValueManagerCollection(g_metaFunctionalOptionCLSID, m_metaData);
+		return true;
+	case enBackgroundJobs:
+		pvarPropVal = new ibValueBackgroundJobsManager();
 		return true;
 	}
 
@@ -219,4 +250,5 @@ bool ibValueGlobalContextManager::GetPropVal(const long lPropNum, ibValue& pvarP
 //***********************************************************************
 
 SYSTEM_TYPE_REGISTER(ibValueGlobalContextManager, "GlobalContextManager", system_to_clsid("MG_SYSM"));
-SYSTEM_TYPE_REGISTER(ibValueGlobalContextStructureManager, "GlobalContextStructureManager", g_valueGlobalContextStructureManagerCLSID);
+SYSTEM_TYPE_REGISTER(ibValueManagerCollection, "ManagerCollection", g_valueManagerCollectionCLSID);
+SYSTEM_TYPE_REGISTER(ibValueScheduledJobsManager, "ScheduledJobsManager", system_to_clsid("MG_SCJOB"));

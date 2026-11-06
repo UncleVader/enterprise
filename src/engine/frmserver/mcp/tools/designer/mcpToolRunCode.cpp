@@ -93,6 +93,7 @@
 #include "backend/session/workerPool.h"       // …on the thread that owns what it is checked against
 #include "backend/metadataConfiguration.h"    // activeMetaData - whose configuration it checks against
 #include "backend/system/systemEnum.h"        // ibStatusMessage - the level of what the code said
+#include "backend/job/jobManager.h"           // ibJobManager::kKeptBackgroundJobs - how many ended runs are answered for
 
 namespace {
 
@@ -194,7 +195,11 @@ const ibArg& ArgSession()
 			  "the person's own Active Users if they want to stop it themselves.\n"
 			  "It names a run in the APPLICATION, not in this conversation - so it still answers "
 			  "after a reconnect, and a run somebody else started can be asked after with theirs. It "
-			  "dies when the application does."),
+			  "dies when the application does.\n"
+			  "AN ENDED RUN IS ANSWERED FOR A WHILE, NOT FOR EVER: the application keeps the runs that are "
+			  "going and the last ") + ibString::Format(ibT("%zu"), ibJobManager::kKeptBackgroundJobs)
+			+ ibMcpText(" that ended (its policy on ended runs). One that dropped out of them answers as unknown, "
+			  "the way a run that never existed does - its journal lines, read by the same session id, stay."),
 		/*required*/ true);
 	return s_a;
 }
@@ -224,6 +229,13 @@ ibMcpDebugBridge* JobBridge(ibString& refusal)
 		return nullptr;
 	}
 
+	// Asked of the wire, an absent application read as one that "did not answer in time", in milliseconds.
+	if (!bridge->GetStop().m_connected) {
+		refusal = ibMcpText("No application is attached, so there is nothing to run the code in, and a run "
+			"dies with the application it ran in. app_run starts one.");
+		return nullptr;
+	}
+
 	return bridge;
 }
 
@@ -248,13 +260,13 @@ ibMcpDebugBridge* JobBridge(ibString& refusal)
 // sentence this file invents about a failure it did not witness.
 //
 // 🛑 ON THE THREAD THAT OWNS WHAT IT IS CHECKED AGAINST. Before it judges the snippet, ibCheckScript compiles
-// the configuration's module manager — the designer's own, which its code editor uses on the main thread —
-// and this tool runs on an MCP connection's thread (it waits for the application; see NeedsMainThread). Two
+// the configuration's module manager — the designer's own, which its code editor uses as the session's task —
+// and this tool runs on an MCP connection's thread (it waits for the application; see IsSessionTask). Two
 // runs asked at once compiled that one module on two threads: one cleared the bytecode the other was reading,
 // and the designer went down (2026-10-01, a dump with ibByteCode::Reset under ibCheckScript on an httplib
-// worker). So the check is handed to the session's worker — the main loop on the desktop — and waited for;
-// the wait for the APPLICATION that follows stays on this thread, where it has to. Its state is shared, not
-// borrowed from this frame: a check the main thread reaches after we stopped waiting writes into its own.
+// worker). So the check is handed to the session's worker and waited for; the wait for the APPLICATION that
+// follows stays on this thread, where it has to. Its state is shared, not borrowed from this frame: a check the
+// worker reaches after we stopped waiting writes into its own.
 bool CheckCode(const ibString& text, ibString& refusal)
 {
 	struct ibCheckCall {
@@ -362,10 +374,10 @@ public:
 
 	ibString GetName() const override { return ibT("code_run"); }
 
-	// 🛑 NOT ON THE MAIN THREAD — see ibMcpTool::NeedsMainThread. All three of these ask the
-	// application and WAIT, and the answer comes back through the session's worker, which on the
-	// desktop is the main loop. Waiting here is waiting for a message only this thread can deliver.
-	bool NeedsMainThread() const override { return false; }
+	// 🛑 NOT AS THE SESSION'S TASK — see ibMcpTool::IsSessionTask. All three of these ask the
+	// application and WAIT, and the answer comes back through the session's queue: waiting in that
+	// queue is waiting for a task behind this one.
+	bool IsSessionTask() const override { return false; }
 
 	// ⚠ THE PERSON AT THE DESIGNER READS THIS LINE while it happens. It says what is being done to
 	// their base, not what tool is running — it is the sentence they need in order to stop it if it
@@ -710,7 +722,7 @@ public:
 	ibString GetName() const override { return ibT("code_status"); }
 
 	// 🛑 It waits on the wire like the one above — same reason, same answer.
-	bool NeedsMainThread() const override { return false; }
+	bool IsSessionTask() const override { return false; }
 
 	ibString GetActivity(const ibDataNode& /*params*/) const override
 	{
@@ -766,7 +778,7 @@ public:
 	ibString GetName() const override { return ibT("code_cancel"); }
 
 	// 🛑 It waits on the wire like the two above — same reason, same answer.
-	bool NeedsMainThread() const override { return false; }
+	bool IsSessionTask() const override { return false; }
 
 	ibString GetActivity(const ibDataNode& /*params*/) const override
 	{

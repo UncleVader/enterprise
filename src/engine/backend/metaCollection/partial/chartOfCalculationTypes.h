@@ -135,6 +135,10 @@ public:
 	virtual bool OnPropertyChanging(ibProperty* property, const ibVariant& newValue);
 	virtual void OnPropertyChanged(ibProperty* property, const ibVariant& oldValue, const ibVariant& newValue);
 
+	// Declares this chart's tables, and adds to the base's check of its table what a predefined calculation type's
+	// relations must be: each line naming a type its section may name. Body in chartOfCalculationTypesMetadataSchema.cpp.
+	virtual void ContributeTables(class ibSchemaSnapshot& out) const override;
+
 protected:
 
 	//get metadata
@@ -190,7 +194,7 @@ private:
 	// BaseCharts lists. Asked at run, after every chart has registered its reference type, and again
 	// when the list is edited — one method, so the two moments cannot type the sections differently.
 	void TypeBaseAndLeading();
-	std::array<ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>*, 3> GetRelationProperties() const {
+	std::array<ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>*, 3> GetRelationProperties() const {
 		return { m_propertyDisplacingTable, m_propertyBaseTable, m_propertyLeadingTable };
 	}
 
@@ -254,13 +258,13 @@ private:
 
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Predefined tabular sections "Displacing", "Base", "Leading" — one meta class, named by the property.
-	// Created manually because ibPropertyContainer template can't pass args to non-default constructor via wxClassInfo
-	ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyDisplacingTable =
-		ibPropertyObject::CreateProperty<ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Displacing"), _("Displacing calculation types"), _("For each type, the types that displace it: a record of a named type cuts the days it overlaps out of this type's record for the same dimension values (a sick leave out of a salary). Read as it stands - a change applies at once to records already written."));
-	ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyBaseTable =
-		ibPropertyObject::CreateProperty<ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Base"), _("Base calculation types"), _("For each type, the types whose results make up its base: GetBase sums the records of the named types over the base period, the way the base dependence says (a vacation paid from the salary and bonuses before it)."));
-	ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyLeadingTable =
-		ibPropertyObject::CreateProperty<ibPropertyContainer<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Leading"), _("Leading calculation types"), _("For each type, the types whose change makes its records stale: a record of a named type written for the same dimension values and meeting in time marks this type's records for recalculation (in a register that keeps recalculation)."));
+	// Created manually because ibPropertyPredefined template can't pass args to non-default constructor via wxClassInfo
+	ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyDisplacingTable =
+		ibPropertyObject::CreateProperty<ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Displacing"), _("Displacing calculation types"), _("For each type, the types that displace it: a record of a named type cuts the days it overlaps out of this type's record for the same dimension values (a sick leave out of a salary). Read as it stands - a change applies at once to records already written."));
+	ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyBaseTable =
+		ibPropertyObject::CreateProperty<ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Base"), _("Base calculation types"), _("For each type, the types whose results make up its base: GetBase sums the records of the named types over the base period, the way the base dependence says (a vacation paid from the salary and bonuses before it)."));
+	ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>* m_propertyLeadingTable =
+		ibPropertyObject::CreateProperty<ibPropertyPredefined<ibValueMetaObjectCalculationTypeRelationTable>>(m_categoryData, ibT("Leading"), _("Leading calculation types"), _("For each type, the types whose change makes its records stale: a record of a named type written for the same dimension values and meeting in time marks this type's records for recalculation (in a register that keeps recalculation)."));
 
 	ibPropertyCategory* m_categoryForm = ibPropertyObject::CreatePropertyCategory(ibT("PresetValues"), _("Preset values"));
 
@@ -306,6 +310,7 @@ public:
 	virtual bool SetPropVal(const long lPropNum, const ibValue& varPropVal);
 	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal);
 
+	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray);
 
 	//support source data

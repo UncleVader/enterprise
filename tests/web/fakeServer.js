@@ -8,7 +8,7 @@
 	const packet = import('/pub/src/protocol/packet.js');
 
 	// The events (ibEvent::ibKind) and the questions (ibRequest::ibKind) this server knows of.
-	const Event = { Command: 2, Open: 7 };
+	const Event = { Command: 2, Press: 3, Open: 7 };
 	const messageRequest = 1;
 	const viewModeRequest = 7;
 	const viewModeCommand = 700;
@@ -21,6 +21,18 @@
 	// An item's Stretch (wxStretch): it fills its box across.
 	const expand = 0x2000;
 
+	/** The control of that id among the nodes and under them, or undefined. @param {any[]} nodes @param {number} id */
+	function controlOf(nodes, id) {
+		for (const node of nodes) {
+			if (node.ControlId === id)
+				return node;
+			const under = controlOf(node.NodeChildren ?? [], id);
+			if (under !== undefined)
+				return under;
+		}
+		return undefined;
+	}
+
 	class FakeServer {
 		constructor() {
 			this.calls = [];
@@ -28,8 +40,11 @@
 			this.latency = scenario.latency ?? 0;
 			this.fetchLatency = scenario.fetchLatency ?? this.latency;
 			this.loginLatency = scenario.loginLatency ?? this.latency;
+			// A schema's command answered late - a save still on its way.
+			this.commandLatency = scenario.commandLatency ?? this.latency;
 			this.users = scenario.users ?? [];
 			this.password = scenario.password ?? '';
+			this.title = scenario.title ?? 'Test base';
 			/** @type {any[]} the forms open, a tab each */
 			this.tabs = (scenario.tabs ?? []).map((tab, place) => ({ id: place + 1, ...tab }));
 			this.active = this.tabs.length > 0 ? 1 : 0;
@@ -71,11 +86,15 @@
 			const tab = this.tab();
 			return {
 				Frame: ++this.frame,
-				Title: scenario.title ?? 'Test base',
+				Title: this.title,
 				Status: 'Ready',
 				Menu: scenario.menu ?? {},
+				// The schemas this server offers (ibFrame::Schemas): a scenario names them, when one is asked for by its number.
+				...(scenario.schemaKinds !== undefined ? { Schemas: scenario.schemaKinds } : {}),
 				Tabs: { NodeChildren: this.tabs.map((one) => ({ NodeId: one.id, Title: one.title, Locked: one.locked === true,
-					...(one.columns !== undefined ? { Kind: homePageKind } : {}) })) },
+					...(one.columns !== undefined ? { Kind: homePageKind } : {}),
+					// The commands its document takes now (ibTab::Commands): a scenario's tab names them.
+					...(one.commands !== undefined ? { Commands: one.commands } : {}) })) },
 				ActiveTab: this.active,
 				...(tab !== undefined ? { View: this.view(tab) } : {}),
 				...(this.request !== undefined ? { Request: this.request } : {}),
@@ -115,12 +134,15 @@
 			return {
 				NodeType: 'ClientForm', ControlId: tab.id * 100, Key: `form${tab.id}`,
 				State: {},
-				// Laid as a saved form lays them: each control in a sizer's item, the table taking what is left.
-				NodeChildren: [...(tab.fields ?? []).map((field, place) => ({
+				// Laid as a saved form lays them: each control in a sizer's item, the table taking what is left. A tab's
+				// `controls` are nodes as the server writes them, put first as they are.
+				NodeChildren: [...(tab.controls ?? []), ...(tab.fields ?? []).map((field, place) => ({
 					NodeType: 'SizerItem', ControlId: 500 + place, Proportion: 0, Stretch: expand,
 					NodeChildren: [{
 						NodeType: 'Textctrl', ControlId: field.id, ButtonSelect: field.select ?? true, ButtonClear: field.clear ?? true,
 						State: { Caption: field.caption, Text: field.text ?? '' },
+						// A field's own saved properties as the server writes them - its colours, say.
+						...(field.node ?? {}),
 					}],
 				})), {
 					NodeType: 'SizerItem', ControlId: 600, Proportion: 1, Stretch: expand,
@@ -128,6 +150,8 @@
 						NodeType: 'Tablebox', ControlId: table.id ?? 1, Header: true, HeaderHeight: table.headerHeight ?? 1,
 						Footer: table.footer === true, FooterHeight: table.footerHeight ?? 1, FrezeeRow: 0, FrezeeCol: 0,
 						RowSelectionMode: table.selection ?? 1,
+						// The table's own saved properties as the server writes them - its colours, say.
+						...(table.node ?? {}),
 						State: state,
 						NodeChildren: table.columns,
 					}],
@@ -179,6 +203,10 @@
 		}
 
 		handle(method, params) {
+			// A client's call names the Client its login gave: one with none, or another, is refused as frmserver refuses
+			// it (ibClientHost::Call, 401).
+			if (method !== 'users' && method !== 'login' && params.Client !== 'test')
+				throw { code: 401, message: 'no such client' };
 			switch (method) {
 			case 'users':
 				return { Users: this.users };
@@ -197,6 +225,12 @@
 					return this.answerFrame();
 				}
 				return this.closed(params.Tab);
+			case 'command':
+				// On the active tab's document — refused when it does not take the command now, as frmserver refuses it
+				// (ibClientHost::Call, NotNow).
+				if (!(this.tab()?.commands ?? []).includes(params.Command))
+					throw { code: 409, message: 'the active document does not take this command now' };
+				return this.answerFrame();
 			case 'fetch':
 				return this.fetch((this.forms.get(params.Form) ?? this.tab()).table, params.Request);
 			case 'event':
@@ -204,9 +238,14 @@
 			case 'respond':
 				return this.respond(params);
 			case 'schema':
+				// A scenario may have the server refuse a schema's command - the base keeps no settings, say.
+				if (params.Command !== undefined && scenario.schemaRefusal !== undefined)
+					throw { code: 500, message: scenario.schemaRefusal };
 				return scenario.schemas?.[params.Schema] ?? {};
 			case 'picture':
-				return { Pictures: [] };
+				// The scenario's pictures, each its id and its PNG's bytes (an array of numbers in the scenario).
+				return { Pictures: { NodeChildren: (scenario.pictures ?? []).filter((one) => params.Pictures?.includes(String(one.id)))
+					.map((one) => ({ Id: String(one.id), Picture: Uint8Array.from(one.png) })) } };
 			case 'logout':
 				return {};
 			default:
@@ -218,6 +257,10 @@
 			const table = this.tab()?.table;
 			if (params.Event === Event.Command && params.Args?.Id === viewModeCommand)
 				this.request = { Id: this.nextRequest++, Kind: viewModeRequest, Mode: table.viewMode };
+			// A press the scenario answers with a change of that control's State (`onPress`: by the control's id), as a
+			// server whose handler changed what the button says would: the next frame carries it.
+			else if (params.Event === Event.Press && scenario.onPress?.[params.Control] !== undefined)
+				Object.assign(controlOf(this.tab()?.controls ?? [], params.Control)?.State ?? {}, scenario.onPress[params.Control]);
 			else if (table !== undefined && scenario.opens !== undefined && params.Event === Event.Open && params.Args?.Column === undefined)
 				this.tabs.push({ id: this.tabs.length + 1, ...scenario.opens }), this.active = this.tabs.length;
 			return this.answerFrame();
@@ -270,7 +313,14 @@
 				reply = { id: message.id, error: refusal };
 			}
 			const server = window.fake;
-			const wait = message.method === 'fetch' ? server.fetchLatency : message.method === 'login' ? server.loginLatency : server.latency;
+			// A start whose own work changed the frame after it was drawn (`changedAtLogin`: the title it has then): told
+			// at once, the login's answer still on its way — as frmserver tells it (ibClientHost::NotifyChanged).
+			if (message.method === 'login' && reply.result !== undefined && scenario.changedAtLogin !== undefined) {
+				server.title = scenario.changedAtLogin;
+				this.notify('changed');
+			}
+			const wait = message.method === 'fetch' ? server.fetchLatency : message.method === 'login' ? server.loginLatency
+				: message.method === 'schema' && message.params?.Command !== undefined ? server.commandLatency : server.latency;
 			setTimeout(() => this.onmessage?.({ data: encode(reply) }), wait);
 		}
 

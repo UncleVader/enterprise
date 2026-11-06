@@ -8,6 +8,7 @@
 #include "frmclient/docView/tabDocument.h"   // the module's tab — what the text is fetched from and handed back to
 #include "frmclient/mainFrame/objinspect/objinspect.h"   // the inspector — what it shows as it is made, and activated
 #include "res/bitmaps_res.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibModule
 
 #include <wx/artprov.h>
 
@@ -403,6 +404,25 @@ bool ibCodeEditor::SaveModule()
 	}
 
 	return m_document != nullptr;
+}
+
+bool ibCodeEditor::SaveModule(int line, int linesAdded, bool atLineStart)
+{
+	if (m_document == nullptr)
+		return false;
+
+	// MADE NOW, not held as the text alone is: a Change held later took this one's place, its edit with it, and the
+	// breakpoints drawn again right after the edit ask the server where they now are (RefreshBreakpoint).
+	const wxString text = GetText();
+	ibProtocolNode args;
+	args.SetValue(ibProtocol::ibView::ibModule::Text, text)
+		.SetValue(ibProtocol::ibView::ibModule::Line, static_cast<long long>(line))
+		.SetValue(ibProtocol::ibView::ibModule::Offset, static_cast<long long>(linesAdded))
+		.SetValue(ibProtocol::ibView::ibModule::AtLineStart, atLineStart);
+	if (!m_document->Call(ibProtocol::ibEvent::ibKind::Change, args))
+		return false;
+	m_moduleText = text;
+	return true;
 }
 
 void ibCodeEditor::SetCodeStyle(short codeStyle)
@@ -1164,6 +1184,7 @@ void ibCodeEditor::UpdateFoldLevel()
 	if (!m_fp.UpdateFoldLevel(m_tc, GetLineCount(), levels))
 		return;
 
-	for (int line = 1; line < static_cast<int>(levels.size()); line++)
+	// From the FIRST line — a module opening a fold on it (`Procedure OnOpen() {`) folds there too.
+	for (int line = 0; line < static_cast<int>(levels.size()); line++)
 		SetFoldLevel(line, levels[line]);
 }

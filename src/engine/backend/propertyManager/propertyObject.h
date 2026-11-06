@@ -13,8 +13,8 @@ class BACKEND_API ibEventDispatcher;   // backend/eventDispatcher.h — the face
 
 class BACKEND_API ibProperty;
 class BACKEND_API ibEvent;
-class BACKEND_API ibDataNode;   // serialize/dataBuilder.h — universal structure node
-class BACKEND_API ibDataValue;  // serialize/dataBuilder.h — a node value (scalar / Child)
+class ibDataNode;   // serialize/dataBuilder.h — universal structure node
+class ibDataValue;  // serialize/dataBuilder.h — a node value (scalar / Child)
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -31,6 +31,9 @@ template <class T> class ibValuePtr;
 #include "core/description/pictureDescription.h"   // ibPictureDescription — a choice's picture, by its id
 #include "core/propertyChoiceMode.h"               // ibPropertyChoiceMode — how many of the choices are held
 #include "backend/backend_exception.h"   // ibBackendCoreException — a cell that is not what it is asked for raises
+
+#include <concepts>   // std::derived_from — what CreateProperty and CreateEvent make
+#include <initializer_list>   // CreateProperty — a list in braces, taken as it is
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -512,11 +515,17 @@ private:
 class BACKEND_API ibPropertyObject {
 protected:
 
-	template <typename typeProp, typename... Args>
+	template <std::derived_from<ibProperty> typeProp, typename... Args>
 	inline typeProp* CreateProperty(ibPropertyCategory* cat, Args&&... args) {
 		return new typeProp(cat, std::forward<Args>(args)...);
 	}
-	template <typename typeEvent, typename... Args>
+	// …and with a list in braces last - `{ g_valueNumberCLSID }`, the types a holder offers: a braced list deduces no
+	// pack, so it is taken here, as the list it is.
+	template <std::derived_from<ibProperty> typeProp, typename Arg, typename Item>
+	inline typeProp* CreateProperty(ibPropertyCategory* cat, Arg&& arg, std::initializer_list<Item> list) {
+		return new typeProp(cat, std::forward<Arg>(arg), list);
+	}
+	template <std::derived_from<ibEvent> typeEvent, typename... Args>
 	inline typeEvent* CreateEvent(ibPropertyCategory* cat, Args&&... args) {
 		return new typeEvent(cat, std::forward<Args>(args)...);
 	}

@@ -256,6 +256,7 @@ ibClassID ibBackendTypeConfigFactory::GetDefaultTypeByFilter(ibSelectorDataType 
 #include "backend/metaCtor.h"                          // ib_find_meta_any_kind — a metatype's family of a kind
 #include "backend/metaCollection/metaEventHandlerObject.h"   // g_eventSourceKinds — what raises events
 #include "backend/system/value/valueDynamicList.h"     // g_valueDynamicListCLSID
+#include "backend/system/value/valueList.h"            // g_valueListCLSID
 #include "backend/system/value/valueDataComposition.h" // g_valueDataCompositionCLSID
 #include "backend/system/value/valueSpreadsheet.h"     // g_valueSpreadsheetCLSID
 
@@ -306,8 +307,9 @@ void ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType filterDataT
 
 	const bool anyType = filterDataType == ibSelectorDataType::ibSelectorDataType_any;
 
+	// ANY first — every value passes (typeAny.cpp). Not Undefined: that one admits only itself.
 	if (anyType)
-		out.push_back(ibValue::GetIDByVT(ibValueTypes::TYPE_EMPTY));
+		out.push_back(g_valueAnyCLSID);
 
 	// The primitives. A reference shape carries them too: a characteristic may be a number or a
 	// string just as well as a reference to something.
@@ -333,6 +335,7 @@ void ibBackendTypeConfigFactory::GetTypesByFilter(ibSelectorDataType filterDataT
 	// something a configuration declares.
 	if (anyType || filterDataType == ibSelectorDataType::ibSelectorDataType_table) {
 		out.push_back(g_valueTableCLSID);
+		out.push_back(g_valueListCLSID);
 		out.push_back(g_valueDynamicListCLSID);
 		out.push_back(g_valueDataCompositionCLSID);
 		// …and the document a gridbox shows: the control creates the variable, so the variable has to
@@ -445,12 +448,65 @@ const ibBackendSourceColumn* ibBackendTypeSourceFactory::WalkSource(
 	return resolved ? leaf : nullptr;
 }
 
+#include "backend/srcDataObject.h"         // ibSourceDataObject::WalkColumns — the walk the words go through
+#include "backend/backend_exception.h"     // a path that names nothing raises
+
+ibSourceDescription ibBackendTypeSourceFactory::WalkSource(const ibString& path) const
+{
+	// THE HEAD — an attribute the path opens with, by name as a module meets it; else the MAIN one, which is the
+	// form holding its object, so the path's first segment is already a field of it.
+	const ibString first = path.BeforeFirst(ibT('.'));
+	ibBackendFormAttributeValue* head = FindSourceHolder(first);
+	const bool named = head != nullptr;
+	if (head == nullptr) {
+		std::vector<ibBackendFormAttributeValue*> holders;
+		GetSourceList(holders);
+		for (ibBackendFormAttributeValue* holder : holders) {
+			if (holder != nullptr && holder->IsMain()) {
+				head = holder;
+				break;
+			}
+		}
+	}
+	if (head == nullptr)
+		ibBackendCoreException::Error(_("'%s' names no attribute this control can be bound to, and the form has no main "
+			"attribute to start from"), first);
+
+	ibSourceDescription walk(head->GetId());
+	const ibString rest = named ? path.AfterFirst(ibT('.')) : path;
+	if (const ibSourceDataObject* source = head->GetSourceValue()) {
+		std::vector<ibValue> held;
+		source->WalkColumns(rest, named ? head->GetName() : ibString(), walk, held);
+	}
+	else if (!rest.IsEmpty())
+		ibBackendCoreException::Error(_("'%s' holds a value - nothing unfolds from it, so '%s' cannot follow"),
+			head->GetName(), rest.BeforeFirst(ibT('.')));
+
+	// The MAIN head alone is not a binding — it is the form holding the object.
+	if (walk.GetHopCount() < 2 && !named)
+		ibBackendCoreException::Error(_("Nothing to bind to - the path names no field and no attribute"));
+
+	return walk;
+}
+
 ibBackendFormAttributeValue* ibBackendTypeSourceFactory::FindSourceHolder(const ibMetaID& id) const
 {
 	std::vector<ibBackendFormAttributeValue*> holders;
 	GetSourceList(holders);
 	for (ibBackendFormAttributeValue* holder : holders)
 		if (holder != nullptr && id == holder->GetId())
+			return holder;
+	return nullptr;
+}
+
+#include "core/stringUtils.h"
+
+ibBackendFormAttributeValue* ibBackendTypeSourceFactory::FindSourceHolder(const ibString& name) const
+{
+	std::vector<ibBackendFormAttributeValue*> holders;
+	GetSourceList(holders);
+	for (ibBackendFormAttributeValue* holder : holders)
+		if (holder != nullptr && stringUtils::IsSameAs(holder->GetName(), name))
 			return holder;
 	return nullptr;
 }

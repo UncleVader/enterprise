@@ -2,8 +2,9 @@
 
 #include "designer-thin/backend/metaCollection/metaDiff.h"
 #include "frmclient/mainFrame/mainFrame.h"
-#include "frmclient/win/ctrls/dataview/dataview.h"
-#include "frmclient/win/theme/luna_toolbarart.h"
+#include "gui/univ/dataview/dataview.h"
+#include "gui/univ/theme/luna_toolbarart.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibSchema::ibConfigCompare
 
 #include <wx/aui/auibar.h>
 #include <wx/button.h>
@@ -163,10 +164,10 @@ void ibConfigCompareView::BuildLayout(wxWindow* parent)
 	// pattern.
 	m_dataView->AssociateModel(m_compareDoc->GetModel());
 
-	m_dataView->Bind(wxEVT_DATAVIEW_ITEM_COLLAPSING,
+	m_dataView->Bind(ibEVT_DATAVIEW_ITEM_COLLAPSING,
 		&ibConfigCompareView::OnItemCollapsing, this);
 
-	m_dataView->Bind(wxEVT_DATAVIEW_ITEM_VALUE_CHANGED,
+	m_dataView->Bind(ibEVT_DATAVIEW_ITEM_VALUE_CHANGED,
 		[this](ibDataViewEvent& event) {
 			event.Skip();
 			RefreshApplyButtonState();

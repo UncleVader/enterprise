@@ -13,9 +13,12 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
+
 #include "backend/backend_exception.h"
 #include "backend/compiler/compileCode.h"
 #include "backend/compiler/procUnit.h"
+#include "backend/compiler/procUnitLambda.h"   // ibValueFunction — what a lambda took, read off it
 #include "backend/compiler/byteCode.h"
 #include "backend/compiler/value.h"
 #include "backend/system/systemManager.h"   // ibValueSystemFunction — IsNull / ValueIsFilled impls
@@ -26,11 +29,22 @@
 #include "backend/system/value/valueMap.h"  // ibValueStructure, g_valueStructureCLSID
 #include "frmserver/visualView/ctrl/form.h"          // a real form, DataSource bound on it
 #include "frmserver/visualView/ctrl/formAttribute.h" // the attribute cell the bind points at
+#include "frmserver/visualView/ctrl/tableBox.h"     // a table bound to a value table the module added
+#include "backend/system/value/valueType.h"         // ibValueTypeDescription — an attribute's type, as the list reads it
+#include "core/serialize/dataBuilder.h"                // a control's saved node and its state
+#include "frmserver/visualView/controlEnum.h"         // a button's Representation, a tile among it
+#include "protocol/protocol.h"                       // the state a client reads a tile from
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibFormDesigner
 #include "backend/backend_mainFrame.h"               // a frame so the form can be born
 #include "backend/metaCollection/metaModuleObject.h" // a form module, so the bind has somewhere to live
 #include "backend/metadataConfiguration.h"           // the module's file name is asked of its metadata
+#include "backend/metaCollection/metaFormObject.h"  // a common form: what a tile's form is created by
 #include "backend/moduleManager/moduleManager.h"
 #include "backend/system/value/valueDynamicList.h"
+#include "backend/system/value/valueList.h"        // ibValueValueList — a value list is a table source
+#include "backend/system/value/valuePicture.h"     // g_valuePictureCLSID — the type of a value list's picture
+#include "core/picturePredefined.h"
+#include "backend/metaCollection/metaPictureObject.h"  // a configuration's own picture, for PictureLib
 
 #include <wx/init.h>
 #include <wx/log.h>    // wxLogStderr — a wx warning must not become a modal box                        // wxInitializer — wxBase before appData
@@ -46,7 +60,7 @@ namespace {
 // this tree had ever executed one: not a policy, a wall.
 //
 // A real host always has it, so this is the test's job and not the engine's.
-// The same wall stands in front of ibValueContainer (six sites), which is why
+// The same wall stands in front of ibValueMap (six sites), which is why
 // the Structure benchmarks throw.
 //
 // Cost of not knowing this: seven builds spent proving the compiler innocent.
@@ -98,20 +112,13 @@ struct BuiltInRuntime : ::testing::Test {
 	}
 }
 
-// A COMPILER THAT KEEPS ITS PARENT, assembled on the TEST side.
+// A COMPILER THAT TAKES ITS PARENT ON THE WAY IN, assembled on the TEST side.
 //
-// `Compile()` opens with `Reset()`, which clears the bytecode's parent link, so
-// SetParent-then-Compile resolves nothing across the boundary. In the product
-// `ibCompileModule::Compile` re-establishes the link mid-compile from its
-// metaobject; a test has no metaobject, and teaching the base class to remember
-// the parent was tried and reverted (it duplicates the bytecode's declared single
-// source of truth and trades a loud failure for a silent stale one).
-//
-// So the link is re-established here instead, in the one window where it is
-// correct — after Reset, before any name is resolved. This is the same five steps
-// ibCompileCode::Compile(strCode) runs, with SetParent inserted at step two; four
-// of the five are public and CompileModule() is protected, which a subclass may
-// call. Nothing in the compiler changes to make a test work.
+// `Compile()` opens with `Reset()`, which keeps the bytecode's parent link. This
+// is the same five steps ibCompileCode::Compile(strCode) runs, with SetParent
+// inserted at step two; four of the five are public and CompileModule() is
+// protected, which a subclass may call. Nothing in the compiler changes to make a
+// test work.
 class ParentedCompiler : public ibCompileCode {
 public:
 	explicit ParentedCompiler(const ibString& strName)
@@ -1340,13 +1347,13 @@ TEST(RuntimeTest, ArrayInsert_AtEnd_Appends) {
 	EXPECT_EQ(ret.GetInteger(), 123);   // [0,1,2,3]
 }
 
-// A Container round-trips its keys and values (the redesigned vector + hash
+// A Map round-trips its keys and values (the redesigned vector + hash
 // store), preserves insertion order, and overwrites on `[key] = v`.
 TEST(RuntimeTest, ContainerStore_InsertGetOverwriteOrder) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	const ibString src =
 		wxT("Function C() Public\n")
-		wxT("  var m; m = New Container;\n")
+		wxT("  var m; m = New Map;\n")
 		wxT("  m.Insert(\"b\", 2); m.Insert(\"a\", 1);\n")
 		wxT("  var got; m.Property(\"a\", got);\n")
 		wxT("  If got <> 1 Then Return -1; EndIf;\n")
@@ -1745,6 +1752,33 @@ TEST(RuntimeTest, NullAndFilledBuiltins) {
 	EXPECT_FALSE(ibValueSystemFunction::ValueIsFilled(emptyStr));
 }
 
+// The two rounding rules differ on an EXACT half only: Round15as20 sends it away from zero, Round15as10
+// towards it. Past the half both go away — Round15as10 once took 0.4 of the last place off first, and
+// 1.6 came out 1.
+TEST(RuntimeTest, RoundModesDifferOnAnExactHalfOnly) {
+	const auto round = [](const wchar_t* text, int places, ibRoundMode mode) {
+		ibNumber n;
+		EXPECT_TRUE(n.FromString(ibString(text)));
+		return ibValueSystemFunction::Round(ibValue(n), places, mode).ToString().ToStdString();
+	};
+	constexpr ibRoundMode away = ibRoundMode::ibRoundMode_Round15as20, towards = ibRoundMode::ibRoundMode_Round15as10;
+
+	EXPECT_EQ(round(L"1.5", 0, away), "2");
+	EXPECT_EQ(round(L"-1.5", 0, away), "-2");
+	EXPECT_EQ(round(L"1.5", 0, towards), "1");
+	EXPECT_EQ(round(L"-1.5", 0, towards), "-1");
+
+	EXPECT_EQ(round(L"1.6", 0, towards), "2");
+	EXPECT_EQ(round(L"1.51", 0, towards), "2");
+	EXPECT_EQ(round(L"-1.6", 0, towards), "-2");
+	EXPECT_EQ(round(L"1.4", 0, towards), "1");
+
+	EXPECT_EQ(round(L"1250.565", 2, towards), "1250.56");
+	EXPECT_EQ(round(L"1250.565", 2, away), "1250.57");
+	EXPECT_EQ(round(L"1250.566", 2, towards), "1250.57");
+	EXPECT_EQ(round(L"1250.5650001", 2, towards), "1250.57");
+}
+
 // `+=` on a string concatenates (bare OPER_ADD over strings), same as `s = s + ...`.
 TEST(RuntimeTest, CompoundAssignmentStringConcat) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
@@ -1926,11 +1960,207 @@ TEST(RuntimeTest, NewAsAStatementPassesItsArguments) {
 	ibProcUnit pu;
 	EXPECT_TRUE(TryExecute(pu, cc.m_cByteCode));
 }
+
+TEST(RuntimeTest, NewIsReadOnLikeAnyValue) {
+	// What is written after `new Class(…)` - a method, a property, an index - was refused: "Keyword or
+	// identifier expected" (#646). A new object is a value, and the chain after it is the one after a variable.
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc, wxT("var count public; var field public; var inner public; var element public;\n")
+		wxT("count = new Array(3).Count();\n")
+		wxT("field = New Structure(\"A, B\", 1, 2).B;\n")
+		wxT("inner = new Structure(\"A\", new Array(2)).A.Count();\n")
+		wxT("element = new Array(3)[2];")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue val;
+	ASSERT_TRUE(pu.GetPropVal(wxT("count"), val));
+	EXPECT_EQ(val.GetInteger(), 3);
+	ASSERT_TRUE(pu.GetPropVal(wxT("field"), val));
+	EXPECT_EQ(val.GetInteger(), 2);
+	ASSERT_TRUE(pu.GetPropVal(wxT("inner"), val));
+	EXPECT_EQ(val.GetInteger(), 2);
+	ASSERT_TRUE(pu.GetPropVal(wxT("element"), val));
+	EXPECT_EQ(val.GetType(), ibValueTypes::TYPE_EMPTY);
+}
+
+TEST_F(BuiltInRuntime, StrSplitCutsAtEachSeparatorCharacter) {
+	// A line of a "|"-separated export was cut with Find and Mid by hand: there was no StrSplit (#646).
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());   // the global API, as a host binds it
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
+	ASSERT_TRUE(TryCompile(cc, wxT("var fields public; var blank public; var kept public; var mixed public; var whole public; var empty public;\n")
+		wxT("fields = StrSplit(\"2020-01-02|Client 1|5\", \"|\");\n")
+		wxT("blank = StrSplit(\"a||b|\", \"|\");\n")
+		wxT("kept = StrSplit(\"a||b|\", \"|\", false);\n")
+		wxT("mixed = StrSplit(\"a,b;c\", \",;\");\n")
+		wxT("whole = StrSplit(\"abc\", \"|\");\n")
+		wxT("empty = StrSplit(\"\", \"|\", false);")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	const auto parts = [&pu](const ibString& name) {
+		std::vector<ibString> answer;
+		ibValue array;
+		if (!pu.GetPropVal(name, array))
+			return answer;
+		ibValue count;
+		ibValue* noParams[1] = { nullptr };
+		const long countAt = array.FindMethod(wxT("Count"));
+		const long getAt = array.FindMethod(wxT("Get"));
+		if (countAt < 0 || getAt < 0 || !array.CallAsFunc(countAt, count, noParams, 0))
+			return answer;
+		for (int i = 0; i < count.GetInteger(); ++i) {
+			ibValue index{ ibNumber(i) }, part;   // braces: `index(ibNumber(i))` declares a function
+			ibValue* params[1] = { &index };
+			if (array.CallAsFunc(getAt, part, params, 1))
+				answer.push_back(part.GetString());
+		}
+		return answer;
+	};
+	EXPECT_EQ(parts(wxT("fields")), (std::vector<ibString>{ wxT("2020-01-02"), wxT("Client 1"), wxT("5") }));
+	EXPECT_EQ(parts(wxT("blank")), (std::vector<ibString>{ wxT("a"), wxT(""), wxT("b"), wxT("") }));
+	EXPECT_EQ(parts(wxT("kept")), (std::vector<ibString>{ wxT("a"), wxT("b") }));
+	EXPECT_EQ(parts(wxT("mixed")), (std::vector<ibString>{ wxT("a"), wxT("b"), wxT("c") }));
+	EXPECT_EQ(parts(wxT("whole")), (std::vector<ibString>{ wxT("abc") }));
+	EXPECT_TRUE(parts(wxT("empty")).empty());
+}
+
+TEST_F(BuiltInRuntime, FillPropertyValuesCopiesWhatBothSidesHave) {
+	// There was no FillPropertyValues (#300): a ported module filled a structure field by field. With no list it
+	// fills what the source has and the receiver takes; a list names exactly what is filled; exclude leaves out
+	// what it names, found as the source finds a name - whatever its case. Nothing is added to the receiver.
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());   // the global API, as a host binds it
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
+	ASSERT_TRUE(TryCompile(cc, wxT("var all public; var listed public; var excluded public;\n")
+		wxT("var src = New Structure(\"Code, Description, Price\", \"001\", \"Bolt\", 5);\n")
+		wxT("all = New Structure(\"Description, Price, Comment\", \"\", 0, \"kept\");\n")
+		wxT("FillPropertyValues(all, src);\n")
+		wxT("listed = New Structure(\"Description, Price\", \"\", 0);\n")
+		wxT("FillPropertyValues(listed, src, \" Price ,\");\n")
+		wxT("excluded = New Structure(\"Description, Price\", \"\", 0);\n")
+		wxT("FillPropertyValues(excluded, src, , \"price\");")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	const auto field = [&pu](const ibString& name, const ibString& property) {
+		ibValue holder, value;
+		if (pu.GetPropVal(name, holder)) {
+			const long at = holder.FindProp(property);
+			if (at >= 0)
+				holder.GetPropVal(at, value);
+		}
+		return value;
+	};
+	const auto has = [&pu](const ibString& name, const ibString& property) {
+		ibValue holder;
+		return pu.GetPropVal(name, holder) && holder.FindProp(property) >= 0;
+	};
+	EXPECT_EQ(field(wxT("all"), wxT("Description")).GetString(), ibString(wxT("Bolt")));
+	EXPECT_EQ(field(wxT("all"), wxT("Price")).GetInteger(), 5);
+	EXPECT_EQ(field(wxT("all"), wxT("Comment")).GetString(), ibString(wxT("kept")));   // the source has none
+	EXPECT_FALSE(has(wxT("all"), wxT("Code")));                                         // and nothing is added
+	EXPECT_EQ(field(wxT("listed"), wxT("Description")).GetString(), ibString());
+	EXPECT_EQ(field(wxT("listed"), wxT("Price")).GetInteger(), 5);
+	EXPECT_EQ(field(wxT("excluded"), wxT("Description")).GetString(), ibString(wxT("Bolt")));
+	EXPECT_EQ(field(wxT("excluded"), wxT("Price")).GetInteger(), 0);
+
+	// A name the list gives is asked for: one the receiver or the source does not have is refused, as
+	// `receiver.Name = source.Name` would be.
+	for (const ibString text : {
+		wxT("var a = New Structure(\"A\", 1); var b = New Structure(\"B\", 2); FillPropertyValues(b, a, \"A\");"),
+		wxT("var a = New Structure(\"A\", 1); var b = New Structure(\"A\", 2); FillPropertyValues(b, a, \"Z\");") }) {
+		ibCompileCode refused(wxT("test"), wxT("memory"), false);
+		refused.AddContextVariable(wxT("System"), valueSystem, true);
+		ASSERT_TRUE(TryCompile(refused, text)) << text;
+		ibProcUnit run;
+		ibString refusal;
+		EXPECT_FALSE(RunBound(refused, run, refusal)) << text;
+	}
+}
+
+TEST_F(BuiltInRuntime, NumberTakesTheWholeTextOrRefuses) {
+	// Number("234,8") answered 234 and Number("12x") 12, without a word: the parse read the number the text
+	// begins with (#646). What is left over after the number is a refusal, the comma included.
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());   // the global API, as a host binds it
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
+	ASSERT_TRUE(TryCompile(cc, wxT("var point public; var blanks public;\n")
+		wxT("point = Number(\"-1.5e2\");\n")
+		wxT("blanks = Number(\" 42 \");")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue val;
+	ASSERT_TRUE(pu.GetPropVal(wxT("point"), val));
+	EXPECT_EQ(val.GetNumber(), ibNumber(-150));
+	ASSERT_TRUE(pu.GetPropVal(wxT("blanks"), val));
+	EXPECT_EQ(val.GetInteger(), 42);
+
+	for (const ibString text : { wxT("var x; x = Number(\"234,8\");"), wxT("var x; x = Number(\"12x\");"),
+		wxT("var x; x = Number(\"1 234\");") }) {
+		ibCompileCode refused(wxT("test"), wxT("memory"), false);
+		refused.AddContextVariable(wxT("System"), valueSystem, true);
+		ASSERT_TRUE(TryCompile(refused, text)) << text;
+		ibProcUnit run;
+		ibString refusal;
+		EXPECT_FALSE(RunBound(refused, run, refusal)) << text;
+	}
+}
+
+TEST(RuntimeTest, NewAsAStatementIsReadOnToo) {
+	// The statement that starts with `new` takes the same chain: the array is made and added to, nothing kept.
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc, wxT("new Array(2).Add(1);")));
+
+	ibProcUnit pu;
+	EXPECT_TRUE(TryExecute(pu, cc.m_cByteCode));
+}
+
+TEST(RuntimeTest, AFunctionWinsOverAVariableOfItsName) {
+	// Names are read whatever their case, so `before = Before();` had the variable hide the module's function and
+	// the run failed with "value is not a callable function" (#646). The function wins, as a system one already did,
+	// declared above or below the call; a variable no function is named after is still called.
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("Function Before()\n")
+		wxT("  Return 1;\n")
+		wxT("EndFunction\n")
+		wxT("Function Run()\n")
+		wxT("  var before; before = Before();\n")
+		wxT("  var after; after = After();\n")
+		wxT("  Return before * 10 + after;\n")
+		wxT("EndFunction\n")
+		wxT("Function After()\n")
+		wxT("  Return 2;\n")
+		wxT("EndFunction\n")
+		wxT("var result public; var called public; var f;\n")
+		wxT("result = Run();\n")
+		wxT("f = Function() Return 7; EndFunction;\n")
+		wxT("called = f();\n")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue val;
+	ASSERT_TRUE(pu.GetPropVal(wxT("result"), val));
+	EXPECT_EQ(val.GetInteger(), 12);
+	ASSERT_TRUE(pu.GetPropVal(wxT("called"), val));
+	EXPECT_EQ(val.GetInteger(), 7);
+}
 // ===========================================================================
 // A CLOSURE WRITING BACK INTO ITS CAPTURED SLOT
 //
 // `i = i + 1` inside a lambda, where `i` belongs to the enclosing function's
-// heap-promoted frame. It is the one assignment whose destination is NOT in the
+// frame — a cell the lambda took. It is the one assignment whose destination is NOT in the
 // current frame, so it is the one that tells whether writing an operation's
 // result straight into its destination (compileCode.cpp, EmitAssign) survives
 // the outer-frame walk — every other assignment resolves through
@@ -1969,6 +2199,66 @@ TEST(RuntimeTest, ClosureWritesBackIntoItsCapturedSlot) {
 	// lambda and a dead capture.
 	EXPECT_EQ(valA.GetInteger(), 1);
 	EXPECT_EQ(valB.GetInteger(), 2);
+}
+
+// ===========================================================================
+// A LAMBDA TAKES THE VARIABLES IT REFERENCES, NOT THE FRAME (2026-11-03)
+//
+// It took the frame whole, and with it every variable of the frame. A lambda
+// stored in a variable of that frame was then a ring nothing released, and an
+// Excel object beside it outlived `Quit` until the thread ended (leak6.ces in
+// the session that found it). What a lambda keeps is read off the lambda: its
+// first rung is what it took from Make's frame, and `big` is not in it.
+// ===========================================================================
+
+TEST(RuntimeTest, ALambdaTakesOnlyTheVariablesItReferences) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var none public; var one public; var sum public;\n")
+		wxT("Function Make()\n")
+		wxT("  var big; big = 7;\n")
+		wxT("  var small; small = 5;\n")
+		wxT("  none = Function(x) Return x EndFunction;\n")
+		wxT("  one = Function(x) Return x + small EndFunction;\n")
+		wxT("EndFunction\n")
+		wxT("Make();\n")
+		wxT("sum = one(1);\n")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue none, one, sum;
+	ASSERT_TRUE(pu.GetPropVal(wxT("none"), none));
+	ASSERT_TRUE(pu.GetPropVal(wxT("one"), one));
+	ASSERT_TRUE(pu.GetPropVal(wxT("sum"), sum));
+	EXPECT_EQ(sum.GetInteger(), 6) << "the lambda lost 'small' when Make's frame ended";
+
+	const ibValueFunction* const takesNothing = AsFunction(none);
+	const ibValueFunction* const takesSmall = AsFunction(one);
+	ASSERT_NE(takesNothing, nullptr);
+	ASSERT_NE(takesSmall, nullptr);
+	ASSERT_EQ(takesNothing->CapturedDepth(), 1u) << "one rung: Make's frame";
+	ASSERT_EQ(takesSmall->CapturedDepth(), 1u);
+
+	EXPECT_EQ(takesNothing->CapturedAt(0)->GetLocalCount(), 0)
+		<< "a lambda that references nothing took Make's variables";
+
+	// `small` is taken, `big` is not — by the slots Make's own table gives them.
+	const ibRunCaptureContext* const rung = takesSmall->CapturedAt(0);
+	ASSERT_NE(rung->m_currentFunction, nullptr);
+	// Not `small`: <windows.h> (rpcndr.h) defines it as `char`.
+	long bigSlot = -1, smallSlot = -1;
+	for (const auto& local : rung->m_currentFunction->m_listLocals) {
+		if (local.m_strRealName.IsSameAs(wxT("big"), false)) bigSlot = local.m_slotIndex;
+		if (local.m_strRealName.IsSameAs(wxT("small"), false)) smallSlot = local.m_slotIndex;
+	}
+	ASSERT_GE(bigSlot, 0);
+	ASSERT_GE(smallSlot, 0);
+	ASSERT_LT(smallSlot, rung->GetLocalCount());
+	EXPECT_NE(rung->m_pRefLocVars[smallSlot], &rung->m_pLocVars[smallSlot]) << "'small' was not taken";
+	EXPECT_EQ(rung->m_pRefLocVars[smallSlot]->GetInteger(), 5);
+	EXPECT_TRUE(bigSlot >= rung->GetLocalCount() || rung->m_pRefLocVars[bigSlot] == &rung->m_pLocVars[bigSlot])
+		<< "'big' was taken though nothing references it";
 }
 
 // ===========================================================================
@@ -2017,6 +2307,98 @@ TEST(RuntimeTest, AStringSumIntoASlotHoldingAReferenceReleasesItOnce) {
 }
 
 // ===========================================================================
+// AN ASSIGNMENT MOVES ITS TEMPORARY (2026-11-03)
+//
+// `slot = Source.Next` reads the value into a temporary, and the assignment
+// COPIED it, so the temporary held the object until the frame ended:
+// `slot = Undefined` let go of one holder of two. An out-of-process Excel stayed
+// alive that way after `Quit` (excelclosure3.ces in the session that found it).
+// The module's frame is still alive when the test looks — a temporary that kept
+// the probe would be in it.
+// ===========================================================================
+
+namespace {
+// A probe a chain can go through: `Value` answers 7.
+class ProbeLink : public ReleaseProbe {
+public:
+	explicit ProbeLink(int* destroyed) : ReleaseProbe(destroyed) {}
+	long FindProp(const ibString& strPropName) const override {
+		return strPropName.IsSameAs(wxT("Value"), false) ? 0 : wxNOT_FOUND;
+	}
+	bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override {
+		pvarPropVal = 7;
+		return true;
+	}
+};
+
+// Answers a new probe each time `Next` is read, and a new link each time `Link` is.
+class ProbeSource : public ibValue {
+public:
+	explicit ProbeSource(int* destroyed)
+		: ibValue(ibValueTypes::TYPE_VALUE, false), m_destroyed(destroyed) {}
+	long FindProp(const ibString& strPropName) const override {
+		if (strPropName.IsSameAs(wxT("Next"), false)) return 0;
+		if (strPropName.IsSameAs(wxT("Link"), false)) return 1;
+		return wxNOT_FOUND;
+	}
+	bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override {
+		if (lPropNum == 1)
+			pvarPropVal = ibValue(static_cast<ibValue*>(new ProbeLink(m_destroyed)));
+		else
+			pvarPropVal = ibValue(static_cast<ibValue*>(new ReleaseProbe(m_destroyed)));
+		return true;
+	}
+private:
+	int* m_destroyed;
+};
+} // namespace
+
+TEST(RuntimeTest, AnAssignmentMovesItsTemporary) {
+	int destroyed = 0;
+	ibValuePtr<ProbeSource> source(new ProbeSource(&destroyed));
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.AddContextVariable(wxT("Source"), source, false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var held = Source.Next;\n")
+		wxT("var slot public;\n")
+		wxT("held = Undefined;\n")
+		wxT("slot = Source.Next;\n")
+		wxT("slot = Undefined;\n")));
+
+	ibProcUnit pu;
+	ibString error;
+	ASSERT_TRUE(RunBound(cc, pu, error)) << error.ToStdString();
+	EXPECT_EQ(destroyed, 2) << "a temporary still holds what an assignment or a declaration took from it";
+}
+
+// ===========================================================================
+// A LINK OF A CHAIN LETS GO OF THE LINK BEFORE (2026-11-03)
+//
+// `Source.Link.Value` reads the link into a temporary and the value out of it;
+// the link stayed in the temporary until the frame ended. That is how
+// `Excel.Workbooks.Count` kept a Workbooks, and with it Excel, alive after
+// `Quit` (excelclosure3.ces). The module's frame is alive when the test looks.
+// ===========================================================================
+
+TEST(RuntimeTest, AChainLetsGoOfTheLinkBefore) {
+	int destroyed = 0;
+	ibValuePtr<ProbeSource> source(new ProbeSource(&destroyed));
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	cc.AddContextVariable(wxT("Source"), source, false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var n public;\n")
+		wxT("n = Source.Link.Value;\n")));
+
+	ibProcUnit pu;
+	ibString error;
+	ASSERT_TRUE(RunBound(cc, pu, error)) << error.ToStdString();
+	EXPECT_EQ(destroyed, 1) << "a temporary still holds the link the chain went through";
+	ibValue n;
+	ASSERT_TRUE(pu.GetPropVal(wxT("n"), n));
+	EXPECT_EQ(n.GetInteger(), 7);
+}
+
+// ===========================================================================
 // A BUILT-IN GLOBAL CALLED WITH FEWER ARGUMENTS THAN IT DECLARES
 //
 // `Message` declares two parameters (text, status) and every script passes one.
@@ -2035,8 +2417,8 @@ TEST_F(BuiltInRuntime, ABuiltInGlobalTakesFewerArgumentsThanItDeclares) {
 
 	// The host binds the global API as a transparent scope, exactly as
 	// codeRunner and the corpus do. It must outlive the ProcUnit.
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc, wxT("Message(\"boom\");")));
 
@@ -2062,8 +2444,8 @@ TEST_F(BuiltInRuntime, ABuiltInGlobalTakesFewerArgumentsThanItDeclares) {
 TEST_F(BuiltInRuntime, ABuiltInFunctionSuppliesABuiltInProcedureArgument) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc, wxT("Message(Sqrt(16));")));
 
@@ -2114,8 +2496,8 @@ TEST(RuntimeTest, PostfixIncrementYieldsTheOldValueThenStores) {
 TEST_F(BuiltInRuntime, DISABLED_DumpBuiltInCall) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc, wxT("Message(\"boom\");")));
 
@@ -2165,8 +2547,8 @@ TEST_F(BuiltInRuntime, DISABLED_DumpBuiltInCall) {
 
 TEST_F(BuiltInRuntime, ABuiltInProcedureWithEveryArgumentWritten) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	// TWO messages, both with only the text — the omitted-status shape, twice,
 	// so a state left behind by the first call would show. A literal status
@@ -2181,8 +2563,8 @@ TEST_F(BuiltInRuntime, ABuiltInProcedureWithEveryArgumentWritten) {
 
 TEST_F(BuiltInRuntime, ABuiltInFunctionWithEveryArgumentWritten) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	// Sqrt takes exactly one; if THIS crashes the receiver is at fault, and if
 	// it runs the fault is the omitted-argument path and nothing else.
@@ -2431,8 +2813,8 @@ TEST(RuntimeTest, ASecondJoinedVarAfterAFirstOne) {
 TEST_F(BuiltInRuntime, AModuleVarAfterAPipelineLambda) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var orders = New Array\n")
@@ -2486,11 +2868,11 @@ TEST_F(BuiltInRuntime, AModuleVarAfterAPipelineLambda) {
 // `test_linq_nested_join.txt` dies on it with "a variable is not an aggregate
 // object", i.e. the captured row arrives as nothing.
 //
-// The suspected cause is that the pipeline invoke path (procUnitLINQ.cpp,
-// CallLambdaWithArgs) builds a C-stack frame and never honours
-// `m_needsHeapFrame`, so the outer frame is an ordinary one and the inner
-// lambda finds nothing it may capture. Promoting it was tried once and made things worse; the
-// note there says not to re-apply without a repro that fails first.
+// The suspected cause was that the pipeline invoke path (procUnitLINQ.cpp,
+// CallLambdaWithArgs) builds a C-stack frame and never honoured the heap-frame
+// flag of the day, so the outer frame was an ordinary one and the inner
+// lambda found nothing it may capture. Promoting it was tried once and made things worse; the
+// note there said not to re-apply without a repro that fails first.
 //
 // This is that repro.
 // ===========================================================================
@@ -2502,15 +2884,15 @@ TEST_F(BuiltInRuntime, AModuleVarAfterAPipelineLambda) {
 // invoke path binds each parameter to the caller's `ibValue` by POINTER, and under
 // a pipeline those point into the iterator state, which dies before a captured
 // frame does. A promoted frame then read its own parameters through a dangling
-// pointer — that was the access violation, not the capture machinery. A frame that
-// can be captured now COPIES its arguments (`procUnitLINQ.cpp`,
-// `CallLambdaWithArgs`).
+// pointer — that was the access violation, not the capture machinery. A lambda
+// whose parameters a lambda inside it takes now COPIES its arguments
+// (`procUnitLINQ.cpp`, `CallLambdaWithArgs`), and the frame makes cells of them.
 //
 // The emission side was verified separately rather than inferred from this test
-// going green: `RuntimeBench.DISABLED_DumpNestedLambda` shows the compiler flags
-// only the OUTER lambda `m_needsHeapFrame`, and that the inner body reads `x` at
-// frame depth 1 — exactly where `ibValueFunction::Execute` installs
-// `m_capturedFrames[0]`. The two halves agree by construction.
+// going green: `RuntimeBench.DISABLED_DumpNestedLambda` shows what each lambda's
+// `m_listCaptured` holds, and that the inner body reads `x` at frame depth 1 —
+// exactly where `ibValueFunction::Execute` installs `m_capturedFrames[0]`. The
+// two halves agree by construction.
 TEST(RuntimeTest, ALambdaInsideAPipelineLambdaSeesTheOuterParameter) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 	ASSERT_TRUE(TryCompile(cc,
@@ -2536,6 +2918,89 @@ TEST(RuntimeTest, ALambdaInsideAPipelineLambdaSeesTheOuterParameter) {
 }
 
 // ===========================================================================
+// A LAMBDA WRITTEN INSIDE A BODY THE CHAIN WOULD FOLD (2026-11-03)
+//
+// The same reading of the outer parameter, on the road that compiles a chain as
+// a loop in the caller's frame — the braces dialect and a terminal `ToArray`.
+// The fold bound `x` on its block scope, the inner lambda read it as its own
+// frame's slot, and `Crossed` died of an access violation on the stand. Such a
+// body now keeps the dispatcher road (compileCodeLINQ.cpp, IsFoldableLambdaBody),
+// where each call owns its row — which `Rows` checks: a lambda kept past its row
+// answers with that row, not the last one.
+// ===========================================================================
+TEST(RuntimeTest, ALambdaWrittenInAFoldedBodyKeepsItsRow) {
+	struct StyleGuard {
+		const short saved = ibCompileCode::GetCodeStyle();
+		~StyleGuard() { ibCompileCode::SetCodeStyle(saved); }
+	} guard;
+	ibCompileCode::SetCodeStyle(CODE_CES);   // the fold is the braces dialect's road
+
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("Function Crossed(a, b) { return a.SelectMany(Function(x) { return b.Select(Function(y) { return x + y; }); }).ToArray(); }\n")
+		wxT("Function Rows(a) { return a.Select(Function(x) { return Function() { return x; }; }).ToArray(); }\n")
+		wxT("var r public; var f public; var g public;\n")
+		wxT("var a = New Array; a.Add(10); a.Add(20);\n")
+		wxT("var b = New Array; b.Add(1); b.Add(2);\n")
+		wxT("r = \"\";\n")
+		wxT("foreach (v in Crossed(a, b)) { r = r + v + \";\"; }\n")
+		wxT("var fs = Rows(a);\n")
+		wxT("var f0 = fs[0]; f = f0();\n")
+		wxT("var f1 = fs[1]; g = f1();\n")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue r, f, g;
+	ASSERT_TRUE(pu.GetPropVal(wxT("r"), r));
+	ASSERT_TRUE(pu.GetPropVal(wxT("f"), f));
+	ASSERT_TRUE(pu.GetPropVal(wxT("g"), g));
+	EXPECT_EQ(r.GetString(), wxT("11;12;21;22;"));
+	EXPECT_EQ(f.GetInteger(), 10) << "the first row's lambda answers with a row that is not its own";
+	EXPECT_EQ(g.GetInteger(), 20);
+}
+
+// ===========================================================================
+// A FOLDED CHAIN IN A LOOP STARTS EVERY RUN WITH NO ANSWER (2026-11-03)
+//
+// The answer of `First` / `Last` / `Min` / `Max` / `Single` / `ElementAt` lives in
+// one slot of the frame, and the fold took it as empty — true on the first run
+// only. In a loop the slot kept the run before's answer: the second group's
+// `Max` was measured against the first group's, and a `First` that found nothing
+// answered with the first group's row.
+// ===========================================================================
+TEST(RuntimeTest, AFoldedChainInALoopStartsWithNoAnswer) {
+	struct StyleGuard {
+		const short saved = ibCompileCode::GetCodeStyle();
+		~StyleGuard() { ibCompileCode::SetCodeStyle(saved); }
+	} guard;
+	ibCompileCode::SetCodeStyle(CODE_CES);   // the fold is the braces dialect's road
+
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var maxes public; var nones public;\n")
+		wxT("var a = New Array; a.Add(9); a.Add(4);\n")
+		wxT("var b = New Array; b.Add(2); b.Add(3);\n")
+		wxT("var groups = New Array; groups.Add(a); groups.Add(b);\n")
+		wxT("maxes = \"\"; nones = 0;\n")
+		wxT("foreach (gr in groups) {\n")
+		wxT("  var m = gr.Where(Function(x) { return x > 0; }).Max();\n")
+		wxT("  maxes = maxes + m + \";\";\n")
+		wxT("  var f = gr.Where(Function(x) { return x > 5; }).First();\n")
+		wxT("  if (f = Undefined) { nones = nones + 1; }\n")
+		wxT("}\n")));
+
+	ibProcUnit pu;
+	ASSERT_TRUE(TryExecute(pu, cc.m_cByteCode));
+
+	ibValue maxes, nones;
+	ASSERT_TRUE(pu.GetPropVal(wxT("maxes"), maxes));
+	ASSERT_TRUE(pu.GetPropVal(wxT("nones"), nones));
+	EXPECT_EQ(maxes.GetString(), wxT("9;3;")) << "the second group's Max was measured against the first group's";
+	EXPECT_EQ(nones.GetInteger(), 1) << "a First that found nothing answered with the group before's row";
+}
+
+// ===========================================================================
 // A LITERAL PASSED ACROSS A MODULE BOUNDARY COMES FROM THE CALLER'S POOL
 //
 // `OPER_SETCONST` carries two different things and looks identical either way:
@@ -2553,8 +3018,7 @@ TEST(RuntimeTest, ALambdaInsideAPipelineLambdaSeesTheOuterParameter) {
 //
 // The two modules are assembled the way the DESCRIPTOR assembles them — compile
 // each, link them, hand the bytecode to a ProcUnit — rather than by teaching the
-// compiler a new trick. See ParentedCompiler above for the one window in which
-// the parent link has to be re-applied, and why it is done on this side.
+// compiler a new trick. See ParentedCompiler above.
 // ===========================================================================
 TEST(RuntimeTest, ALiteralArgumentToAParentModuleFunctionKeepsItsValue) {
 	// The PARENT. The three pads land in its pool ahead of anything else, so a
@@ -2578,8 +3042,7 @@ TEST(RuntimeTest, ALiteralArgumentToAParentModuleFunctionKeepsItsValue) {
 		wxT("EndFunction\n")
 		wxT("padA = \"WRONG-A\"; padB = \"WRONG-B\"; padC = \"WRONG-C\";\n")));
 
-	// The CHILD. Its parent survives its own Reset because CompileUnder re-applies
-	// the link after it, which is the window ibCompileModule::Compile uses too.
+	// The CHILD, compiled against the parent's live compile contexts.
 	ParentedCompiler ccLocal(wxT("local"));
 	ASSERT_TRUE(ccLocal.CompileUnder(&ccGlobal,
 		wxT("var r public;\n")
@@ -2597,6 +3060,44 @@ TEST(RuntimeTest, ALiteralArgumentToAParentModuleFunctionKeepsItsValue) {
 	ASSERT_TRUE(puLocal.GetPropVal(wxT("r"), r));
 	EXPECT_EQ(r.GetString(), wxT("CALLER"))
 		<< "a WRONG-* value here means the argument was read from the callee's pool";
+}
+
+// A MODULE IS COMPILED UNDER ITS PARENT'S BYTECODE: no compiler stands above it. The parent's name has one
+// address on that road, from the module body and from a function in it alike, and a second compile keeps the parent.
+TEST(RuntimeTest, AModuleCompiledUnderItsParentsByteCodeReadsItsNames) {
+	ibCompileCode ccParent(wxT("parent"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(ccParent,
+		wxT("var shared public;\n")
+		wxT("Function Twice(x) Public\n")
+		wxT("  Return x * 2;\n")
+		wxT("EndFunction\n")
+		wxT("shared = 21;\n")));
+
+	ibCompileCode ccChild(wxT("child"), wxT("memory"), false);
+	ccChild.SetParent(&ccParent.m_cByteCode);
+	const ibString text =
+		wxT("var fromBody public; var fromFunction public;\n")
+		wxT("Function Read()\n")
+		wxT("  Return shared;\n")
+		wxT("EndFunction\n")
+		wxT("fromBody = Twice(shared);\n")
+		wxT("fromFunction = Read();\n");
+	ASSERT_TRUE(TryCompile(ccChild, wxT("var first public; first = shared;\n")));
+	ASSERT_TRUE(TryCompile(ccChild, text));
+	EXPECT_EQ(ccChild.m_cByteCode.m_parent, &ccParent.m_cByteCode);
+
+	ibProcUnit puParent;
+	ASSERT_TRUE(TryExecute(puParent, ccParent.m_cByteCode));
+
+	ibProcUnit puChild;
+	puChild.SetParent(&puParent);
+	ASSERT_TRUE(TryExecute(puChild, ccChild.m_cByteCode));
+
+	ibValue fromBody, fromFunction;
+	ASSERT_TRUE(puChild.GetPropVal(wxT("fromBody"), fromBody));
+	ASSERT_TRUE(puChild.GetPropVal(wxT("fromFunction"), fromFunction));
+	EXPECT_EQ(fromBody.GetInteger(), 42);
+	EXPECT_EQ(fromFunction.GetInteger(), 21);
 }
 
 // An object module and its manager are different methods. The same exported
@@ -2767,8 +3268,8 @@ TEST(RuntimeTest, ACorrelatedJoinPairsEachKeyWithItsOwnRowsMeta) {
 TEST_F(BuiltInRuntime, EvaluateComputesAConstantExpression) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc, wxT("var a public; a = Evaluate(\"2 + 2\");")));
 
@@ -2793,8 +3294,8 @@ TEST_F(BuiltInRuntime, EvaluateComputesAConstantExpression) {
 TEST_F(BuiltInRuntime, EvaluateReadsAVariableOfTheHostModule) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var k public; var a public;\n")
@@ -3007,8 +3508,8 @@ TEST(CachedFunction, ACallThatRaisedIsNotKept) {
 TEST_F(BuiltInRuntime, MaxAndMinTerminateWhateverTheArgumentOrder) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		// NOT named `descending` / `ascending` — those are LINQ keywords
@@ -3053,8 +3554,8 @@ TEST_F(BuiltInRuntime, MaxAndMinTerminateWhateverTheArgumentOrder) {
 TEST_F(BuiltInRuntime, StringCountingFunctionsCountRatherThanLocate) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var occurNone public; var occurOne public; var occurThree public;\n")
@@ -3107,8 +3608,8 @@ TEST_F(BuiltInRuntime, StringCountingFunctionsCountRatherThanLocate) {
 TEST_F(BuiltInRuntime, StringPositionsAsTheyActuallyAre) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var found public; var missing public;\n")
@@ -3159,8 +3660,8 @@ TEST_F(BuiltInRuntime, StringPositionsAsTheyActuallyAre) {
 TEST_F(BuiltInRuntime, DayOfWeekIsIsoAndTheWeekIsSevenDays) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var mon public; var tue public; var wed public; var thu public;\n")
@@ -3203,8 +3704,8 @@ TEST_F(BuiltInRuntime, DayOfWeekIsIsoAndTheWeekIsSevenDays) {
 TEST_F(BuiltInRuntime, ACalendarDateKeepsItsOwnComponents) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var y public; var m public; var d public;\n")
@@ -3233,8 +3734,8 @@ TEST_F(BuiltInRuntime, ACalendarDateKeepsItsOwnComponents) {
 TEST_F(BuiltInRuntime, TheDifferenceOfTwoDatesIsInSeconds) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var day public; var span public; var back public;\n")
@@ -3259,8 +3760,8 @@ TEST_F(BuiltInRuntime, TheDifferenceOfTwoDatesIsInSeconds) {
 TEST_F(BuiltInRuntime, DateArithmeticIgnoresTheClockChange) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var march public; var later public; var year public;\n")
@@ -3291,8 +3792,8 @@ TEST_F(BuiltInRuntime, DateArithmeticIgnoresTheClockChange) {
 // The flag that says otherwise (ibFunction::m_valueVariadic) was set at
 // registration and never carried in the bytecode, so it survived only while a
 // LIVE compile context resolved the name — and a cache hit is precisely the
-// case where none exists. Third field of this shape after m_needsHeapFrame and
-// m_valueCached.
+// case where none exists. Third field of this shape after m_needsHeapFrame (now
+// m_listCaptured) and m_valueCached.
 //
 // ⚠ WHAT THIS TEST DOES NOT DO, said plainly so nobody trusts it for that: it
 // CANNOT catch the defect it was written after. Here the context is live — the
@@ -3308,8 +3809,8 @@ TEST_F(BuiltInRuntime, DateArithmeticIgnoresTheClockChange) {
 TEST_F(BuiltInRuntime, AVariadicBuiltInAcceptsEveryCount) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
 
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var one public; var two public; var many public;\n")
@@ -3352,6 +3853,40 @@ TEST_F(BuiltInRuntime, AVariadicBuiltInAcceptsEveryCount) {
 // (Corpus/ScriptCorpusRun.RunsToTheEnd/<file>), and the next sanitiser run names
 // the file instead.
 // ===========================================================================
+
+// Issue #203, as it was reported: the numbers 1, 2 and 3 in a column added without a type, unloaded
+// into an array, totalled 1 and averaged 1/3. Two changes answer it together: a column with no type
+// keeps the number that was written, and Sum adds every element. This pins the script, end to end.
+TEST(RuntimeTest, AColumnUnloadedIntoAnArraySumsAndAveragesItsNumbers) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var n public; var total public; var mean public; var projected public;\n")
+		wxT("var t; t = New Table;\n")
+		wxT("t.Columns.AddColumn(\"A\");\n")
+		wxT("var r; r = t.Add(); r.A = 1;\n")
+		wxT("r = t.Add(); r.A = 2;\n")
+		wxT("r = t.Add(); r.A = 3;\n")
+		wxT("var col; col = t.UnloadColumn(\"A\");\n")
+		wxT("n = col.Count();\n")
+		wxT("total = col.Sum();\n")
+		wxT("mean = col.Average();\n")
+		wxT("projected = col.Sum(Function(x) Return x EndFunction);\n")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("n"), v));
+	EXPECT_EQ(3, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("total"), v));
+	EXPECT_EQ(ibValueTypes::TYPE_NUMBER, v.GetType());
+	EXPECT_EQ(6, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("mean"), v));
+	EXPECT_EQ(2, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("projected"), v));
+	EXPECT_EQ(6, v.GetInteger());
+}
 
 TEST(RuntimeTest, AnArrayWalkedAndRewalkedIsLetGoOfOnce) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
@@ -3416,10 +3951,7 @@ struct FramedSession : ibSession {
 };
 
 struct ReadableForm : ibValueForm {
-	// A form with no module meta cannot keep a bind: EnsureCompileModule
-	// has nothing to compile against and BindExportVariable does nothing.
-	ibValueMetaObjectModule m_module{ wxT("Form") };
-	const ibValueMetaObjectModuleBase* GetMetaForCompile() const override { return &m_module; }
+	// A form with no module meta keeps a bind as any form does: in its maps.
 	bool ReadBound(const ibString& name, ibValue& out) { return GetBoundValue(name, out); }
 };
 
@@ -3444,15 +3976,8 @@ TEST_F(FormRuntime, AFormScriptWritesThroughDataSource) {
 	ibSessionScope scope(session.get());
 
 	// The call holds ThisForm and releases it when the frame goes. A form on
-	// the stack would be deleted by that release. The configuration outlives
-	// that release: the compile module asks it for a file name.
-	ibMetaDataConfigurationFile cfg;
+	// the stack would be deleted by that release.
 	ReadableForm* form = new ReadableForm();
-	form->m_module.SetMetaData(&cfg);
-	// Binding ThisForm is what a live form does first. That creates the
-	// compile module, and only then can the main attribute point DataSource
-	// at its cell.
-	form->BindContextVariable(wxT("ThisForm"), form);
 
 	ibValuePtr<ibValueStructure> object(new ibValueStructure());
 	object->Insert(ibValue(ibT("A")), ibValue(3));
@@ -3478,7 +4003,8 @@ TEST_F(FormRuntime, AFormScriptWritesThroughDataSource) {
 	} styleRestore{ savedStyle };
 
 	ibCompileCode cc(wxT("caller"), wxT("memory"), false);
-	cc.AddContextVariable(wxT("ThisForm"), form);
+	const ibValue formValue(static_cast<ibValue*>(form));
+	cc.AddContextVariable(wxT("ThisForm"), formValue);
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("Procedure Write()\n")
 		wxT("  ThisForm.DataSource.B = ThisForm.DataSource.A;\n")
@@ -3492,6 +4018,342 @@ TEST_F(FormRuntime, AFormScriptWritesThroughDataSource) {
 	ibValue got;
 	ASSERT_TRUE(object->GetPropVal(object->FindProp(wxT("B")), got));
 	EXPECT_EQ(got.GetInteger(), 3);
+}
+
+// A module adds an attribute to its open form — a value table of columns a file decides, a flag — through
+// ThisForm.Attributes, and reaches its value as ThisForm.<name> from then on. The form builds it; the script says
+// only a name and a type. The list walks the attributes as Controls walks the controls — what each one IS, not what
+// it holds — and the module can take away what it added and nothing else.
+TEST_F(FormRuntime, AFormScriptAddsAndRemovesAnAttribute) {
+	auto session = std::make_shared<FramedSession>(wxT("form-add-attribute"), ibSessionKind::Enterprise);
+	ibSessionHolder holder = ibApplicationInstance::GetSessionRegistry()->MintUnlisted(session);
+	KeyFrame frame(std::move(holder));
+	session->Attach(&frame);
+	ibSessionScope scope(session.get());
+
+	// HELD, unlike the form above: a METHOD call on ThisForm takes a reference and gives it back, and a form
+	// at count zero is deleted by that release - the next ThisForm.<member> would read a freed object.
+	ibValuePtr<ReadableForm> form(new ReadableForm());
+	ASSERT_NE(form->AddAttribute(wxT("Designed"), g_valueStructureCLSID, ibValue()), nullptr);
+	ASSERT_NE(form->AddFormCommand(wxT("Reload"), wxT("OnReload")), nullptr);
+	// The module's names — ThisForm.Attributes and the rest — are bound as a form with no module has them bound.
+	ASSERT_TRUE(form->InitializeFormModule());
+
+	const short savedStyle = ibCompileCode::GetCodeStyle();
+	ibCompileCode::SetCodeStyle(CODE_VES);
+	struct StyleRestore {
+		short saved;
+		~StyleRestore() { ibCompileCode::SetCodeStyle(saved); }
+	} styleRestore{ savedStyle };
+
+	ibCompileCode cc(wxT("caller"), wxT("memory"), false);
+	const ibValue formValue(static_cast<ibValue*>(static_cast<ReadableForm*>(form)));
+	cc.AddContextVariable(wxT("ThisForm"), formValue);
+	// The global API as a transparent scope (Type), as a form module has it.
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
+	ASSERT_TRUE(TryCompile(cc,
+		// What Add answers is the attribute's structure; its value is ThisForm.<name>.
+		wxT("Function Add()\n")
+		wxT("  Made = ThisForm.Attributes.Add(\"Flag\", New TypeDescription(\"Boolean\"));\n")
+		wxT("  ThisForm.Flag = Not ThisForm.Flag;\n")
+		wxT("  Return Made.Name;\n")
+		wxT("EndFunction\n")
+		wxT("Function AddNumber()\n")
+		wxT("  ThisForm.Attributes.Add(\"Amount\", New TypeDescription(\"Number\"));\n")
+		wxT("  Return ThisForm.Amount;\n")
+		wxT("EndFunction\n")
+		wxT("Function FlagType()\n")
+		wxT("  Return ThisForm.Attributes.Flag.Type;\n")
+		wxT("EndFunction\n")
+		wxT("Function Names()\n")
+		wxT("  Names = \"\";\n")
+		wxT("  Foreach Attribute In ThisForm.Attributes Do\n")
+		wxT("    Names = Names + Attribute.Key + \"=\" + Attribute.Value.Name + \";\";\n")
+		wxT("  EndDo;\n")
+		wxT("  Return Names;\n")
+		wxT("EndFunction\n")
+		wxT("Function Count()\n")
+		wxT("  Return ThisForm.Attributes.Count();\n")
+		wxT("EndFunction\n")
+		wxT("Function CommandName()\n")
+		wxT("  Return ThisForm.Commands.Find(\"Reload\").Name + \"/\" + ThisForm.Commands[0].Name;\n")
+		wxT("EndFunction\n")
+		wxT("Procedure AddAgain(Name)\n")
+		wxT("  ThisForm.Attributes.Add(Name, New TypeDescription(\"String\"));\n")
+		wxT("EndProcedure\n")
+		wxT("Procedure AddUntyped()\n")
+		wxT("  ThisForm.Attributes.Add(\"Loose\", \"Boolean\");\n")
+		wxT("EndProcedure\n")
+		wxT("Procedure Remove(Name)\n")
+		wxT("  ThisForm.Attributes.Remove(ThisForm.Attributes.Find(Name));\n")
+		wxT("EndProcedure\n")
+		// What the attribute is FOR: a value of a complex type a control is bound to and shows.
+		wxT("Procedure BindTable(Table)\n")
+		wxT("  ThisForm.Attributes.Add(\"Prices\", New TypeDescription(\"Table\"));\n")
+		wxT("  ThisForm.Prices.Columns.AddColumn(\"Price\", New TypeDescription(\"Number\"));\n")
+		wxT("  Row = ThisForm.Prices.Add();\n")
+		wxT("  Row.Price = 42;\n")
+		wxT("  Table.Source = \"Prices\";\n")
+		wxT("EndProcedure\n")
+		wxT("Procedure BindNowhere(Control)\n")
+		wxT("  Control.Source = \"Prices.Nowhere\";\n")
+		wxT("EndProcedure\n")));
+
+	ibProcUnit pu;
+	ibString err;
+	ASSERT_TRUE(RunBound(cc, pu, err)) << err.ToStdString();
+
+	// Add answers the attribute; a Boolean is born False, and the module wrote its negation through ThisForm.Flag.
+	ibValue ret;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("Add"), ret));
+	EXPECT_EQ(ret.GetString(), wxT("Flag"));
+	ibFormAttributeValue* flag = form->GetAttribute(wxT("Flag"));
+	ASSERT_NE(flag, nullptr);
+	EXPECT_FALSE(flag->IsMain());
+	ibValue held;
+	ASSERT_TRUE(flag->GetValue(held));
+	EXPECT_TRUE(held.GetBoolean());
+	const ibMetaID flagId = flag->GetId();
+
+	// A Number is born 0: the entry is made a String first, and its "" is not converted into the number.
+	ibValue amount;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("AddNumber"), amount));
+	EXPECT_EQ(amount.GetType(), ibValueTypes::TYPE_NUMBER);
+	EXPECT_EQ(amount.GetInteger(), 0);
+	ibValue amountName(ibT("Amount"));
+	ASSERT_TRUE(pu.CallAsProc(wxT("Remove"), amountName));
+
+	// …its structure is read through the list: its type is the description it was added with.
+	ibValue type;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("FlagType"), type));
+	ibValueTypeDescription* description = nullptr;
+	ASSERT_TRUE(type.ConvertToValue(description));
+	EXPECT_TRUE(description->GetTypeDesc().ContainType(ibValueTypes::TYPE_BOOLEAN));
+
+	// …and the list is walked as the controls' is: the name, and the attribute it names.
+	ibValue names;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("Names"), names));
+	EXPECT_EQ(names.GetString(), wxT("Designed=Designed;Flag=Flag;"));
+	ibValue count;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("Count"), count));
+	EXPECT_EQ(count.GetInteger(), 2);
+
+	// The form's commands are a list of the same kind.
+	ibValue command;
+	ASSERT_TRUE(pu.CallAsFunc(wxT("CommandName"), command));
+	EXPECT_EQ(command.GetString(), wxT("Reload/Reload"));
+
+	// A name the form has already, in any case, a name that is not one, and a type that is not a description.
+	ibValue name(ibT("flag"));
+	EXPECT_THROW(pu.CallAsProc(wxT("AddAgain"), name), ibBackendCoreException);
+	ibValue notAName(ibT("2nd"));
+	EXPECT_THROW(pu.CallAsProc(wxT("AddAgain"), notAName), ibBackendCoreException);
+	EXPECT_THROW(pu.CallAsProc(wxT("AddUntyped")), ibBackendCoreException);
+	EXPECT_EQ(form->GetAttributeCount(), 2u);
+
+	// The designed one stays; the added one goes, and a second time there is nothing to remove.
+	ibValue designed(ibT("Designed"));
+	EXPECT_THROW(pu.CallAsProc(wxT("Remove"), designed), ibBackendCoreException);
+	ibValue added(ibT("Flag"));
+	ASSERT_TRUE(pu.CallAsProc(wxT("Remove"), added));
+	EXPECT_EQ(form->GetAttribute(wxT("Flag")), nullptr);
+	EXPECT_NE(form->GetAttribute(wxT("Designed")), nullptr);
+	EXPECT_THROW(pu.CallAsProc(wxT("Remove"), added), ibBackendCoreException);
+
+	// The table is bound by the path the script wrote, and what it shows is the attribute's own table, row and all.
+	// The table is made as ThisForm.Controls.CreateControl makes it: `Type("Tablebox")` would ask a configuration,
+	// and this form has none.
+	ibValueModelTableBox* table = dynamic_cast<ibValueModelTableBox*>(form->CreateControl(ibT("Tablebox"), form));
+	ASSERT_NE(table, nullptr);
+	ibValue shown(static_cast<ibValue*>(table));
+	ASSERT_TRUE(pu.CallAsProc(wxT("BindTable"), shown));
+	ibValue tableValue, attributeValue;
+	ASSERT_TRUE(table->GetControlValue(tableValue));
+	ibFormAttributeValue* prices = form->GetAttribute(wxT("Prices"));
+	ASSERT_NE(prices, nullptr);
+	ASSERT_TRUE(prices->GetValue(attributeValue));
+	ibValueModel* tableModel = nullptr;
+	ibValueModel* attributeModel = nullptr;
+	ASSERT_TRUE(tableValue.ConvertToValue(tableModel));
+	ASSERT_TRUE(attributeValue.ConvertToValue(attributeModel));
+	EXPECT_EQ(tableModel, attributeModel);
+	EXPECT_EQ(table->GetSourceDesc().GetHopCount(), 1u);
+	// …with a column for the one the module gave its table: a Source written at run time is a new table, as a written
+	// Value is.
+	EXPECT_EQ(table->GetChildCount(), 1u);
+
+	// The removed attribute's id is not handed out again: the table would show what a control bound to it never meant.
+	EXPECT_GT(prices->GetId(), flagId);
+
+	// A path that names nothing there raises - and the binding stays the one the table had.
+	EXPECT_THROW(pu.CallAsProc(wxT("BindNowhere"), shown), ibBackendCoreException);
+	EXPECT_EQ(table->GetSourceDesc().GetHopCount(), 1u);
+
+	// An attribute a control shows is not taken from under it.
+	ibValue shownByTable(ibT("Prices"));
+	EXPECT_THROW(pu.CallAsProc(wxT("Remove"), shownByTable), ibBackendCoreException);
+	EXPECT_NE(form->GetAttribute(wxT("Prices")), nullptr);
+
+	// What the module added is not part of what the form was designed with: it is not written with it.
+	ibDataNode written;
+	form->WriteData(written);
+	const auto attributes = written.FindChild(ibProtocol::ibView::ibFormDesigner::Attributes);
+	ASSERT_TRUE(attributes.has_value());
+	std::vector<ibMetaID> stored;
+	for (const ibDataNode& one : attributes->Children())
+		stored.push_back(one.GetMetaId());
+	ASSERT_EQ(stored.size(), 1u);   // Designed only - not Prices
+	EXPECT_EQ(stored.front(), form->GetAttribute(wxT("Designed"))->GetId());
+}
+
+// A BUTTON AS A TILE - the representation a finger presses: the picture large over the caption and a note under
+// them. What the server says of it: the member of the button's own Representation, the note saved with the button,
+// and the state a client draws from - the note going with a tile alone. The buttons are made by a form born against
+// the session's frame, with the metadata a form lives on - a common form of a configuration is its creator - through
+// the factory the designer's comes to (NewObject), and read through what every control answers; they stand on the
+// form itself, with no sizer between - their state does not ask for one.
+struct TileForm : FormRuntime {
+	std::shared_ptr<FramedSession> m_session;
+	std::unique_ptr<KeyFrame> m_frame;
+	std::unique_ptr<ibSessionScope> m_scope;
+	std::unique_ptr<ibMetaDataConfigurationFile> m_configuration;
+	ibValuePtr<ibValueForm> m_form;
+
+	void SetUp() override {
+		FormRuntime::SetUp();
+		if (IsSkipped() || HasFatalFailure())
+			return;
+		m_session = std::make_shared<FramedSession>(wxT("tile"), ibSessionKind::Enterprise);
+		m_frame = std::make_unique<KeyFrame>(ibApplicationInstance::GetSessionRegistry()->MintUnlisted(m_session));
+		m_session->Attach(m_frame.get());
+		m_scope = std::make_unique<ibSessionScope>(m_session.get());
+		m_configuration = std::make_unique<ibMetaDataConfigurationFile>();
+		const ibValueMetaObjectFormBase* const creator = dynamic_cast<const ibValueMetaObjectFormBase*>(
+			m_configuration->CreateMetaObject(g_metaCommonFormCLSID, m_configuration->GetCommonMetaObject(), false));
+		ASSERT_NE(creator, nullptr);
+		m_form = ibValuePtr<ibValueForm>(new ibValueForm(ibFormRequest(), creator));
+		ASSERT_EQ(m_form->GetMetaData(), m_configuration.get());
+	}
+	void TearDown() override {
+		m_form = ibValuePtr<ibValueForm>();
+		m_configuration.reset();
+		m_scope.reset();
+		m_frame.reset();
+		m_session.reset();
+		FormRuntime::TearDown();
+	}
+
+	// A button given its title, its note and where its picture stands the way a saved form gives them: through its node.
+	ibValueFrame* Button(const ibString& title, const ibString& note, ibPictureLocation location) {
+		ibValueFrame* const button = m_form->NewObject(ibString(ibT("Button")), static_cast<ibValueForm*>(m_form));
+		EXPECT_NE(button, nullptr);
+		if (button == nullptr)
+			return nullptr;
+		ibDataNode saved;
+		EXPECT_TRUE(button->WriteData(saved));
+		saved.SetField(ibT("Title"), ibDataValue::String(title));   // replaces; SetProperty would add a second
+		saved.SetField(ibT("Note"), ibDataValue::String(note));
+		saved.SetField(ibT("PictureLocation"), ibDataValue::Int(static_cast<int>(location)));
+		EXPECT_TRUE(button->ReadData(saved));
+		return button;
+	}
+
+	static ibDataNode State(ibValueFrame& control) {
+		ibDataNode state;
+		control.OnUpdate(state, nullptr);
+		return state;
+	}
+	static ibString Text(const ibDataNode& state, const char* name) {
+		const auto value = state.FindField(name);
+		return value ? value->AsString() : ibString();
+	}
+	static int Number(const ibDataNode& state, const char* name) {
+		const auto value = state.FindField(name);
+		return value ? static_cast<int>(value->AsInt()) : -1;
+	}
+};
+
+// Where a button's picture stands: where the button puts it, on the left, on the right, or a tile - under the numbers
+// the client reads them by.
+TEST(ButtonTile, ThePictureLocationsAreUnderTheProtocolsNumbers) {
+	ibValueEnumPictureLocation location;
+	location.CreateEnumeration();
+	ASSERT_EQ(location.GetEnumCount(), 4u);
+	EXPECT_EQ(location.GetEnumName(3), ibString(ibT("Tile")));
+	EXPECT_EQ(static_cast<int>(ibPictureLocation_Auto), static_cast<int>(ibProtocol::ibForm::ibProperty::ibPictureLocation::Auto));
+	EXPECT_EQ(static_cast<int>(ibPictureLocation_Left), static_cast<int>(ibProtocol::ibForm::ibProperty::ibPictureLocation::Left));
+	EXPECT_EQ(static_cast<int>(ibPictureLocation_Right), static_cast<int>(ibProtocol::ibForm::ibProperty::ibPictureLocation::Right));
+	EXPECT_EQ(static_cast<int>(ibPictureLocation_Tile), static_cast<int>(ibProtocol::ibForm::ibProperty::ibPictureLocation::Tile));
+}
+
+// How a button is drawn: a button, or a hyperlink - under the numbers the client reads them by.
+TEST(ButtonTile, TheButtonViewsAreUnderTheProtocolsNumbers) {
+	ibValueEnumButtonView view;
+	view.CreateEnumeration();
+	ASSERT_EQ(view.GetEnumCount(), 2u);
+	EXPECT_EQ(view.GetEnumName(1), ibString(ibT("Hyperlink")));
+	EXPECT_EQ(static_cast<int>(ibButtonView_Button), static_cast<int>(ibProtocol::ibForm::ibProperty::ibButtonView::Button));
+	EXPECT_EQ(static_cast<int>(ibButtonView_Hyperlink), static_cast<int>(ibProtocol::ibForm::ibProperty::ibButtonView::Hyperlink));
+}
+
+// Saved with the button, as its title is - the location and the view under the names the client reads them by - and
+// read back by one the form makes anew.
+TEST_F(TileForm, TheNoteIsSavedWithTheButtonAndReadBack) {
+	ibValueFrame* const written = Button(ibT("Tea"), ibT("12 pcs"), ibPictureLocation_Tile);
+	ASSERT_NE(written, nullptr);
+	ibDataNode node;
+	ASSERT_TRUE(written->WriteData(node));
+	EXPECT_EQ(Number(node, ibProtocol::ibForm::ibProperty::PictureLocation),
+		static_cast<int>(ibProtocol::ibForm::ibProperty::ibPictureLocation::Tile));
+	EXPECT_EQ(Number(node, ibProtocol::ibForm::ibProperty::View), static_cast<int>(ibProtocol::ibForm::ibProperty::ibButtonView::Button));
+
+	ibValueFrame* const read = m_form->NewObject(ibString(ibT("Button")), static_cast<ibValueForm*>(m_form));
+	ASSERT_NE(read, nullptr);
+	ASSERT_TRUE(read->ReadData(node));
+	const ibDataNode state = State(*read);
+	EXPECT_EQ(Text(state, ibProtocol::ibForm::ibState::Caption), ibString(ibT("Tea")));
+	EXPECT_EQ(Text(state, ibProtocol::ibForm::ibState::Note), ibString(ibT("12 pcs")));
+
+	// A form saved before there was a note - its node has no Note field at all - reads back with none.
+	ibDataNode older;
+	for (const auto& [name, value] : node.Fields())
+		if (name != ibT("Note"))
+			older.AddField(name, value);
+	ibValueFrame* const old = m_form->NewObject(ibString(ibT("Button")), static_cast<ibValueForm*>(m_form));
+	ASSERT_NE(old, nullptr);
+	ASSERT_TRUE(old->ReadData(older));
+	EXPECT_EQ(Text(State(*old), ibProtocol::ibForm::ibState::Note), ibString());
+}
+
+// A script reads where the picture stands as a PictureLocation member; what the button shows stays the Representation
+// every control has.
+TEST_F(TileForm, ThePictureLocationIsAPictureLocation) {
+	ibValueFrame* const button = Button(ibT("Tea"), ibT("12 pcs"), ibPictureLocation_Tile);
+	ASSERT_NE(button, nullptr);
+	ibValue location, representation;
+	ASSERT_TRUE(button->GetPropVal(button->FindProp(ibT("PictureLocation")), location));
+	EXPECT_EQ(location.GetClassName(), ibString(ibT("PictureLocation")));
+	ASSERT_TRUE(button->GetPropVal(button->FindProp(ibT("Representation")), representation));
+	EXPECT_EQ(representation.GetClassName(), ibString(ibT("Representation")));
+}
+
+// The state a client draws from: a tile carries its note; a picture anywhere else draws none, so carries none.
+TEST_F(TileForm, TheStateCarriesTheNoteForATileAlone) {
+	ibValueFrame* const tile = Button(ibT("Tea"), ibT("12 pcs"), ibPictureLocation_Tile);
+	ASSERT_NE(tile, nullptr);
+	const ibDataNode tiled = State(*tile);
+	EXPECT_EQ(Text(tiled, ibProtocol::ibForm::ibState::Caption), ibString(ibT("Tea")));
+	EXPECT_EQ(Text(tiled, ibProtocol::ibForm::ibState::Note), ibString(ibT("12 pcs")));
+	// What it shows is decided as it is for any button: nothing bound, picture and text.
+	EXPECT_EQ(Number(tiled, ibProtocol::ibForm::ibState::Representation),
+		static_cast<int>(ibProtocol::ibForm::ibState::ibRepresentation::PictureAndText));
+
+	for (const ibPictureLocation location : { ibPictureLocation_Auto, ibPictureLocation_Left, ibPictureLocation_Right }) {
+		ibValueFrame* const beside = Button(ibT("Tea"), ibT("12 pcs"), location);
+		ASSERT_NE(beside, nullptr);
+		EXPECT_FALSE(State(*beside).FindField(ibProtocol::ibForm::ibState::Note).has_value()) << "a note is a tile's";
+	}
 }
 
 // A list form's DataSource is a dynamic list. It already knows its source
@@ -3512,8 +4374,8 @@ TEST_F(BuiltInRuntime, DynamicList_GetMetadataIsCallable) {
 
 TEST_F(BuiltInRuntime, BegOfHourFloorsToTheHour) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var hour public; var minute public; var second public; var day public;\n")
@@ -3546,8 +4408,8 @@ TEST_F(BuiltInRuntime, BegOfHourFloorsToTheHour) {
 // EndOfHour is BegOfHour's pair, as EndOfDay is BegOfDay's: the same hour at :59:59, the day kept.
 TEST_F(BuiltInRuntime, EndOfHourIsTheHoursLastSecond) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var hour public; var minute public; var second public; var day public;\n")
@@ -3574,8 +4436,8 @@ TEST_F(BuiltInRuntime, EndOfHourIsTheHoursLastSecond) {
 // of them apart are the time between, to the millisecond, and a date's milliseconds are kept.
 TEST_F(BuiltInRuntime, GetMillisecondIsTheDatesOwnCount) {
 	ibCompileCode cc(wxT("test"), wxT("memory"), false);
-	ibValueSystemFunction valueSystem;
-	cc.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	cc.AddContextVariable(wxT("System"), valueSystem, true);
 
 	ASSERT_TRUE(TryCompile(cc,
 		wxT("var count public; var between public;\n")
@@ -3601,4 +4463,364 @@ TEST_F(BuiltInRuntime, GetMillisecondIsTheDatesOwnCount) {
 	const ibNumber counted = ibValueSystemFunction::GetMillisecond(ibValue(ibDateTime(2024, 3, 15, 14, 40, 7, 250)));
 	ASSERT_EQ(counted.ToInt(withMilliseconds), 0);
 	EXPECT_EQ(withMilliseconds - count, 250);
+}
+
+TEST(RuntimeTest, ValueListHoldsItemsAndWalksThem) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var n public; var held public; var shown public; var mark public; var bare public;\n")
+		wxT("var found public; var missing public; var walked public; var left public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(1, \"one\", true);\n")
+		wxT("list.Add(2);\n")
+		wxT("n = list.Count();\n")
+		wxT("var item; item = list.Get(0);\n")
+		wxT("held = item.Value;\n")
+		wxT("shown = item.Presentation;\n")
+		wxT("mark = item.Check;\n")
+		wxT("bare = list.Get(1).Presentation;\n")
+		wxT("found = list.FindByValue(2);\n")
+		wxT("missing = list.FindByValue(9);\n")
+		wxT("walked = 0;\n")
+		wxT("Foreach it In list Do\n")
+		wxT("  walked = walked + it.Value;\n")
+		wxT("EndDo;\n")
+		wxT("list.Delete(0);\n")
+		wxT("left = list.Count();\n")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("n"), v));
+	EXPECT_EQ(2, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("held"), v));
+	EXPECT_EQ(1, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("shown"), v));
+	EXPECT_EQ(wxT("one"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("mark"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	// Given none, an item takes its value's text as its presentation.
+	ASSERT_TRUE(pu.GetPropVal(wxT("bare"), v));
+	EXPECT_EQ(wxT("2"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("found"), v));
+	EXPECT_FALSE(v.IsEmpty());
+	ASSERT_TRUE(pu.GetPropVal(wxT("missing"), v));
+	EXPECT_TRUE(v.IsEmpty());
+	ASSERT_TRUE(pu.GetPropVal(wxT("walked"), v));
+	EXPECT_EQ(3, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("left"), v));
+	EXPECT_EQ(1, v.GetInteger());
+}
+
+// Delete(item) used to read the item as an index, and that read is 0, so the first
+// element went and the one that was passed stayed.
+TEST(RuntimeTest, ValueListDeleteRemovesTheItemThatWasPassed)
+{
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var first public; var second public; var n public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(\"a\"); list.Add(\"b\"); list.Add(\"c\");\n")
+		wxT("var item; item = list.Get(1);\n")
+		wxT("list.Delete(item);\n")
+		wxT("first = list.Get(0).Value;\n")
+		wxT("second = list.Get(1).Value;\n")
+		wxT("n = list.Count();\n")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("first"), v));
+	EXPECT_EQ(wxT("a"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("second"), v));
+	EXPECT_EQ(wxT("c"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("n"), v));
+	EXPECT_EQ(2, v.GetInteger());
+
+	ibCompileCode byIndex(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(byIndex,
+		wxT("var first public; var second public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(\"a\"); list.Add(\"b\"); list.Add(\"c\");\n")
+		wxT("list.Delete(1);\n")
+		wxT("first = list.Get(0).Value;\n")
+		wxT("second = list.Get(1).Value;\n")));
+	ibProcUnit indexUnit;
+	ASSERT_TRUE(RunBound(byIndex, indexUnit, strError)) << strError.ToStdString();
+	ASSERT_TRUE(indexUnit.GetPropVal(wxT("first"), v));
+	EXPECT_EQ(wxT("a"), v.GetString());
+	ASSERT_TRUE(indexUnit.GetPropVal(wxT("second"), v));
+	EXPECT_EQ(wxT("c"), v.GetString());
+
+	ibCompileCode missing(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(missing,
+		wxT("var one; one = New ValueList();\n")
+		wxT("var other; other = New ValueList();\n")
+		wxT("one.Add(\"a\");\n")
+		wxT("other.Delete(one.Get(0));\n")));
+	ibProcUnit missingUnit;
+	EXPECT_FALSE(RunBound(missing, missingUnit, strError));
+	EXPECT_TRUE(strError.Contains(wxT("not in the list")));
+
+	// A value, or Undefined, is neither an item nor an index. Reading either as
+	// a number answered 0 and removed the first element.
+	ibCompileCode byValue(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(byValue,
+		wxT("var n public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(\"a\"); list.Add(\"b\");\n")
+		wxT("list.Delete(\"b\");\n")
+		wxT("n = list.Count();\n")));
+	ibProcUnit valueUnit;
+	EXPECT_FALSE(RunBound(byValue, valueUnit, strError));
+	EXPECT_TRUE(strError.Contains(wxT("item or an index")));
+
+	ibCompileCode byEmpty(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(byEmpty,
+		wxT("var n public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(\"a\");\n")
+		wxT("list.Delete(Undefined);\n")
+		wxT("n = list.Count();\n")));
+	ibProcUnit emptyUnit;
+	EXPECT_FALSE(RunBound(byEmpty, emptyUnit, strError));
+	EXPECT_TRUE(strError.Contains(wxT("item or an index")));
+}
+
+// The rest of what ported code asks of a value list: a copy that does not share items, the two sorts,
+// marking every item, moving one, list[i] as the item at i, and Index(item) as Table.Index answers it.
+TEST(RuntimeTest, ValueListCopiesSortsMovesAndIndexes) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var copied public; var kept public; var byValue public; var byValueDown public;\n")
+		wxT("var byShown public; var marked public; var moved public; var indexed public; var at public; var away public;\n")
+		wxT("Function Spell(l)\n")
+		wxT("  var s; s = \"\";\n")
+		wxT("  Foreach it In l Do s = s + it.Value; EndDo;\n")
+		wxT("  Return s;\n")
+		wxT("EndFunction\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(\"b\", \"2\"); list.Add(\"c\", \"1\"); list.Add(\"a\", \"3\");\n")
+		wxT("var copy; copy = list.Copy();\n")
+		wxT("copy.Get(0).Value = \"z\";\n")
+		wxT("copied = Spell(copy); kept = Spell(list);\n")
+		wxT("list.SortByValue(); byValue = Spell(list);\n")
+		wxT("list.SortByValue(false); byValueDown = Spell(list);\n")
+		wxT("list.SortByPresentation(); byShown = Spell(list);\n")
+		wxT("list.FillChecks(true);\n")
+		wxT("marked = list.Get(0).Check and list.Get(1).Check and list.Get(2).Check;\n")
+		wxT("list.Move(list.Get(0), 2); list.Move(1, -1); moved = Spell(list);\n")
+		wxT("indexed = list[2].Value;\n")
+		wxT("at = list.Index(list[1]); away = list.Index(copy.Get(0));\n")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("copied"), v));
+	EXPECT_EQ(wxT("zca"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("kept"), v));
+	EXPECT_EQ(wxT("bca"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("byValue"), v));
+	EXPECT_EQ(wxT("abc"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("byValueDown"), v));
+	EXPECT_EQ(wxT("cba"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("byShown"), v));
+	EXPECT_EQ(wxT("cba"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("marked"), v));
+	EXPECT_TRUE(v.GetBoolean());
+	// c b a -> Move(c, 2) -> b a c -> Move(1, -1) -> a b c
+	ASSERT_TRUE(pu.GetPropVal(wxT("moved"), v));
+	EXPECT_EQ(wxT("abc"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("indexed"), v));
+	EXPECT_EQ(wxT("c"), v.GetString());
+	ASSERT_TRUE(pu.GetPropVal(wxT("at"), v));
+	EXPECT_EQ(1, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("away"), v));
+	EXPECT_EQ(-1, v.GetInteger());
+
+	// A move past either end, and a value that is neither an item nor an index, are refused.
+	const wxChar* const refusals[] = {
+		wxT("var l; l = New ValueList(); l.Add(1); l.Add(2); l.Move(0, 2);\n"),
+		wxT("var l; l = New ValueList(); l.Add(1); l.Add(2); l.Move(l.Get(0), -1);\n"),
+		wxT("var l; l = New ValueList(); l.Add(1); l.Move(\"1\", 0);\n"),
+		wxT("var l; l = New ValueList(); l.Add(1); var x; x = l[1];\n"),
+	};
+	for (const wxChar* const code : refusals) {
+		ibCompileCode refused(wxT("test"), wxT("memory"), false);
+		ASSERT_TRUE(TryCompile(refused, code));
+		ibProcUnit refusedUnit;
+		ibString refusedError;
+		EXPECT_FALSE(RunBound(refused, refusedUnit, refusedError)) << code;
+	}
+}
+
+TEST(RuntimeTest, ValueListUnloadsAndLoadsValues) {
+	ibCompileCode cc(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var n public; var first public; var second public;\n")
+		wxT("var left public; var held public; var shown public; var mark public;\n")
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.Add(1, \"one\", true);\n")
+		wxT("list.Add(2);\n")
+		wxT("var values; values = list.UnloadValues();\n")
+		wxT("n = values.Count();\n")
+		wxT("first = values.Get(0);\n")
+		wxT("second = values.Get(1);\n")
+		wxT("list.Add(9, \"nine\", true);\n")
+		wxT("list.LoadValues(values);\n")
+		wxT("left = list.Count();\n")
+		wxT("var item; item = list.Get(0);\n")
+		wxT("held = item.Value;\n")
+		wxT("shown = item.Presentation;\n")
+		wxT("mark = item.Check;\n")));
+
+	ibProcUnit pu;
+	ibString strError;
+	ASSERT_TRUE(RunBound(cc, pu, strError)) << strError.ToStdString();
+
+	ibValue v;
+	ASSERT_TRUE(pu.GetPropVal(wxT("n"), v));
+	EXPECT_EQ(2, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("first"), v));
+	EXPECT_EQ(1, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("second"), v));
+	EXPECT_EQ(2, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("left"), v));
+	EXPECT_EQ(2, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("held"), v));
+	EXPECT_EQ(1, v.GetInteger());
+	ASSERT_TRUE(pu.GetPropVal(wxT("shown"), v));
+	EXPECT_EQ(wxT("1"), v.GetString());   // loaded with no presentation: the value's text is taken as one
+	ASSERT_TRUE(pu.GetPropVal(wxT("mark"), v));
+	EXPECT_FALSE(v.GetBoolean());
+
+	ibCompileCode refused(wxT("test"), wxT("memory"), false);
+	ASSERT_TRUE(TryCompile(refused,
+		wxT("var list; list = New ValueList();\n")
+		wxT("list.LoadValues(1);\n")));
+	ibProcUnit refusedUnit;
+	ibString refusedError;
+	EXPECT_FALSE(RunBound(refused, refusedUnit, refusedError));
+	EXPECT_TRUE(refusedError.Contains(wxT("array")));
+}
+
+
+// A value list is a form's data source as a table is: its explorer is a table, so an attribute of that type drops
+// as a table box, and the columns are the kind's own. Only the value is shown; the other three are there to add.
+TEST(RuntimeTest, ValueListIsATableSourceWithTheKindsColumns) {
+	ibValuePtr<ibValueValueList> list(new ibValueValueList());
+	const ibSourceDataObject::ibSourceExplorer* explorer = list->GetSourceExplorer();
+	ASSERT_NE(explorer, nullptr);
+	EXPECT_TRUE(explorer->IsTableSection());
+	ASSERT_EQ(4u, explorer->GetHelperCount());
+	EXPECT_EQ(wxT("Value"), explorer->GetHelper(0)->GetSourceName());
+	EXPECT_TRUE(explorer->GetHelper(0)->IsVisible());
+	EXPECT_EQ(wxT("Presentation"), explorer->GetHelper(1)->GetSourceName());
+	EXPECT_FALSE(explorer->GetHelper(1)->IsVisible());
+	EXPECT_EQ(wxT("Check"), explorer->GetHelper(2)->GetSourceName());
+	EXPECT_FALSE(explorer->GetHelper(2)->IsVisible());
+	EXPECT_EQ(wxT("Picture"), explorer->GetHelper(3)->GetSourceName());
+	EXPECT_FALSE(explorer->GetHelper(3)->IsVisible());
+
+	// The value is Any — the type that lists nothing; the presentation is a string, the check a boolean, the picture a
+	// picture.
+	const ibValueModel::ibValueModelColumnCollection* const columns = list->GetColumnCollection();
+	EXPECT_EQ(0u, columns->GetColumnInfo(0)->GetColumnType().GetClsidCount());
+	EXPECT_TRUE(columns->GetColumnInfo(1)->GetColumnType().ContainType(ibValueTypes::TYPE_STRING));
+	EXPECT_TRUE(columns->GetColumnInfo(2)->GetColumnType().ContainType(ibValueTypes::TYPE_BOOLEAN));
+	EXPECT_TRUE(columns->GetColumnInfo(3)->GetColumnType().ContainType(g_valuePictureCLSID));
+
+	// A row shows its presentation, and its value when it has none.
+	list->Add(ibValue(7), ibString(), false, ibValue());
+	list->Add(ibValue(8), ibString(wxT("eight")), true, ibValue());
+	ibValue shown;
+	list->GetValueByRow(shown, list->GetItem(0), ibValueValueList::ePresentation);
+	EXPECT_EQ(wxT("7"), shown.GetString());
+	list->GetValueByRow(shown, list->GetItem(1), ibValueValueList::ePresentation);
+	EXPECT_EQ(wxT("eight"), shown.GetString());
+	list->GetValueByRow(shown, list->GetItem(1), ibValueValueList::eCheck);
+	EXPECT_TRUE(shown.GetBoolean());
+	// An item given no picture holds an empty one, not Undefined.
+	ibValue picture;
+	ASSERT_TRUE(list->GetValueByMetaID(list->GetItem(0), ibValueValueList::ePicture, picture));
+	EXPECT_EQ(g_valuePictureCLSID, picture.GetClassType());
+	EXPECT_TRUE(picture.IsEmpty());
+}
+
+// PictureLib is one per module manager: its main module makes it and binds the name (a name a script reads, not a
+// transparent scope), and letting the main module go unbinds it. A property is a picture: the configuration's own
+// Picture objects and the engine's, the set the picture property's picker offers.
+TEST(RuntimeTest, PictureLibNamesTheConfigurationsPicturesAndTheEngines) {
+	ibMetaDataConfigurationFile cfg;
+	ibValueMetaObjectConfiguration* root = cfg.GetCommonMetaObject();
+	ASSERT_NE(root, nullptr);
+	auto* logo = dynamic_cast<ibValueMetaObjectPicture*>(cfg.CreateMetaObject(g_metaPictureCLSID, root, false));
+	ASSERT_NE(logo, nullptr);
+	logo->SetName(ibT("Logo"));
+
+	ibValueModuleManagerDesigner manager(&cfg, root);
+	ASSERT_TRUE(manager.CreateMainModule());
+	const auto bound = manager.GetContextVariables().find(ibT("PictureLib"));
+	ASSERT_NE(bound, manager.GetContextVariables().end());
+	EXPECT_FALSE(bound->second.m_scopeContext);
+	ibValue* library = bound->second.m_value;
+	ASSERT_NE(library, nullptr);
+	// The compiler asks every context value for its type; one not registered asserts there.
+	EXPECT_NE(library->GetClassType(), static_cast<ibClassID>(0));
+
+	ibCompileCode cc(ibT("test"), ibT("memory"), false);
+	cc.AddContextVariable(ibT("PictureLib"), library, false);
+	ASSERT_TRUE(TryCompile(cc,
+		wxT("var own public;\n")
+		wxT("var engine public;\n")
+		wxT("own = PictureLib.Logo;\n")
+		wxT("engine = PictureLib.Error;\n")));
+	ibProcUnit pu;
+	ibString error;
+	ASSERT_TRUE(RunBound(cc, pu, error)) << error.ToStdString();
+
+	ibValue own;
+	ASSERT_TRUE(pu.GetPropVal(ibT("own"), own));
+	ibValuePicture* ownPicture = own.ConvertToType<ibValuePicture>();
+	ASSERT_NE(ownPicture, nullptr);
+	EXPECT_TRUE(ownPicture->GetPictureDesc() == ibPictureDescription(logo->GetGuid()));
+
+	ibValue engine;
+	ASSERT_TRUE(pu.GetPropVal(ibT("engine"), engine));
+	ibValuePicture* enginePicture = engine.ConvertToType<ibValuePicture>();
+	ASSERT_NE(enginePicture, nullptr);
+	EXPECT_TRUE(enginePicture->GetPictureDesc() == ibPictureDescription(g_picErrorCLSID));
+
+	ASSERT_TRUE(manager.DestroyMainModule());
+	EXPECT_EQ(manager.GetContextVariables().count(ibT("PictureLib")), 0u);
+}
+
+// A configuration picture named like an engine one is the configuration's: the name is listed once, and it answers
+// with the configuration's picture.
+TEST(RuntimeTest, PictureLibAConfigurationPictureTakesTheEnginesName) {
+	ibMetaDataConfigurationFile cfg;
+	ibValueMetaObjectConfiguration* root = cfg.GetCommonMetaObject();
+	ASSERT_NE(root, nullptr);
+	auto* own = dynamic_cast<ibValueMetaObjectPicture*>(cfg.CreateMetaObject(g_metaPictureCLSID, root, false));
+	ASSERT_NE(own, nullptr);
+	own->SetName(ibT("Error"));
+
+	const ibValue holder(new ibValuePictureLib(&cfg));
+	ibValue* const library = holder.GetRef();
+	long found = 0;
+	for (long prop = 0; prop < library->GetNProps(); ++prop)
+		found += stringUtils::IsSameAs(library->GetPropName(prop), ibT("Error")) ? 1 : 0;
+	EXPECT_EQ(found, 1);
+
+	ibValue picture;
+	ASSERT_TRUE(library->GetPropVal(library->FindProp(ibT("Error")), picture));
+	ibValuePicture* got = picture.ConvertToType<ibValuePicture>();
+	ASSERT_NE(got, nullptr);
+	EXPECT_TRUE(got->GetPictureDesc() == ibPictureDescription(own->GetGuid()));
 }

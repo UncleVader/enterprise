@@ -5,6 +5,9 @@
 #include "backend/databaseLayer/databaseErrorCodes.h"
 #include "backend/databaseLayer/databaseLayerException.h"
 
+#include <charconv>   // std::to_chars — a floating value's digits, with a point whatever the locale
+#include <limits>     // std::numeric_limits<float>::digits10 — the decimal digits a float carries through itself
+
 ibDatabaseResultSetFirebird::ibDatabaseResultSetFirebird(ibInterfaceFirebird* pInterface)
 	: ibDatabaseResultSet()
 {
@@ -368,10 +371,25 @@ double ibDatabaseResultSetFirebird::GetResultDouble(int nField)
 	return dblReturn;
 }
 
+// ⭐ A FLOAT READS AS THE DECIMAL IT STANDS FOR, at its own digits (digits10: six). A double is that decimal by
+// ibNumber(double) itself (fifteen, fnumber.cpp); a float handed over as a double would carry its own noise into
+// those fifteen - 0.1 read 0.100000001490116. The columns are NUMERIC and read exactly; a floating value comes only
+// from what the server computed (2026-11-05). NaN and infinity are no decimal, and read as zero, as ibNumber(double)
+// collapses them.
+static ibNumber DecimalOf(float value)
+{
+	char digits[32];
+	const std::to_chars_result written = std::to_chars(digits, digits + sizeof(digits), value,
+		std::chars_format::general, std::numeric_limits<float>::digits10);
+	ibNumber decimal;
+	decimal.FromString(ibString::FromUTF8(digits, static_cast<size_t>(written.ptr - digits)));
+	return decimal;
+}
+
 ibNumber ibDatabaseResultSetFirebird::GetResultNumber(int nField)
 {
 	// ⚠ ZERO IS THE DEFAULT CONSTRUCTOR, NOT `0.00`. A double literal goes through ibNumber(double),
-	// which prints the double with `%.17g` and parses the text back into a big decimal to be exact about
+	// which prints the double with `%.15g` and parses the text back into a big decimal to be exact about
 	// it — and this line ran that for every number of every row read, before the field was even looked
 	// at: it stood in the stack samples of the payroll sheet's reads (2026-09-12, Debug).
 	ibNumber dblReturn;
@@ -389,7 +407,7 @@ ibNumber ibDatabaseResultSetFirebird::GetResultNumber(int nField)
 		{
 			float v = 0.0f;
 			memcpy(&v, pVar->sqldata, sizeof(v));
-			dblReturn = v;
+			dblReturn = DecimalOf(v);
 		}
 		else if (nType == SQL_DOUBLE)
 		{

@@ -63,14 +63,6 @@ enum { //instruction types
 	OPER_GET_A,
 	OPER_ENTER_A,
 	OPER_CALL_METHOD,
-	OPER_CALL_CLOSURE,    // function call where target has m_needsHeapFrame:
-	                      // build the callee frame as an ibRunCaptureContext,
-	                      // which counts its own holders, so that inner lambdas
-	                      // materialised during the call can take the frame and
-	                      // keep it past the return. Operand layout is
-	                      // identical to OPER_CALL; the split avoids a
-	                      // per-OPER_CALL FindFunctionByEntry probe + flag
-	                      // check on the hot non-closure path.
 	OPER_CALL_LINQ,       // universal pipeline method on an iterable receiver
 	                      // (Where / Select / OrderBy / GroupBy / Join /
 	                      // Skip / Take / Aggregate / ...). Compile detects
@@ -92,7 +84,7 @@ enum { //instruction types
 	OPER_SET_TYPE,
 	// ⭐ CREATE A VALUE OF A BUILT-IN TYPE — `New Structure(…)`, `New Array`, and every other
 	// registered VALUE ctor. Configuration objects are not made this way; they come from their
-	// manager (`Catalogs.X.CreateElement()`), which is why the compiler refuses any name that is not
+	// manager (`Catalogs.X.CreateItem()`), which is why the compiler refuses any name that is not
 	// an `ibCtorObjectType_object_value`.
 	//   m_param1            — the destination
 	//   m_param2.m_numIndex — the class NAME in the const pool, for a refusal to be able to name it
@@ -223,7 +215,7 @@ enum { //instruction types
 	OPER_LINQ_RESULT,
 
 	// ⭐ GROUPING AND JOINING, in the same collection and with no name anywhere. A bucket is found by
-	// its KEY; what this replaces was a script `Container` created BY NAME whose every lookup went
+	// its KEY; what this replaces was a script `Map` created BY NAME whose every lookup went
 	// through the language's member machinery.
 	//   OPER_LINQ_BUCKET      p1 = the collection, p2 = the key, p3 = the row to put under it
 	//   OPER_LINQ_BUCKET_GET  p1 = the rows under that key (empty when none), p2 = collection, p3 = key
@@ -467,6 +459,9 @@ enum ibScriptError { //Error message numbers
 
 	// --- compiler, appended after the runtime block so no code above changes its number ------
 	ibScriptError_LinqAfterUnnamedGroup,
+
+	// --- runtime, appended ------
+	ibScriptError_ProcedureNotDone,
 
 	ibScriptError_Count
 };

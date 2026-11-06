@@ -28,9 +28,10 @@
 #include "backend/metaCollection/metaDiff.h"
 #include "backend/metaCollection/metaObject.h"
 #include "backend/metaCollection/attribute/metaAttributeObject.h"   // a field with no type
-#include "backend/metaCollection/metaComposerObject.h"              // …and a composer with no name
+#include "backend/metaCollection/metaTemplateObject.h"              // …and a composer with no name
 #include "backend/metaCollection/partial/dataReport.h"              // …and a report with no composer
 #include "backend/metaCollection/metaSectionObject.h"                // …and an object no section leads to
+#include "backend/metaCollection/partial/commonObject.h"             // …and a register the save would refuse
 
 namespace {
 
@@ -311,12 +312,15 @@ public:
 			"Update database configuration. Code as much as structure: the application runs what the "
 			"database holds, so an edited module gets to the running application only through this, and "
 			"then after a restart (app_run restart). READ database_diff FIRST: this writes DDL and can "
-			"take the base exclusively. With confirm=false it goes all the way and then rolls "
+			"take the base exclusively - an application started from here holds it until app_stop ends it. "
+			"With confirm=false it goes all the way and then rolls "
 			"back, answering with the ledger of every CREATE, ALTER and DROP it would have made - "
 			"which is the only way to see the schema changes in advance, because the engine has "
-			"no rehearsal mode by design. Saving first costs nothing here - config_save stores the "
-			"configuration without touching the structure, so the ledger this hands back still "
-			"holds everything the base has not got.");
+			"no rehearsal mode by design. What is rolled back is the structure: the configuration "
+			"itself is stored first either way, as the designer's button stores it, and survives "
+			"closing the designer - config_rollback takes the database's copy back. Saving first "
+			"costs nothing here - config_save stores the configuration without touching the "
+			"structure, so the ledger this hands back still holds everything the base has not got.");
 	}
 
 	const std::vector<ibMcpArgument>& Arguments() const override
@@ -428,13 +432,24 @@ public:
 		// ⚠ BUT ONLY IF THERE WAS A DECISION TO DECLINE. Everything that stops the apply before
 		// `decide` is a refusal with the engine's own words behind it, and it falls through.
 		if (decisionReached && (!commit || sawErrors)) {
+			// ⚠ THE CONFIGURATION ITSELF WAS STORED, whatever came of the rest: the apply's step 1 stores it
+			// before the restructure is decided (ApplyConfiguration). "Nothing was written" read as "closing the
+			// designer loses these edits" and a rehearsal's objects were in the stored copy at the next start
+			// (2026-11-03).
 			result.SetValue(ibT("note"), sawErrors
-				? ibMcpText("Rolled back: the ledger carries errors, so nothing was written whatever was "
-					"confirmed.")
-				: ibMcpText("Rolled back as asked - nothing was written. The ledger above is what "
-					"confirm: true would have done."));
+				? ibMcpText("Rolled back: the ledger carries errors, so the database structure is untouched "
+					"whatever was confirmed. The configuration itself was stored, as applying stores it "
+					"first - config_rollback takes the database's copy back.")
+				: ibMcpText("Rolled back as asked - the database structure is untouched; the ledger above is "
+					"what confirm: true would have done. The configuration itself was stored, as applying "
+					"stores it first - config_rollback takes the database's copy back."));
 			return true;
 		}
+
+		// ⭐ THE DOOR, NAMED (#646). An apply that never reached its decision most often found the base held, and the
+		// holder is usually the application started from here, standing at a breakpoint.
+		if (!decisionReached)
+			refusal += ibMcpText(" If an application started from here holds the base, app_stop ends it.");
 
 		return false;   // a real failure — `refusal` already carries the engine's words
 	}
@@ -445,6 +460,16 @@ MCP_TOOL_REGISTER_DESIGNER(ibMcpToolConfigApply);
 //---------------------------------------------------------------------------
 // config_rollback
 //---------------------------------------------------------------------------
+
+namespace {
+const ibArg& ArgRollbackConfirm()
+{
+	static const ibArg argument(ibT("confirm"), ibArg::Kind::Flag,
+		ibMcpText("true discards every edit since the last apply and takes the database's copy back. "
+			"false refuses and changes nothing."), true);
+	return argument;
+}
+}
 
 class ibMcpToolConfigRollback : public ibMcpTool {
 public:
@@ -466,7 +491,7 @@ public:
 
 	const std::vector<ibMcpArgument>& Arguments() const override
 	{
-		static const std::vector<ibMcpArgument> s_arguments = { ArgConfirm() };
+		static const std::vector<ibMcpArgument> s_arguments = { ArgRollbackConfirm() };
 		return s_arguments;
 	}
 
@@ -476,7 +501,7 @@ public:
 		if (config == nullptr)
 			return false;
 
-		if (!ArgConfirm().Flag(params)) {
+		if (!ArgRollbackConfirm().Flag(params)) {
 			refusal = ibMcpText("This discards every edit since the last apply and cannot be undone. Pass "
 				"confirm: true if that is what you mean; database_diff lists what would go.");
 			return false;
@@ -727,9 +752,9 @@ public:
 	{
 		return ibMcpText("WHAT IS UNFINISHED IN THIS CONFIGURATION, object by object - the questions each "
 			"verb asks about the thing it just touched, asked of everything at once. Only faults "
-			"that BITE: what will refuse to save (a composer with a nameless variant), and what "
-			"produces silence for the person using it (a report showing no columns, an attribute "
-			"that can hold no type, a register with no resources). Ask it when picking up a base "
+			"that BITE: what will refuse to save (a composer with a nameless variant, a register "
+			"with no column or no recorder), and what produces silence for the person using it (a "
+			"report showing no columns, an attribute that can hold no type). Ask it when picking up a base "
 			"somebody else built, and before saving or applying.");
 	}
 
@@ -864,13 +889,26 @@ public:
 			// hidden only because this server runs inside the designer — the one process where
 			// that check stays quiet (caught by Max asking whether ConvertToType throws, after I
 			// had "improved" these four casts into it — 2026-09-02).
-			const ibValueMetaObjectComposer* composer = nullptr;
-			if (object->ConvertToValue(composer)) {
+			const ibValueMetaObjectTemplate* composer = nullptr;
+			if (object->ConvertToValue(composer) && composer->GetTemplateDesc().GetType() == ibTemplateType::Composer) {
 
 				std::vector<ibString> missing;
-				ibMcpComposerComplaints(composer->GetCompositionDesc(), missing);
+				ibMcpComposerComplaints(composer->GetTemplateDesc().GetCompositionDesc(), missing);
 
 				for (const ibString& one : missing)
+					complain(object, one);
+
+				continue;
+			}
+
+			// ⭐ A REGISTER THE SAVE WOULD REFUSE — no column at all, or written by a recorder and bound to
+			// none. The save itself is asked (ibMcpComplaints), because it refuses the WHOLE configuration over
+			// one of them: every other change of the session waited behind a sequence that was still being
+			// built, and nothing said so until the save (#189).
+			const ibValueMetaObjectRegisterData* registerData = nullptr;
+			if (object->ConvertToValue(registerData)) {
+
+				for (const ibString& one : ibMcpComplaints(object))
 					complain(object, one);
 
 				continue;
@@ -883,7 +921,7 @@ public:
 			const ibValueMetaObjectAttribute* attribute = nullptr;
 			if (object->ConvertToValue(attribute)) {
 
-				if (attribute->GetTypeDesc().m_listTypeClass.empty())
+				if (!attribute->GetTypeDesc().IsOk())
 					complain(object, ibMcpText("no type - metadata_set_type says what it may hold; a "
 						  "field with no type is one nothing can be written into"));
 
@@ -898,10 +936,10 @@ public:
 				for (unsigned int index = 0; index < object->GetChildCount(); index++) {
 
 					const ibValueMetaObject* child = object->GetChild(index);
-					const ibValueMetaObjectComposer* inside = nullptr;
+					const ibValueMetaObjectTemplate* inside = nullptr;
 
 					anyComposer = anyComposer
-						|| (child != nullptr && child->ConvertToValue(inside));
+						|| (child != nullptr && child->ConvertToValue(inside) && inside->GetTemplateDesc().GetType() == ibTemplateType::Composer);
 				}
 
 				if (!anyComposer) {
@@ -959,6 +997,7 @@ public:
 			for (const ibDiagnostic& diagnostic : answer.m_diagnostics) {
 				std::shared_ptr<ibDataNode> line = std::make_shared<ibDataNode>();
 				line->AddField(ibT("line"), ibDataValue::Int(static_cast<std::int64_t>(diagnostic.m_line)));
+				line->SetValue(ibT("module"), diagnostic.m_moduleName);
 				line->SetValue(ibT("message"), diagnostic.m_message);
 				if (!diagnostic.m_codeLine.IsEmpty())
 					line->SetValue(ibT("codeLine"), diagnostic.m_codeLine);

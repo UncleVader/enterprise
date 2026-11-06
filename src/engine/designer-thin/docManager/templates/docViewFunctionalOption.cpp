@@ -1,6 +1,7 @@
 #include "docViewFunctionalOption.h"
 
 #include "designer-thin/win/editor/functionalOptionEditor/functionalOptionEditor.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibCheckTree
 
 // ----------------------------------------------------------------------------
 // ibFunctionalOptionEditView implementation
@@ -59,3 +60,5 @@ ibFrontendView* ibFunctionalOptionEditDocument::DoCreateView()
 {
 	return new ibFunctionalOptionEditView();
 }
+
+TAB_DOCUMENT_REGISTER(ibFunctionalOptionEditDocument, ibProtocol::ibView::ibKind::FunctionalOption)

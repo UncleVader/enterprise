@@ -79,7 +79,7 @@ void ibValueGridBox::Create(wxWindow* parent, const ibProtocolNode& /*node*/)
 
 	// A DOUBLE left click opens the cell's value — the editor's own event, the question asked of the server: what this
 	// figure is made of is its sheet's to say.
-	gridWindow->Bind(wxEVT_GRID_CELL_LEFT_DCLICK, &ibValueGridBox::OnCellLeftClick, this);
+	gridWindow->Bind(ibEVT_GRID_CELL_LEFT_DCLICK, &ibValueGridBox::OnCellLeftClick, this);
 }
 
 void ibValueGridBox::Update(const ibProtocolNode& node)
@@ -163,3 +163,5 @@ void ibValueGridBox::OnCellLeftClick(ibGridEvent& event)
 		.SetValue(ibProtocol::ibEvent::Col, event.GetCol() + 1);
 	Send(ibProtocol::ibEvent::ibKind::Cell, args);
 }
+
+CONTROL_REGISTER(ibValueGridBox, ibProtocol::ibForm::ibType::Gridbox)

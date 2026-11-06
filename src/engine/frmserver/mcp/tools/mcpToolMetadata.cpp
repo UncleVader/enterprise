@@ -16,7 +16,7 @@
 #include "frmserver/mcp/mcpTool.h"
 #include "frmserver/mcp/tools/mcpToolMetadata.h"
 #include "backend/metaCollection/attribute/metaAttributeObject.h"   // anything that DECLARES a type
-#include "backend/metaCollection/metaComposerObject.h" // …and a query is the other place a name is said
+#include "backend/metaCollection/metaTemplateObject.h" // …and a query is the other place a name is said
 #include "backend/metaCollection/metaIntrospect.h"
 #include "backend/metaCollection/metaModuleObject.h"   // the standard handlers a module may implement
 #include "backend/metaCollection/metaObject.h"
@@ -694,7 +694,7 @@ public:
 			const ibValueMetaObjectAttributeBase* column = nullptr;
 			if (other->ConvertToValue(column)) {
 
-				for (const ibClassID& clsid : column->GetTypeDesc().m_listTypeClass) {
+				for (const ibClassID& clsid : column->GetTypeDesc().GetClsidList()) {
 
 					// ⚠ THE KIND FIRST. Only a CONSTRUCTIVE id carries a metaID; a static one's body
 					// is a name hash, and reading a hash as an id finds a match roughly never and
@@ -747,14 +747,14 @@ public:
 			ibString text, where;
 
 			const ibValueMetaObjectModuleBase* module = nullptr;
-			const ibValueMetaObjectComposer* composer = nullptr;
+			const ibValueMetaObjectTemplate* composer = nullptr;
 
 			if (other->ConvertToValue(module)) {
 				text = module->GetModuleText();
 				where = ibMcpText("script");
 			}
-			else if (other->ConvertToValue(composer)) {
-				text = composer->GetCompositionDesc().m_query;
+			else if (other->ConvertToValue(composer) && composer->GetTemplateDesc().GetType() == ibTemplateType::Composer) {
+				text = composer->GetTemplateDesc().GetCompositionDesc().m_query;
 				where = ibMcpText("query");
 			}
 

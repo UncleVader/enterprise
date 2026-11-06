@@ -588,10 +588,10 @@ static const char* OpName(int base) {
 
 // A LAMBDA INSIDE A PIPELINE LAMBDA, on the tape.
 //
-// The runtime side of the capture was fixed by making a heap-promoted frame OWN
+// The runtime side of the capture was fixed by making the outer lambda's frame OWN
 // its arguments; a green test alone does not prove the two halves agree, because
 // the right answer can come out of the wrong layout. This dump is the other half:
-// it says whether the compiler flagged the OUTER lambda `m_needsHeapFrame`, and
+// it says what the compiler listed in each lambda's `m_listCaptured`, and
 // at what DEPTH the inner body reads the outer parameter — the depth has to line
 // up with where ibValueFunction::Execute installs m_capturedFrames (layers
 // [1..N], everything pre-existing shifted to [N+1..]).
@@ -617,7 +617,7 @@ TEST(RuntimeBench, DISABLED_DumpNestedLambda) {
                   << "  params=" << fn.m_listParam.size()
                   << "  vars=" << fn.m_lVarCount
                   << "  line=" << fn.m_lCodeLine
-                  << "  heapFrame=" << (fn.m_needsHeapFrame ? "YES" : "no")
+                  << "  captured=" << fn.m_listCaptured.size()
                   << "  lambda=" << (fn.IsLambda() ? "yes" : "no")
                   << "\n";
     }
@@ -644,11 +644,12 @@ TEST(RuntimeBench, DISABLED_DumpNestedLambda) {
 //
 // A profile of that bench put `operator new` at 11.7% of the run with 96% of the
 // calls coming from CallLambdaWithArgs, i.e. the FRAME is reaching the heap on
-// every invocation. Two things there can allocate and they are told apart by two
+// every invocation. Two things there could allocate and they are told apart by two
 // printed numbers, not by reading:
 //   vars > 256 (one pool block) -> SetLocalCount falls back to `new ibValue[]`
-//   heapFrame = YES             -> make_shared, one per call
-// A lambda with no inner lambda must show neither.
+//   captured > 0                -> m_listCaptured; its depth-0 entries cost a cell each per call
+// A lambda with no inner lambda must show neither. (The second was `heapFrame` — a
+// whole frame on the heap per call — until a lambda took cells instead, 2026-11-03.)
 //
 // The first line used to read `vars > MAX_STATIC_VAR`, back when a frame carried its
 // locals inline and anything wider went to the heap. Local slots now come from the
@@ -677,7 +678,7 @@ TEST(RuntimeBench, DISABLED_DumpThinLambda) {
                   << "  name='" << fn.m_strRealName.ToUTF8().c_str() << "'"
                   << "  params=" << fn.m_listParam.size()
                   << "  vars=" << fn.m_lVarCount
-                  << "  heapFrame=" << (fn.m_needsHeapFrame ? "YES" : "no")
+                  << "  captured=" << fn.m_listCaptured.size()
                   << "  lambda=" << (fn.IsLambda() ? "yes" : "no")
                   << "  spills=" << (fn.m_lVarCount > 256 ? "YES" : "no")
                   << "\n";
@@ -1754,7 +1755,7 @@ TEST(RuntimeBench, DISABLED_RecordParts) {
 
 // --- where a field's cost goes as a structure gets wider -------------------
 // `struct build 3 fields` read 1603 ns on 2026-08-11 (§8) and 2321 today, and
-// the suspect is the commit that turned ibValueContainer into a hash index
+// the suspect is the commit that turned ibValueMap into a hash index
 // (675b04db, 23:19 THAT DAY — the baseline predates it by hours). A hash pays a
 // fixed price the tree did not: the first insert allocates a bucket array, and
 // the key is then stored TWICE, in m_entries and in m_index.

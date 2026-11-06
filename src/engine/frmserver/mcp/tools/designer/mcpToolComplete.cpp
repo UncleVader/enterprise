@@ -193,7 +193,6 @@ ibString ibOriginName(ibNameOrigin origin)
 	switch (origin) {
 	case ibNameOrigin::Platform:     return ibT("platform");
 	case ibNameOrigin::Global:       return ibT("global");
-	case ibNameOrigin::GlobalModule: return ibT("globalModule");
 	case ibNameOrigin::Context:      return ibT("context");
 	case ibNameOrigin::Bound:        return ibT("bound");
 	case ibNameOrigin::Member:       return ibT("member");
@@ -317,8 +316,8 @@ public:
 			"(Write / Fill / Lock on a document); `context` is the binding itself, ThisObject / "
 			"ThisForm; `bound` is a handle this module was given, such as a constant's Value; "
 			"`declared` is written in this text (with `local` true when it belongs to the body you "
-			"are standing in); `inherited` comes from a module above this one. `platform`, `global` "
-			"and `globalModule` are the ones you already know - the configuration's collections, "
+			"are standing in); `inherited` comes from a module above this one. `platform` and `global` "
+			"are the ones you already know - the configuration's collections, "
 			"the system functions, global constants and common modules.\n\n"
 			"EVERY NAME IN IT CAN BE WRITTEN HERE - it is what the runtime itself sees at that "
 			"point, not everything that exists. This text's own names, the globals, and from each "
@@ -475,7 +474,7 @@ public:
 			// ⭐⭐ WHAT THE EXPRESSION TURNED OUT TO BE, AND IT IS SAID PER BRANCH. The members alone
 			// say what may be written next; they do not say WHAT is being written on, and a caller
 			// reading only a member list has to infer the thing from its parts — a catalog manager
-			// from `CreateElement`, an array from `Add`. That is the same guessing this arc removes
+			// from `CreateItem`, an array from `Add`. That is the same guessing this arc removes
 			// everywhere else, so the value says its own name: it is the one fact the walk holds and
 			// nobody else can recover. Said once for the whole answer it would name the last branch
 			// and describe the others wrongly, which is worse than saying nothing.

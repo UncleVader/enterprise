@@ -19,7 +19,9 @@ ibValueForm::ibValueForm(const ibFormRequest& request, const ibValueMetaObjectFo
 	m_formType(defaultFormType), m_formModified(false),
 	m_closeOnChoice(true), m_closeOnOwnerClose(true),
 	m_metaFormObject(nullptr), m_controlOwner(nullptr), m_request(request),
-	m_formCollectionControl(new ibValueFormCollectionControl(this))
+	m_formCollectionControl(new ibValueFormCollectionControl(this)),
+	m_formCollectionAttribute(new ibValueFormCollectionAttribute(this)),
+	m_formCollectionCommand(new ibValueFormCollectionCommand(this))
 {
 	// Frame surface (properties + Events) comes from ibValueFrame::FillMembers, bound
 	// by the base ctor. The form ADDS its own members on top (FillFormMembers); module
@@ -316,7 +318,7 @@ void ibValueForm::FillFormMembers(ibMemberTable& helper) const
 	helper.AppendProc(ibT("Show"), ibT("Show()"));
 	helper.AppendProc(ibT("Activate"), ibT("Activate()"));
 	helper.AppendProc(ibT("Update"), ibT("Update()"));
-	helper.AppendProc(ibT("Close"), ibT("Close()"));
+	helper.AppendFunc(ibT("Close"), ibT("Close()"));
 	helper.AppendFunc(ibT("IsShown"), ibT("IsShown()"));
 	helper.AppendProc(ibT("AttachIdleHandler"), 3, ibT("AttachIdleHandler(procedureName : string, interval : number, single : boolean)"));
 	helper.AppendProc(ibT("DetachIdleHandler"), 1, ibT("DetachIdleHandler(procedureName : string)"));
@@ -328,7 +330,7 @@ void ibValueForm::FillFormMembers(ibMemberTable& helper) const
 	// Module exports AND the context binds (ThisForm.Controls / DataSource) are
 	// surfaced as the helper's tail by the descriptor's ExportThunk (autobind under
 	// eProcUnit == g_aliasExport) — NOT here. Doing it manually made an unguarded
-	// virtual GetCompileModule() on a possibly half-alive `this` (crash on teardown /
+	// virtual call on a possibly half-alive `this` (crash on teardown /
 	// debugger-thread lazy build); the descriptor thunk is dynamic_cast-guarded.
 
 	// A button, a caption, or an HTML box holds no value and is still what a
@@ -400,7 +402,10 @@ bool ibValueForm::SetPropVal(const long lPropNum, const ibValue& varPropVal)
 	}
 	else if (lPropAlias == eFormAttribute) {
 		if (ibFormAttributeValue* attr = FindAttributeById(m_members.GetPropData(lPropNum))) {
-			attr->SetValue(varPropVal);
+			// INTO THE VALUE THE ATTRIBUTE HOLDS — the cell the module's bare <name> writes through its bind.
+			// SetValue is the variant's own, inherited by the holder: it copied the value over the HOLDER, so
+			// `ThisForm.<name> = …` turned the entry into the primitive and the attribute never saw it.
+			attr->SetHeldValue(varPropVal);
 			return true;
 		}
 	}

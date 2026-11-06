@@ -48,7 +48,7 @@
 #include "frmserver/mcp/mcpTool.h"
 
 #include "core/description/compositionDescription.h"
-#include "backend/metaCollection/metaComposerObject.h"
+#include "backend/metaCollection/metaTemplateObject.h"
 #include "backend/metadataConfiguration.h"
 #include "backend/composition/dataComposer.h"                  // ibDataDBComposer — folding the settings
 #include "backend/composition/composeRunSchema.h"                     // …and the field names the far end reads
@@ -75,11 +75,11 @@ using ibArg = ibMcpTool::ibMcpArgument;
 const ibArg& ArgId(bool required)
 {
 	static const ibArg s_optional(ibT("id"), ibArg::Kind::Whole,
-		ibMcpText("The composer's NodeId - a report declares one, metadata_get on the report lists it "
-			  "among its children. Give this OR `schema`, not both."), /*required*/ false);
+		ibMcpText("The composer's NodeId - a template of the composer kind, under a report or any other object; "
+			  "metadata_get on its owner lists it among its children. Give this OR `schema`, not both."), /*required*/ false);
 	static const ibArg s_required(ibT("id"), ibArg::Kind::Whole,
-		ibMcpText("The composer's NodeId - a report declares one, metadata_get on the report lists it "
-			  "among its children."), /*required*/ true);
+		ibMcpText("The composer's NodeId - a template of the composer kind, under a report or any other object; "
+			  "metadata_get on its owner lists it among its children."), /*required*/ true);
 	return required ? s_required : s_optional;
 }
 
@@ -272,16 +272,17 @@ public:
 
 	ibString GetName() const override { return ibT("compose_run"); }
 
-	// 🛑 NOT ON THE MAIN THREAD — see ibMcpTool::NeedsMainThread, which says this in as many words.
-	// The schema goes down the socket and the tables come back through the session's worker, which on
-	// the desktop IS the main loop: waiting here would be waiting for a message only this thread can
-	// dispatch. Measured, because it was not read: the designer hung with `ibMcpDebugBridge::Compose`
-	// blocked at the bottom of `wxEventLoopManual::DoRunLoop` (2026-09-06).
+	// 🛑 NOT AS THE SESSION'S TASK — see ibMcpTool::IsSessionTask, which says this in as many words.
+	// The schema goes down the socket and the tables come back through the session's queue: waiting
+	// in that queue is waiting for a task behind this one. Measured, because it was not read: the
+	// designer hung with `ibMcpDebugBridge::Compose` blocked in the desktop's event loop (2026-09-06).
 	//
 	// ⚠ A DEADLOCK BY CONSTRUCTION CANNOT BE FIXED BY A LONGER DEADLINE. Nothing in this verb touches
 	// a window — it talks to a socket and a condition variable, and both are indifferent to where
 	// they are called from. It is the WAITING that decides, not what is being waited for.
-	bool NeedsMainThread() const override { return false; }
+	bool IsSessionTask() const override { return false; }
+
+	bool IsDataAssistant() const override { return true; }
 
 	ibString GetActivity(const ibDataNode& params) const override
 	{
@@ -488,9 +489,9 @@ public:
 		// does. Nothing new was built for it: it is a second source for one field.
 		ibCompositionDescription description;
 		ibString                 subject;
-		// The report this came from, when it came from one — kept because a SAVED SETTING is stored
+		// The composer this came from, when it came from one — kept because a SAVED SETTING is stored
 		// against its key and would otherwise have to be looked up a second time further down.
-		ibValueMetaObject*       object = nullptr;
+		ibValueMetaObjectTemplate* object = nullptr;
 
 		auto givenSchema = params.FindChild(ArgSchema().Name());
 		const bool        namedReport = params.Has(ArgId(false).Name());
@@ -556,18 +557,11 @@ public:
 			subject = ibMcpText("the schema given");
 		}
 		else {
-			object = ibMcpObjectNamed(params, refusal);
+			object = ibMcpComposerNamed(params, refusal);
 			if (object == nullptr)
 				return false;
 
-			ibValueMetaObjectComposer* composerObject = object->ConvertToType<ibValueMetaObjectComposer>();
-			if (composerObject == nullptr) {
-				refusal = ibString::Format(
-					ibMcpText("'%s' is not a composer. metadata_get on the report lists the composer among "
-						  "its children."), object->GetName());
-				return false;
-			}
-			description = composerObject->GetCompositionDesc();
+			description = object->GetTemplateDesc().GetCompositionDesc();
 			subject     = object->GetName();
 		}
 
@@ -695,7 +689,7 @@ public:
 	}
 };
 
-MCP_TOOL_REGISTER_DATA(ibMcpToolComposeRun);
+MCP_TOOL_REGISTER(ibMcpToolComposeRun);
 
 //---------------------------------------------------------------------------
 // report_show
@@ -706,6 +700,8 @@ class ibMcpToolReportShow : public ibMcpTool {
 public:
 
 	ibString GetName() const override { return ibT("report_show"); }
+
+	bool IsDataAssistant() const override { return true; }
 
 	ibString GetActivity(const ibDataNode& /*params*/) const override
 	{
@@ -777,7 +773,7 @@ public:
 	}
 };
 
-MCP_TOOL_REGISTER_DATA(ibMcpToolReportShow);
+MCP_TOOL_REGISTER_RUNTIME(ibMcpToolReportShow);
 
 //---------------------------------------------------------------------------
 // compose_settings
@@ -830,17 +826,9 @@ public:
 
 	bool Call(const ibDataNode& params, ibDataNode& result, ibString& refusal) const override
 	{
-		ibValueMetaObject* object = ibMcpObjectNamed(params, refusal);
+		ibValueMetaObjectTemplate* object = ibMcpComposerNamed(params, refusal);
 		if (object == nullptr)
 			return false;
-
-		ibValueMetaObjectComposer* composerObject = object->ConvertToType<ibValueMetaObjectComposer>();
-		if (composerObject == nullptr) {
-			refusal = ibString::Format(
-				ibMcpText("'%s' is not a composer. metadata_get on the report lists the composer among "
-					  "its children."), object->GetName());
-			return false;
-		}
 
 		ibUserInfo owner;
 		if (!UserNamed(params, ArgUser(), owner, refusal))
@@ -885,8 +873,7 @@ public:
 		// the wrong one" or "this one is not what I expect". report_variant lists them too; they are
 		// here because a diagnosis needs both sides in one look: what the report can be run AS, and
 		// what this person saved for themselves. Two different ways to end up seeing something else.
-		const ibCompositionDescription& description =
-			composerObject != nullptr ? composerObject->GetCompositionDesc() : ibCompositionDescription();
+		const ibCompositionDescription& description = object->GetTemplateDesc().GetCompositionDesc();
 		std::vector<ibDataValue> variants;
 		variants.reserve(description.m_variants.size());
 		for (size_t i = 0; i < description.m_variants.size(); ++i) {

@@ -10,7 +10,9 @@ the browser one [the browser client](browser-client.md).
 
 **Where it is written.** Every name and number below is written once, in `src/engine/protocol/protocol.h` — a header
 that depends on nothing, included by the server (`frmserver`), the thin client and the web server alike. A number there
-is never renumbered.
+is never renumbered. What only the designer speaks — its debugger, its schemas and views, the questions asked while a
+configuration is written — is written beside it, in `protocol/protocolDesigner.h`; its numbers stay in `protocol.h`,
+one numbering for the wire.
 
 ## Transports
 
@@ -22,7 +24,9 @@ is never renumbered.
 
 The address is `oes://server[:port]/<base>`, or `oess://` when the server speaks TLS - its `backend.conf` names a
 certificate, which the client checks ([listeners.md](listeners.md)); the port is the cluster's, 7373 unless its
-`server.conf` says otherwise. A file base needs no server: the client opens it itself and makes the same calls in process. A thin designer's
+`server.conf` says otherwise. A web server's publication is reached by the link a browser shows for it,
+`http(s)://server[:port]/<base>/`: the same WebSocket at `/<base>/client`, the same packets; the port left out is the
+browser's (80, 443). A file base needs no server: the client opens it itself and makes the same calls in process. A thin designer's
 WebSocket, and a thin runtime's when `backend.conf` `Resume` is 0, ends its session when it closes. A thin runtime
 with the window on (left out, 120 seconds; 0 is off; never more than 30 minutes) keeps the session that long, and
 comes back with `login` `{Token}`.
@@ -311,6 +315,7 @@ A schema is a dialog of the desktop held as data: the client shows it however it
 | 8 Users | the designer | `Users` (`Guid`, `Name`, `FullName`), and what a record is chosen from: `Roles` (`Guid`, `Name`, `Title`, `Mode`), `Languages` (`Guid`, `Title`, `Code`, and `Default` on the configuration's own language); with `Args {Guid}` — that one's `User` (`Guid`, `Name`, `FullName`, `Password` — whether one is stored, `Language`, `Roles`) | 4 Save `{Guid, Name, FullName, Language, Roles[, Password]}` — the password hashed by the server, absent: kept; 8 Remove `{Guid}` | data administration |
 | 18 ConfigCompare | the designer | with `Args {Mode, File, File2}` (`Mode` 1 the configuration and a file, 2 and the base's, 3 two files): `Records` — the walk of the two; a side that cannot be read is refused | 13 Merge `{Mode, File, File2, Pull, Ops}` — Add/Delete/Replace; what was applied and what was not, said to the person by the server | administration |
 | 19 Types | the designer | the language's types, for the syntax helper: with `Args {Query}` — `Types` (`Name`), whose names match; with `Args {Name}` — what that one offers: `Methods` (`Name`, `Signature`) and `Properties` (`Name`), or `Note`, why it cannot be asked | — | — |
+| 20 Style | both | how the person's interface is painted: `Theme` — 0 as their machine is set, 1 light, 2 dark; theirs, kept in the base (0 until they choose; a base with no users keeps one for everybody) | 4 Save `{Theme}` — kept as theirs; a value that is not one of the three numbers is refused | — |
 
 A schema the client's application does not have, or the person has no right to, is refused.
 
@@ -339,7 +344,7 @@ while the number stays: clicking an object again, or walking back to it, before 
 | Kind | Asks | `respond` with |
 |---|---|---|
 | 1 Message | `Text`, `Caption`, `Style` | `Button`: 2 Yes, 8 No, 4 OK, 16 Cancel |
-| 2 Choice | `Caption` and items: `Id`, `Caption`, `Picture`, `Selected` | `Id` — one of those offered |
+| 2 Choice | `Caption` and items: `Id`, `Caption`, `Picture`, `Selected`; `Quick` — dropped under the field pressed, not a window | `Id` — one of those offered |
 | 4 Edit | `Command` (7–11): done to the field under the client's focus | nothing |
 | 5 File | `Caption` and items: `Title`, `Mask` — a file of the person's chosen and uploaded | `File` — its id; none — cancelled |
 | 6 Generation | `Picture` and items: `Id`, `Caption`, `Picture` — the objects this one generates | `Id` — the one to base a new one on; none — cancelled |
@@ -354,7 +359,7 @@ while the number stays: clicking an object again, or walking back to it, before 
 | 15 Print | a script's sheet: `Sheet`, as a gridbox's `fetch` gives it | `Done` — printed; false — the print dialog cancelled, or the printer failed |
 | 16 Schedule | a form's schedule: `Schedule`, in its stored form | `Schedule` — the one edited, and the form is modified; none — cancelled |
 | 17 ApplyChange | the restructure's ledger: `Picture` and items `Level`, `Text` | `Done` — applied; none — cancelled, rolled back |
-| 18 FormType | a form just made: `Caption`, `Name`, `Synonym`, `Comment` and items `Id`, `Caption`, `Name` — the kinds its owner offers | `Id`, `Name`, `Synonym`, `Comment` — the kind chosen; none — cancelled, form taken away |
+| 18 ObjectKind | a form or a template just made: `Caption` (the window's), `Name`, `Synonym`, `Comment` and items `Id`, `Caption`, `Name` — the kinds it is offered | `Id`, `Name`, `Synonym`, `Comment` — the kind chosen; none — cancelled, the object taken away |
 | 19 PredefinedSelector | the designer's declared values of a reference, its type asked before it as a Choice: `Types` — a branch per admitted reference (`Title`), its values as children (`Name`, `Id`), each with what is declared under it | `Id` — the value chosen; none — closed |
 
 A SavedSettings window stays open through its acts: each act is a `respond`, done by the server, which asks again with
@@ -374,7 +379,9 @@ A ComposerSettings window acts the same way. The setting taken becomes the repor
 composed again — its gridbox says `ComposeState` 2 until the person composes it.
 
 A SimpleChoice is a number's calculator or a date's calendar, dropped under the field pressed. The server asks it from
-the field's Select, after the field's choice event — the event runs on the server, the client only draws.
+the field's Select, after the field's choice event — the event runs on the server, the client only draws. A Choice
+asked `Quick` drops the same way: a reference's items on its Select, or those that match the text typed into it. A
+client that does not know `Quick` asks it in a window.
 
 The server's code waits for the answer where it asked. A call made while a question is pending runs inside that
 wait; which calls a person can make meanwhile is the client's to say.
@@ -396,8 +403,18 @@ What a call's own work changes is not told: its answer carries it. A question th
 answered — a confirmation answered No — comes in that answer, with no `changed` and no empty frame after it; a change
 made after the answer's frame was drawn (a report composed in the background) is told as before.
 
+A login's start is such work too: what changes after its frame was drawn can be told before the login's answer has
+given the client its `Client`. The client asks for its frame once that answer is in — never with no `Client`, which is
+refused (401).
+
 A notification begins `{"jsonrpc":"2.0","method":` — where an answer has its `id` — and a client tells the two apart
 by that, whatever the length.
+
+From protocol 8 a button's node says where its picture stands, `PictureLocation`: 0 where the button puts it (on the
+left), 1 left, 2 right of its `Caption`, 3 a tile — its picture large over its `Caption`, and `Note` (a line under them
+— a price, a count) beside them in the state; a tile fills what its sizer item gives it. Its `View` says how it is
+drawn: 0 a button, 1 a hyperlink — no face and no frame, its caption underlined. A client before 8 draws a button
+with its picture on the left, and the note is not shown.
 
 ## The debugger
 

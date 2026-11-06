@@ -32,7 +32,7 @@
         "global_functions"
       ],
       "signature": "Number(value: any)",
-      "description": "Перетворює значення на число. Рядок розбирається; булеве дає 1 або 0; значення без числового прочитання дає нуль, а не виняток. Результат — точне десяткове число: числа цієї платформи не двійкові з рухомою комою, тому грошова арифметика не пливе.",
+      "description": "Перетворює значення на число. Рядок читається цілком — число, з пробілами навколо, якщо є; \"234,8\" або \"12x\" викликають виняток «Не вдалося перетворити рядок на число». Булеве дає 1 або 0; інше значення без числового прочитання дає нуль, а не виняток. Результат — точне десяткове число: числа цієї платформи не двійкові з рухомою комою, тому грошова арифметика не пливе.",
       "syntax_block": "Number(value: any)",
       "parameters": "value — значення будь-якого типу.",
       "return_descr": "Число.",
@@ -89,7 +89,7 @@
         "global_functions"
       ],
       "signature": "Round(num : number, number, roundMode)",
-      "description": "Округлює число до заданої кількості десяткових знаків. ПРАВИЛО округлення задає третій аргумент, і воно розрізняє результати рівно на половині: Round15as20 (за замовчуванням) відправляє половину від нуля, тому 1.5 стає 2; Round15as10 лишає половину вниз, тому 1.5 стає 1, а вгору йдуть лише .6 і більше. Зазначайте правило явно всюди, де цифру звіряють з іншою системою.",
+      "description": "Округлює число до заданої кількості десяткових знаків. ПРАВИЛО округлення задає третій аргумент, і воно розрізняє результати рівно на половині: Round15as20 (за замовчуванням) відправляє половину від нуля, тому 1.5 стає 2; Round15as10 відправляє рівну половину до нуля, тому 1.5 стає 1, а все, що більше половини, йде вгору (1.51 і 1.6 стають 2). Зазначайте правило явно всюди, де цифру звіряють з іншою системою.",
       "syntax_block": "Round(num : number, number, roundMode)",
       "parameters": "num — число. number — кількість десяткових знаків (за замовчуванням 0). roundMode — RoundMode.Round15as20 (за замовчуванням) або RoundMode.Round15as10.",
       "return_descr": "Число, округлене.",
@@ -400,6 +400,25 @@
       "example": "Message(StrReplace(\"a-b-c\", \"-\", \"+\"));   // a+b+c",
       "availability": "Тонкий клієнт, Сервер",
       "see_also": ["fn.Find", "fn.StrCountOccur"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.StrSplit",
+      "name_local": "StrSplit",
+      "name_en": "StrSplit",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "description": "Розділяє рядок на масив частин за роздільниками. Кожен СИМВОЛ separators — окремий роздільник. Рядок файлу з роздільниками стає масивом його полів.",
+      "syntax_block": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "parameters": "str — рядок, який розділяємо. separators — символи-роздільники, кожен сам по собі (\",;\" ділить і за комою, і за крапкою з комою). includeBlank — залишати порожні частини (два роздільники поспіль або роздільник на краю); за замовчуванням true.",
+      "return_descr": "Масив рядків. Рядок без роздільників — одна частина; самі роздільники до частин не входять.",
+      "example": "var fields = StrSplit(\"2020-01-02|Клієнт 1|5\", \"|\");   // [\"2020-01-02\", \"Клієнт 1\", \"5\"]\nvar words = StrSplit(\"a,,b\", \",\", false);              // [\"a\", \"b\"]",
+      "availability": "Тонкий клієнт, Сервер",
+      "see_also": ["fn.Find", "fn.Mid", "fn.StrReplace"],
       "reviewed": true
     },
     {
@@ -1153,9 +1172,9 @@
         "global_functions"
       ],
       "signature": "WriteJSON(writer : JSONWriter, value : any)",
-      "description": "Пише значення через JSONWriter — написання еталонної системи для `writer.WriteValue(value)`. Structure, Container і Array ідуть цілком, на будь-яку глибину; те, у чого немає форми в JSON (посилання, таблиця), відхиляється за іменем типу і нічого по собі не залишає.",
+      "description": "Пише значення через JSONWriter — написання еталонної системи для `writer.WriteValue(value)`. Structure, Map і Array ідуть цілком, на будь-яку глибину; те, у чого немає форми в JSON (посилання, таблиця), відхиляється за іменем типу і нічого по собі не залишає.",
       "syntax_block": "WriteJSON(writer : JSONWriter, value : any)",
-      "parameters": "writer — JSONWriter; value — String, Number, Boolean, Date, Null, Undefined або Structure / Container / Array з них.",
+      "parameters": "writer — JSONWriter; value — String, Number, Boolean, Date, Null, Undefined або Structure / Map / Array з них.",
       "return_descr": "Нічого.",
       "example": "line = New Structure();\nline.Insert(\"item\", \"x\");\nwriter = New JSONWriter();\nWriteJSON(writer, line);\nMessage(writer.Close());",
       "availability": "Тонкий клієнт, Сервер",
@@ -1272,7 +1291,7 @@
         "global_functions"
       ],
       "signature": "SetStatus(text : string)",
-      "description": "Виводить рядок у рядок стану вікна — перебіг роботи, що триває, нікого не перериваючи.  Під обчисленням не робить нічого.",
+      "description": "Виводить рядок у рядок стану вікна — перебіг роботи, що триває, нікого не перериваючи. У фоновому завданні, яке вікна не має, рядок — активність завдання: її показують «Активні користувачі» і `code_status`. Під обчисленням не робить нічого.",
       "syntax_block": "SetStatus(text : string)",
       "parameters": "text — рядок для показу.",
       "return_descr": "Нічого.",
@@ -1399,6 +1418,25 @@
         "fn.IsEmptyValue",
         "fn.IsNull"
       ],
+      "reviewed": true
+    },
+    {
+      "id": "fn.FillPropertyValues",
+      "name_local": "FillPropertyValues",
+      "name_en": "FillPropertyValues",
+      "kind": "system_procedure",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "description": "Заповнює властивості приймача значеннями однойменних властивостей джерела — у структури, рядка, об'єкта однаково. Нових властивостей у приймача не з'являється.",
+      "syntax_block": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "parameters": "receiver — значення, чиї властивості заповнюються. source — значення, з якого вони читаються. list — імена через кому; якщо порожньо — усі властивості джерела, які приймач може прийняти, а ім'я, яке є лише в одного з них, пропускається. Ім'я зі списку, якого немає в одного з боків або яке приймач не може записати, відхиляється так само, як receiver.Name = source.Name. exclude — імена через кому, які не заповнюються.",
+      "return_descr": "",
+      "example": "var from = New Structure(\"Code, Description, Price\", \"001\", \"Болт\", 5);\nvar to = New Structure(\"Description, Price\", \"\", 0);\nFillPropertyValues(to, from);              // to.Description = \"Болт\", to.Price = 5\nFillPropertyValues(to, from, \"Price\");     // лише Price\nFillPropertyValues(to, from, , \"Price\");   // усе, крім Price",
+      "availability": "Тонкий клієнт, Сервер",
+      "see_also": ["fn.ValueIsFilled"],
       "reviewed": true
     },
     {
@@ -1833,7 +1871,7 @@
       "syntax_block": "GetCommonForm(name : string, owner : any, id : guid)",
       "parameters": "name — ім'я спільної форми. owner — вікно-власник (необов'язково). id — ключ, що впізнає цю форму, щоб повторний запит перевикористав одне вікно (необов'язково).",
       "return_descr": "Форма.",
-      "example": "form = GetCommonForm(\"Settings\");\nform.Open();",
+      "example": "form = GetCommonForm(\"Settings\");\nform.Show();",
       "availability": "Тонкий клієнт, Сервер",
       "see_also": ["fn.ShowCommonForm", "fn.ActiveWindow", "fn.GetCommonTemplate"],
       "reviewed": true
@@ -1961,14 +1999,14 @@
         "global_context",
         "global_functions"
       ],
-      "signature": "RunBackground(procedure : string, args : array)",
-      "description": "Запускає процедуру у фоні й повертає описувач запущеного завдання, не чекаючи на нього. Аргументи передаються Масивом, який розкладається в позиційні параметри процедури; будь-яке інше непорожнє значення відхиляється із зазначенням причини, а не приймається за «без аргументів» — інакше процедура запустилася б із хибною сигнатурою і впала б глибоко всередині. Якщо застосунок не працює, виникає виняток.",
-      "syntax_block": "RunBackground(procedure : string, args : array)",
-      "parameters": "procedure — ім'я процедури, що запускається. args — Масив її аргументів (може бути порожнім).",
+      "signature": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "description": "Запускає процедуру у фоні й повертає описувач запущеного завдання, не чекаючи на нього. Аргументи передаються Масивом, який розкладається в позиційні параметри процедури; будь-яке інше непорожнє значення відхиляється із зазначенням причини, а не приймається за «без аргументів» — інакше процедура запустилася б із хибною сигнатурою і впала б глибоко всередині. Поки завдання тієї ж процедури з тим самим ключем виконується, друге відхиляється — захист кнопки «виконати зараз» від подвійного натискання. Якщо застосунок не працює, виникає виняток.",
+      "syntax_block": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "parameters": "procedure — Ім'яМодуля.Ім'яМетоду, експортний метод загального модуля. args — Масив її аргументів (може бути порожнім). key — ім'я роботи, дане викликачем. description — що це за завдання, як його читає людина.",
       "return_descr": "Запущене фонове завдання.",
       "example": "args = New Array();\nargs.Add(BegOfMonth(WorkingDate()));\njob = RunBackground(\"RecalculateTotals\", args);",
       "availability": "Тонкий клієнт, Сервер",
-      "see_also": ["fn.RunJob", "fn.RunScheduledJobs"],
+      "see_also": ["fn.RunJob", "fn.RunScheduledJobs", "cls.BackgroundJobs", "cls.BackgroundJob"],
       "reviewed": true
     },
     {
@@ -2019,7 +2057,7 @@
         "global_functions"
       ],
       "signature": "XMLString(value : any)",
-      "description": "Значення у вигляді XML - близнюк `JSONString`, лише з XML замість JSON. Значення пакується так, як його зберігає платформа (тип, далі вміст: число - точно, дата - до мілісекунд, рядок, посилання - своїм GUID, значення переліку, Guid - своїм текстом, BinaryData, структура чи масив - разом із вмістом), і цей пакунок пишеться XML-документом. Тип зазначається засобами XML Schema: `xsi:type` - `xs:decimal`, `xs:string`, `xs:boolean`, `xs:dateTime` для примітивів, ім'я типу для решти (його номер, якщо за ім'ям тип не знаходиться назад) - і `xsi:nil=\"true\"` для Null; примітив пишеться своїм текстом - усередині документа `<Node xsi:type=\"xs:decimal\">5</Node>`. Дата поза 1-9999 роками не має тексту, який читається назад, і відхиляється. На відміну від JSON зберігається вид кожного значення, і `XMLValue` читає значення назад таким, яким воно було, зокрема посилання чи значення переліку конфігурації всередині структури, масиву чи контейнера (Container).\n\nТекст - цілий документ, а не вміст одного елемента. Значення, яке не можна запакувати (форма, відкритий об'єкт, тип), відхиляється: `The value 'Type' cannot be serialized`. Потрібна відкрита конфігурація.",
+      "description": "Значення у вигляді XML - близнюк `JSONString`, лише з XML замість JSON. Значення пакується так, як його зберігає платформа (тип, далі вміст: число - точно, дата - до мілісекунд, рядок, посилання - своїм GUID, значення переліку, Guid - своїм текстом, BinaryData, структура чи масив - разом із вмістом), і цей пакунок пишеться XML-документом. Тип зазначається засобами XML Schema: `xsi:type` - `xs:decimal`, `xs:string`, `xs:boolean`, `xs:dateTime` для примітивів, ім'я типу для решти (його номер, якщо за ім'ям тип не знаходиться назад) - і `xsi:nil=\"true\"` для Null; примітив пишеться своїм текстом - усередині документа `<Node xsi:type=\"xs:decimal\">5</Node>`. Дата поза 1-9999 роками не має тексту, який читається назад, і відхиляється. На відміну від JSON зберігається вид кожного значення, і `XMLValue` читає значення назад таким, яким воно було, зокрема посилання чи значення переліку конфігурації всередині структури, масиву чи відповідності (Map).\n\nТекст - цілий документ, а не вміст одного елемента. Значення, яке не можна запакувати (форма, відкритий об'єкт, тип), відхиляється: `The value 'Type' cannot be serialized`. Потрібна відкрита конфігурація.",
       "syntax_block": "XMLString(value : any)",
       "parameters": "value - значення, яке треба записати.",
       "return_descr": "Рядок.",

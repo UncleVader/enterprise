@@ -234,6 +234,7 @@
     <ClCompile Include="metaTree\treeDataProcessor.cpp" />
     <ClCompile Include="metaTree\treeDataReport.cpp" />
     <ClCompile Include="schema\about.cpp" />
+    <ClCompile Include="schema\style.cpp" />
     <ClCompile Include="schema\activeUser.cpp" />
     <ClCompile Include="schema\auditLog.cpp" />
     <ClCompile Include="schema\clientSchema.cpp" />
@@ -261,7 +262,7 @@
     <ClCompile Include="visualView\visualHostDocView.cpp" />
     <ClCompile Include="win\dlgs\formEditor.cpp" />
     <ClCompile Include="win\dlgs\applyChange.cpp" />
-    <ClCompile Include="win\dlgs\formSelector.cpp" />
+    <ClCompile Include="win\dlgs\kindSelector.cpp" />
     <ClCompile Include="win\dlgs\generation.cpp" />
     <ClCompile Include="win\dlgs\selectPredefined.cpp" />
     <ClCompile Include="win\dlgs\settings\savedSettings.cpp" />
@@ -274,6 +275,7 @@
     <ClCompile Include="visualView\ctrl\boxsizer_res.cpp" />
     <ClCompile Include="visualView\ctrl\button.cpp" />
     <ClCompile Include="visualView\ctrl\buttonEvent.cpp" />
+    <ClCompile Include="visualView\ctrl\buttonProperty.cpp" />
     <ClCompile Include="visualView\ctrl\button_res.cpp" />
     <ClCompile Include="visualView\ctrl\chartBox.cpp" />
     <ClCompile Include="visualView\ctrl\chartBox_res.cpp" />
@@ -399,6 +401,7 @@
     <ClInclude Include="metaTree\treeDataProcessor.h" />
     <ClInclude Include="metaTree\treeDataReport.h" />
     <ClInclude Include="schema\about.h" />
+    <ClInclude Include="schema\style.h" />
     <ClInclude Include="schema\activeUser.h" />
     <ClInclude Include="schema\auditLog.h" />
     <ClInclude Include="schema\clientSchema.h" />
@@ -427,7 +430,7 @@
     <ClInclude Include="visualView\visualHost.h" />
     <ClInclude Include="win\dlgs\formEditor.h" />
     <ClInclude Include="win\dlgs\applyChange.h" />
-    <ClInclude Include="win\dlgs\formSelector.h" />
+    <ClInclude Include="win\dlgs\kindSelector.h" />
     <ClInclude Include="win\dlgs\generation.h" />
     <ClInclude Include="win\dlgs\selectPredefined.h" />
     <ClInclude Include="win\dlgs\settings\savedSettings.h" />

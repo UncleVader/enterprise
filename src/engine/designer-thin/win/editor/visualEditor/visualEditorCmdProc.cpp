@@ -12,6 +12,7 @@
 #include "frmclient/backend/serialize/dataProtocol.h"   // ibReadProtocolValue, ibWriteProtocolNode — a control's values
 #include "frmclient/backend/propertyManager/property/propertySerializable.h"   // a layer's properties — a row's each
 #include "frmclient/mainFrame/objinspect/objinspect.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibView::ibFormDesigner, ibProtocol::ibView::ibModule
 
 #include <wx/artprov.h>
 #include <wx/clipbrd.h>
@@ -121,7 +122,7 @@ void SetNodeProperty(ibProtocolNode node, const wxString& name, const ibDataValu
 {
 	node.Remove(name.utf8_str());
 	ibDataNode entries;
-	entries.SetProperty(name, value);
+	entries.SetProperty(ibString(name), value);
 	ibWriteProtocolNode(entries, node);
 }
 

@@ -6,7 +6,7 @@
 #include "protocol/protocol.h"
 
 #include "frmclient/visualView/ctrl/frame.h"
-#include "frmclient/win/theme/luna_toolbarart.h"
+#include "gui/univ/theme/luna_toolbarart.h"
 
 #include <algorithm>
 
@@ -324,7 +324,7 @@ void ibAuditLogView::BuildLayout(wxWindow* parent)
 	// ----- DataView -----
 	m_dataEditor = new ibDataViewCtrl(parent, wxID_ANY,
 		wxDefaultPosition, wxDefaultSize, 0);
-	m_dataEditor->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED,
+	m_dataEditor->Bind(ibEVT_DATAVIEW_ITEM_ACTIVATED,
 		&ibAuditLogView::OnItemActivated, this);
 	m_dataEditor->Bind(wxEVT_MENU, &ibAuditLogView::OnCommandMenu, this);
 
@@ -495,3 +495,5 @@ bool ibAuditLogView::OnClose(bool deleteWindow)
 	if (m_tailTimer && m_tailTimer->IsRunning()) m_tailTimer->Stop();
 	return true;
 }
+
+TAB_DOCUMENT_REGISTER(ibAuditLogDocument, ibProtocol::ibView::ibKind::AuditLog)

@@ -1,4 +1,5 @@
 #include "propertySource.h"
+#include "backend/backend_exception.h"   // a path that does not resolve raises
 #include "backend/propertyManager/property/variant/variantSource.h"   // GetGuidByID / GetIdByGuid — the hop <-> guid resolve
 #include "core/serialize/dataBuilder.h"   // ibDataValue — node value (Binary)
 #include "core/description/sourceDescription.h"       // ibSourceDescription / ibSourceHop (the id path the variant holds)
@@ -100,15 +101,28 @@ bool ibPropertySource::IsAvailable() const {
 ////////////////////////////////////////////////////////////////////////
 
 //base property for "source"
+// ⭐ A SCRIPT BINDS BY THE PATH IT READS — the dotted text GetDataValue answers with (`Control.Source = "List.Price"`),
+// walked by the control's own WalkSource, the walk MCP form_bind takes too (it writes through this door). An
+// empty text unbinds. A path that does not resolve RAISES: left quietly unchanged, the control would go on showing
+// what it showed before.
 bool ibPropertySource::SetDataValue(const ibValue& varPropVal)
 {
-	//varPropVal.GetString();
-	return false;
+	const ibString path = varPropVal.GetString();
+	if (path.IsEmpty()) {
+		SetValue(ibSourceDescription());
+		return true;
+	}
+
+	const ibBackendTypeSourceFactory* const factory = get_cell_variant<ibVariantSource>()->GetSourceFactory();
+	SetValue(factory->WalkSource(path));
+	return true;
 }
 
+// …and an UNBOUND one reads as no path at all, the text that unbinds: `A.Source = B.Source` carries an unbound B over
+// as it is. "<not selected>" is the inspector's sentence for a person, not a path.
 bool ibPropertySource::GetDataValue(ibValue& pvarPropVal) const
 {
-	pvarPropVal = ibString(m_propValue.GetString());
+	pvarPropVal = IsEmptyProperty() ? ibString() : m_propValue.GetString();
 	return true;
 }
 
@@ -209,7 +223,7 @@ bool ibPropertySource::PasteNodeValue(const ibDataValue& value)
 #include "backend/metaCollection/partial/reference/reference.h"   // ConvertToMetaIds — a field's reference targets
 #include "backend/srcDataObject.h"     // ibSourceDataObject / ibSourceExplorer — an attribute's fields
 #include "backend/system/value/valueTable.h"   // g_valueTableCLSID — a table's picture
-#include "protocol/protocol.h"     // ibProtocol::ibSchema::ibProperties — the row's keys
+#include "protocol/protocolDesigner.h"     // ibProtocol::ibSchema::ibProperties — the row's keys
 
 #include <algorithm>
 
@@ -278,7 +292,9 @@ void AppendExplorerColumns(ibDataNode& parent, const ibSourceExplorer& explorer,
 			continue;
 		std::vector<ibSourceHop> childPath = prefix;
 		childPath.push_back({ col->GetSourceId() });
-		AppendSource(parent, col->GetSourceName(), childPath,
+		// The name, the type beside it — as an attribute's field says itself (GetProtocolValue, below).
+		const ibString label = col->GetSourceName() + ibT(" (") + MakeTypeString(metaData, col->GetTypeDesc()) + ibT(")");
+		AppendSource(parent, label, childPath,
 			ibValueReferenceDataObject::ConvertToMetaIds(col->GetClsidList(), metaData), false);
 	}
 }
@@ -368,13 +384,14 @@ bool ibPropertySource::GetProtocolValue(ibDataNode& row, ibReader reader)
 					continue;   // a table box — only table sections; a field — only fields
 				std::vector<ibSourceHop> childPath = basePrefix;
 				childPath.push_back({ col->GetSourceId() });
-				// The row says the field as the desktop's window said it (ProcessAttribute) — its SYNONYM, the type beside it;
-				// what is chosen is its path, never its label.
+				// The row says the field by its NAME, the type beside it — a path is chosen by names (Max, 2026-11-02: a
+				// synonym says nothing there), as the root says its attribute and the cell its path; what is chosen is its
+				// path, never its label.
 				if (tableBox) {
-					AppendSource(root, col->GetSourceSynonym(), childPath, {}, true);
+					AppendSource(root, col->GetSourceName(), childPath, {}, true);
 				}
 				else {
-					const ibString label = col->GetSourceSynonym() + ibT(" (") + MakeTypeString(metaData, col->GetTypeDesc()) + ibT(")");
+					const ibString label = col->GetSourceName() + ibT(" (") + MakeTypeString(metaData, col->GetTypeDesc()) + ibT(")");
 					AppendSource(root, label, childPath, ibValueReferenceDataObject::ConvertToMetaIds(col->GetClsidList(), metaData), false);
 				}
 			}
@@ -396,7 +413,7 @@ bool ibPropertySource::GetProtocolValue(ibDataNode& row, ibReader reader)
 			for (size_t i = 1; i < parentPath.size() && boundNode != nullptr; ++i)
 				boundNode = boundNode->FindById(parentPath[i].m_id);
 			if (boundNode != nullptr)
-				AppendExplorerColumns(AppendSource(sources, boundNode->GetSourceSynonym(), {}, {}, true), *boundNode, parentPath, metaData);
+				AppendExplorerColumns(AppendSource(sources, boundNode->GetSourceName(), {}, {}, true), *boundNode, parentPath, metaData);
 		}
 
 		std::vector<ibSourceId> seenRoots;   // GetSourceList is queried under two filters — a root once

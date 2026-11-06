@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 #include "backend/compiler/value.h"
-#include "frmclient/win/dateconv.h"   // DateTimeToWxDateTime / WxDateTimeToDateTime — a date across to wx and back
+#include "gui/dateconv.h"   // DateTimeToWxDateTime / WxDateTimeToDateTime — a date across to wx and back
 #include "backend/compiler/procUnitLambda.h"   // CopyValue — the LET road a script's `r = …` takes
 #include "backend/system/value/valueArray.h"   // ValueHashContract — composite keys
 #include "backend/system/systemManager.h"      // ibValueSystemFunction::Date — the script's door to a date
@@ -182,9 +182,9 @@ TEST(ValueTest, LiteralIsStringNotBoolean) {
 
 // A WIDE literal is no longer a string to a value at all - since the text is char16_t, `wchar_t*` is just
 // another pointer, and the deleted constructor refuses it at compile time rather than letting it turn TRUE.
-static_assert(!std::is_constructible<ibValue, const wchar_t*>::value,
+static_assert(!std::is_constructible_v<ibValue, const wchar_t*>,
     "a wide literal must not become a value - write it as ibT(\"...\")");
-static_assert(!std::is_assignable<ibValue&, const wchar_t*>::value,
+static_assert(!std::is_assignable_v<ibValue&, const wchar_t*>,
     "a wide literal must not be assigned to a value - write it as ibT(\"...\")");
 
 TEST(ValueTest, NarrowLiteralIsStringNotBoolean) {

@@ -450,7 +450,7 @@ TEST(CompileTree, ADeclaredFunctionIsRegisteredSoACallResolves) {
 	EXPECT_EQ(bc.m_listFunc[0].m_strRealName, ibT("Twice"));
 	EXPECT_TRUE(bc.m_listFunc[0].m_bCodeRet);
 	EXPECT_EQ(bc.m_listFunc[0].m_listParam.size(), 1u);
-	EXPECT_GT(CountOpcode(bc, OPER_CALL) + CountOpcode(bc, OPER_CALL_CLOSURE), 0u)
+	EXPECT_GT(CountOpcode(bc, OPER_CALL), 0u)
 		<< "the call never resolved\n" << Listing(bc).ToStdString();
 }
 
@@ -488,7 +488,7 @@ TEST(CompileTree, ADuplicateVisibleFunctionIsRejected) {
 }
 
 TEST(CompileTree, ACommonModuleTakesFunctionsOnly) {
-	// `onlyFunction` — the third ctor argument, what ibCompileCommonModule passes.
+	// `onlyFunction` — the third ctor argument, what ibCompileModule passes for a common module.
 	ibCompileCode moduleVar(wxT("test"), wxT("memory"), true);
 	EXPECT_FALSE(Build(moduleVar, wxT("var a;\nFunction F()\nEndFunction\n")));
 
@@ -890,7 +890,7 @@ TEST(CompileTree, ARecursiveCallIsDeferredNotEmittedInline) {
 	const ibByteCode& bc = compiler.m_cByteCode;
 	ASSERT_EQ(bc.m_listFunc.size(), 1u);
 	EXPECT_GT(bc.m_listFunc[0].m_lVarCount, 0);
-	EXPECT_GT(CountOpcode(bc, OPER_CALL) + CountOpcode(bc, OPER_CALL_CLOSURE), 0u)
+	EXPECT_GT(CountOpcode(bc, OPER_CALL), 0u)
 		<< "the recursive call never resolved\n" << Listing(bc).ToStdString();
 }
 
@@ -937,8 +937,8 @@ TEST(CompileTree, ALambdaArgumentClosesWithEndFunction) {
 	// `Message` is a GLOBAL, and a host provides it — codeRunner binds the
 	// system functions as a transparent scope and so does this. Rewriting the
 	// source to avoid the name would have hidden the shape the corpus dies on.
-	ibValueSystemFunction valueSystem;
-	compiler.AddContextVariable(wxT("System"), &valueSystem, true);
+	ibValuePtr<ibValueSystemFunction> valueSystem(new ibValueSystemFunction());
+	compiler.AddContextVariable(wxT("System"), valueSystem, true);
 	const bool bOk = Build(compiler,
 		wxT("var nums\n")
 		wxT("nums = New Array\n")

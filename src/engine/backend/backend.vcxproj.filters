@@ -33,6 +33,9 @@
     <ClInclude Include="debugger\debugServer.h">
       <Filter>debugger</Filter>
     </ClInclude>
+    <ClInclude Include="moduleManager\metaObjectCollection.h">
+      <Filter>moduleManager</Filter>
+    </ClInclude>
     <ClInclude Include="moduleManager\moduleManager.h">
       <Filter>moduleManager</Filter>
     </ClInclude>
@@ -290,10 +293,7 @@
     <ClInclude Include="metaCollection\metaFormObject.h">
       <Filter>metaCollection</Filter>
     </ClInclude>
-    <ClInclude Include="metaCollection\metaComposerObject.h">
-      <Filter>metaCollection</Filter>
-    </ClInclude>
-    <ClInclude Include="metaCollection\metaSpreadsheetObject.h">
+    <ClInclude Include="metaCollection\metaTemplateObject.h">
       <Filter>metaCollection</Filter>
     </ClInclude>
     <ClInclude Include="metaCollection\metaModuleObject.h">
@@ -476,6 +476,9 @@
     <ClInclude Include="propertyManager\propertyObject.h">
       <Filter>propertyManager</Filter>
     </ClInclude>
+    <ClInclude Include="propertyManager\propertyMembers.h">
+      <Filter>propertyManager</Filter>
+    </ClInclude>
     <ClInclude Include="propertyManager\property\propertyBoolean.h">
       <Filter>propertyManager\property</Filter>
     </ClInclude>
@@ -492,9 +495,6 @@
       <Filter>propertyManager\property</Filter>
     </ClInclude>
     <ClInclude Include="propertyManager\property\propertyDataComposition.h">
-      <Filter>propertyManager\property</Filter>
-    </ClInclude>
-    <ClInclude Include="propertyManager\property\propertyComposition.h">
       <Filter>propertyManager\property</Filter>
     </ClInclude>
     <ClInclude Include="propertyManager\property\propertyEnum.h">
@@ -610,7 +610,10 @@
     <ClInclude Include="system\value\valueMap.h">
       <Filter>system\value</Filter>
     </ClInclude>
-    <ClInclude Include="system\value\valueOLE.h">
+    <ClInclude Include="system\value\valueCOM.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
+    <ClInclude Include="system\value\valueSafeArray.h">
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valuePoint.h">
@@ -634,13 +637,16 @@
     <ClInclude Include="system\value\valueArray.h">
       <Filter>system\value</Filter>
     </ClInclude>
+    <ClInclude Include="system\value\valueList.h">
+      <Filter>system\value</Filter>
+    </ClInclude>
     <ClInclude Include="system\value\valueColour.h">
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="propertyManager\property\propertyModule.h">
       <Filter>propertyManager\property</Filter>
     </ClInclude>
-    <ClInclude Include="propertyManager\property\propertySpreadsheet.h">
+    <ClInclude Include="propertyManager\property\propertyTemplate.h">
       <Filter>propertyManager\property</Filter>
     </ClInclude>
     <ClInclude Include="propertyManager\property\propertyForm.h">
@@ -677,6 +683,7 @@
       <Filter>databaseLayer\firebird\engine\firebird\impl</Filter>
     </ClInclude>
     <ClInclude Include="value_cast.h" />
+    <ClInclude Include="value_collection.h" />
     <ClInclude Include="interfaceHelper.h" />
     <ClInclude Include="compositionHelper.h" />
     <ClInclude Include="functionalOptionHelper.h" />
@@ -785,7 +792,7 @@
       <Filter>system\value</Filter>
     </ClInclude>
     <ClInclude Include="spreadsheetModel.h" />
-    <ClInclude Include="propertyManager\property\variant\variantSpreadsheet.h">
+    <ClInclude Include="propertyManager\property\variant\variantTemplate.h">
       <Filter>propertyManager\property\variant</Filter>
     </ClInclude>
     <ClInclude Include="system\value\valueDatabase.h">
@@ -953,6 +960,9 @@
       <Filter>moduleManager</Filter>
     </ClCompile>
     <ClCompile Include="moduleManager\moduleManagerEvent.cpp">
+      <Filter>moduleManager</Filter>
+    </ClCompile>
+    <ClCompile Include="moduleManager\metaObjectCollection.cpp">
       <Filter>moduleManager</Filter>
     </ClCompile>
     <ClCompile Include="moduleManager\moduleManagerMetadataUnit.cpp">
@@ -1188,22 +1198,13 @@
     <ClCompile Include="metaCollection\metaFormObjectProperty.cpp">
       <Filter>metaCollection</Filter>
     </ClCompile>
-    <ClCompile Include="metaCollection\metaComposerObject.cpp">
+    <ClCompile Include="metaCollection\metaTemplateObject.cpp">
       <Filter>metaCollection</Filter>
     </ClCompile>
-    <ClCompile Include="metaCollection\metaComposerObjectMenu.cpp">
+    <ClCompile Include="metaCollection\metaTemplateObject_res.cpp">
       <Filter>metaCollection</Filter>
     </ClCompile>
-    <ClCompile Include="metaCollection\metaComposerObject_res.cpp">
-      <Filter>metaCollection</Filter>
-    </ClCompile>
-    <ClCompile Include="metaCollection\metaSpreadsheetObject.cpp">
-      <Filter>metaCollection</Filter>
-    </ClCompile>
-    <ClCompile Include="metaCollection\metaSpreadsheetObject_res.cpp">
-      <Filter>metaCollection</Filter>
-    </ClCompile>
-    <ClCompile Include="metaCollection\metaSpreadsheetObjectMenu.cpp">
+    <ClCompile Include="metaCollection\metaTemplateObjectMenu.cpp">
       <Filter>metaCollection</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\metaModuleObject.cpp">
@@ -1279,6 +1280,9 @@
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\partial\commonObjectMetaQuery.cpp">
+      <Filter>metaCollection\partial</Filter>
+    </ClCompile>
+    <ClCompile Include="metaCollection\partial\commonObjectPredefined.cpp">
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\partial\commonObjectSchema.cpp">
@@ -1419,6 +1423,9 @@
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadataProperty.cpp">
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
+    <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadataSchema.cpp">
+      <Filter>metaCollection\partial</Filter>
+    </ClCompile>
     <ClCompile Include="metaCollection\partial\chartOfCalculationTypesMetadata_res.cpp">
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
@@ -1528,6 +1535,9 @@
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadataProperty.cpp">
+      <Filter>metaCollection\partial</Filter>
+    </ClCompile>
+    <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesMetadataSchema.cpp">
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
     <ClCompile Include="metaCollection\partial\chartOfCharacteristicTypesObject.cpp">
@@ -1698,9 +1708,6 @@
     <ClCompile Include="propertyManager\property\propertyDataComposition.cpp">
       <Filter>propertyManager\property</Filter>
     </ClCompile>
-    <ClCompile Include="propertyManager\property\propertyComposition.cpp">
-      <Filter>propertyManager\property</Filter>
-    </ClCompile>
     <ClCompile Include="propertyManager\property\propertyNumber.cpp">
       <Filter>propertyManager\property</Filter>
     </ClCompile>
@@ -1825,7 +1832,10 @@
     <ClCompile Include="system\value\valueMap.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
-    <ClCompile Include="system\value\valueOLE.cpp">
+    <ClCompile Include="system\value\valueCOM.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
+    <ClCompile Include="system\value\valueSafeArray.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="system\value\valuePoint.cpp">
@@ -1855,13 +1865,16 @@
     <ClCompile Include="system\value\valueArray.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
+    <ClCompile Include="system\value\valueList.cpp">
+      <Filter>system\value</Filter>
+    </ClCompile>
     <ClCompile Include="system\value\valueColour.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
     <ClCompile Include="propertyManager\property\propertyModule.cpp">
       <Filter>propertyManager\property</Filter>
     </ClCompile>
-    <ClCompile Include="propertyManager\property\propertySpreadsheet.cpp">
+    <ClCompile Include="propertyManager\property\propertyTemplate.cpp">
       <Filter>propertyManager\property</Filter>
     </ClCompile>
     <ClCompile Include="propertyManager\property\propertyForm.cpp">
@@ -1871,6 +1884,7 @@
       <Filter>metaCollection\partial</Filter>
     </ClCompile>
     <ClCompile Include="value_cast.cpp" />
+    <ClCompile Include="value_collection.cpp" />
     <ClCompile Include="interfaceHelper.cpp" />
     <ClCompile Include="compositionHelper.cpp" />
     <ClCompile Include="functionalOptionHelper.cpp" />
@@ -2048,7 +2062,7 @@
     <ClCompile Include="system\value\valueSpreadsheetDetails.cpp">
       <Filter>system\value</Filter>
     </ClCompile>
-    <ClCompile Include="propertyManager\property\variant\variantSpreadsheet.cpp">
+    <ClCompile Include="propertyManager\property\variant\variantTemplate.cpp">
       <Filter>propertyManager\property\variant</Filter>
     </ClCompile>
     <ClCompile Include="compiler\valueSerialization.cpp">

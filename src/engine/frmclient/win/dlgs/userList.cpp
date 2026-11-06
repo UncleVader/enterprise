@@ -1,6 +1,6 @@
 #include "userList.h"
 #include "frmclient/backend/userInfo.h"   // the users — the server's schema behind the desktop's calls
-#include "frmclient/win/theme/luna_toolbarart.h"
+#include "gui/univ/theme/luna_toolbarart.h"
 #include "frmclient/backend/backend_picture.h"
 #include "core/picturePredefined.h"
 
@@ -89,8 +89,8 @@ ibDialogUserList::ibDialogUserList(wxWindow* parent, wxWindowID id, const wxStri
 		wxDATAVIEW_COL_SORTABLE);
 
 	m_dataEditor = new ibDataViewCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0);
-	m_dataEditor->Bind(wxEVT_DATAVIEW_ITEM_ACTIVATED, &ibDialogUserList::OnItemActivated, this);
-	m_dataEditor->Bind(wxEVT_DATAVIEW_ITEM_CONTEXT_MENU, &ibDialogUserList::OnContextMenu, this);
+	m_dataEditor->Bind(ibEVT_DATAVIEW_ITEM_ACTIVATED, &ibDialogUserList::OnItemActivated, this);
+	m_dataEditor->Bind(ibEVT_DATAVIEW_ITEM_CONTEXT_MENU, &ibDialogUserList::OnContextMenu, this);
 
 	m_dataEditor->Bind(wxEVT_MENU, &ibDialogUserList::OnCommandMenu, this);
 

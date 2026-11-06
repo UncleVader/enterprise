@@ -74,7 +74,7 @@ enum ibHierarchyType {
 // allocation, contiguous lookup and no per-entry RB-node overhead. See rowValues.h.
 // (Alias only — ibValue is forward-declared inline; instantiated at member sites
 // where value.h is complete.)
-typedef ibRowValues<ibMetaID, class BACKEND_API ibValue> ibRowMetaValues;
+typedef ibRowValues<ibMetaID, class ibValue> ibRowMetaValues;
 
 //*******************************************************************************************
 //*                                 Declare special var                                     *
@@ -103,7 +103,7 @@ typedef ibRowValues<ibMetaID, class BACKEND_API ibValue> ibRowMetaValues;
 #define MAX_STATIC_VAR 10ll
 #endif 
 
-// (The program's version — ibProgramVersion, version_oes_last — is the core's, beside its build: core/build.h.)
+// (The compatibility ladder — ibProgramVersion, version_oes_last — is the core's, beside its build: core/build.h.)
 
 // (The program's syntax — ibProgramSyntax — is the core's, beside the language it chooses: core/compiler/codeDef.h.)
 

@@ -41,6 +41,7 @@
   #include "wx/stream.h"
 #endif
 
+#include <concepts>   // std::derived_from — what CreateDocument makes
 #include <list>
 #include <vector>
 #include <map>
@@ -65,8 +66,8 @@ class FRMSERVER_API ibMetaDocument;
 class ibDocChildFrameAnyBase;
 class ibClientFrame;
 
-class BACKEND_API ibDataNode;
-class BACKEND_API ibValue;
+class ibDataNode;
+class ibValue;
 class BACKEND_API ibValueMetaObject;
 class BACKEND_API ibValueMetaObjectRecordData;
 class BACKEND_API ibValueMetaObjectModule;
@@ -156,6 +157,9 @@ public:
     virtual bool Save();
     virtual bool SaveAs();
     virtual bool Revert();
+    // May it be saved now — its own check, asked before it is saved: by its Save, and by Save as of its tab, when the
+    // file is its owner's (ibClientFrame::GetSaveAsDocument). None: it may.
+    virtual bool CanSave() const { return true; }
 
 #if wxUSE_STD_IOSTREAM
     virtual std::ostream& SaveObject(std::ostream& stream);
@@ -548,7 +552,7 @@ public:
     // callers that need the metadata-aware downcast use this directly.
     ibMetaDocument*    GetCurrentMetaDocument() const;
 
-    template <typename T, typename... Args>
+    template <std::derived_from<ibDocument> T, typename... Args>
     T* CreateDocument(Args&&... args) const
     {
         ibDocTemplate* docTemplate = FindTemplateByDocClassInfo(CLASSINFO(T));

@@ -8,9 +8,10 @@
 
 // ----------------------------------------------------------------------------
 // THE DOCUMENT OF A TAB THE SERVER RAISED — what every tab is, whatever its view: the tab it is (by its id), closed and
-// saved by the server, modified and taking commands as the tab says. ⚠ NO TEMPLATE, as the desktop's had none: made by
-// the window for each tab the frame brings (ibFrontendMainFrame::DrawTabs), each kind with a view of its own — a form
-// (ibFormVisualDocument), the registration journal (ibAuditLogDocument).
+// saved by the server, modified and taking commands as the tab says. ⚠ NO TEMPLATE, as the desktop's had none: made for
+// each tab the frame brings (ibFrontendMainFrame::DrawTabs) by the tab's Kind (Make), each kind with a document of its
+// own registered at the bottom of its source (TAB_DOCUMENT_REGISTER) — a form (ibFormVisualDocument), the registration
+// journal (ibAuditLogDocument), the designer's own in the designer.
 // ----------------------------------------------------------------------------
 
 class FRMCLIENT_API ibTabDocument : public ibFrontendDocument {
@@ -69,11 +70,21 @@ public:
 	// hands back without the person asking for anything yet (a module's text as the focus leaves it). Posted where the
 	// server takes none held.
 	void Hold(ibProtocol::ibEvent::ibKind event, const ibProtocolNode& args = ibProtocolNode()) const;
+	// …or made now, its answer settled before this returns: what is asked next depends on it — a module's edit that moved
+	// its lines, its breakpoints drawn again right after (ibCodeEditor::SaveModule). Held, a later one took its place;
+	// posted, the question went first.
+	bool Call(ibProtocol::ibEvent::ibKind event, const ibProtocolNode& args = ibProtocolNode()) const;
 
 	// The State of the view in the frame that opened the tab — set while its views are made (OnCreate), empty after:
 	// what a view reads as it is made may ride there.
 	void SetOpeningState(const ibProtocolNode& state) { m_openingState = state; }
 	const ibProtocolNode& GetOpeningState() const { return m_openingState; }
+
+	// A TAB'S DOCUMENT, BY ITS KIND — the one registered for that kind; a form's for a kind none is registered for, and for
+	// a form's tab, which names no kind.
+	static ibTabDocument* Make(ibProtocol::ibView::ibKind kind, long long tabId);
+	// …and how a kind's document is made, registered as its source is loaded (TAB_DOCUMENT_REGISTER).
+	static void Register(ibProtocol::ibView::ibKind kind, ibTabDocument* (*make)(long long tabId));
 
 protected:
 
@@ -81,8 +92,17 @@ protected:
 
 private:
 
+	// The event as the server reads it, whichever way it goes: event {Tab, Event, Args}.
+	ibProtocolNode EventOf(ibProtocol::ibEvent::ibKind event, const ibProtocolNode& args) const;
+
 	const long long m_tabId;
 	ibProtocolNode m_openingState;
 };
+
+// A kind of tab and the document made for it — at the bottom of the document's source, as a value type is registered
+// (VALUE_TYPE_REGISTER).
+#define TAB_DOCUMENT_REGISTER(class_info, kind)\
+	[[maybe_unused]] static const bool wxMAKE_UNIQUE_NAME(s_tab_document_reg_) = (ibTabDocument::Register(kind,\
+		[](long long tabId) -> ibTabDocument* { return new class_info(tabId); }), true);
 
 #endif

@@ -8,6 +8,8 @@
 #include "backend/job/jobManager.h"
 #include "backend/metaData.h"
 #include "backend/metaCollection/metaObject.h"   // g_metaScheduledJobCLSID
+#include "backend/metaCollection/metaScheduledJobObject.h"   // the declared Use and Schedule a row starts from
+#include "valueBackgroundJob.h"                                // LastJob
 
 //////////////////////////////////////////////////////////////////////
 
@@ -172,36 +174,50 @@ void ibValueSchedule::ShowValue()
 //                        the collection                            //
 //////////////////////////////////////////////////////////////////////
 
+// Count and Get are the collection's, and nothing more: the jobs are the configuration's, not a caller's to add.
+void ibValuePredefinedJobs_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ctx*/)
+{
+	ibValuePredefinedJobs::FillCollection(helper);
+}
+
 ibValuePredefinedJobs::ibValuePredefinedJobs(ibMetaData* metaData)
-	: ibValueArray()
+	: ibValueCollection(ibValueTypes::TYPE_VALUE)
 {
 	if (metaData == nullptr)
 		return;
 
-	for (const auto object : metaData->GetAnyArrayObject(g_metaScheduledJobCLSID)) {
-		if (object->IsDeleted())
+	for (const auto job : metaData->GetAnyArrayObject<ibValueMetaObjectScheduledJob>(g_metaScheduledJobCLSID)) {
+		if (job->IsDeleted())
 			continue;
-		ibValuePtr<ibValueJobRow> row(new ibValueJobRow(object->GetGuid(), object->GetName()));
-		Add(row);
+		m_listValue.emplace_back(new ibValueJobRow(job->GetGuid(), job->GetName(), job->IsUsed(), job->GetSchedule()));
 	}
+}
+
+ibValue ibValuePredefinedJobs::ElementValue(const ibValuePtr<ibValueJobRow>& row) const
+{
+	if (row == nullptr)
+		return ibValue(new ibValueJobRow());
+	return row;
 }
 
 //////////////////////////////////////////////////////////////////////
 //                            the row                               //
 //////////////////////////////////////////////////////////////////////
 
-ibValuePredefinedJobs::ibValueJobRow::ibValueJobRow()
+ibValueJobRow::ibValueJobRow()
 	: ibValueStaticMembers(ibValueTypes::TYPE_VALUE)
 {
 }
 
-ibValuePredefinedJobs::ibValueJobRow::ibValueJobRow(const ibGuid& jobKey, const ibString& jobName)
-	: ibValueStaticMembers(ibValueTypes::TYPE_VALUE), m_jobKey(jobKey), m_jobName(jobName)
+ibValueJobRow::ibValueJobRow(const ibGuid& jobKey, const ibString& jobName,
+	bool declaredActive, const ibJobScheduleDescription& declaredSchedule)
+	: ibValueStaticMembers(ibValueTypes::TYPE_VALUE), m_jobKey(jobKey), m_jobName(jobName),
+	m_active(declaredActive), m_schedule(declaredSchedule)
 {
 	ReadSettings();
 }
 
-bool ibValuePredefinedJobs::ibValueJobRow::ReadSettings()
+bool ibValueJobRow::ReadSettings()
 {
 	if (!m_jobKey.isValid())
 		return false;
@@ -210,11 +226,15 @@ bool ibValuePredefinedJobs::ibValueJobRow::ReadSettings()
 	// defaults stand — the same values the manager seeds it with on the next registration.
 	const ibJobManager::ibJobSettings stored = ibJobManager::ReadSharedSettings(m_jobKey);
 
-	m_active = stored.m_active;
+	// Only a row that IS there speaks — "not found" carries the defaults of a settings struct, not this
+	// job's declaration, and adopting them would show a job declared off as switched on.
+	if (stored.m_found) {
+		m_active = stored.m_active;
+		if (ibJobScheduleRules::IsValid(stored.m_schedule))
+			m_schedule = stored.m_schedule;
+	}
 	m_lastRun = stored.m_lastRun;
 	m_computer = stored.m_computer;
-	if (ibJobScheduleRules::IsValid(stored.m_schedule))
-		m_schedule = stored.m_schedule;
 
 	return stored.m_found;
 }
@@ -225,6 +245,7 @@ void ibValueJobRow_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ct
 	helper.AppendProp(ibT("Active"));
 	helper.AppendProp(ibT("Schedule"));
 	helper.AppendProp(ibT("LastRun"));
+	helper.AppendProp(ibT("LastJob"));
 	helper.AppendProp(ibT("Computer"));
 	helper.AppendProp(ibT("NextRun"));
 
@@ -233,7 +254,7 @@ void ibValueJobRow_BindNames(ibValue::ibMemberTable& helper, const ibValue* /*ct
 	helper.AppendFunc(ibT("Execute"), ibT("Execute()"));
 }
 
-bool ibValuePredefinedJobs::ibValueJobRow::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
+bool ibValueJobRow::CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray)
 {
 	switch (lMethodNum)
 	{
@@ -296,7 +317,7 @@ bool ibValuePredefinedJobs::ibValueJobRow::CallAsFunc(const long lMethodNum, ibV
 	return false;
 }
 
-bool ibValuePredefinedJobs::ibValueJobRow::SetPropVal(const long lPropNum, const ibValue& varPropVal)
+bool ibValueJobRow::SetPropVal(const long lPropNum, const ibValue& varPropVal)
 {
 	switch (lPropNum)
 	{
@@ -320,7 +341,7 @@ bool ibValuePredefinedJobs::ibValueJobRow::SetPropVal(const long lPropNum, const
 	return false;
 }
 
-bool ibValuePredefinedJobs::ibValueJobRow::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
+bool ibValueJobRow::GetPropVal(const long lPropNum, ibValue& pvarPropVal)
 {
 	switch (lPropNum)
 	{
@@ -338,6 +359,16 @@ bool ibValuePredefinedJobs::ibValueJobRow::GetPropVal(const long lPropNum, ibVal
 	case enLastRun:
 		pvarPropVal = ibValue(m_lastRun);   // never run: the empty date
 		return true;
+	case enLastJob:
+	{
+		// THE RUN ITSELF, handed over as the BackgroundJob it is — State / Begin / End / Error() are asked of
+		// a pass the same way as of any run. The manager holds it (ibJobManager::LastJob); a pass a peer took instead
+		// left nothing here, and when the job last ran anywhere is LastRun.
+		ibJobManager* const manager = ibApplicationInstance::GetJobManager();
+		std::shared_ptr<ibBackgroundRun> run = manager != nullptr ? manager->LastJob(m_jobKey) : nullptr;
+		pvarPropVal = run != nullptr ? ibValue(new ibValueBackgroundJob(std::move(run))) : ibValue();
+		return true;
+	}
 	case enComputer:
 		pvarPropVal = m_computer;
 		return true;
@@ -367,4 +398,4 @@ bool ibValuePredefinedJobs::ibValueJobRow::GetPropVal(const long lPropNum, ibVal
 // row exists because the collection produced it. `New JobSettings()` would refer to nothing — the
 // way in is ScheduledJobs.Predefined.
 SYSTEM_TYPE_REGISTER(ibValuePredefinedJobs, "PredefinedJobs", g_valuePredefinedJobsCLSID);
-SYSTEM_TYPE_REGISTER(ibValuePredefinedJobs::ibValueJobRow, "JobSettings", value_to_clsid("VL_JOBST"));
+SYSTEM_TYPE_REGISTER(ibValueJobRow, "JobSettings", value_to_clsid("VL_JOBST"));

@@ -5,9 +5,11 @@
 
 #include "widgets.h"
 
+#include "gui/univ/ctrl/radioButton.h"
+
 void ibValueRadioButton::Create(wxWindow* parent, const ibProtocolNode& /*node*/)
 {
-	m_radioButton = new wxRadioButton(parent, wxID_ANY, wxEmptyString);
+	m_radioButton = new ibRadioButton(parent, wxID_ANY, wxEmptyString);
 }
 
 void ibValueRadioButton::Update(const ibProtocolNode& node)
@@ -19,3 +21,10 @@ void ibValueRadioButton::Update(const ibProtocolNode& node)
 
 	UpdateWindow(m_radioButton, node);
 }
+
+wxWindow* ibValueRadioButton::GetWindow() const
+{
+	return m_radioButton;
+}
+
+CONTROL_REGISTER(ibValueRadioButton, ibProtocol::ibForm::ibType::Radiobutton)

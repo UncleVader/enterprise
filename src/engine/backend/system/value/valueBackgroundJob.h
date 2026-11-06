@@ -6,7 +6,8 @@
 // VENDED, never created: a job comes into being by being STARTED, so
 // `New BackgroundJob()` would have nothing to refer to. That is what
 // SYSTEM_TYPE_REGISTER means (docs/private/script-value-types.md § 1) — the ctor
-// registry returns nullptr for it and only RunBackground() hands one out.
+// registry returns nullptr for it and only RunBackground(), BackgroundJobs and a
+// scheduled job's LastJob hand one out.
 //
 // It is a thin skin over ibBackgroundRun, which is shared with the worker
 // executing the run. Dropping the value does NOT cancel anything: the run owns
@@ -42,8 +43,33 @@ public:
 	virtual bool CallAsProc(const long lMethodNum, ibValue** paParams, const long lSizeArray) override;
 	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
 
+	// State, Begin, End and the label — FACTS about the run, all read-only.
+	virtual bool GetPropVal(const long lPropNum, ibValue& pvarPropVal) override;
+
+	const std::shared_ptr<ibBackgroundRun>& GetRun() const { return m_run; }
+
 private:
 	std::shared_ptr<ibBackgroundRun> m_run;
+};
+
+void ibValueBackgroundJobsManager_BindNames(ibValue::ibMemberTable& helper, const ibValue* ctx);
+
+// BackgroundJobs — where the runs are found again: listed, or one by its UUID. It starts nothing — a job is
+// started by RunBackground, under a key and a description when the caller gives them — and it lists every
+// run the job manager holds, a background job or a scheduled job's pass (ibJobManager::GetBackgroundJobs).
+//
+//   Job = RunBackground("Exchange.Upload", Parameters, "upload", "Upload to the warehouse");
+//   Jobs = BackgroundJobs.GetBackgroundJobs(New Structure("Key, State", "upload", BackgroundJobState.Active));
+//
+// VENDED like the job itself: there is one, and it is reached by its global name.
+class BACKEND_API ibValueBackgroundJobsManager :
+	public ibValueStaticMembers<&ibValueBackgroundJobsManager_BindNames> {
+public:
+	ibValueBackgroundJobsManager();
+
+	virtual ibString GetString() const override { return ibT("BackgroundJobsManager"); }
+
+	virtual bool CallAsFunc(const long lMethodNum, ibValue& pvarRetValue, ibValue** paParams, const long lSizeArray) override;
 };
 
 #endif // !_VALUE_BACKGROUND_JOB_H__

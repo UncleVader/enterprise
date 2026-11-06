@@ -32,7 +32,7 @@
         "global_functions"
       ],
       "signature": "Number(value: any)",
-      "description": "Преобразует значение в число. Строка разбирается; булево даёт 1 или 0; значение без числового прочтения даёт ноль, а не исключение. Результат — точное десятичное число: числа этой платформы не двоичные с плавающей точкой, поэтому денежная арифметика не уплывает.",
+      "description": "Преобразует значение в число. Строка читается целиком — число, допустимы пробелы вокруг; \"234,8\" или \"12x\" вызывают исключение «Невозможно преобразовать строку в число». Булево даёт 1 или 0; другое значение без числового прочтения даёт ноль, а не исключение. Результат — точное десятичное число: числа этой платформы не двоичные с плавающей точкой, поэтому денежная арифметика не уплывает.",
       "syntax_block": "Number(value: any)",
       "parameters": "value — значение любого типа.",
       "return_descr": "Число.",
@@ -89,7 +89,7 @@
         "global_functions"
       ],
       "signature": "Round(num : number, number, roundMode)",
-      "description": "Округляет число до заданного числа десятичных знаков. ПРАВИЛО округления задаётся третьим аргументом и различает результаты ровно на половине: Round15as20 (по умолчанию) отправляет половину от нуля, поэтому 1.5 становится 2; Round15as10 оставляет половину вниз, поэтому 1.5 становится 1, а вверх идут только .6 и больше. Указывайте правило явно везде, где цифру сверяют с другой системой.",
+      "description": "Округляет число до заданного числа десятичных знаков. ПРАВИЛО округления задаётся третьим аргументом и различает результаты ровно на половине: Round15as20 (по умолчанию) отправляет половину от нуля, поэтому 1.5 становится 2; Round15as10 отправляет ровную половину к нулю, поэтому 1.5 становится 1, а всё, что больше половины, идёт вверх (1.51 и 1.6 становятся 2). Указывайте правило явно везде, где цифру сверяют с другой системой.",
       "syntax_block": "Round(num : number, number, roundMode)",
       "parameters": "num — число. number — количество десятичных знаков (по умолчанию 0). roundMode — RoundMode.Round15as20 (по умолчанию) либо RoundMode.Round15as10.",
       "return_descr": "Число, округлённое.",
@@ -400,6 +400,25 @@
       "example": "Message(StrReplace(\"a-b-c\", \"-\", \"+\"));   // a+b+c",
       "availability": "Тонкий клиент, Сервер",
       "see_also": ["fn.Find", "fn.StrCountOccur"],
+      "reviewed": true
+    },
+    {
+      "id": "fn.StrSplit",
+      "name_local": "StrSplit",
+      "name_en": "StrSplit",
+      "kind": "system_function",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "description": "Разделяет строку на массив частей по разделителям. Каждый СИМВОЛ separators — отдельный разделитель. Строка файла с разделителями становится массивом её полей.",
+      "syntax_block": "StrSplit(str : string, separators : string, includeBlank = true : boolean)",
+      "parameters": "str — строка, которую разделяем. separators — символы-разделители, каждый сам по себе (\",;\" делит и по запятой, и по точке с запятой). includeBlank — оставлять пустые части (два разделителя подряд или разделитель на краю); по умолчанию true.",
+      "return_descr": "Массив строк. Строка без разделителей — одна часть; сами разделители в части не входят.",
+      "example": "var fields = StrSplit(\"2020-01-02|Клиент 1|5\", \"|\");   // [\"2020-01-02\", \"Клиент 1\", \"5\"]\nvar words = StrSplit(\"a,,b\", \",\", false);              // [\"a\", \"b\"]",
+      "availability": "Тонкий клиент, Сервер",
+      "see_also": ["fn.Find", "fn.Mid", "fn.StrReplace"],
       "reviewed": true
     },
     {
@@ -1153,9 +1172,9 @@
         "global_functions"
       ],
       "signature": "WriteJSON(writer : JSONWriter, value : any)",
-      "description": "Пишет значение через JSONWriter — написание эталонной системы для `writer.WriteValue(value)`. Structure, Container и Array уходят целиком, на любую глубину; то, у чего нет формы в JSON (ссылка, таблица), отвергается по имени типа и ничего после себя не оставляет.",
+      "description": "Пишет значение через JSONWriter — написание эталонной системы для `writer.WriteValue(value)`. Structure, Map и Array уходят целиком, на любую глубину; то, у чего нет формы в JSON (ссылка, таблица), отвергается по имени типа и ничего после себя не оставляет.",
       "syntax_block": "WriteJSON(writer : JSONWriter, value : any)",
-      "parameters": "writer — JSONWriter; value — String, Number, Boolean, Date, Null, Undefined либо Structure / Container / Array из них.",
+      "parameters": "writer — JSONWriter; value — String, Number, Boolean, Date, Null, Undefined либо Structure / Map / Array из них.",
       "return_descr": "Ничего.",
       "example": "line = New Structure();\nline.Insert(\"item\", \"x\");\nwriter = New JSONWriter();\nWriteJSON(writer, line);\nMessage(writer.Close());",
       "availability": "Тонкий клиент, Сервер",
@@ -1272,7 +1291,7 @@
         "global_functions"
       ],
       "signature": "SetStatus(text : string)",
-      "description": "Выводит строку в строку состояния окна — ход работы, которая длится, никого не прерывая. Под вычислением не делает ничего.",
+      "description": "Выводит строку в строку состояния окна — ход работы, которая длится, никого не прерывая. В фоновом задании, у которого окна нет, строка — активность задания: её показывают «Активные пользователи» и `code_status`. Под вычислением не делает ничего.",
       "syntax_block": "SetStatus(text : string)",
       "parameters": "text — выводимая строка.",
       "return_descr": "Ничего.",
@@ -1399,6 +1418,25 @@
         "fn.IsEmptyValue",
         "fn.IsNull"
       ],
+      "reviewed": true
+    },
+    {
+      "id": "fn.FillPropertyValues",
+      "name_local": "FillPropertyValues",
+      "name_en": "FillPropertyValues",
+      "kind": "system_procedure",
+      "category_keys": [
+        "global_context",
+        "global_functions"
+      ],
+      "signature": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "description": "Заполняет свойства приёмника значениями одноимённых свойств источника — у структуры, строки, объекта одинаково. Новых свойств у приёмника не появляется.",
+      "syntax_block": "FillPropertyValues(receiver : any, source : any, list = \"\" : string, exclude = \"\" : string)",
+      "parameters": "receiver — значение, чьи свойства заполняются. source — значение, из которого они читаются. list — имена через запятую; если пусто — все свойства источника, которые приёмник может принять, а имя, которое есть только у одного из них, пропускается. Имя из списка, которого нет у одной из сторон или которое приёмник не может записать, отвергается так же, как receiver.Name = source.Name. exclude — имена через запятую, которые не заполняются.",
+      "return_descr": "",
+      "example": "var from = New Structure(\"Code, Description, Price\", \"001\", \"Болт\", 5);\nvar to = New Structure(\"Description, Price\", \"\", 0);\nFillPropertyValues(to, from);              // to.Description = \"Болт\", to.Price = 5\nFillPropertyValues(to, from, \"Price\");     // только Price\nFillPropertyValues(to, from, , \"Price\");   // всё, кроме Price",
+      "availability": "Тонкий клиент, Сервер",
+      "see_also": ["fn.ValueIsFilled"],
       "reviewed": true
     },
     {
@@ -1833,7 +1871,7 @@
       "syntax_block": "GetCommonForm(name : string, owner : any, id : guid)",
       "parameters": "name — имя общей формы. owner — окно-владелец (необязательно). id — ключ, опознающий эту форму, чтобы повторный запрос переиспользовал одно окно (необязательно).",
       "return_descr": "Форма.",
-      "example": "form = GetCommonForm(\"Settings\");\nform.Open();",
+      "example": "form = GetCommonForm(\"Settings\");\nform.Show();",
       "availability": "Тонкий клиент, Сервер",
       "see_also": ["fn.ShowCommonForm", "fn.ActiveWindow", "fn.GetCommonTemplate"],
       "reviewed": true
@@ -1961,14 +1999,14 @@
         "global_context",
         "global_functions"
       ],
-      "signature": "RunBackground(procedure : string, args : array)",
-      "description": "Запускает процедуру в фоне и возвращает описатель запущенного задания, не дожидаясь его. Аргументы передаются Массивом, который раскладывается в позиционные параметры процедуры; любое другое непустое значение отвергается с указанием причины, а не принимается за «без аргументов» — иначе процедура запустилась бы с неверной сигнатурой и упала бы глубоко внутри. Если приложение не работает, вызывается исключение.",
-      "syntax_block": "RunBackground(procedure : string, args : array)",
-      "parameters": "procedure — имя запускаемой процедуры. args — Массив её аргументов (может быть пустым).",
+      "signature": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "description": "Запускает процедуру в фоне и возвращает описатель запущенного задания, не дожидаясь его. Аргументы передаются Массивом, который раскладывается в позиционные параметры процедуры; любое другое непустое значение отвергается с указанием причины, а не принимается за «без аргументов» — иначе процедура запустилась бы с неверной сигнатурой и упала бы глубоко внутри. Пока задание той же процедуры с тем же ключом выполняется, второе отвергается — защита кнопки «выполнить сейчас» от двойного нажатия. Если приложение не работает, вызывается исключение.",
+      "syntax_block": "RunBackground(procedure : string, args : array [, key : string [, description : string]])",
+      "parameters": "procedure — ИмяМодуля.ИмяМетода, экспортный метод общего модуля. args — Массив её аргументов (может быть пустым). key — имя работы, данное вызывающим. description — что это за задание, как его читает человек.",
       "return_descr": "Запущенное фоновое задание.",
       "example": "args = New Array();\nargs.Add(BegOfMonth(WorkingDate()));\njob = RunBackground(\"RecalculateTotals\", args);",
       "availability": "Тонкий клиент, Сервер",
-      "see_also": ["fn.RunJob", "fn.RunScheduledJobs"],
+      "see_also": ["fn.RunJob", "fn.RunScheduledJobs", "cls.BackgroundJobs", "cls.BackgroundJob"],
       "reviewed": true
     },
     {
@@ -2019,7 +2057,7 @@
         "global_functions"
       ],
       "signature": "XMLString(value : any)",
-      "description": "Значение в виде XML - близнец `JSONString`, только с XML вместо JSON. Значение упаковывается так, как его хранит платформа (тип, затем содержимое: число - точно, дата - до миллисекунд, строка, ссылка - своим GUID, значение перечисления, Guid - своим текстом, BinaryData, структура или массив - вместе с содержимым), и эта упаковка пишется XML-документом. Тип указывается средствами XML Schema: `xsi:type` - `xs:decimal`, `xs:string`, `xs:boolean`, `xs:dateTime` для примитивов, имя типа для остальных (его номер, если по имени тип не находится обратно) - и `xsi:nil=\"true\"` для Null; примитив пишется своим текстом - внутри документа `<Node xsi:type=\"xs:decimal\">5</Node>`. Дата вне 1-9999 годов не имеет текста, который читается обратно, и отвергается. В отличие от JSON сохраняется вид каждого значения, и `XMLValue` читает значение обратно таким, каким оно было, в том числе ссылку или значение перечисления конфигурации внутри структуры, массива или контейнера (Container).\n\nТекст - целый документ, а не содержимое одного элемента. Значение, которое нельзя упаковать (форма, открытый объект, тип), отвергается: `The value 'Type' cannot be serialized`. Нужна открытая конфигурация.",
+      "description": "Значение в виде XML - близнец `JSONString`, только с XML вместо JSON. Значение упаковывается так, как его хранит платформа (тип, затем содержимое: число - точно, дата - до миллисекунд, строка, ссылка - своим GUID, значение перечисления, Guid - своим текстом, BinaryData, структура или массив - вместе с содержимым), и эта упаковка пишется XML-документом. Тип указывается средствами XML Schema: `xsi:type` - `xs:decimal`, `xs:string`, `xs:boolean`, `xs:dateTime` для примитивов, имя типа для остальных (его номер, если по имени тип не находится обратно) - и `xsi:nil=\"true\"` для Null; примитив пишется своим текстом - внутри документа `<Node xsi:type=\"xs:decimal\">5</Node>`. Дата вне 1-9999 годов не имеет текста, который читается обратно, и отвергается. В отличие от JSON сохраняется вид каждого значения, и `XMLValue` читает значение обратно таким, каким оно было, в том числе ссылку или значение перечисления конфигурации внутри структуры, массива или соответствия (Map).\n\nТекст - целый документ, а не содержимое одного элемента. Значение, которое нельзя упаковать (форма, открытый объект, тип), отвергается: `The value 'Type' cannot be serialized`. Нужна открытая конфигурация.",
       "syntax_block": "XMLString(value : any)",
       "parameters": "value - значение, которое нужно записать.",
       "return_descr": "Строка.",

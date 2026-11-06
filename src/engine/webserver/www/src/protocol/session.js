@@ -74,13 +74,21 @@ export class Session extends EventTarget {
 	 * @param {string} password
 	 */
 	async login(user, password) {
-		const answer = await this.connection.call('login', { User: user, Password: password, Protocol: protocol,
-			Features: [resumeFeature] });
-		this.client = answer.Client;
-		// The bearer comes once — and only from a server that offers to keep the session.
-		this.token = (answer.Features ?? []).includes(resumeFeature) ? answer.Token ?? null : null;
-		this.take(answer);
-		return answer;
+		// IN THE QUEUE every call waits in. The start's own work can change the frame after it is drawn (a report composing
+		// as its form opens), and the server tells it — `changed` — before this answer has said who the client is: the
+		// frame asked for then goes once the Client is known. Sent with none, it was refused (401, no such client) and
+		// the session ended as it began (2026-11-04).
+		const next = this.queue.then(async () => {
+			const answer = await this.connection.call('login', { User: user, Password: password, Protocol: protocol,
+				Features: [resumeFeature] });
+			this.client = answer.Client;
+			// The bearer comes once — and only from a server that offers to keep the session.
+			this.token = (answer.Features ?? []).includes(resumeFeature) ? answer.Token ?? null : null;
+			this.take(answer);
+			return answer;
+		});
+		this.queue = next.catch(() => {});
+		return next;
 	}
 
 	/**
@@ -196,7 +204,7 @@ export class Session extends EventTarget {
 	/**
 	 * What the person did with a control. A state event waits for the next call unless the control's State says the
 	 * server is subscribed to it; anything else goes at once, and its answer is the frame.
-	 * @param {{Control: number, Event: number, Args?: object, Form?: string, Tab?: number}} event
+	 * @param {{Control?: number, Event: number, Args?: object, Form?: string, Tab?: number}} event
 	 * @param {number[]} [subscribed] the control's State's Subscribed
 	 */
 	send(event, subscribed = []) {
@@ -209,7 +217,7 @@ export class Session extends EventTarget {
 
 	/**
 	 * Held: the latest per control and event — Move and Resize per column — in the order last done.
-	 * @param {{Control: number, Event: number, Args?: any}} event
+	 * @param {{Control?: number, Event: number, Args?: any}} event
 	 */
 	hold(event) {
 		const column = (one) => (one.Event === 11 || one.Event === 15) ? one.Args?.Column : undefined;

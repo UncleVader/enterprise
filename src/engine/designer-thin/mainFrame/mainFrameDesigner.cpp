@@ -10,6 +10,7 @@
 #include "designer-thin/mainFrame/local/localWindow.h"
 #include "designer-thin/mainFrame/stack/stackWindow.h"
 #include "designer-thin/mainFrame/watch/watchWindow.h"
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibRequest::ibApplyChange, ibProtocol::ibSchema::ibMetaData
 
 ibFrontendMainFrameDesigner* ibFrontendMainFrameDesigner::GetFrame() {
 	ibFrontendMainFrame* instance = ibFrontendMainFrame::GetFrame();
@@ -61,7 +62,7 @@ void ibFrontendMainFrameDesigner::CreateGUI()
 }
 
 #include "frmclient/win/dlgs/applyChange.h"
-#include "frmclient/win/dlgs/formSelector/formSelector.h"
+#include "frmclient/win/dlgs/kindSelector/kindSelector.h"
 #include "frmclient/win/dlgs/selectPredefined.h"
 
 void ibFrontendMainFrameDesigner::ShowRequest(const ibProtocolNode& request, ibProtocolNode& response)
@@ -73,10 +74,10 @@ void ibFrontendMainFrameDesigner::ShowRequest(const ibProtocolNode& request, ibP
 		if (ibDialogApplyChange::ShowApplyChange(request, this))
 			response.SetValue(ibProtocol::ibRequest::ibApplyChange::Done, true);
 		break;
-	case ibProtocol::ibRequest::ibKind::FormType: {
-		// THE DESKTOP'S ibDialogSelectTypeForm over a form just made. Cancelled — answered with no Id: the form taken
-		// away again.
-		ibDialogSelectTypeForm dialog(request);
+	case ibProtocol::ibRequest::ibKind::ObjectKind: {
+		// THE DESKTOP'S ibDialogSelectTypeForm over a form just made, and a template's the same way. Cancelled — answered
+		// with no Id: the object taken away again.
+		ibDialogSelectKind dialog(request);
 		dialog.ShowModal(response);
 		break;
 	}
@@ -152,42 +153,6 @@ bool ibFrontendMainFrameDesigner::Debug(const ibProtocolNode& params, ibProtocol
 	return GetCommunicator().Debug(params, result, refusal, error);
 }
 #pragma endregion
-
-#include "designer-thin/docManager/templates/docViewMetaFile.h"
-#include "designer-thin/docManager/templates/docViewDataProcessorFile.h"
-#include "designer-thin/docManager/templates/docViewDataReportFile.h"
-#include "designer-thin/docManager/templates/docViewModuleEditor.h"
-#include "designer-thin/docManager/templates/docViewFormEditor.h"
-#include "designer-thin/docManager/templates/docViewInterface.h"
-#include "designer-thin/docManager/templates/docViewCommonAttribute.h"
-#include "designer-thin/docManager/templates/docViewFunctionalOption.h"
-#include "designer-thin/docManager/templates/docViewRole.h"
-#include "designer-thin/docManager/templates/docViewComposer.h"
-
-ibTabDocument* ibFrontendMainFrameDesigner::CreateDocument(ibProtocol::ibView::ibKind kind, long long tabId)
-{
-	if (kind == ibProtocol::ibView::ibKind::Configuration)
-		return new ibMetadataBrowserDocument(tabId);   // a file's or the database's copy — the server's to tell apart
-	if (kind == ibProtocol::ibView::ibKind::DataProcessor)
-		return new ibDataProcessorFileDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Report)
-		return new ibReportFileDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Module)
-		return new ibModuleEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::FormDesigner)
-		return new ibFormEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Interface)
-		return new ibInterfaceEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::CommonAttribute)
-		return new ibCommonAttributeEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::FunctionalOption)
-		return new ibFunctionalOptionEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Role)
-		return new ibRoleEditDocument(tabId);
-	if (kind == ibProtocol::ibView::ibKind::Composer)
-		return new ibComposerEditDocument(tabId);
-	return ibFrontendMainFrame::CreateDocument(kind, tabId);
-}
 
 bool ibFrontendMainFrameDesigner::AllowClose()
 {

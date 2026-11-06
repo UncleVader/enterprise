@@ -2,6 +2,8 @@
 #include "core/memory/memoryBuffer.h"
 #include "core/serialize/dataBuilder.h"   // ibDataNode / ibDataValue (Child + Array)
 
+#include <limits>                         // what a qualifier's field holds
+
 ////////////////////////////////////////////////////////////////////////
 
 namespace {
@@ -63,6 +65,22 @@ bool ibTypeDescriptionMemory::ReadNode(const ibDataValue& value, ibTypeDescripti
 	if (!root)
 		return false;
 
+	// 🛑 A QUALIFIER ITS FIELD CANNOT HOLD IS REFUSED, NOT CUT (#646). A length of 70000 was read as 4464 and
+	// 300 digits as 44 — a declaration nobody made, which the apply then built a column for. Asked before
+	// anything is touched, so a refused shape leaves the description as it was. The bound is the field's own and
+	// no more: a configuration loads through here, and its file reads as it was written — 44 digits saved before
+	// stay 44, for the apply's DDL to refuse; refused here, the attribute would keep its default type without a
+	// word. What a qualifier may say is its door's (QualifierNumber, the designer, metadata_set_type).
+	const std::int32_t precision = root->GetValue<std::int32_t>(ibT("Precision"));
+	const std::int32_t scale = root->GetValue<std::int32_t>(ibT("Scale"));
+	const std::int32_t length = root->GetValue<std::int32_t>(ibT("Length"));
+	if (precision < 0 || precision > std::numeric_limits<decltype(ibQualifierNumber::m_precision)>::max())
+		return false;
+	if (scale < 0 || scale > std::numeric_limits<decltype(ibQualifierNumber::m_scale)>::max())
+		return false;
+	if (length < 0 || length > std::numeric_limits<decltype(ibQualifierString::m_length)>::max())
+		return false;
+
 	typeDesc.ClearMetaType();
 
 	const ibDataValue typesVal = ReadTypeList(*root);
@@ -79,11 +97,10 @@ bool ibTypeDescriptionMemory::ReadNode(const ibDataValue& value, ibTypeDescripti
 
 	// restore the shared qualifier block (overwrites the per-type defaults set above)
 	ibTypeDescription::ibTypeData data;
-	data.SetNumber((unsigned char)root->GetValue<std::int32_t>(ibT("Precision")),
-		(unsigned char)root->GetValue<std::int32_t>(ibT("Scale")),
+	data.SetNumber(static_cast<unsigned char>(precision), static_cast<unsigned char>(scale),
 		root->GetValue<bool>(ibT("NonNegative")));
 	data.SetDate((ibDateFractions)root->GetValue<std::int32_t>(ibT("DateFraction")));
-	data.SetString((unsigned short)root->GetValue<std::int32_t>(ibT("Length")),
+	data.SetString(static_cast<unsigned short>(length),
 		(ibAllowedLength)root->GetValue<std::int32_t>(ibT("AllowedLength")));
 	typeDesc.SetTypeData(data);
 	return true;
@@ -211,12 +228,12 @@ void ibTypeDescriptionMemory::WriteBuffer(ibMemoryBuffer& out, const ibTypeDescr
 
 	// The three qualifiers, in declaration order. Fixed width each, so a reader that knows this
 	// version can skip forward without parsing what it does not need.
-	PutU32(out, static_cast<std::uint32_t>(typeDesc.m_typeData.m_number.m_precision));
-	PutU32(out, static_cast<std::uint32_t>(typeDesc.m_typeData.m_number.m_scale));
-	PutU32(out, typeDesc.m_typeData.m_number.m_nonNegative ? 1u : 0u);
-	PutU32(out, static_cast<std::uint32_t>(typeDesc.m_typeData.m_date.m_dateTime));
-	PutU32(out, static_cast<std::uint32_t>(typeDesc.m_typeData.m_string.m_length));
-	PutU32(out, static_cast<std::uint32_t>(typeDesc.m_typeData.m_string.m_allowedLength));
+	PutU32(out, static_cast<std::uint32_t>(typeDesc.GetPrecision()));
+	PutU32(out, static_cast<std::uint32_t>(typeDesc.GetScale()));
+	PutU32(out, typeDesc.IsNonNegative() ? 1u : 0u);
+	PutU32(out, static_cast<std::uint32_t>(typeDesc.GetDateFraction()));
+	PutU32(out, static_cast<std::uint32_t>(typeDesc.GetLength()));
+	PutU32(out, static_cast<std::uint32_t>(typeDesc.GetAllowedLength()));
 }
 
 bool ibTypeDescriptionMemory::ReadBuffer(const void* data, size_t length, ibTypeDescription& typeDesc)
@@ -253,12 +270,10 @@ bool ibTypeDescriptionMemory::ReadBuffer(const void* data, size_t length, ibType
 		!reader.Take(dateFractions) || !reader.Take(strLength) || !reader.Take(allowedLength))
 		return false;
 
-	ibTypeDescription::ibTypeData typeData;
-	typeData.m_number = ibQualifierNumber(static_cast<unsigned char>(precision),
-		static_cast<char>(scale), nonNegative != 0);
-	typeData.m_date = ibQualifierDate(static_cast<ibDateFractions>(dateFractions));
-	typeData.m_string = ibQualifierString(static_cast<unsigned short>(strLength),
-		static_cast<ibAllowedLength>(allowedLength));
+	const ibTypeDescription::ibTypeData typeData(ibQualifierNumber(static_cast<unsigned char>(precision),
+		static_cast<char>(scale), nonNegative != 0),
+		ibQualifierDate(static_cast<ibDateFractions>(dateFractions)),
+		ibQualifierString(static_cast<unsigned short>(strLength), static_cast<ibAllowedLength>(allowedLength)));
 
 	typeDesc.SetDefaultMetaType(list);
 	typeDesc.SetTypeData(typeData);

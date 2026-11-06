@@ -331,7 +331,7 @@ ibQueryAstExprPtr ibBuildFilledCondition(ibDataComposer& composer, const ibFilte
 	empty->m_lhs = ibBuildFilterSide(composer, item.m_left);
 	for (const ibClassID& clsid : type.GetClsidList()) {
 		const ibValue emptyOfType = ibValueTypeDescription::AdjustValue(
-			ibTypeDescription(clsid, type.m_typeData), composer.GetMetaData());
+			ibTypeDescription(clsid, type.GetTypeData()), composer.GetMetaData());
 		if (emptyOfType.m_typeClass == ibValueTypes::TYPE_EMPTY)
 			continue;   // a class nothing can make here — NULL still answers for it
 		ibQueryAstExprPtr param = ibQueryAstExpr::Make(ibQueryAstExprKind::Param);
@@ -1718,7 +1718,7 @@ void ibDataDBComposer::SplitSourceText() const
 			continue;   // …the one exception: with no links the LAST statement IS the result
 		ibBackendCoreException::Error(
 			_("Composer: a query of several selections has one that is neither named nor a temporary "
-			  "table. Name it with ONTO — without a name nothing can read it, and it is left out of "
+			  "table. Name it with ONTO - without a name nothing can read it, and it is left out of "
 			  "the answer."));
 	}
 

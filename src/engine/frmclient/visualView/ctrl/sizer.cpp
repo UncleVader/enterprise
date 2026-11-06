@@ -5,7 +5,7 @@
 
 #include "sizer.h"
 
-#include "frmclient/win/typeconv.h"
+#include "gui/typeconv.h"
 
 void ibViewUpdateSizer(wxSizer* sizer, const ibProtocolNode& node)
 {
@@ -152,3 +152,8 @@ int ibValueSizerItem::GetFlag(const ibProtocolNode& node)
 	return flag;
 }
 
+CONTROL_REGISTER(ibValueSizerItem, ibProtocol::ibForm::ibType::SizerItem)
+CONTROL_REGISTER(ibValueBoxSizer, ibProtocol::ibForm::ibType::Boxsizer)
+CONTROL_REGISTER(ibValueWrapSizer, ibProtocol::ibForm::ibType::Wrapsizer)
+CONTROL_REGISTER(ibValueGridSizer, ibProtocol::ibForm::ibType::Gridsizer)
+CONTROL_REGISTER(ibValueStaticBoxSizer, ibProtocol::ibForm::ibType::Staticboxsizer)

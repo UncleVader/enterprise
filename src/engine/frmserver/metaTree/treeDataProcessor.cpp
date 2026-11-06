@@ -6,6 +6,7 @@
 #include "frmserver/client/clientFrame.h"
 #include "frmserver/client/propertyInspector.h"   // the header's rows
 #include "frmserver/docView/docView.h"            // the file's document — its title
+#include "protocol/protocolDesigner.h"   // ibProtocol::ibSchema::ibMetaData
 
 ibDataProcessorTree::ibDataProcessorTree(ibClientFrame* frame, ibMetaDocument* docParent)
 	: ibMetaTreeBase(frame), m_docParent(docParent)
@@ -82,7 +83,7 @@ void ibDataProcessorTree::FillData(ibDataNode& root)
 	// forms
 	ibDataNode& forms = AppendGroupItem(root, g_metaFormCLSID, _("Forms"));
 	for (auto metaForm : commonMetadata->GetFormArrayObject()) {
-		if (metaForm->IsDeleted() || metaForm == m_askedForm)   // gone, or not made yet: its kind is being asked
+		if (metaForm->IsDeleted() || metaForm == m_askedObject)   // gone, or not made yet: its kind is being asked
 			continue;
 		AppendItem(forms, metaForm);
 	}

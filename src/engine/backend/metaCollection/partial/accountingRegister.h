@@ -12,6 +12,7 @@
 #include "backend/metaCollection/partial/registerQueryLowering.h"
 
 #include <algorithm>
+#include <concepts>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -628,7 +629,7 @@ public:
 	//
 	// So there is one list, and it is this. A slot added, a side added, a predefined attribute added —
 	// every walker learns about it at once, because there is nothing else to teach.
-	template <typename TVisitor>
+	template <std::predicate<ibValueMetaObjectAttributePredefined*, ibOwnAttributeRole> TVisitor>
 	bool ForEachOwnAttribute(TVisitor visit) const {
 		for (ibValueMetaObjectAttributePredefined* slot : m_accountDimensionKinds)   if (!visit(slot, ibOwnAttributeRole::DimensionKind))  return false;
 		for (ibValueMetaObjectAttributePredefined* slot : m_accountDimensionSlots)   if (!visit(slot, ibOwnAttributeRole::DimensionValue)) return false;
@@ -1018,11 +1019,11 @@ private:
 	ibPropertyBoolean* m_propertySplitTotals = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryData, ibT("SplitTotals"), _("Split totals"), _("Spread one logical totals row over several physical ones, so sessions posting at the same time stop queueing on the same row (cash, revenue and VAT accounts are hit by every document). A read sums the parts back, as it reads anyway. On by default; switching it changes the totals tables."), true);
 
 	// Predefined attributes: RecordType (Debit/Credit)
-	ibPropertyContainer<>* m_propertyAttributeRecordType = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon,
+	ibPropertyPredefined<>* m_propertyAttributeRecordType = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined,
 		ibValueMetaObjectCompositeData::CreateSpecialType(ibT("RecordType"), _("Record type"), _("Debit or credit - the side of the account a line moves, in a register without correspondence (one side per line)."), g_enumAccountingRecordTypeCLSID, false, ibValueEnumAccountingRegisterRecordType::CreateDefEnumValue()));
 
 	// Predefined attribute: Account (reference to Chart of Accounts - polymorphic)
-	ibPropertyContainer<>* m_propertyAttributeAccount = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon,
+	ibPropertyPredefined<>* m_propertyAttributeAccount = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined,
 		ibValueMetaObjectCompositeData::CreateEmptyType(ibT("Account"), _("Account"), _("The account a line is posted to - an account of the register's chart; its dimension kinds decide what the line's dimension slots hold."), false, ibItemMode::ibItemMode_Item));
 
 	// THE DIMENSION SLOTS — created by SyncAccountDimensionSlots, not declared here.

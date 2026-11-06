@@ -3,6 +3,7 @@
 
 #include "backend/propertyManager/propertyManager.h"
 
+#include <concepts>   // std::derived_from — what the finders hand back, what is made a child
 #include <vector>   // ibMetaMenuItem arrives as a vector of these — see CollectContextMenu
 
 #include "backend/backend_form.h"
@@ -21,8 +22,8 @@
 //*******************************************************************************
 class BACKEND_API ibMetaData;
 class BACKEND_API ibValueMetaObject;
-class BACKEND_API ibDataNode;   // serialize/dataBuilder.h — universal structure node
-class BACKEND_API ibDataValue;  // serialize/dataBuilder.h — a node value (Child for a nested object)
+class ibDataNode;   // serialize/dataBuilder.h — universal structure node
+class ibDataValue;  // serialize/dataBuilder.h — a node value (Child for a nested object)
 //*******************************************************************************
 
 //*******************************************************************************
@@ -61,10 +62,9 @@ constexpr ibClassID g_metaAttributeCLSID = metadata_to_clsid("MD_ATTR");
 constexpr ibClassID g_metaFormCLSID = metadata_to_clsid("MD_FRM");
 constexpr ibClassID g_metaTemplateCLSID = metadata_to_clsid("MD_TMPL");
 constexpr ibClassID g_metaCommandCLSID       = metadata_to_clsid("MD_OCMD");   // OBJECT command (under a business object, like Form)
-// A COMPOSER — what a report READS and how it is LAID OUT, declared inside the report the way a
-// form, a template or a tabular section is. It is not an attribute somebody adds by hand: it lives
-// in the object, so declaring it is what makes `Object.<Name>` exist (Max, 2026-08-20). The report's
-// DEFAULT composer is what the generated form is built from — a report with one needs no form at all.
+// A COMPOSER AS IT WAS STORED before it became a template of the composer kind (2026-11-03,
+// ibTemplateType::Composer) — no class answers it any more; a file's node of it is read as a template
+// (ApplyDataNode).
 constexpr ibClassID g_metaComposerCLSID      = metadata_to_clsid("MD_CMPS");
 constexpr ibClassID g_metaModuleCLSID = metadata_to_clsid("MD_MOD");
 constexpr ibClassID g_metaManagerCLSID = metadata_to_clsid("MD_MNGR");
@@ -696,7 +696,7 @@ public:
 #pragma region __array_h__
 
 	//any
-	template <typename _T1 = ibValueMetaObject>
+	template <std::derived_from<ibValueMetaObject> _T1 = ibValueMetaObject>
 	std::vector<_T1*> GetAnyArrayObject(
 		std::vector<_T1*> array = std::vector<_T1*>()) const {
 		FillArrayObjectByFilter<_T1>(array, {});
@@ -707,14 +707,14 @@ public:
 #pragma region __filter_h__
 
 	//any
-	template <typename _T1 = ibValueMetaObject, typename _T2>
+	template <std::derived_from<ibValueMetaObject> _T1 = ibValueMetaObject, typename _T2>
 	_T1* FindAnyObjectByFilter(const _T2& id) const {
 		return FindObjectByFilter<_T1>(id, {});
 	}
 
 #pragma endregion
 
-	template<typename T, typename... Args>
+	template<std::derived_from<ibValueMetaObject> T, typename... Args>
 	T* CreateMetaObjectAndSetParent(Args&&... args) {
 		const ibValuePtr<T> createdObject = ibValue::CreateObjectValue<T>(args...);
 		wxASSERT(createdObject);

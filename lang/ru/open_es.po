@@ -411,6 +411,11 @@ msgstr "'%s' - глобальная функция - она не принадл�
 msgid "Nothing can follow a group without a name: its answer is the groups themselves, each with Key and Values. To go on - Select, Where, OrderBy - name the group: '%s <name>'."
 msgstr "После группы без имени ничего не может идти: её ответ - сами группы, у каждой Key и Values. Чтобы продолжить - Select, Where, OrderBy - дайте группе имя: '%s <имя>'."
 
+#: src/engine/backend/backend_exception.cpp:217
+#, c-format
+msgid "The procedure '%s' was not carried out by this value"
+msgstr "Значение не выполнило процедуру '%s'"
+
 #: src/engine/backend/backend_exception.cpp:696
 msgid "Context functions are not available: this is a server, and a server has no forms."
 msgstr "Контекстные функции недоступны: это сервер, а у сервера нет форм."
@@ -1053,7 +1058,7 @@ msgid "Composer: source '%s.%s' exposes no columns"
 msgstr "Компоновщик: источник '%s.%s' не предоставляет колонок"
 
 #: src/engine/backend/composition/dataComposer.cpp:1698
-msgid "Composer: a query of several selections has one that is neither named nor a temporary table. Name it with ONTO — without a name nothing can read it, and it is left out of the answer."
+msgid "Composer: a query of several selections has one that is neither named nor a temporary table. Name it with ONTO - without a name nothing can read it, and it is left out of the answer."
 msgstr "Компоновщик: в запросе из нескольких выборок есть выборка без имени, которая не является временной таблицей. Назовите её через ONTO — без имени её никто не прочитает, и она не попадёт в ответ."
 
 #: src/engine/backend/composition/dataComposer.cpp:1886
@@ -5730,7 +5735,7 @@ msgstr "'%s' не группируется и не агрегируется: д�
 
 #: src/engine/backend/query/queryLowering.cpp:6279
 #, c-format
-msgid "the link on '%s' refers to '%s', which this query reads AFTER it: a link can only relate tables that are already read — move the table earlier, or write this as a condition"
+msgid "the link on '%s' refers to '%s', which this query reads AFTER it: a link can only relate tables that are already read - move the table earlier, or write this as a condition"
 msgstr "связь у '%s' ссылается на '%s', а эту таблицу запрос читает ПОЗЖЕ: связь может связывать только уже прочитанные таблицы — переместите таблицу раньше или запишите это как условие"
 
 #: src/engine/backend/query/queryLowering.cpp:6294
@@ -7094,60 +7099,6 @@ msgstr "Ошибка преобразования значения. Должно
 msgid "Structure ctor: first argument must be a comma-separated field name string"
 msgstr "Конструктор Structure: первый аргумент должен быть строкой имён полей через запятую"
 
-#: src/engine/backend/system/value/valueOLE.cpp:462
-#, c-format
-msgid "Failed to create an instance of \"%s\""
-msgstr "Не удалось создать экземпляр \"%s\"."
-
-#: src/engine/backend/system/value/valueOLE.cpp:530
-#, c-format
-msgid "Failed to create an instance of '%s'"
-msgstr "Не удалось создать экземпляр '%s'."
-
-#: src/engine/backend/system/value/valueOLE.cpp:894
-msgid "The number of elements provided to DISPPARAMS is different from the number of arguments accepted by the method or property."
-msgstr "Количество элементов, передаваемых в DISPPARAMS, отличается от количества аргументов, принимаемых методом или свойством."
-
-#: src/engine/backend/system/value/valueOLE.cpp:897
-msgid "One of the arguments in rgvarg is not a valid variant type. "
-msgstr "Один из аргументов в rgvarg не является допустимым типом варианта."
-
-#: src/engine/backend/system/value/valueOLE.cpp:900
-msgid "The requested member does not exist, or the call to Invoke tried to set the value of a read-only property."
-msgstr "Запрошенный элемент не существует, или же вызов функции Invoke попытался установить значение свойства, доступного только для чтения."
-
-#: src/engine/backend/system/value/valueOLE.cpp:903
-msgid "This implementation of IDispatch does not support named arguments."
-msgstr "Данная реализация IDispatch не поддерживает именованные аргументы."
-
-#: src/engine/backend/system/value/valueOLE.cpp:906
-msgid "One of the arguments in rgvarg could not be coerced to the specified type."
-msgstr "Один из аргументов в rgvarg не удалось преобразовать к указанному типу."
-
-#: src/engine/backend/system/value/valueOLE.cpp:909
-msgid "One of the parameter DISPIDs does not correspond to a parameter on the method. In this case, puArgErr should be set to the first argument that contains the error."
-msgstr "Один из параметров DISPID не соответствует параметру метода. В этом случае puArgErr следует установить равным первому аргументу, содержащему ошибку."
-
-#: src/engine/backend/system/value/valueOLE.cpp:912
-msgid "One or more of the arguments could not be coerced. The index within rgvarg of the first parameter with the incorrect type is returned in the puArgErr parameter."
-msgstr "Один или несколько аргументов не удалось преобразовать в нужный тип. В параметре puArgErr возвращается индекс первого параметра с некорректным типом в пределах rgvarg."
-
-#: src/engine/backend/system/value/valueOLE.cpp:915
-msgid "The interface identifier passed in riid is not IID_NULL.)"
-msgstr "Идентификатор интерфейса, переданный в riid, не равен IID_NULL."
-
-#: src/engine/backend/system/value/valueOLE.cpp:918
-msgid "The member being invoked interprets string arguments according to the LCID, and the LCID is not recognized. If the LCID is not needed to interpret arguments, this error should not be returned."
-msgstr "Вызываемый член интерпретирует строковые аргументы в соответствии с LCID, но LCID не распознан. Если LCID не нужен для интерпретации аргументов, эта ошибка не должна возвращаться."
-
-#: src/engine/backend/system/value/valueOLE.cpp:921
-msgid "A required parameter was omitted."
-msgstr "Был пропущен обязательный параметр."
-
-#: src/engine/backend/system/value/valueOLE.cpp:924
-msgid "Error: get method return unknown code"
-msgstr "Ошибка: метод get возвращает неизвестный код"
-
 #: src/engine/backend/system/value/valueQuery.cpp:255
 msgid "TempTablesManager expects a TempTablesManager value"
 msgstr "TempTablesManager ожидает значение TempTablesManager"
@@ -7390,8 +7341,8 @@ msgid "Column caption (header)"
 msgstr "Заголовок колонки (шапка)"
 
 #: src/engine/backend/system/value/valueTable.h:155
-msgid "Which values the column holds; a value of another type is converted to it when stored. String by default."
-msgstr "Какие значения хранит колонка; значение другого типа при сохранении преобразуется к нему. По умолчанию - строка."
+msgid "Which values the column holds; a value of another type is converted to it when stored. Any by default."
+msgstr "Какие значения хранит колонка; значение другого типа при сохранении преобразуется к нему. По умолчанию - произвольный."
 
 #: src/engine/backend/system/value/valueTable.h:156
 msgid "Keep a lookup index on this column, so Find and an equality search stop scanning"
@@ -9451,14 +9402,6 @@ msgstr "Не удалось вставить элемент '%s' в '%s' (иде
 msgid "The form attribute the grid shows: a spreadsheet document, or a composition (a report) whose result the grid displays. Empty: the grid keeps a spreadsheet document of its own."
 msgstr "Реквизит формы, который показывает поле табличного документа: табличный документ или компоновка (отчёт), результат которой выводится в поле. Если пусто, поле хранит собственный табличный документ."
 
-#: src/engine/frmserver/visualView/ctrl/gridBox.h:241
-msgid "Compose on open"
-msgstr "Формировать при открытии"
-
-#: src/engine/frmserver/visualView/ctrl/gridBox.h:242
-msgid "Whether a report bound to the grid builds itself once when the control is created, without the user pressing Compose. Off (the default) suits a report whose parameters are set first; on suits one with nothing left to ask, such as a report on a desktop."
-msgstr "Формируется ли привязанный к полю отчёт один раз при создании элемента, без нажатия пользователем кнопки Сформировать. Выключено (по умолчанию) подходит для отчёта, параметры которого сначала задаются; включено - для отчёта, у которого больше нечего спрашивать, например отчёта на рабочем столе."
-
 #: src/engine/frmserver/visualView/ctrl/gridBox.h:264
 msgid "On detail processing"
 msgstr "Обработка расшифровки"
@@ -10874,6 +10817,24 @@ msgstr "Не удалось сбросить настройку формы."
 msgid " form wizard"
 msgstr " мастер форм"
 
+msgid " template wizard"
+msgstr " мастер шаблонов"
+
+msgid "Select kind"
+msgstr "Выберите вид"
+
+msgid "What the template holds, its kind chosen when it is added: a spreadsheet document (cells, named areas and parameters a print form is assembled from) or a data composer (its query, resources, parameters, structure and settings variants). Code gets a fresh value of it with the owner's GetTemplate(name), a common one with GetCommonTemplate(name)."
+msgstr "Что хранит шаблон, вид выбирается при добавлении: табличный документ (ячейки, именованные области и параметры, из которых собирается печатная форма) или компоновщик данных (его запрос, ресурсы, параметры, структура и варианты настроек). Код получает новое значение функцией GetTemplate(name) владельца, общего шаблона — GetCommonTemplate(name)."
+
+msgid "The template is not a spreadsheet document"
+msgstr "Шаблон — не табличный документ"
+
+msgid "The template is not a data composer"
+msgstr "Шаблон — не компоновщик данных"
+
+msgid "The template's kind %i is not one this version knows"
+msgstr "Вид шаблона %i неизвестен этой версии"
+
 msgid "Select form type"
 msgstr "Выберите тип формы"
 
@@ -11427,7 +11388,7 @@ msgstr "Одна строка над всеми измерениями, свор
 msgid "By periods"
 msgstr "По периодам"
 
-msgid "Group this level by calendar periods, and report every period in the range — including the ones nothing happened in."
+msgid "Group this level by calendar periods, and report every period in the range - including the ones nothing happened in."
 msgstr "Группировать этот уровень по календарным периодам и выводить каждый период диапазона — включая те, в которых ничего не происходило."
 
 msgid "Period:"
@@ -11435,7 +11396,7 @@ msgstr "Период:"
 
 msgid ""
 "Report periods from this moment. Empty = from the earliest period in the data.\n"
-"A bound does not filter rows — it says which periods to show."
+"A bound does not filter rows - it says which periods to show."
 msgstr ""
 "Выводить периоды с этого момента. Пусто = с самого раннего периода в данных.\n"
 "Граница не отбирает строки — она говорит, какие периоды показывать."
@@ -12240,6 +12201,14 @@ msgstr "Соединение с БД установлено!"
 #: src/engine/launcher/connectionDB.cpp:205
 msgid "Failed to connect to DB!"
 msgstr "Не удалось подключиться к БД!"
+
+#: src/engine/launcher/connectionDB.cpp:79
+msgid "Server cluster"
+msgstr "Кластер серверов"
+
+#: src/engine/launcher/connectionDB.cpp:116
+msgid "Base:"
+msgstr "База:"
 
 #: src/engine/launcher/connectionDB.h:67
 msgid "Configure connect"
@@ -13122,9 +13091,10 @@ msgid ""
 "\n"
 "Provide one of:\n"
 "  --address=oes://<server>[:port]/<base>   (an application server; oess:// over TLS)\n"
+"  --address=http(s)://<server>[:port]/<base>/   (a web server's publication, its link)\n"
 "  --file=<path>          (Firebird embedded / SQLite file)\n"
 "  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]"
-msgstr "Невозможно запустить designer-thin.exe - не указана информационная база.\n\nУкажите одно из:\n  --address=oes://<server>[:port]/<base>   (сервер приложений; oess:// через TLS)\n  --file=<path>          (Firebird embedded / файл SQLite)\n  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]"
+msgstr "Невозможно запустить designer-thin.exe - не указана информационная база.\n\nУкажите одно из:\n  --address=oes://<server>[:port]/<base>   (сервер приложений; oess:// через TLS)\n  --address=http(s)://<server>[:port]/<base>/   (публикация веб-сервера, её ссылка)\n  --file=<path>          (Firebird embedded / файл SQLite)\n  --server=<host> --db=<name> [--dbport=...] [--user=...] [--password=...]"
 
 #: src/engine/designer-thin/mainFrame/mainFrameDesignerEvent.cpp:282
 msgid "Failed to upload configuration file."
@@ -13152,9 +13122,10 @@ msgid ""
 "\n"
 "Provide one of:\n"
 "  --address=oes://<server>[:port]/<base>   (an application server; oess:// over TLS)\n"
+"  --address=http(s)://<server>[:port]/<base>/   (a web server's publication, its link)\n"
 "  --file=<path>          (Firebird embedded / SQLite file)\n"
 "  --server=<host> --db=<name> [--dbport=...] [--user=...]"
-msgstr "Невозможно запустить enterprise-thin.exe - не указана информационная база.\n\nУкажите одно из:\n  --address=oes://<server>[:port]/<base>   (сервер приложений; oess:// через TLS)\n  --file=<path>          (Firebird embedded / файл SQLite)\n  --server=<host> --db=<name> [--dbport=...] [--user=...]"
+msgstr "Невозможно запустить enterprise-thin.exe - не указана информационная база.\n\nУкажите одно из:\n  --address=oes://<server>[:port]/<base>   (сервер приложений; oess:// через TLS)\n  --address=http(s)://<server>[:port]/<base>/   (публикация веб-сервера, её ссылка)\n  --file=<path>          (Firebird embedded / файл SQLite)\n  --server=<host> --db=<name> [--dbport=...] [--user=...]"
 
 #: src/engine/frmclient/docView/templates/docViewSpreadsheet.cpp:233
 msgid "Zoom"
@@ -13383,8 +13354,8 @@ msgstr "не удалось прочитать доверенные сертиф
 
 #: src/engine/protocol/connectionServer.cpp:113
 #, c-format
-msgid "'%s' is not the address of a base: oes://server[:port]/<base> or oess://..."
-msgstr "'%s' не является адресом базы: oes://server[:port]/<base> или oess://..."
+msgid "'%s' is not the address of a base: oes://server[:port]/<base>, oess://... or a publication's link, http(s)://server[:port]/<publication>/"
+msgstr "'%s' не является адресом базы: oes://server[:port]/<base>, oess://... или ссылкой публикации, http(s)://server[:port]/<publication>/"
 
 #: src/engine/protocol/connectionServer.cpp:121
 #, c-format
@@ -13602,3 +13573,456 @@ msgstr "Ассистент с доступом к данным"
 #: src/engine/frmclient/mainFrame/settings/settingsdialog.cpp:39
 msgid "Debugging"
 msgstr "Отладка"
+
+#: src/engine/frmserver/visualView/ctrl/formAttribute.cpp:121
+#, c-format
+msgid "'%s' cannot be the name of a form attribute: it takes letters, digits and the symbol \"_\", and does not start with a digit"
+msgstr "'%s' не может быть именем реквизита формы: в имени допустимы буквы, цифры и символ \"_\", и оно не начинается с цифры"
+
+#: src/engine/frmserver/visualView/ctrl/formAttribute.cpp:126
+#, c-format
+msgid "The form already has an attribute '%s'"
+msgstr "У формы уже есть реквизит '%s'"
+
+#: src/engine/frmserver/visualView/ctrl/formAttribute.cpp:224
+#, c-format
+msgid "The form has no attribute '%s'"
+msgstr "У формы нет реквизита '%s'"
+
+#: src/engine/frmserver/visualView/ctrl/formAttribute.cpp:228
+#, c-format
+msgid "'%s' is an attribute the form was designed with - only one the module added with Attributes.Add can be removed"
+msgstr "'%s' - реквизит, заданный при проектировании формы: удалить можно только реквизит, который модуль добавил через Attributes.Add"
+
+#: src/engine/frmserver/visualView/ctrl/formAttribute.cpp:234
+#, c-format
+msgid "'%s' is shown by the control '%s' - unbind the control first"
+msgstr "'%s' показывает элемент '%s' - сначала отвяжите элемент"
+
+#: src/engine/backend/backend_type.cpp:469
+#, c-format
+msgid "'%s' names no attribute this control can be bound to, and the form has no main attribute to start from"
+msgstr "'%s' не называет реквизит, к которому можно привязать этот элемент, а основного реквизита, с которого начать путь, у формы нет"
+
+#: src/engine/backend/backend_type.cpp:479 src/engine/backend/srcDataObject.cpp:148
+#, c-format
+msgid "'%s' holds a value - nothing unfolds from it, so '%s' cannot follow"
+msgstr "'%s' хранит значение - из него ничего не раскрывается, поэтому '%s' дальше пути быть не может"
+
+#: src/engine/backend/srcDataObject.cpp:150
+#, c-format
+msgid "'%s' has no field called '%s'. It offers: %s"
+msgstr "У '%s' нет поля '%s'. Доступны: %s"
+
+#: src/engine/backend/backend_type.cpp:484
+#, c-format
+msgid "Nothing to bind to - the path names no field and no attribute"
+msgstr "Не к чему привязать: путь не называет ни поля, ни реквизита"
+
+#: src/engine/frmserver/visualView/controlEnum.h
+msgid "Tile"
+msgstr "Плитка"
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgid "Note"
+msgstr "Подпись"
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgid "The line under a tile's title - a price, a count, a state. Shown only when the picture location is Tile. Can be written per language and changed from code while the form is open."
+msgstr "Строка под заголовком плитки - цена, количество, состояние. Показывается только при положении картинки «Плитка». Может быть написана на каждом языке и меняться из кода, пока форма открыта."
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgctxt "button"
+msgid "View"
+msgstr "Вид"
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgid "How the button is drawn: a button, or a hyperlink - no face and no frame, its caption underlined. Pressed the same way, and its picture, its representation and its command are the same."
+msgstr "Как рисуется кнопка: обычной кнопкой или гиперссылкой - без фона и рамки, с подчёркнутой надписью. Нажимается так же, картинка, представление и команда те же."
+
+#: src/engine/frmserver/visualView/controlEnum.h
+msgctxt "button view"
+msgid "Button"
+msgstr "Обычная кнопка"
+
+#: src/engine/frmserver/visualView/controlEnum.h
+msgid "Hyperlink"
+msgstr "Гиперссылка"
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgid "Picture location"
+msgstr "Положение картинки"
+
+#: src/engine/frmserver/visualView/ctrl/widgets.h
+msgid "Where the picture stands. Auto: where the button puts it, on the left of the text. Left, Right: on that side of the text. Tile: the picture large over the text and the Note under them, the button filling what its sizer gives it - a big button for a finger; put tiles in a grid sizer for a panel of them."
+msgstr "Где стоит картинка. Авто: там, куда её ставит кнопка, слева от текста. Лево, Право: с этой стороны от текста. Плитка: картинка крупно над текстом и подпись под ними, кнопка заполняет то, что ей даёт сайзер, - крупная кнопка под палец; плитки в сетке образуют панель."
+
+#: src/engine/backend/metaCollection/partial/chartOfAccountsMetadataSchema.cpp:142
+#, c-format
+msgid "%s.%s: %i analytics are declared, the chart takes %i"
+msgstr "%s.%s: объявлено аналитик: %i, план счетов принимает %i"
+
+#: src/engine/backend/metaCollection/partial/chartOfAccountsMetadataSchema.cpp:147
+#, c-format
+msgid "%s.%s: analytics line %i names no kind its chart of characteristic types declares"
+msgstr "%s.%s: строка аналитики %i указывает вид, которого нет среди объявленных в его плане видов характеристик"
+
+#: src/engine/backend/metaCollection/partial/chartOfCalculationTypesMetadataSchema.cpp:60
+#, c-format
+msgid "%s.%s: %s line %i names no calculation type the section may name"
+msgstr "%s.%s: %s, строка %i: указан вид расчёта, который в этом разделе указывать нельзя"
+
+#: src/engine/backend/metaCollection/partial/chartOfCharacteristicTypesMetadataSchema.cpp:36
+#, c-format
+msgid "%s.%s: the characteristic declares no Type"
+msgstr "%s.%s: у характеристики не указан Тип"
+
+#: src/engine/backend/metaCollection/partial/commonObject.cpp:2910
+#, c-format
+msgid "%s: line %i of the %s list is declared by the configuration and cannot be removed, moved or changed"
+msgstr "%s: строка %i списка %s объявлена конфигурацией - её нельзя удалить, переместить или изменить"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:57
+#, c-format
+msgid "'%s': '%s' keeps no folders"
+msgstr "'%s': в '%s' нет папок"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:61
+#, c-format
+msgid "'%s' holds '%s', so it stays a folder"
+msgstr "'%s' содержит '%s', поэтому остаётся папкой"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:66
+#, c-format
+msgid "'%s': the items of '%s' do not stand under one another"
+msgstr "'%s': элементы '%s' не подчиняются друг другу"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:69
+#, c-format
+msgid "'%s': '%s' has no predefined item to sit under"
+msgstr "'%s': в '%s' нет предопределённого элемента, которому он мог бы подчиняться"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:71
+#, c-format
+msgid "'%s' is not a folder, so nothing can sit under it"
+msgstr "'%s' - не папка, поэтому ей ничего не может подчиняться"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:74
+#, c-format
+msgid "'%s' cannot sit under itself"
+msgstr "'%s' не может подчиняться самому себе"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:183
+#, c-format
+msgid "'%s': '%s' is not a value '%s' may be given"
+msgstr "'%s': '%s' - не то значение, которое можно задать для '%s'"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:189
+#, c-format
+msgid "'%s': '%s' may not name the type '%s'"
+msgstr "'%s': '%s' не может указывать тип '%s'"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:195
+#, c-format
+msgid "'%s': '%s' takes no value of the type '%s'"
+msgstr "'%s': '%s' не принимает значения типа '%s'"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:227
+#, c-format
+msgid "'%s': a predefined item of '%s' declares no attribute #%d"
+msgstr "'%s': предопределённый элемент '%s' не объявляет реквизит #%d"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:232
+#, c-format
+msgid "'%s': a predefined item of '%s' declares no section #%d"
+msgstr "'%s': предопределённый элемент '%s' не объявляет табличную часть #%d"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:236
+#, c-format
+msgid "'%s': '%s' has no column #%d"
+msgstr "'%s': в '%s' нет колонки #%d"
+
+#: src/engine/backend/metaCollection/partial/commonObjectPredefined.cpp:373
+#, c-format
+msgid "'%s': its predefined items cannot be read"
+msgstr "'%s': не удалось прочитать его предопределённые элементы"
+
+#: src/engine/backend/metaCollection/partial/commonObjectSchema.cpp:265
+#, c-format
+msgid "%s.%s: the predefined item has no %s"
+msgstr "%s.%s: у предопределённого элемента не заполнено: %s"
+
+#: src/engine/backend/metaCollection/partial/commonObjectSchema.cpp:322
+#, c-format
+msgid "%s: the declared lines cannot be written - the table names no owner"
+msgstr "%s: объявленные строки нельзя записать - в таблице не указан владелец"
+
+#: src/engine/backend/metaCollection/partial/commonObjectSchema.cpp:399
+#, c-format
+msgid "%s.%s %i: the configuration declares this line where the base already holds one - remove the lines held there first"
+msgstr "%s.%s %i: конфигурация объявляет эту строку там, где в базе уже есть строка - сначала удалите строки, которые там стоят"
+
+#: src/engine/designer-thin/win/dlg/predefinedEditor.cpp:172
+#, c-format
+msgid "\"%s\" must be filled in"
+msgstr "Поле \"%s\" должно быть заполнено"
+
+#: src/engine/designer-thin/win/dlg/predefinedEditor.cpp:352
+msgid "Declared by the configuration"
+msgstr "Объявлено конфигурацией"
+
+#: src/engine/designer-thin/win/dlg/predefinedEditor.cpp:531
+#, c-format
+msgid "%s, row %u"
+msgstr "%s, строка %u"
+
+#: src/engine/backend/metaCollection/partial/chartOfCharacteristicTypesMetadataSchema.cpp:49
+#, c-format
+msgid "%s.%s: the characteristic's Type holds a type the chart does not take - pick it again among its Types of characteristics"
+msgstr "%s.%s: в Типе характеристики есть тип, которого план не принимает - выберите его заново среди Видов характеристик"
+
+#: src/engine/backend/system/value/valueCOM.cpp:107
+#, c-format
+msgid "COM object \"%s\" returned a value that cannot be read: %s"
+msgstr "COM-объект \"%s\" вернул значение, которое не удалось прочитать: %s"
+
+#: src/engine/backend/system/value/valueCOM.cpp:195
+#, c-format
+msgid "COM object \"%s\" returned a date that cannot be read"
+msgstr "COM-объект \"%s\" вернул дату, которую не удалось прочитать"
+
+#: src/engine/backend/system/value/valueCOM.cpp:214
+#, c-format
+msgid "COM object \"%s\" returned an interface that cannot be called by name"
+msgstr "COM-объект \"%s\" вернул интерфейс, к которому нельзя обратиться по имени"
+
+#: src/engine/backend/system/value/valueCOM.cpp:221
+#, c-format
+msgid "COM object \"%s\" returned a value of a kind the language does not have (VARTYPE %d)"
+msgstr "COM-объект \"%s\" вернул значение вида, которого нет в языке (VARTYPE %d)"
+
+#: src/engine/backend/system/value/valueCOM.cpp:241
+#, c-format
+msgid "COM object \"%s\" returned an array of structures, which the language does not have"
+msgstr "COM-объект \"%s\" вернул массив структур, которых нет в языке"
+
+#: src/engine/backend/system/value/valueCOM.cpp:354
+#, c-format
+msgid "The date %s cannot be passed to a COM object"
+msgstr "Дату %s нельзя передать COM-объекту"
+
+#: src/engine/backend/system/value/valueCOM.cpp:375
+#, c-format
+msgid "An array of %d elements cannot be passed to a COM object"
+msgstr "Массив из %d элементов нельзя передать COM-объекту"
+
+#: src/engine/backend/system/value/valueCOM.cpp:393
+#, c-format
+msgid "A value of type \"%s\" cannot be passed to a COM object"
+msgstr "Значение типа \"%s\" нельзя передать COM-объекту"
+
+#: src/engine/backend/system/value/valueCOM.cpp:699
+#, c-format
+msgid "The handler of event \"%s\" must be a function or a procedure name"
+msgstr "Обработчик события \"%s\" должен быть функцией или именем процедуры"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:56
+#, c-format
+msgid "ComSafeArray: \"%s\" is not an element type"
+msgstr "ComSafeArray: \"%s\" не является типом элементов"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:77
+#, c-format
+msgid "ComSafeArray: the array has no dimension %d"
+msgstr "ComSafeArray: у массива нет измерения %d"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:82
+#, c-format
+msgid "ComSafeArray: %s"
+msgstr "ComSafeArray: %s"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:91
+msgid "ComSafeArray: a size is a whole number, 0 or more"
+msgstr "ComSafeArray: размер — целое число, 0 или больше"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:115
+#, c-format
+msgid "ComSafeArray: the array has %d dimensions, and %d indices were given"
+msgstr "ComSafeArray: у массива измерений %d, а индексов передано %d"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:190
+#, c-format
+msgid "ComSafeArray: a value of type \"%s\" cannot be stored as %s"
+msgstr "ComSafeArray: значение типа \"%s\" нельзя записать как %s"
+
+#: src/engine/backend/system/value/valueSafeArray.cpp:200
+msgid "ComSafeArray: the array does not have the sizes given"
+msgstr "ComSafeArray: у массива не те размеры, что заданы"
+
+#: src/engine/backend/system/value/valueCOM.cpp:705
+#, c-format
+msgid "COM object \"%s\" has no events"
+msgstr "У COM-объекта \"%s\" нет событий"
+
+#: src/engine/backend/system/value/valueCOM.cpp:716
+#, c-format
+msgid "COM object \"%s\" has no event \"%s\""
+msgstr "У COM-объекта \"%s\" нет события \"%s\""
+
+#: src/engine/backend/system/value/valueCOM.cpp:593
+#, c-format
+msgid "The module that handles event \"%s\" of COM object \"%s\" is gone"
+msgstr "Модуля, который обрабатывает событие \"%s\" COM-объекта \"%s\", больше нет"
+
+#: src/engine/backend/system/value/valueCOM.cpp:820
+#, c-format
+msgid "COM object \"%s\" could not be created: %s"
+msgstr "Не удалось создать COM-объект \"%s\": %s"
+
+#: src/engine/backend/system/value/valueCOM.cpp:884
+#, c-format
+msgid "argument %d: %s"
+msgstr "аргумент %d: %s"
+
+#: src/engine/backend/system/value/valueCOM.cpp:893
+#, c-format
+msgid "COM object \"%s\", member \"%s\": %s"
+msgstr "COM-объект \"%s\", член \"%s\": %s"
+
+#: src/engine/backend/system/value/valueCOM.cpp:965
+#, c-format
+msgid "No COM class is registered as \"%s\""
+msgstr "COM-класс \"%s\" не зарегистрирован"
+
+#: src/engine/backend/system/value/valueCOM.cpp:1014
+msgid "COM objects are available on Windows only"
+msgstr "COM-объекты доступны только в Windows"
+
+#: src/engine/backend/system/value/valueCOM.cpp:1435
+#, c-format
+msgid "COM object \"%s\" cannot be walked with For Each"
+msgstr "COM-объект \"%s\" нельзя обойти циклом For Each"
+
+#: src/engine/backend/metaCollection/partial/sequenceBorderRules.cpp
+#, c-format
+msgid "%s is not a document"
+msgstr "%s - не документ"
+
+#: src/engine/backend/metaCollection/partial/sequenceBorderRules.cpp
+#, c-format
+msgid "%s cannot be read"
+msgstr "%s не удаётся прочитать"
+
+#: src/engine/backend/metaCollection/partial/sequenceBorderRules.cpp
+#, c-format
+msgid "%s was not posted"
+msgstr "%s не проведён"
+
+#: src/engine/backend/metaCollection/partial/sequenceBorderRules.cpp
+#, c-format
+msgid "Sequence '%s': restoring stopped at %s - %s"
+msgstr "Последовательность '%s': восстановление остановлено на %s - %s"
+
+#: src/engine/backend/metaCollection/partial/sequenceMetadata.cpp
+#, c-format
+msgid "Sequence '%s' is restored: %zu document(s) posted again"
+msgstr "Последовательность '%s' восстановлена: перепроведено документов: %zu"
+
+#: src/engine/backend/job/jobBackground.cpp
+#, c-format
+msgid "Background job: '%s' with the key '%s' is already running"
+msgstr "Фоновое задание: '%s' с ключом '%s' уже выполняется"
+
+#: src/engine/backend/system/systemManagerEnum.h
+msgid "Completed"
+msgstr "Завершено"
+
+#: src/engine/backend/system/systemManagerEnum.h
+msgid "Failed"
+msgstr "Завершено с ошибкой"
+
+#: src/engine/backend/system/systemManagerEnum.h
+msgid "Cancelled"
+msgstr "Отменено"
+
+#: src/engine/backend/system/value/valueBackgroundJob.cpp
+#, c-format
+msgid "%s: '%s' is not a UUID"
+msgstr "%s: '%s' - не UUID"
+
+#: src/engine/backend/system/value/valueBackgroundJob.cpp
+msgid "GetBackgroundJobs: the filter must be a Structure"
+msgstr "GetBackgroundJobs: отбор должен быть структурой (Structure)"
+
+#: src/engine/backend/system/value/valueBackgroundJob.cpp
+#, c-format
+msgid "GetBackgroundJobs: a background job has no property '%s' to filter by"
+msgstr "GetBackgroundJobs: у фонового задания нет свойства '%s' для отбора"
+
+#: src/engine/backend/system/value/valueBackgroundJob.cpp
+msgid "FindByUUID: no UUID given"
+msgstr "FindByUUID: UUID не указан"
+
+#: src/engine/backend/compiler/scriptComplete.cpp
+#, c-format
+msgid "%s has no method '%s'"
+msgstr "У %s нет метода '%s'"
+
+#: src/engine/backend/metaCollection/partial/commonObjectSchema.cpp
+#, c-format
+msgid "%s: the %s cannot change between a string and a number"
+msgstr "%s: %s нельзя переводить со строки на число и обратно"
+
+#: src/engine/backend/metaCollection/partial/commonObjectSchema.cpp
+#, c-format
+msgid "%s: the %s cannot be shorter than it was (%u, now %u)"
+msgstr "%s: %s не может быть короче, чем был (%u, теперь %u)"
+
+#: src/engine/backend/databaseLayer/databaseMaterializeBuilder.cpp
+msgid "A reading by the movement was handed a surface without its movements"
+msgstr "Чтению по движениям передан источник без движений"
+
+#: src/engine/backend/system/value/valueTextFile.cpp
+#, c-format
+msgid "The encoding '%s' is not supported; supported: %s"
+msgstr "Кодировка '%s' не поддерживается; поддерживаются: %s"
+
+#: src/engine/backend/system/value/valueList.cpp
+msgid "Check"
+msgstr "Пометка"
+
+#: src/engine/backend/system/value/valueList.cpp
+msgid "The item is not in the list"
+msgstr "Элемент не принадлежит списку"
+
+#: src/engine/backend/system/value/valueList.cpp
+msgid "Expected an item or an index"
+msgstr "Ожидается элемент или индекс"
+
+#: src/engine/backend/system/value/valueList.cpp
+msgid "LoadValues: the argument is not an array"
+msgstr "LoadValues: аргумент не является массивом"
+
+#: src/engine/frmserver/client/clientFrameRuntime.cpp
+msgid "Theme..."
+msgstr "Тема..."
+
+#: src/engine/frmclient/mainFrame/mainFrame.cpp
+msgid "As the system is set"
+msgstr "Как в системе"
+
+#: src/engine/frmclient/mainFrame/mainFrame.cpp
+msgid "Light"
+msgstr "Светлая"
+
+#: src/engine/frmclient/mainFrame/mainFrame.cpp
+msgid "Dark"
+msgstr "Тёмная"
+
+#: src/engine/frmclient/mainFrame/mainFrame.cpp
+msgid "The theme the interface is painted in:"
+msgstr "Тема оформления интерфейса:"
+
+#: src/engine/frmserver/schema/style.cpp
+msgid "The theme could not be kept"
+msgstr "Не удалось сохранить тему"

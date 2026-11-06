@@ -25,7 +25,7 @@
 //special object
 #include "backend/metaCollection/metaModuleObject.h"
 #include "backend/metaCollection/metaFormObject.h"
-#include "backend/metaCollection/metaSpreadsheetObject.h"
+#include "backend/metaCollection/metaTemplateObject.h"
 
 //interface
 #include "backend/metaCollection/metaSectionObject.h"
@@ -50,6 +50,9 @@
 #include "backend/moduleInfo.h"
 #include "backend/valueInfo.h"
 #include "backend/tabularModel.h"
+
+// the predefined items a hierarchy keeps — the one schema of them (m_predefinedDesc)
+#include "core/description/predefinedDescription.h"
 
 // L3 data-navigation interface — ibValueMetaObjectRecordDataRef and
 // ibValueMetaObjectRegisterData implement it so the query builder is family-blind.
@@ -728,6 +731,12 @@ public:
 	//special functions for DB
 	virtual ibString GetPhysicalTableName() const;
 
+	// What the code attribute (GetAttributeForCode) stores for counter `n`: a number as it is, a string as the prefix
+	// and the number padded with zeros to the attribute's length. One spelling for every generated code — the
+	// write's (ibValueRecordDataObjectRef::GenerateNextIdentifier) and a predefined item's (AppendPredefinedValue).
+	// An empty value where the kind has no code.
+	ibValue GenerateIdentifier(const ibNumber& counter, const ibString& prefix = ibEmptyString) const;
+
 protected:
 
 
@@ -756,7 +765,7 @@ protected:
 	ibPropertyCategory* m_categoryData = ibPropertyObject::CreatePropertyCategory(ibT("Data"), _("Data"));
 	ibPropertyCategory* m_categoryPresentation = ibPropertyObject::CreatePropertyCategory(ibT("Presentation"), _("Presentation"));
 	ibPropertyBoolean* m_propertyQuickChoice = ibPropertyObject::CreateProperty<ibPropertyBoolean>(m_categoryPresentation, ibT("QuickChoice"), _("Quick choice"), _("How an input field of this type is filled. On: typing in the field offers a drop-down of the matching items, and the item is picked there - meant for short lists of a few dozen items. Off (the default): the field opens the list form to choose from."), false);
-	ibPropertyContainer<>* m_propertyAttributeReference = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("Ref"), _("Ref"), _("The reference to the object - its identity. Every link to it from other objects, tabular sections and registers stores this value; it never changes, whatever is renamed or edited in the object."), ibValue::GetIDByVT(ibValueTypes::TYPE_EMPTY)));
+	ibPropertyPredefined<>* m_propertyAttributeReference = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("Ref"), _("Ref"), _("The reference to the object - its identity. Every link to it from other objects, tabular sections and registers stores this value; it never changes, whatever is renamed or edited in the object."), ibValue::GetIDByVT(ibValueTypes::TYPE_EMPTY)));
 
 	// ⭐⭐ NO SOURCE DESCRIPTOR HERE — "a reference" is a base to MIX INTO, not a readable source.
 	//
@@ -907,7 +916,7 @@ protected:
 private:
 
 	//default attributes 
-	ibPropertyContainer<>* m_propertyAttributeOrder = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateNumber(ibT("Order"), _("Order"), _("The position of the value in its enumeration, as the values are listed in the configuration. Values compare and sort by it, so a query ordering by an enumeration field orders by the declared order, not by the name."), 6, true));
+	ibPropertyPredefined<>* m_propertyAttributeOrder = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateNumber(ibT("Order"), _("Order"), _("The position of the value in its enumeration, as the values are listed in the configuration. Values compare and sort by it, so a query ordering by an enumeration field orders by the declared order, not by the name."), 6, true));
 
 	// …and this kind's own source descriptor — typed to the ENUMERATION kind, registered by it.
 	ibMetaCommandDescriptor<ibEnumQueryable, ibValueMetaObjectRecordDataEnumRef> m_queryable{ this };
@@ -1075,8 +1084,8 @@ protected:
 protected:
 
 	ibPropertyGeneration* m_propertyGeneration = ibPropertyObject::CreateProperty<ibPropertyGeneration>(m_categoryData, ibT("ListGeneration"), _("List generation"), _("The kinds of objects that can be created on the basis of this one. The Generate command of its form offers exactly these; the new object is filled from this one by its own filling handler. Empty: nothing is created from it."));
-	ibPropertyContainer<>* m_propertyAttributeDataVersion = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(ibT("DataVersion"), _("Data version"), _("A stamp the platform changes on every write of the object. A write locks the stored row and compares the stamp with the one read: if somebody else wrote the object in between, the write is refused rather than overwriting their change."), 12, ibItemMode_Folder_Item));
-	ibPropertyContainer<>* m_propertyAttributeDeletionMark = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateBoolean(ibT("DeletionMark"), _("Deletion mark"), _("Set when the object is marked for deletion: it stays in the base with every link to it and is shown crossed out; deleting it is a separate step. A posted document has its posting undone when it is marked.")));
+	ibPropertyPredefined<>* m_propertyAttributeDataVersion = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateString(ibT("DataVersion"), _("Data version"), _("A stamp the platform changes on every write of the object. A write locks the stored row and compares the stamp with the one read: if somebody else wrote the object in between, the write is refused rather than overwriting their change."), 12, ibItemMode_Folder_Item));
+	ibPropertyPredefined<>* m_propertyAttributeDeletionMark = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateBoolean(ibT("DeletionMark"), _("Deletion mark"), _("Set when the object is marked for deletion: it stays in the base with every link to it and is shown crossed out; deleting it is a separate step. A posted document has its posting undone when it is marked.")));
 
 	// Read/Write/Delete role triplet emitted by IB_DECLARE_RWD_ROLE_TRIPLET
 	// above (in the public access region).
@@ -1288,11 +1297,12 @@ protected:
 	// a configuration that has not set it posts as it always has.
 	ibPropertyEnum<ibValueEnumDocumentRecordsDeletion>* m_propertyRegisterRecordsDeletion =ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumDocumentRecordsDeletion>>(m_categoryData,
 		ibT("RegisterRecordsDeletion"), _("Register records deletion"), _("What the platform does with the document's movements when it is posted again or its posting is undone. Automatically (the default): cleared before the posting handler runs and when the posting is undone. On undo posting: kept when posted again, cleared on undo. Never: the configuration clears them. A deleted document always takes its movements with it."), ibDocumentRecordsDeletion::ibDocumentRecordsDeletion_Automatically);
-	ibPropertyContainer<>* m_propertyAttributeNumber = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(ibT("Number"), ibGETTEXT_IN_CONTEXT("document attribute", "Number"), _("The document's number - what a person finds it by. Indexed; shown with the date in lists and links. Left empty, it is generated when the document is written; the object module's SetNewNumber handler may give it a prefix or take the numbering over."), 11, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
-	ibPropertyContainer<>* m_propertyAttributeDate = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateDate(ibT("Date"), _("Date"), _("The document's date and time - when the fact happened. Documents are ordered by it, and it is the moment its movements stand at in the registers: a balance as of a moment counts the documents up to it."), ibDateFractions::ibDateFractions_DateTime, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
+	// The number's type and length are the configuration's - shown and set as its type (ibPropertyPredefinedType).
+	ibPropertyPredefinedType* m_propertyAttributeNumber = ibPropertyObject::CreateProperty<ibPropertyPredefinedType>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateString(ibT("Number"), ibGETTEXT_IN_CONTEXT("document attribute", "Number"), _("The document's number - what a person finds it by. Indexed; shown with the date in lists and links. Left empty, it is generated when the document is written; the object module's SetNewNumber handler may give it a prefix or take the numbering over."), 11, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
+	ibPropertyPredefined<>* m_propertyAttributeDate = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateDate(ibT("Date"), _("Date"), _("The document's date and time - when the fact happened. Documents are ordered by it, and it is the moment its movements stand at in the registers: a balance as of a moment counts the documents up to it."), ibDateFractions::ibDateFractions_DateTime, true, ibItemMode::ibItemMode_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
 	// The moment — registered like the date above, typed as the PointInTime value. See GetPointInTime
 	// for why it never joins the predefined list.
-	ibPropertyContainer<>* m_propertyAttributePointInTime = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("PointInTime"), _("Point in time"), _("The document's moment: its date together with the document itself, so two documents of the same second are still ordered. Not stored - built from the date and the reference; passed to a register's virtual table it reads everything up to (or before) this very document."), value_to_clsid(ibT("PointInTime"))));
+	ibPropertyPredefined<>* m_propertyAttributePointInTime = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateSpecialType(ibT("PointInTime"), _("Point in time"), _("The document's moment: its date together with the document itself, so two documents of the same second are still ordered. Not stored - built from the date and the reference; passed to a register's virtual table it reads everything up to (or before) this very document."), value_to_clsid(ibT("PointInTime"))));
 
 	// …and this kind's own source descriptor. THIS is the queryable that vends the MOMENT beside the
 	// stored attributes — the reason the kinds have their own at all: a synthetic column belongs to a
@@ -1307,70 +1317,6 @@ public:
 class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	public ibValueMetaObjectRecordDataMutableRef {
 	public:
-
-	class ibPredefinedValueObject : public ibDataViewObject {
-	public:
-
-		// Folder/leaf flag is stored on the predefined value itself
-		// — the designer's predefined-list dialog renders these as
-		// a tree, so the data-view item asks the row "are you a
-		// container?" directly.  Keeps the dialog free of model-side
-		// IsContainer overrides.
-		virtual bool IsContainer() const override { return m_valueIsFolder; }
-
-		ibPredefinedValueObject(bool valueIsFolder = false,
-			const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>())
-			:
-			m_predefinedItemGuid(wxNewUniqueGuid),
-			m_strPredefinedName(),
-			m_strCode(), m_strDescription(),
-			m_valueIsFolder(valueIsFolder),
-			m_valueParent(nullptr)
-		{
-		}
-
-		ibPredefinedValueObject(
-			const ibGuid& predefinedGuid, const ibString& strPredefinedName,
-			const ibString& strCode, const ibString& strDescription,
-			bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>())
-			:
-			m_predefinedItemGuid(predefinedGuid),
-			m_strPredefinedName(strPredefinedName),
-			m_strCode(strCode), m_strDescription(strDescription),
-			m_valueIsFolder(valueIsFolder),
-			m_valueParent(valueParent)
-		{
-		}
-
-		ibGuid GetPredefinedGuid() const { return m_predefinedItemGuid; }
-
-		ibString GetPredefinedParentName() const {
-			if (m_valueParent != nullptr)
-				return m_valueParent->GetPredefinedName();
-			return ibT("");
-		}
-
-		const ibString& GetPredefinedName() const { return m_strPredefinedName; }
-		const ibString& GetPredefinedCode() const { return m_strCode; }
-		const ibString& GetPredefinedDescription() const { return m_strDescription; }
-
-		bool IsPredefinedFolder() const { return m_valueIsFolder; }
-		wxObjectDataPtr<ibPredefinedValueObject> GetPredefinedParent() const { return m_valueParent; }
-
-		friend class ibValueMetaObjectRecordDataHierarchyMutableRef;
-
-	private:
-
-		ibGuid m_predefinedItemGuid;
-
-		ibString m_strPredefinedName;
-		ibString m_strCode;
-		ibString m_strDescription;
-
-		bool m_valueIsFolder;
-
-		wxObjectDataPtr<ibPredefinedValueObject> m_valueParent;
-	};
 
 	ibValueMetaObjectAttributePredefined* GetDataPredefinedName() const { return m_propertyAttributePredefined->GetMetaObject(); }
 	virtual bool IsDataPredefinedName(const ibMetaID& id) const { return id == (*m_propertyAttributePredefined)->GetMetaID(); }
@@ -1550,53 +1496,40 @@ class BACKEND_API ibValueMetaObjectRecordDataHierarchyMutableRef :
 	virtual ibFormPtr<ibBackendValueForm> GetFolderSelectForm(const ibFormRequest& request = ibFormRequest(), ibBackendControlFrame* ownerControl = nullptr) const = 0;
 #pragma endregion 
 
-	//append predefined value
-	void AppendPredefinedValue(const ibString& strPredefinedName,
-		const ibString& strCode, const ibString& strDescription,
-		bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>());
-
-	void SetPredefinedValue(const ibGuid& predefinedGuid,
-		const ibString& strPredefinedName,
-		const ibString& strCode, const ibString& strDescription,
-		bool valueIsFolder = false, const wxObjectDataPtr<ibPredefinedValueObject>& valueParent = wxObjectDataPtr<ibPredefinedValueObject>());
-
+	// ⭐ THE DOOR AN ITEM IS DECLARED THROUGH — given in the node form of the one schema (the window's, MCP's): its fields
+	// and the whole of what it declares beyond them (no cell, nothing declared; no section, its rows the data's), checked
+	// against the columns its kind offers (GetPredefinedDesc) and against where its hierarchy lets it stand BEFORE anything
+	// changes: refused, it raises naming the item, and every item is as it was. Append makes one more item and says which:
+	// its guid; it declares its kind's default where it must declare and was given nothing, and with no code it takes the
+	// one after the greatest declared. Set changes the item of that guid whole, or makes one more of it (the designer's Copy).
+	ibGuid AppendPredefinedValue(const ibPredefinedItemDescription& item);
+	void SetPredefinedValue(const ibPredefinedItemDescription& item);
 	void DeletePredefinedValue(const ibGuid& predefinedGuid);
 
-	//find predefined value
-	wxObjectDataPtr<ibPredefinedValueObject> FindPredefinedValue(const ibGuid& predefinedGuid) const {
+	// The item of that guid, or of that name, as the configuration keeps it — null when none.
+	const ibPredefinedItemDescription* FindPredefinedValue(const ibGuid& predefinedGuid) const { return m_predefinedDesc.FindItem(predefinedGuid); }
+	const ibPredefinedItemDescription* FindPredefinedValue(const ibString& predefinedName) const { return m_predefinedDesc.FindItem(predefinedName); }
 
-		auto iterator = std::find_if(m_predefinedObjectVector.begin(), m_predefinedObjectVector.end(),
-			[predefinedGuid](const auto& value) { return predefinedGuid == value->GetPredefinedGuid(); });
+	//predefined values
+	const std::vector<ibPredefinedItemDescription>& GetPredefinedValueArray() const { return m_predefinedDesc.m_items; }
 
-		if (iterator != m_predefinedObjectVector.end())
-			return *iterator;
-
-		return wxObjectDataPtr<ibPredefinedValueObject>();
-	}
-
-	wxObjectDataPtr<ibPredefinedValueObject> FindPredefinedValue(const ibString& predefinedName) const {
-
-		auto iterator = std::find_if(m_predefinedObjectVector.begin(), m_predefinedObjectVector.end(),
-			[predefinedName](const auto& value) { return predefinedName == value->GetPredefinedName(); });
-
-		if (iterator != m_predefinedObjectVector.end())
-			return *iterator;
-
-		return wxObjectDataPtr<ibPredefinedValueObject>();
-	}
-
-	//predefined values 
-	const std::vector<wxObjectDataPtr<ibPredefinedValueObject>>& GetPredefinedValueArray() const { return m_predefinedObjectVector; }
+	// ⭐⭐ THE ONE SCHEMA OF THE PREDEFINED ITEMS, AS ASKED NOW — the description kept (m_predefinedDesc), its form written
+	// into it first, read off the tables this object declares at this moment: a parent where the items stand under one
+	// another, folders where they are told apart, the next code, every attribute of its row and every section, and the
+	// types a type is chosen among. Asked by everything that declares or shows an item: the door, the designer's window,
+	// MCP. What it answered may be behind by the next question; the apply's check judges the facts (ContributeTables).
+	const ibPredefinedDescription& GetPredefinedDesc();
 
 protected:
 
 	virtual void OnPropertyChanged(ibProperty* property, const ibVariant& oldValue, const ibVariant& newValue) override;
 
-	// Declare the main table (via the base) + the predefined values as its SEED rows (cells keyed by
-	// column id; the builder diffs by uuid + cells).
+	// Declare the main table (via the base) + the predefined items as its SEED rows, read straight off the description
+	// kept (m_predefinedDesc: cells keyed by column id; the builder diffs by uuid + cells), and the rows of the sections
+	// they declare.
 	virtual void ContributeTables(ibSchemaSnapshot& out) const override;
 
-	//load & save metaData from DB 
+	//load & save metaData from DB
 	virtual bool ReadData(const ibDataNode& node) override;
 	virtual bool WriteData(ibDataNode& node) const override;
 
@@ -1665,14 +1598,23 @@ protected:
 	ibPropertyEnum<ibValueEnumDataPresentation>* m_propertyDataPresentation = ibPropertyObject::CreateProperty<ibPropertyEnum<ibValueEnumDataPresentation>>(m_categoryPresentation, ibT("DataPresentation"), _("Data presentation"), _("How a reference to an item reads wherever it is shown - in a field, a list, a report: by its Description (the default for a catalog) or by its Code (the default for a chart of accounts, whose accounts are named by their numbers)."), ibDataPresentation_Description);
 
 	//create default attributes
-	ibPropertyContainer<>* m_propertyAttributePredefined = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(ibT("PredefinedName"), _("Predefined name"), _("The name of an item the configuration itself declares (a predefined item) - what code refers to it by, as Catalogs.<Name>.<PredefinedName>. Empty for items created by users; a predefined item cannot be deleted."), 150, ibItemMode::ibItemMode_Folder_Item));
-	ibPropertyContainer<>* m_propertyAttributeCode = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(ibT("Code"), _("Code"), _("The item's code - a short identifier a person types or searches by. Indexed. Left empty, it is generated when the item is written; the object module's SetNewCode handler may give it a prefix or take the numbering over."), 8, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
-	ibPropertyContainer<>* m_propertyAttributeDescription = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateString(ibT("Description"), ibGETTEXT_IN_CONTEXT("item name", "Description"), _("The item's name - what it is shown as wherever a reference to it appears: in fields, lists, reports and printed forms. Indexed, and searched by in quick choice."), 150, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
-	ibPropertyContainer<>* m_propertyAttributeParent = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateEmptyType(ibT("Parent"), _("Parent"), _("The folder or item this one sits under. What it may point to follows the hierarchy type: a folder in a folders-and-items hierarchy, any item in an items hierarchy. Empty: the item is at the top level."), ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Folders, ibIndexingMode::ibIndexingMode_Index));
-	ibPropertyContainer<>* m_propertyAttributeIsFolder = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateBoolean(ibT("IsFolder"), _("Is folder"), _("Set on a folder of a folders-and-items hierarchy: a folder only holds other items and folders, and carries only the attributes whose use says folders. Decided when the object is created and not changed afterwards."), ibItemMode::ibItemMode_Folder_Item));
+	ibPropertyPredefined<>* m_propertyAttributePredefined = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateString(ibT("PredefinedName"), _("Predefined name"), _("The name of an item the configuration itself declares (a predefined item) - what code refers to it by, as Catalogs.<Name>.<PredefinedName>. Empty for items created by users; a predefined item cannot be deleted."), 150, ibItemMode::ibItemMode_Folder_Item));
+	// The code's and the description's type and length are the configuration's - shown and set as their type
+	// (ibPropertyPredefinedType); the description is a string alone.
+	ibPropertyPredefinedType* m_propertyAttributeCode = ibPropertyObject::CreateProperty<ibPropertyPredefinedType>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateString(ibT("Code"), _("Code"), _("The item's code - a short identifier a person types or searches by. Indexed. Left empty, it is generated when the item is written; the object module's SetNewCode handler may give it a prefix or take the numbering over."), 8, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder));
+	ibPropertyPredefinedType* m_propertyAttributeDescription = ibPropertyObject::CreateProperty<ibPropertyPredefinedType>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateString(ibT("Description"), ibGETTEXT_IN_CONTEXT("item name", "Description"), _("The item's name - what it is shown as wherever a reference to it appears: in fields, lists, reports and printed forms. Indexed, and searched by in quick choice."), 150, true, ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Items, ibIndexingMode::ibIndexingMode_IndexWithAdditionalOrder), { g_valueStringCLSID });
+	ibPropertyPredefined<>* m_propertyAttributeParent = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateEmptyType(ibT("Parent"), _("Parent"), _("The folder or item this one sits under. What it may point to follows the hierarchy type: a folder in a folders-and-items hierarchy, any item in an items hierarchy. Empty: the item is at the top level."), ibItemMode::ibItemMode_Folder_Item, ibSelectMode::ibSelectMode_Folders, ibIndexingMode::ibIndexingMode_Index));
+	ibPropertyPredefined<>* m_propertyAttributeIsFolder = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateBoolean(ibT("IsFolder"), _("Is folder"), _("Set on a folder of a folders-and-items hierarchy: a folder only holds other items and folders, and carries only the attributes whose use says folders. Decided when the object is created and not changed afterwards."), ibItemMode::ibItemMode_Folder_Item));
 
-	//predefinded vector
-	std::vector<wxObjectDataPtr<ibPredefinedValueObject>> m_predefinedObjectVector;
+	// ⭐⭐ THE PREDEFINED ITEMS — ONE DESCRIPTION, the configuration's: read and written with it (ReadData / WriteData),
+	// the seed built of it (ContributeTables), shown and checked through GetPredefinedDesc. Its items are what a
+	// declaration owns beyond the name — a characteristic's Type, an account's side, flags and analytics, a calculation
+	// type's related types: set as data they do not travel with the configuration (#278). A reference is held as what it
+	// is in a configuration, a DECLARATION (ibValueCompositionPredefined), packed as every value travels, so loading a
+	// configuration never builds runtime; the seed makes it live (ibMaterializeCompositionValue). Kept whole and written
+	// whole, the configuration's and the wire's alike: the items, and the form they are declared with as it was last
+	// asked (GetPredefinedDesc writes it); what they must declare is each kind's check before the update (ContributeTables).
+	ibPredefinedDescription m_predefinedDesc;
 
 	// …and this kind's own source descriptor — typed to the HIERARCHY kind, registered by it
 	// (a catalogue, a chart of accounts, a chart of characteristic types, a job all read through it).
@@ -2015,10 +1957,10 @@ protected:
 protected:
 
 	//create default attributes
-	ibPropertyContainer<>* m_propertyAttributeLineActive = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateBoolean(ibT("Active"), _("Active"), _("Whether the register record counts. An inactive record stays in the register but is left out of every total, balance, slice and reading, as if it were not there."), false, true));
-	ibPropertyContainer<>* m_propertyAttributePeriod = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateDate(ibT("Period"), _("Period"), _("The moment the record belongs to: the date of its recorder for a register written by documents, the date of the value for a periodic information register. Totals, balances and slices are read as of it."), ibDateFractions::ibDateFractions_DateTime, true));
-	ibPropertyContainer<>* m_propertyAttributeRecorder = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateEmptyType(ibT("Recorder"), _("Recorder"), _("The document the record was written by. A register subordinate to recorders is written and cleared by recorder: the document's record set holds exactly its own records, and posting it again replaces them.")));
-	ibPropertyContainer<>* m_propertyAttributeLineNumber = ibPropertyObject::CreateProperty<ibPropertyContainer<>>(m_categoryCommon, ibValueMetaObjectCompositeData::CreateNumber(ibT("LineNumber"), _("Line number"), _("The record's number inside its recorder's record set, from 1, in the order the lines were added. With the recorder it identifies a record."), 15, 0));
+	ibPropertyPredefined<>* m_propertyAttributeLineActive = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateBoolean(ibT("Active"), _("Active"), _("Whether the register record counts. An inactive record stays in the register but is left out of every total, balance, slice and reading, as if it were not there."), false, true));
+	ibPropertyPredefined<>* m_propertyAttributePeriod = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateDate(ibT("Period"), _("Period"), _("The moment the record belongs to: the date of its recorder for a register written by documents, the date of the value for a periodic information register. Totals, balances and slices are read as of it."), ibDateFractions::ibDateFractions_DateTime, true));
+	ibPropertyPredefined<>* m_propertyAttributeRecorder = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateEmptyType(ibT("Recorder"), _("Recorder"), _("The document the record was written by. A register subordinate to recorders is written and cleared by recorder: the document's record set holds exactly its own records, and posting it again replaces them.")));
+	ibPropertyPredefined<>* m_propertyAttributeLineNumber = ibPropertyObject::CreateProperty<ibPropertyPredefined<>>(m_categoryPredefined, ibValueMetaObjectCompositeData::CreateNumber(ibT("LineNumber"), _("Line number"), _("The record's number inside its recorder's record set, from 1, in the order the lines were added. With the recorder it identifies a record."), 15, 0));
 
 	// the BASE L4 source descriptor — CONTAINS the register's main (records) queryable and is
 	// registered with the factory on run / close; GetQueryable() forwards to it. The register
@@ -3182,11 +3124,7 @@ public:
 	//get metaData from object
 	virtual const ibValueMetaObjectRegisterData* GetMetaObject() const { return m_metaObject; }
 
-	// Lazy compile-module creation: the record-set compiles against the
-	// register's record-set (object) module. The base GetMetaForCompile reads
-	// through m_compileModule — circular (null at the first Bind…), so name the
-	// module directly; otherwise EnsureCompileModule never builds the compile
-	// module and the designer editor / OnTextChange sees GetCompileModule()==null.
+	// The record-set compiles against the register's record-set (object) module.
 	virtual const class ibValueMetaObjectModuleBase* GetMetaForCompile() const override {
 		if (auto* m = GetMetaObject())
 			return m->GetObjectModule();

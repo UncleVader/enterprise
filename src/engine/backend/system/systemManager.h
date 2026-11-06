@@ -62,6 +62,7 @@ public:
 	static int StrCountOccur(const ibValue& cSource, const ibValue& cValue1);
 	static int StrLineCount(const ibValue& cSource);
 	static ibString StrGetLine(const ibValue& cValue, unsigned int nLine);
+	static std::vector<ibValue> StrSplit(const ibValue& cSource, const ibValue& cSeparators, bool includeBlank = true);
 	static ibString Upper(const ibValue& cSource);
 	static ibString Lower(const ibValue& cSource);
 	static ibString Chr(short nCode);
@@ -137,6 +138,10 @@ public:
 	static bool IsEmptyValue(const ibValue& cData);
 	static bool IsNull(const ibValue& cData);
 	static bool ValueIsFilled(const ibValue& cData);
+	// The receiver's properties filled with the source's of the same names: what both have and the receiver can take,
+	// or exactly what `list` names; `exclude` leaves out what it names. Both are names separated by commas.
+	static void FillPropertyValues(ibValue& receiver, ibValue& source, const ibString& list = ibEmptyString,
+		const ibString& exclude = ibEmptyString);
 
 	// ⭐⭐ A RUNTIME VALUE AS TEXT, AND BACK. The engine has packed values into an ibDataNode for a
 	// while (value.h `Serialize` / `Deserialize`, ibMetaData's door for the types only a
@@ -217,7 +222,10 @@ public:
 	// sees. `args` is an Array whose elements are passed positionally; every one
 	// of them must be transferable (ibValue::IsTransferable) — passing a form, an
 	// object or a record set throws here rather than failing in the background.
-	static ibValue RunBackground(const ibString& strProcedureName, ibValue* pArgs);
+	// `key` is the caller's name for the work: while a run of the same procedure under it is active, a second
+	// start is refused. `description` is what the job is, as a person reads it (BackgroundJob.Description).
+	static ibValue RunBackground(const ibString& strProcedureName, ibValue* pArgs,
+		const ibString& strKey = ibEmptyString, const ibString& strDescription = ibEmptyString);
 
 public:
 

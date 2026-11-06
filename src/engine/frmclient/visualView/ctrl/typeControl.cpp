@@ -1,34 +1,43 @@
 #include "typeControl.h"
-#include "frmclient/win/typeconv.h"   // DateTimeToWxDateTime / WxDateTimeToDateTime — a date across to wx and back
+#include "gui/typeconv.h"   // DateTimeToWxDateTime / WxDateTimeToDateTime — a date across to wx and back
 
 #include <algorithm>
+#include <utility>   // std::exchange — the owner told once
 
 #include <wx/calctrl.h>
 #include <wx/timectrl.h>
 #include <wx/popupwin.h>
-#include <wx/button.h>
-#include <wx/stattext.h>
 #include <wx/sizer.h>
 #include <wx/settings.h>
 
 #include "frmclient/mainFrame/mainFrame.h"   // ibFrontendMainFrame::ChooseValue — a value of the server's type
 #include "frmclient/visualView/ctrl/frame.h"
-#include "frmclient/win/ctrls/dynamicBorder.h"   // ibControlDynamicBorder — where a quick choice drops down from
+#include "gui/univ/ctrl/control.h"         // ibControl — where a quick choice drops down from, beside its title
+#include "gui/univ/ctrl/button.h"          // ibButton — the calculator's keys, the OK of a window
+#include "gui/univ/ctrl/listBox.h"         // ibListBox — the quick choice's list
+#include "gui/univ/ctrl/staticText.h"      // ibStaticText — the calculator's display
 #include "frmclient/backend/system/value/valueType.h"   // ibValueTypeDescription — the empty value of a settled type
 
-bool ibTypeControlFactory::ChooseValue(ibControlFrame* ownerValue,
-	const ibValueMetaObject* WXUNUSED(choiceForm), wxWindow* parent)
+bool ibTypeControlFactory::ChooseValue(ibControlFrame* ownerValue, const ibChooseValueRequest& request, wxWindow* parent)
 {
-	ibTypeControlFactory* factory = dynamic_cast<ibTypeControlFactory*>(ownerValue);
-	if (ownerValue == nullptr || factory == nullptr)
+	if (ownerValue == nullptr)
 		return false;
+
+	// THE VALUES OFFERED — the server's quick choice: dropped as they came, nothing to settle and nothing to read off a value.
+	if (!request.m_values.empty())
+		return ibTypeControlFactory::QuickChoice(ownerValue, request, parent);
 
 	ibValue current;
 	ownerValue->GetControlValue(current);
 
 	// UNDEFINED = the type is not settled yet. GetDataType answers it — the cell's own type, or the one asked of the
-	// user when it admits more than one (the desktop's).
+	// user when it admits more than one (the desktop's). Only a cell has one to settle: the holder of a server's
+	// question carries a value.
 	if (current.GetType() == ibValueTypes::TYPE_EMPTY) {
+
+		ibTypeControlFactory* const factory = dynamic_cast<ibTypeControlFactory*>(ownerValue);
+		if (factory == nullptr)
+			return false;
 
 		// ⭐⭐ WAS A WINDOW ACTUALLY RAISED? — the desktop's: a cell that admits one type has no question to put, and the
 		// value can be chosen in this very call.
@@ -45,15 +54,51 @@ bool ibTypeControlFactory::ChooseValue(ibControlFrame* ownerValue,
 			return true;
 	}
 
-	// A PRIMITIVE IS CHOSEN HERE — its calculator, its calendar, a flag's or an enumeration's list.
-	if (ibTypeControlFactory::QuickChoice(ownerValue, current.GetClassType(), parent))
-		return true;
+	// A PRIMITIVE IS CHOSEN HERE — its calculator, its calendar, a flag's or an enumeration's list: what the value is
+	// picked among (ibValue::FindValue), itself marked.
+	if (ownerValue->HasQuickChoice()) {
+		if (ibTypeControlFactory::SimpleChoice(ownerValue, current.GetClassType(), parent))
+			return true;
+		ibChooseValueRequest offered;
+		if (current.FindValue(wxEmptyString, offered.m_values)) {
+			for (const ibValue& value : offered.m_values) {
+				if (value == current)
+					offered.m_selected = static_cast<int>(offered.m_captions.size());
+				offered.m_captions.Add(value.GetString());
+			}
+			if (ibTypeControlFactory::QuickChoice(ownerValue, offered, parent))
+				return true;
+		}
+	}
 
 	// …A VALUE OF THE SERVER'S TYPE THERE — its quick choice or its choice form, opened for the window asking (a dialog over
 	// it); the value chosen comes back to this cell's ChoiceProcessing.
 	ibFrontendMainFrame* const frame = ibFrontendMainFrame::GetFrame();
 	return frame != nullptr && frame->ChooseValue(ownerValue, current);
 }
+
+namespace {
+
+// A WINDOW A VALUE IS CHOSEN IN, dropped under the field — the calculator, the calendar, the quick choice's list. Whoever
+// waits for the choice (a server's question) is told ONCE that it went: wx tells a popup again each time it loses the
+// activation, and by then the one waiting has gone on — the question answered, its holder gone with it (a crash, 2026-11-02).
+class wxPopupChoiceWindow : public wxPopupTransientWindow {
+public:
+
+	wxPopupChoiceWindow(ibControlFrame* ownerValue, wxWindow* parent, int style) :
+		wxPopupTransientWindow(parent, style), m_ownerValue(ownerValue) {}
+
+protected:
+
+	virtual void OnDismiss() override {
+		if (ibControlFrame* const owner = std::exchange(m_ownerValue, nullptr))
+			owner->ChoiceDismissed();
+	}
+
+	ibControlFrame* m_ownerValue = nullptr;
+};
+
+} // namespace
 
 bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClassID& clsid, wxWindow* parent) {
 
@@ -64,14 +109,13 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 		// a date's opens a calendar: the field's value on the display, a figure keyed in or calculated, and OK
 		// puts the result into the field. It counts in ibNumber, the exact decimal the field holds, so 0.1 + 0.2
 		// is 0.3; left to right like any pocket calculator ("12 + 3 *" finishes 12 + 3 first).
-		class wxPopupCalculatorWindow : public wxPopupTransientWindow {
+		class wxPopupCalculatorWindow : public wxPopupChoiceWindow {
 			enum ibCalcOp { ibCalcOp_None, ibCalcOp_Add, ibCalcOp_Subtract, ibCalcOp_Multiply, ibCalcOp_Divide };
 			// What the display stands for: the last result, the figure being typed, or a division by zero.
 			enum ibCalcState { ibCalcState_Result, ibCalcState_Typing, ibCalcState_Error };
 
-			wxStaticText* m_operation = nullptr;
-			wxStaticText* m_display = nullptr;
-			ibControlFrame* m_ownerValue = nullptr;
+			ibStaticText* m_operation = nullptr;
+			ibStaticText* m_display = nullptr;
 
 			wxString m_entry;            // the figure being typed, exactly as typed ("0.", "12.50")
 			ibNumber m_accumulator;      // the left side of the open operation, or the last result
@@ -80,7 +124,7 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 		public:
 
 			wxPopupCalculatorWindow(ibControlFrame* ownerValue, wxWindow* parent, int style = wxBORDER_NONE | wxPU_CONTAINS_CONTROLS | wxWANTS_CHARS) :
-				wxPopupTransientWindow(parent, style), m_ownerValue(ownerValue) {
+				wxPopupChoiceWindow(ownerValue, parent, style) {
 
 				SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_FRAMEBK));
 
@@ -88,12 +132,12 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 				const int gap = FromDIP(3);
 
 				// The open operation, small, above the figure it is waiting for.
-				m_operation = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+				m_operation = new ibStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
 					wxALIGN_RIGHT | wxST_NO_AUTORESIZE);
 				m_operation->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
 				mainSizer->Add(m_operation, wxSizerFlags().Expand().Border(wxLEFT | wxRIGHT | wxTOP, gap * 2));
 
-				m_display = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+				m_display = new ibStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
 					wxALIGN_RIGHT | wxST_NO_AUTORESIZE);
 				wxFont big = m_display->GetFont();
 				big.SetPointSize(big.GetPointSize() + 6);
@@ -103,13 +147,13 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 				const wxSize keySize(FromDIP(48), FromDIP(34));
 				wxFlexGridSizer* keySizer = new wxFlexGridSizer(4, gap, gap);
 				const auto key = [&](const wxString& label, std::function<void()> action) {
-					wxButton* button = new wxButton(this, wxID_ANY, label, wxDefaultPosition, keySize);
+					ibButton* button = new ibButton(this, wxID_ANY, label, wxDefaultPosition, keySize);
 					button->Bind(wxEVT_BUTTON, [this, action](wxCommandEvent&) { action(); ShowState(); });
 					keySizer->Add(button, wxSizerFlags().Expand());
 				};
 				key(wxT("C"), [this] { Reset(ibNumber(0)); });
-				key(wxT("⌫"), [this] { Backspace(); });
-				key(wxT("±"), [this] { Negate(); });
+				key(wxT("\u232B"), [this] { Backspace(); });   // ⌫
+				key(wxT("\u00B1"), [this] { Negate(); });      // ±
 				key(OperatorSign(ibCalcOp_Divide), [this] { Operator(ibCalcOp_Divide); });
 				for (int row = 2; row >= 0; --row) {
 					for (int col = 0; col < 3; ++col) {
@@ -123,7 +167,7 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 				key(wxT("."), [this] { Point(); });
 				key(wxT("="), [this] { Equals(); });
 
-				wxButton* OKButton = new wxButton(this, wxID_OK, wxEmptyString, wxDefaultPosition, keySize);
+				ibButton* OKButton = new ibButton(this, wxID_OK, wxEmptyString, wxDefaultPosition, keySize);
 				OKButton->Bind(wxEVT_COMMAND_BUTTON_CLICKED, &wxPopupCalculatorWindow::OnOKButtonClicked, this);
 				keySizer->Add(OKButton, wxSizerFlags().Expand());
 
@@ -136,9 +180,6 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 				for (wxWindow* child : GetChildren())
 					child->Bind(wxEVT_CHAR_HOOK, &wxPopupCalculatorWindow::OnCharHook, this);
 			}
-
-			// (The client's: whoever waits for the choice is told the window went — a server's question is answered then.)
-			virtual void OnDismiss() override { if (m_ownerValue != nullptr) m_ownerValue->ChoiceDismissed(); }
 
 			virtual void Popup(wxWindow* focus = nullptr) override {
 				ibValue vSelected; m_ownerValue->GetControlValue(vSelected);
@@ -269,9 +310,9 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 			static wxString OperatorSign(ibCalcOp op) {
 				switch (op) {
 				case ibCalcOp_Add: return wxT("+");
-				case ibCalcOp_Subtract: return wxT("−");
-				case ibCalcOp_Multiply: return wxT("×");
-				case ibCalcOp_Divide: return wxT("÷");
+				case ibCalcOp_Subtract: return wxT("\u2212");   // −
+				case ibCalcOp_Multiply: return wxT("\u00D7");   // ×
+				case ibCalcOp_Divide: return wxT("\u00F7");     // ÷
 				default: return wxT(" ");
 				}
 			}
@@ -355,14 +396,13 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 		return true;
 	}
 	else if (valType == ibValueTypes::TYPE_DATE) {
-		class wxPopupDateTimeWindow : public wxPopupTransientWindow {
+		class wxPopupDateTimeWindow : public wxPopupChoiceWindow {
 			wxCalendarCtrl* m_calendar = nullptr;
 			wxTimePickerCtrl* m_timePicker = nullptr;
-			ibControlFrame* m_ownerValue = nullptr;
 		public:
 
 			wxPopupDateTimeWindow(ibControlFrame* ownerValue, wxWindow* parent, int style = wxBORDER_NONE | wxPU_CONTAINS_CONTROLS | wxWANTS_CHARS) :
-				wxPopupTransientWindow(parent, style), m_ownerValue(ownerValue) {
+				wxPopupChoiceWindow(ownerValue, parent, style) {
 
 				SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_FRAMEBK));
 
@@ -376,7 +416,7 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 				m_timePicker = new wxTimePickerCtrl(this, wxID_ANY);
 				subSizer->Add(m_timePicker, wxSizerFlags(3).Expand().Border(wxALL, FromDIP(2)));
 
-				wxButton* OKButton = new wxButton(this, wxID_OK);
+				ibButton* OKButton = new ibButton(this, wxID_OK);
 				OKButton->Bind(wxEVT_COMMAND_BUTTON_CLICKED, &wxPopupDateTimeWindow::OnOKButtonClicked, this);
 				subSizer->Add(OKButton, wxSizerFlags(3).Expand().Border(wxALL, FromDIP(2)));
 
@@ -408,9 +448,6 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 					m_timePicker->SetFont(font);
 				return wxPopupTransientWindow::SetFont(font);
 			}
-
-			// (The client's: whoever waits for the choice is told the window went — a server's question is answered then.)
-			virtual void OnDismiss() override { if (m_ownerValue != nullptr) m_ownerValue->ChoiceDismissed(); }
 
 			virtual void Popup(wxWindow* focus = nullptr) override {
 				ibValue vSelected; m_ownerValue->GetControlValue(vSelected);
@@ -467,17 +504,14 @@ bool ibTypeControlFactory::SimpleChoice(ibControlFrame* ownerValue, const ibClas
 	return false;
 }
 
-bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClassID& clsid, wxWindow* parent)
+bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibChooseValueRequest& request, wxWindow* parent)
 {
-	if (!ownerValue->HasQuickChoice())
+	if (ownerValue == nullptr || request.m_values.empty() || request.m_values.size() != request.m_captions.size())
 		return false;
 
-	if (ibTypeControlFactory::SimpleChoice(ownerValue, clsid, parent))
-		return true;
+	class wxPopupQuickSelectWindow : public wxPopupChoiceWindow {
 
-	class wxPopupQuickSelectWindow : public wxPopupTransientWindow {
-
-		class wxQuickListBox : public wxListBox {
+		class wxQuickListBox : public ibListBox {
 
 		public:
 
@@ -489,38 +523,27 @@ bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClass
 				long  	            style = wxLB_SINGLE,
 				const wxValidator& validator = wxDefaultValidator,
 				const wxString& name = wxListBoxNameStr) :
-				wxListBox(parent, id, pos, size, 0, nullptr, style, validator, name)
+				ibListBox(parent, id, pos, size, 0, nullptr, style, validator, name)
 			{
 			}
 		};
 
 		std::map<int, ibValue> m_values;
 
-		ibControlFrame* m_ownerValue = nullptr;
 		wxQuickListBox* m_selListBox = nullptr;
 
 	public:
 		wxPopupQuickSelectWindow(ibControlFrame* ownerValue, wxWindow* parent, int style = wxBORDER_NONE | wxPU_CONTAINS_CONTROLS | wxWANTS_CHARS) :
-			wxPopupTransientWindow(parent, style), m_ownerValue(ownerValue) {
+			wxPopupChoiceWindow(ownerValue, parent, style) {
 
 			SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_FRAMEBK));
 			wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
 
 			m_selListBox = new wxQuickListBox(this, wxID_ANY, wxDefaultPosition, wxDefaultSize);
 
-			ibControlDynamicBorder* dynamicBorder = dynamic_cast<ibControlDynamicBorder*>(parent);
-			if (dynamicBorder != nullptr) {
-				wxWindow* innerControl = dynamicBorder->GetControl();
-				wxASSERT(innerControl);
-				m_selListBox->SetBackgroundColour(innerControl->GetBackgroundColour());
-				m_selListBox->SetForegroundColour(innerControl->GetForegroundColour());
-				m_selListBox->SetFont(innerControl->GetFont());
-			}
-			else {
-				m_selListBox->SetBackgroundColour(parent->GetBackgroundColour());
-				m_selListBox->SetForegroundColour(parent->GetForegroundColour());
-				m_selListBox->SetFont(parent->GetFont());
-			}
+			m_selListBox->SetBackgroundColour(parent->GetBackgroundColour());
+			m_selListBox->SetForegroundColour(parent->GetForegroundColour());
+			m_selListBox->SetFont(parent->GetFont());
 
 			m_selListBox->Connect(wxEVT_KEY_DOWN, wxKeyEventHandler(wxPopupQuickSelectWindow::OnKeyDown), nullptr, this);
 			m_selListBox->Connect(wxEVT_LEFT_DOWN, wxMouseEventHandler(wxPopupQuickSelectWindow::OnMouseDown), nullptr, this);
@@ -553,9 +576,9 @@ bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClass
 		}
 
 		virtual void Popup(wxWindow* focus = nullptr) override {
-			ibControlDynamicBorder* innerBorder = dynamic_cast<ibControlDynamicBorder*>(m_parent);
-			const wxSize& controlSize = (innerBorder != nullptr) ?
-				innerBorder->GetControlSize() : m_parent->GetSize();
+			const ibControl* const control = dynamic_cast<const ibControl*>(m_parent);
+			const wxSize controlSize(m_parent->GetSize().x - (control != nullptr ? control->GetTitleWidth() : 0),
+				m_parent->GetSize().y);
 			if (m_selListBox->GetCount() > 5)
 				wxPopupTransientWindow::SetSize(wxSize(controlSize.x, (m_selListBox->GetCharHeight() * 5) + 4));
 			else
@@ -570,8 +593,8 @@ bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClass
 			m_selListBox->SetFocus();
 		}
 
-		void AppendItem(const ibValue& item, bool select = false) {
-			int sel = m_selListBox->Append(item.GetString());
+		void AppendItem(const wxString& caption, const ibValue& item, bool select = false) {
+			int sel = m_selListBox->Append(caption);
 			if (select)
 				m_selListBox->Select(sel);
 			m_values.insert_or_assign(sel, item);
@@ -586,9 +609,15 @@ bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClass
 			const wxChar charcode = (wxChar)event.GetKeyCode();
 #endif
 			if (charcode == WXK_RETURN) {
-				if (m_ownerValue != nullptr)
-					m_ownerValue->ChoiceProcessing(m_values[m_selListBox->GetSelection()]);
+				// Nothing marked, nothing chosen: not the empty value a missing row of the map would make.
+				const int selection = m_selListBox->GetSelection();
+				if (selection != wxNOT_FOUND && m_ownerValue != nullptr)
+					m_ownerValue->ChoiceProcessing(m_values[selection]);
 				Dismiss();
+			}
+			else if (charcode == WXK_ESCAPE) {
+				Dismiss();
+				return;
 			}
 			event.Skip();
 		}
@@ -599,24 +628,17 @@ bool ibTypeControlFactory::QuickChoice(ibControlFrame* ownerValue, const ibClass
 				if (m_ownerValue != nullptr)
 					m_ownerValue->ChoiceProcessing(m_values[selection]);
 				Dismiss();
+				return;   // chosen: the click is taken — the list's own would capture the mouse in a window gone
 			}
 			event.Skip();
 		}
 	};
 
-	if (ownerValue != nullptr) {
-		ibValue cValue; ownerValue->GetControlValue(cValue);
-		std::vector<ibValue> listValue;
-		if (cValue.FindValue(wxEmptyString, listValue)) {
-			wxPopupQuickSelectWindow* popup =
-				new wxPopupQuickSelectWindow(ownerValue, parent);
-			for (auto selObj : listValue)
-				popup->AppendItem(selObj, selObj == cValue);
-			popup->Popup();
-			return true;
-		}
-	}
-	return false;
+	wxPopupQuickSelectWindow* popup = new wxPopupQuickSelectWindow(ownerValue, parent);
+	for (size_t idx = 0; idx < request.m_values.size(); ++idx)
+		popup->AppendItem(request.m_captions[idx], request.m_values[idx], static_cast<int>(idx) == request.m_selected);
+	popup->Popup();
+	return true;
 }
 
 ibValue ibTypeControlFactory::CreateValue() const

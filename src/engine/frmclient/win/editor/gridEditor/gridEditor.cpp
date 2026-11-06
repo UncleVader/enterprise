@@ -272,7 +272,7 @@ void ibGridEditor::ShowComposeState(ibProtocol::ibForm::ibSpreadsheet::ibCompose
 
 #pragma endregion
 
-#include "frmclient/backend/metaCollection/metaSpreadsheetObject.h"
+#include "frmclient/backend/metaCollection/metaTemplateObject.h"
 
 void ibGridEditor::GetCellDetailsParameter(int row, int col, wxString& s) const
 {
@@ -287,7 +287,7 @@ void ibGridEditor::SetCellDetailsParameter(int row, int col, const wxString& s)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -424,7 +424,7 @@ void ibGridEditor::OnMouseRightDown(ibGridEvent& event)
 	}
 }
 
-#include "frmclient/win/ctrls/grid/gridextprivate.h"
+#include "gui/univ/grid/gridextprivate.h"
 
 // This seems to be required for wxMotif/wxGTK otherwise the mouse
 // cursor must be in the cell edit control to get key events
@@ -512,7 +512,7 @@ void ibGridEditor::OnGridRowSize(ibGridSizeEvent& event)
 
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -538,7 +538,7 @@ void ibGridEditor::OnGridColSize(ibGridSizeEvent& event)
 
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -563,15 +563,15 @@ void ibGridEditor::OnGridRowBrake(ibGridSizeEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
-			if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_ADD)
+			if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_ADD)
 				spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
-			else if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_SET)
+			else if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_SET)
 				spreadsheetDescription.SetRowBrake(event.GetRowOrCol());
-			else if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_DELETE)
+			else if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_DELETE)
 				spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
 		}
 
@@ -580,11 +580,11 @@ void ibGridEditor::OnGridRowBrake(ibGridSizeEvent& event)
 
 	if (m_spreadsheetObject != nullptr) {
 		ibSpreadsheetDescription& spreadsheetDescription = m_spreadsheetObject->GetSpreadsheetDesc();
-		if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_ADD)
+		if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_ADD)
 			spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
-		else if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_SET)
+		else if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_SET)
 			spreadsheetDescription.SetRowBrake(event.GetRowOrCol());
-		else if (event.GetEventType() == wxEVT_GRID_ROW_BRAKE_DELETE)
+		else if (event.GetEventType() == ibEVT_GRID_ROW_BRAKE_DELETE)
 			spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
 	}
 
@@ -595,15 +595,15 @@ void ibGridEditor::OnGridColBrake(ibGridSizeEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
-			if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_ADD)
+			if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_ADD)
 				spreadsheetDescription.AddColBrake(event.GetRowOrCol());
-			else if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_SET)
+			else if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_SET)
 				spreadsheetDescription.SetColBrake(event.GetRowOrCol());
-			else if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_DELETE)
+			else if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_DELETE)
 				spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
 		}
 
@@ -612,11 +612,11 @@ void ibGridEditor::OnGridColBrake(ibGridSizeEvent& event)
 
 	if (m_spreadsheetObject != nullptr) {
 		ibSpreadsheetDescription& spreadsheetDescription = m_spreadsheetObject->GetSpreadsheetDesc();
-		if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_ADD)
+		if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_ADD)
 			spreadsheetDescription.AddColBrake(event.GetRowOrCol());
-		else if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_SET)
+		else if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_SET)
 			spreadsheetDescription.SetColBrake(event.GetRowOrCol());
-		else if (event.GetEventType() == wxEVT_GRID_COL_BRAKE_DELETE)
+		else if (event.GetEventType() == ibEVT_GRID_COL_BRAKE_DELETE)
 			spreadsheetDescription.AddRowBrake(event.GetRowOrCol());
 	}
 
@@ -627,17 +627,17 @@ void ibGridEditor::OnGridRowArea(ibGridAreaEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
-			if (event.GetEventType() == wxEVT_GRID_ROW_AREA_CREATE)
+			if (event.GetEventType() == ibEVT_GRID_ROW_AREA_CREATE)
 				spreadsheetDescription.AddRowArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-			else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_DELETE)
+			else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_DELETE)
 				spreadsheetDescription.DeleteRowArea(event.GetAreaLabel());
-			else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_SIZE)
+			else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_SIZE)
 				spreadsheetDescription.SetRowSizeArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-			else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_NAME)
+			else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_NAME)
 				spreadsheetDescription.SetRowNameArea(event.GetRowOrColPos(), event.GetAreaLabel());
 		}
 
@@ -646,13 +646,13 @@ void ibGridEditor::OnGridRowArea(ibGridAreaEvent& event)
 
 	if (m_spreadsheetObject != nullptr) {
 		ibSpreadsheetDescription& spreadsheetDescription = m_spreadsheetObject->GetSpreadsheetDesc();
-		if (event.GetEventType() == wxEVT_GRID_ROW_AREA_CREATE)
+		if (event.GetEventType() == ibEVT_GRID_ROW_AREA_CREATE)
 			spreadsheetDescription.AddRowArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-		else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_DELETE)
+		else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_DELETE)
 			spreadsheetDescription.DeleteRowArea(event.GetAreaLabel());
-		else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_SIZE)
+		else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_SIZE)
 			spreadsheetDescription.SetRowSizeArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-		else if (event.GetEventType() == wxEVT_GRID_ROW_AREA_NAME)
+		else if (event.GetEventType() == ibEVT_GRID_ROW_AREA_NAME)
 			spreadsheetDescription.SetRowNameArea(event.GetRowOrColPos(), event.GetAreaLabel());
 	}
 
@@ -663,17 +663,17 @@ void ibGridEditor::OnGridColArea(ibGridAreaEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
-			if (event.GetEventType() == wxEVT_GRID_COL_AREA_CREATE)
+			if (event.GetEventType() == ibEVT_GRID_COL_AREA_CREATE)
 				spreadsheetDescription.AddColArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-			else if (event.GetEventType() == wxEVT_GRID_COL_AREA_DELETE)
+			else if (event.GetEventType() == ibEVT_GRID_COL_AREA_DELETE)
 				spreadsheetDescription.DeleteColArea(event.GetAreaLabel());
-			else if (event.GetEventType() == wxEVT_GRID_COL_AREA_SIZE)
+			else if (event.GetEventType() == ibEVT_GRID_COL_AREA_SIZE)
 				spreadsheetDescription.SetColSizeArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-			else if (event.GetEventType() == wxEVT_GRID_COL_AREA_NAME)
+			else if (event.GetEventType() == ibEVT_GRID_COL_AREA_NAME)
 				spreadsheetDescription.SetColNameArea(event.GetRowOrColPos(), event.GetAreaLabel());
 		}
 
@@ -682,13 +682,13 @@ void ibGridEditor::OnGridColArea(ibGridAreaEvent& event)
 
 	if (m_spreadsheetObject != nullptr) {
 		ibSpreadsheetDescription& spreadsheetDescription = m_spreadsheetObject->GetSpreadsheetDesc();
-		if (event.GetEventType() == wxEVT_GRID_COL_AREA_CREATE)
+		if (event.GetEventType() == ibEVT_GRID_COL_AREA_CREATE)
 			spreadsheetDescription.AddColArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-		else if (event.GetEventType() == wxEVT_GRID_COL_AREA_DELETE)
+		else if (event.GetEventType() == ibEVT_GRID_COL_AREA_DELETE)
 			spreadsheetDescription.DeleteColArea(event.GetAreaLabel());
-		else if (event.GetEventType() == wxEVT_GRID_COL_AREA_SIZE)
+		else if (event.GetEventType() == ibEVT_GRID_COL_AREA_SIZE)
 			spreadsheetDescription.SetColSizeArea(event.GetAreaLabel(), event.GetAreaStart(), event.GetAreaEnd());
-		else if (event.GetEventType() == wxEVT_GRID_COL_AREA_NAME)
+		else if (event.GetEventType() == ibEVT_GRID_COL_AREA_NAME)
 			spreadsheetDescription.SetColNameArea(event.GetRowOrColPos(), event.GetAreaLabel());
 	}
 
@@ -699,7 +699,7 @@ void ibGridEditor::OnGridRowFreeze(ibGridSizeEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -721,7 +721,7 @@ void ibGridEditor::OnGridColFreeze(ibGridSizeEvent& event)
 {
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -767,7 +767,7 @@ void ibGridEditor::OnGridTableModified(ibGridEvent& event)
 
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 			ibSpreadsheetDescription& spreadsheetDescription = creator->GetSpreadsheetDesc();
@@ -800,7 +800,7 @@ void ibGridEditor::OnGridTableAttrModified(ibGridEvent& event)
 
 	if (m_document != nullptr) {
 
-		ibValueMetaObjectSpreadsheetBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>();
+		ibValueMetaObjectTemplateBase* creator = m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>();
 
 		if (creator != nullptr) {
 
@@ -1230,8 +1230,8 @@ void ibGridEditor::OnRowHeight(wxCommandEvent& event)
 
 		// A height typed here reaches the document the way a drag does — through the size event
 		// (OnGridRowSize). Only GIVING one UP has to be said here, because there is no event for it.
-		ibValueMetaObjectSpreadsheetBase* creator = m_document != nullptr ?
-			m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>() : nullptr;
+		ibValueMetaObjectTemplateBase* creator = m_document != nullptr ?
+			m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>() : nullptr;
 
 		for (auto cell : ibGrid::GetSelectedBlocks()) {
 			if (rowHeight->IsAutoHeight()) {
@@ -1271,8 +1271,8 @@ void ibGridEditor::OnColWidth(wxCommandEvent& event)
 
 		// As with a row's height: a width typed here reaches the document through the size event
 		// (OnGridColSize), and only GIVING one UP has to be said here.
-		ibValueMetaObjectSpreadsheetBase* creator = m_document != nullptr ?
-			m_document->ConvertMetaObjectToType<ibValueMetaObjectSpreadsheetBase>() : nullptr;
+		ibValueMetaObjectTemplateBase* creator = m_document != nullptr ?
+			m_document->ConvertMetaObjectToType<ibValueMetaObjectTemplateBase>() : nullptr;
 
 		for (auto cell : ibGrid::GetSelectedBlocks()) {
 			if (colWidth->IsDefaultWidth()) {

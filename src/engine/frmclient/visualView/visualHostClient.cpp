@@ -12,8 +12,8 @@
 #include <wx/wupdlock.h>   // wxWindowUpdateLocker — RAII Freeze/Thaw
 
 #include "frmclient/mainFrame/mainFrame.h"
-#include "frmclient/win/typeconv.h"
-#include "frmclient/win/ctrls/dynamicBorder.h"
+#include "gui/typeconv.h"
+#include "gui/univ/ctrl/control.h"   // ibControl — a title beside it, lined up into a column
 
 namespace {
 
@@ -125,10 +125,9 @@ bool IsLayoutChanged(const ibProtocolNode& patch)
 // one x. A horizontal sizer is a row, not a run: it stops the column.
 void CalculateLabels(const ibValueFrame* control, wxBoxSizer* parentSizer, int& maxLabelWidth)
 {
-	const ibControlDynamicBorder* const label = dynamic_cast<const ibControlDynamicBorder*>(control->GetWindow());
-	if (label != nullptr && label->AllowCalc()) {
-		wxCoord w = 0, h = 0;
-		label->CalculateLabelSize(&w, &h);
+	const ibControl* const label = dynamic_cast<const ibControl*>(control->GetWindow());
+	if (label != nullptr && !label->GetTitle().empty() && label->GetTitlePosition() == wxLEFT) {
+		const wxCoord w = label->GetTitleExtent().x;
 		if (w > maxLabelWidth)
 			maxLabelWidth = w;
 	}
@@ -151,7 +150,7 @@ void CalculateLabels(const ibValueFrame* control, wxBoxSizer* parentSizer, int& 
 void ApplyLabels(const ibValueFrame* control, wxBoxSizer* parentSizer, int& maxLabelWidth)
 {
 	wxBoxSizer* const childSizer = dynamic_cast<wxBoxSizer*>(control->GetSizer());
-	ibControlDynamicBorder* const label = dynamic_cast<ibControlDynamicBorder*>(control->GetWindow());
+	ibControl* const label = dynamic_cast<ibControl*>(control->GetWindow());
 
 	// A page starts a column of its own (see CalculateLabels): measured in its sizer, from nothing.
 	if (control->GetWindow() != nullptr && childSizer != nullptr) {
@@ -171,8 +170,8 @@ void ApplyLabels(const ibValueFrame* control, wxBoxSizer* parentSizer, int& maxL
 	for (unsigned int idx = 0; idx < control->GetChildCount(); idx++)
 		ApplyLabels(control->GetChild(idx), nextParent, subtreeMax);
 
-	if (label != nullptr && label->AllowCalc()) {
-		label->ApplyLabelSize(maxLabelWidth != wxNOT_FOUND ? wxSize(maxLabelWidth, wxNOT_FOUND) : wxDefaultSize);
+	if (label != nullptr && !label->GetTitle().empty() && label->GetTitlePosition() == wxLEFT) {
+		label->SetTitleWidth(maxLabelWidth != wxNOT_FOUND ? maxLabelWidth : wxDefaultCoord);
 
 		// After a label in a row the column is broken: the next run starts from nothing.
 		if (parentSizer->GetOrientation() == wxHORIZONTAL)
@@ -277,7 +276,7 @@ void ibVisualHostClient::Draw(const ibProtocolNode& view, const ibProtocolNode& 
 		const auto found = m_controls.find(view.GetId());
 		if (found != m_controls.end() && !found->second->IsPlaceholder()) {
 			wxWindow* const childParent = found->second->GetChildParent();
-			UpdateChildren(view, ibProtocolNode(), found->second, childParent != nullptr ? childParent : GetBackgroundWindow(),
+			UpdateChildren(view, patch, found->second, childParent != nullptr ? childParent : GetBackgroundWindow(),
 				found->second->GetSizer());
 		}
 	}
@@ -649,7 +648,10 @@ bool ibVisualHostClient::UpdateChildren(const ibProtocolNode& node, const ibProt
 		if (drawn == nullptr)
 			continue;
 		const ibProtocolNode& child = children[idx];
-		ibProtocolNode changed;
+		// No patch — none down it either. A node made here is a node of no entries, not none: handed down as a patch it
+		// skipped every control under this one, and a column dropped on a table was drawn only when the form was opened
+		// again (2026-11-02).
+		ibProtocolNode changed = patch;
 		if (patch.IsNode()) {
 			const auto named = std::find_if(changes.begin(), changes.end(),
 				[&child](const ibProtocolNode& change) { return change.GetId() == child.GetId(); });
