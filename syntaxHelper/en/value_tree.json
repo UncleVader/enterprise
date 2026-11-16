@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.ValueTree",
+      "name_local": "ValueTree",
+      "name_en": "ValueTree",
+      "kind": "collection",
+      "category_keys": ["value_types", "collections"],
+      "signature": "New ValueTree()",
+      "description": "A tree of named cells. Columns.Add(name) declares a column. Rows.Add() appends a root row, and a row's Rows.Add() appends a child. A cell is read and written by the column's name. Parent is the row above, empty at the root. This is the 1C ДеревоЗначений a copy of a tree walks.",
+      "parameters": "None.",
+      "return_descr": "An empty tree.",
+      "example": "tree = New ValueTree();\ntree.Columns.Add(\"Title\");\nrow = tree.Rows.Add();\nrow.Title = \"Root\";\nchild = row.Rows.Add();\nchild.Title = \"Leaf\";",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": [],
+      "reviewed": false
+    }
+  ]
+}
