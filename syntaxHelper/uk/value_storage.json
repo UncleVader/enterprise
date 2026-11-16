@@ -1,0 +1,37 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "uk",
+  "entries": [
+    {
+      "id": "cls.ValueStorage",
+      "name_local": "ValueStorage",
+      "name_en": "ValueStorage",
+      "kind": "collection",
+      "category_keys": ["value_types"],
+      "signature": "New ValueStorage(value)",
+      "description": "Значення, яке можна зберегти і прочитати назад. Get повертає те, що було передано. Порожнє сховище повертає порожнє значення. Так параметр сеансу і журнал реєстрації тримають значення будь-якого типу (1С: ХранилищеЗначення).",
+      "parameters": "value — значення, яке зберігається. Без аргумента сховище порожнє.",
+      "return_descr": "ValueStorage.",
+      "example": "stored = New ValueStorage(\"kept\");\ntext = stored.Get();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["mth.ValueStorage.Get"],
+      "reviewed": false
+    },
+    {
+      "id": "mth.ValueStorage.Get",
+      "name_local": "Get",
+      "name_en": "Get",
+      "kind": "method",
+      "category_keys": ["value_types"],
+      "signature": "Get()",
+      "description": "Значення, яке було передано в це сховище.",
+      "parameters": "None.",
+      "return_descr": "Збережене значення або порожнє значення.",
+      "example": "text = stored.Get();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.ValueStorage"],
+      "reviewed": false
+    }
+  ]
+}
