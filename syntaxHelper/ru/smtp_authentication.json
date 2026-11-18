@@ -1,0 +1,16 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "en.SMTPAuthenticationMode",
+      "name_local": "SMTPAuthenticationMode",
+      "name_en": "SMTPAuthenticationMode",
+      "kind": "enum_type",
+      "category_keys": ["global_context", "value_types"],
+      "signature": "SMTPAuthenticationMode.Login",
+      "description": "Как SMTP-сервер просят представиться (СпособSMTPАутентификации): None, Plain, Login, CramMD5, Default."
+    }
+  ]
+}
