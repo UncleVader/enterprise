@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.TextDocument",
+      "name_local": "TextDocument",
+      "name_en": "TextDocument",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime", "text_files"],
+      "signature": "New TextDocument()",
+      "description": "Lines of text held in memory (ТекстовыйДокумент). New TextDocument() builds an empty one.\n\nSetText replaces the whole text. A line break is LF, CRLF or CR, and a break at the very end ends the last line rather than opening an empty one after it. GetText joins the lines with LF and does not add one after the last line.\n\nAddLine adds a line at the end; with no argument the line is empty. InsertLine(number, line) inserts at that line and shifts the rest down; one past LineCount appends. DeleteLine, ReplaceLine and GetLine address a line counted from 1. A number outside 1..LineCount (1..LineCount+1 for InsertLine) is a refusal: \"TextDocument: line N is outside 1..M\". LineCount is how many lines there are. Clear drops them all.",
+      "parameters": "None.",
+      "return_descr": "TextDocument.",
+      "example": "Doc = New TextDocument;\nDoc.AddLine(\"Hello\");\nDoc.AddLine(\"World\");\nMessage(Doc.GetLine(1));\nMessage(Doc.GetText());",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.TextReader", "cls.TextWriter"],
+      "reviewed": false
+    }
+  ]
+}
