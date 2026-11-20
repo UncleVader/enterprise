@@ -166,6 +166,7 @@ add_executable(oes_tests
     test_valueGeometry.cpp
     test_valueTextFile.cpp
     test_valueHttp.cpp
+    test_internetMail.cpp
     test_valueHttpSecure.cpp
     test_listener.cpp
     test_sessionTokenText.cpp

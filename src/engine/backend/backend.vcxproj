@@ -371,6 +371,7 @@
     <ClInclude Include="system\value\valueDataHashing.h" />
     <ClInclude Include="system\value\valueTextFile.h" />
     <ClInclude Include="system\value\valueHttp.h" />
+    <ClInclude Include="system\value\valueInternetMailSession.h" />
     <ClInclude Include="system\value\valueSecureConnection.h" />
     <ClInclude Include="system\value\valueFile.h" />
     <ClInclude Include="system\value\valueFont.h" />
@@ -869,6 +870,7 @@
     <ClCompile Include="system\value\valueDataHashing.cpp" />
     <ClCompile Include="system\value\valueTextFile.cpp" />
     <ClCompile Include="system\value\valueHttp.cpp" />
+    <ClCompile Include="system\value\valueInternetMailSession.cpp" />
     <ClCompile Include="system\value\valueSecureConnection.cpp" />
     <ClCompile Include="system\value\valueFile.cpp" />
     <ClCompile Include="system\value\valueFont.cpp" />
