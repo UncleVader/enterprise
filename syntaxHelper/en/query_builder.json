@@ -1,0 +1,22 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "en",
+  "entries": [
+    {
+      "id": "cls.QueryBuilder",
+      "name_local": "QueryBuilder",
+      "name_en": "QueryBuilder",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime", "queries"],
+      "signature": "New QueryBuilder([text : string])",
+      "description": "A query a module builds before it runs (ПостроительЗапроса). Text is the query text. Parameters is a Structure; Execute copies each name into the query and runs it, and answers with a QueryResult. GetQuery returns that query without running it. FillSettings is accepted and does not build a filter or an order: those settings are not a type here.",
+      "parameters": "text — the query text. Left out, the builder is empty.",
+      "return_descr": "QueryBuilder.",
+      "example": "Builder = New QueryBuilder;\nBuilder.Text = \"SELECT Ref FROM Catalog.Goods\";\nBuilder.Parameters.Insert(\"Code\", \"001\");\nResult = Builder.Execute();",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "see_also": ["cls.Query"],
+      "reviewed": false
+    }
+  ]
+}
