@@ -25,6 +25,8 @@
 #include "backend/query/queryProvider.h"       // ibComputedProviderInstance + ibQueryRamTable
 #include "backend/query/queryable.h"           // ibBackendQueryable / ibQueryCondition / ibQueryFilterOp
 #include "backend/query/queryColumn.h"         // ibBackendQueryColumn / ibTypeDescription
+#include "backend/query/queryLowering.h"       // ibQueryLowering::Execute
+#include "backend/query/queryParser.h"
 
 namespace {
 
@@ -438,4 +440,136 @@ TEST(NestedQueryAvailability, PresentationOfAnAvailableFieldIsOffered)
 	const ibBackendQueryColumn* shown = nested.Column(wxT("Shown"));
 	ASSERT_NE(shown, nullptr);
 	EXPECT_TRUE(shown->IsAvailable());
+}
+
+// Arithmetic and CASE over a JOIN. A named product is already a computed column of the stitch.
+// SELECT * and FOR UPDATE are left on the join (the rewrite will not lift them), so the comparison
+// and the sort have to be answered on the joined row.
+namespace {
+
+const ibMetaID BL_REF = 501, BL_QTY = 502, BL_GOODS = 503, RT_KEY = 601, RT_PRICE = 602;
+
+ibQueryRamTable BuildBillRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(BL_REF, wxT("Ref"), kNoType);
+	t.AddColumn(BL_QTY, wxT("Qty"), kNoType);
+	t.AddColumn(BL_GOODS, wxT("Goods"), kNoType);
+	auto add = [&](const wxString& ref, long qty, const wxString& goods) {
+		const long r = t.AppendRow();
+		t.SetCell(r, BL_REF, ibValue(ref));
+		t.SetCell(r, BL_QTY, ibValue(ibNumber(qty)));
+		t.SetCell(r, BL_GOODS, ibValue(goods));
+	};
+	add(wxT("R1"), 10, wxT("K1"));   // 10 * 2 = 20
+	add(wxT("R2"),  3, wxT("K2"));   //  3 * 5 = 15
+	add(wxT("R3"),  4, wxT("K1"));   //  4 * 2 =  8
+	return t;
+}
+
+ibQueryRamTable BuildRateRows()
+{
+	ibQueryRamTable t;
+	t.AddColumn(RT_KEY, wxT("Key"), kNoType);
+	t.AddColumn(RT_PRICE, wxT("Price"), kNoType);
+	auto add = [&](const wxString& key, long price) {
+		const long r = t.AppendRow();
+		t.SetCell(r, RT_KEY, ibValue(key));
+		t.SetCell(r, RT_PRICE, ibValue(ibNumber(price)));
+	};
+	add(wxT("K1"), 2);
+	add(wxT("K2"), 5);
+	return t;
+}
+
+struct JoinExpr : ::testing::Test {
+	TestCol ref{ wxT("Ref"), BL_REF };
+	TestCol qty{ wxT("Qty"), BL_QTY };
+	TestCol goods{ wxT("Goods"), BL_GOODS };
+	TestCol key{ wxT("Key"), RT_KEY };
+	TestCol price{ wxT("Price"), RT_PRICE };
+	ComputedQ bills{ wxT("Bills"), 1 };
+	ComputedQ rates{ wxT("Rates"), 2 };
+
+	void SetUp() override {
+		bills.AddCol(&ref); bills.AddCol(&qty); bills.AddCol(&goods);
+		bills.SetBuilder(&BuildBillRows);
+		rates.AddCol(&key); rates.AddCol(&price);
+		rates.SetBuilder(&BuildRateRows);
+	}
+
+	ibDataQueryResult Run(const wxString& sql) {
+		const std::map<wxString, const ibBackendQueryable*> reg{ { wxT("Bills"), &bills }, { wxT("Rates"), &rates } };
+		const ibTempSourceScope scope(reg);
+		std::vector<ibQueryLowering::OutputColumn> schema;
+		return ibQueryLowering::Execute(*ibQueryParser().Parse(sql), {}, schema);
+	}
+};
+
+const wxString kJoin =
+	wxT("FROM Bills AS B LEFT JOIN Rates AS R ON B.Goods = R.Key");
+
+std::vector<std::string> Refs(ibDataQueryResult& res)
+{
+	std::vector<std::string> got;
+	while (res.Next())
+		got.push_back(res.GetColumn(wxT("Ref")).GetString().ToStdString());
+	return got;
+}
+
+std::vector<long> Numbers(ibDataQueryResult& res, const wxString& column)
+{
+	std::vector<long> got;
+	while (res.Next())
+		got.push_back(res.GetColumn(column).GetInteger());
+	return got;
+}
+
+} // namespace
+
+TEST_F(JoinExpr, Product_OverJoin)
+{
+	ibDataQueryResult res = Run(wxString(wxT("SELECT B.Qty * R.Price AS Amount ")) + kJoin);
+	EXPECT_EQ(Numbers(res, wxT("Amount")), (std::vector<long>{ 20, 15, 8 }));
+}
+
+TEST_F(JoinExpr, Case_OverJoin)
+{
+	ibDataQueryResult res = Run(
+		wxString(wxT("SELECT CASE WHEN B.Qty > 5 THEN R.Price ELSE 0 END AS Band ")) + kJoin);
+	EXPECT_EQ(Numbers(res, wxT("Band")), (std::vector<long>{ 2, 0, 0 }));
+}
+
+TEST_F(JoinExpr, SelectStar_WhereProduct)
+{
+	ibDataQueryResult res = Run(wxString(wxT("SELECT * ")) + kJoin + wxT(" WHERE B.Qty * R.Price > 16"));
+	EXPECT_EQ(Refs(res), (std::vector<std::string>{ "R1" }));
+}
+
+TEST_F(JoinExpr, SelectStar_WhereProductOrQty)
+{
+	ibDataQueryResult res = Run(
+		wxString(wxT("SELECT * ")) + kJoin + wxT(" WHERE B.Qty * R.Price > 16 OR B.Qty = 3"));
+	EXPECT_EQ(Refs(res), (std::vector<std::string>{ "R1", "R2" }));
+}
+
+TEST_F(JoinExpr, SelectStar_OrderByProduct)
+{
+	ibDataQueryResult res = Run(wxString(wxT("SELECT * ")) + kJoin + wxT(" ORDER BY B.Qty * R.Price"));
+	EXPECT_EQ(Refs(res), (std::vector<std::string>{ "R3", "R2", "R1" }));
+}
+
+// The select list names only Ref. Qty and Price still have to ride into the joined row, or the
+// comparison reads nothing and keeps no row. FOR UPDATE is what keeps this query on the join.
+TEST_F(JoinExpr, ForUpdate_WhereProduct_GathersTheOperands)
+{
+	ibDataQueryResult res = Run(
+		wxString(wxT("SELECT B.Ref AS Ref ")) + kJoin + wxT(" WHERE B.Qty * R.Price > 16 FOR UPDATE"));
+	EXPECT_EQ(Refs(res), (std::vector<std::string>{ "R1" }));
+}
+
+TEST_F(JoinExpr, SumOfProduct_OverJoin)
+{
+	ibDataQueryResult res = Run(wxString(wxT("SELECT SUM(B.Qty * R.Price) AS Amount ")) + kJoin);
+	EXPECT_EQ(Numbers(res, wxT("Amount")), (std::vector<long>{ 43 }));
 }

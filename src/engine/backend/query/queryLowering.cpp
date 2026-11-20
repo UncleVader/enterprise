@@ -1677,18 +1677,9 @@ bool IsComputedExprAst(const ibQueryAstExpr& e)
 	    || e.m_kind == ibQueryAstExprKind::ScalarCall || e.m_kind == ibQueryAstExprKind::Cast || IsConditionAst(e);
 }
 
-// Gate for a computed (arithmetic / CASE) condition lhs / aggregate input / sort: a single DB source lowers it
-// server-side; a COMPUTED source (register slice / subquery) evaluates it in RAM per row (EvalColumnExprRow —
-// SELECT / WHERE / SUM alike). Over a JOIN it is not computed here at all: the statement reads its rows one level
-// down and computes it over them, one source (queryRewrite.cpp, rule 3). What still arrives is a statement that
-// rule leaves as written — `SELECT *`, `FOR UPDATE`.
-void GateComputedExpr(const std::vector<ibSourceBinding>& sources, const ibQueryAstExpr& e)
-{
-	if (sources.size() > 1)
-		ThrowQueryException(e.m_line, e.m_col, _("an arithmetic / CASE expression over a JOIN is computed over the rows "
-		                                         "the join makes, and SELECT * or FOR UPDATE keeps them where they are: "
-		                                         "name the fields, or lock the rows in a query of their own"));
-}
+// A computed comparison, aggregate input, or sort over a JOIN is evaluated on the joined row
+// (RamEvalLeaf, the RAM fold, ProjectToAliases). The rewrite still lifts that expression one level
+// down when it can. SELECT * and FOR UPDATE stay written as they are, and the stitch answers them.
 
 // Does this side of a comparison read a field of the row — anywhere inside it, not only as itself?
 bool NamesAField(const ibQueryAstExpr& e)
@@ -1782,7 +1773,6 @@ ibQueryCondition ConditionThatIs(bool truth)
 ibQueryCondition ComputedComparison(const std::vector<ibSourceBinding>& sources, const ibQueryAstExpr& e,
                                     const std::map<ibString, ibValue>& params)
 {
-	GateComputedExpr(sources, *e.m_lhs);
 	ibQueryCondition c;
 	c.m_expr = BuildColumnExprFromAst(sources, *e.m_lhs, params);
 	if (NamesAField(*e.m_rhs)) c.m_valueExpr = BuildColumnExprFromAst(sources, *e.m_rhs, params);
@@ -2531,7 +2521,7 @@ void LowerFlatWhere(ibDataQueryBuilder& b, const std::vector<ibSourceBinding>& s
 			return;
 		}
 		// COMPUTED lhs, or a field on the right — the same condition the predicate tree builds
-		// (ComputedComparison), handed to the door whole (single DB source; gated).
+		// (ComputedComparison), handed to the door whole. A joined row evaluates it after the join.
 		if (ComparesComputed(e)) {
 			b.Where(ComputedComparison(sources, e, params));
 			return;
@@ -4053,12 +4043,11 @@ bool PopulateBuilder(const ibQuerySelect& ast, const std::map<ibString, ibValue>
 			if (e.m_kind == ibQueryAstExprKind::Func) {
 				RefuseUnloweredWindow(e);
 				// Aggregate input: a plain column, a reference dot-walk leaf (SUM(Producer.Weight)), or a
-				// COMPUTED expression (SUM(Qty * Price) — the provider lowers it; single DB source, gated).
+				// COMPUTED expression (SUM(Qty * Price) — the fold evaluates it over the joined rows).
 				if (e.m_star) {
 					b.Aggregate(AggFn(e.m_func), (const ibBackendQueryColumn*)nullptr, alias, e.m_distinctArg);
 				}
 				else if (e.m_arg && IsComputedExprAst(*e.m_arg)) {
-					GateComputedExpr(sources, *e.m_arg);
 					b.Aggregate(AggFn(e.m_func), BuildColumnExprFromAst(sources, *e.m_arg, params), alias, e.m_distinctArg);
 				}
 				// ⭐⭐ AND AN AGGREGATE OVER A CONSTANT IS ORDINARY. `SUM(1)`, `MAX(&Limit)`,
@@ -4567,8 +4556,8 @@ bool PopulateBuilder(const ibQuerySelect& ast, const std::map<ibString, ibValue>
 			break;
 		const ibQueryAstExpr& oe = *SortTargetOf(ast, o.m_expr);
 		// ORDER BY <expression> — a CASE / arithmetic ("sort by a condition") or a bare constant (value(...) /
-		// &parameter): lower it to an EXPRESSION sort. Single DB source only (like the computed WHERE side); a
-		// computed sort is no keyset key, so the text-query full read is the user. A plain column / dot-walk keeps
+		// &parameter): lower it to an EXPRESSION sort. A joined row is sorted by evaluating it. A computed
+		// sort is no keyset key, so the text-query full read is the user. A plain column / dot-walk keeps
 		// the column sort below (it CAN keyset).
 		if (IsComputedExprAst(oe)
 		    || oe.m_kind == ibQueryAstExprKind::Param
@@ -4576,8 +4565,6 @@ bool PopulateBuilder(const ibQuerySelect& ast, const std::map<ibString, ibValue>
 		    || oe.m_kind == ibQueryAstExprKind::Literal) {
 			if (computedPrimary)
 				ThrowQueryException(oe.m_line, oe.m_col, _("ORDER BY an expression over a computed source is not yet supported: sort by a column"));
-			if (IsComputedExprAst(oe))
-				GateComputedExpr(sources, oe);
 			ibQueryColumnExprPtr sortBy = BuildColumnExprFromAst(sources, oe, params);
 			// A value answered over the row that the query does not select has nothing to be sorted by here: no
 			// engine can compute it, and the finished row does not hold it.
@@ -7031,7 +7018,6 @@ ibQueryColumnExprPtr ibQueryLowering::LowerLambdaColumnExpr(
 		return nullptr;   // only arithmetic / CASE; a plain column / dot-walk / structure is handled elsewhere
 	const std::vector<ibSourceBinding> sources{ { ibEmptyString, source } };
 	try {
-		GateComputedExpr(sources, expr);   // single physical source only (no JOIN, no computed / RAM source)
 		return BuildColumnExprFromAst(sources, expr, captured);
 	}
 	catch (...) {
