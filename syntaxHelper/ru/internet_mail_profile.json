@@ -1,0 +1,21 @@
+{
+  "format": "OES-HELP-1.0",
+  "schema_version": 1,
+  "locale": "ru",
+  "entries": [
+    {
+      "id": "cls.InternetMailProfile",
+      "name_local": "InternetMailProfile",
+      "name_en": "InternetMailProfile",
+      "kind": "collection",
+      "category_keys": ["value_types", "runtime"],
+      "signature": "New InternetMailProfile()",
+      "description": "Серверы и учётная запись, с которыми почтовый сеанс входит (ИнтернетПочтовыйПрофиль). SMTPServerAddress, SMTPPort (25), SMTPUser, SMTPPassword, SMTPAuthentication, SMTPUseSSL. Те же поля для POP3 (порт 110) и сервер и порт IMAP (143). Timeout равен 30. SMTPAuthentication хранит присвоенное значение, в том числе член SMTPAuthenticationMode.",
+      "parameters": "Нет.",
+      "return_descr": "InternetMailProfile.",
+      "example": "Profile = New InternetMailProfile;\nProfile.SMTPServerAddress = \"smtp.example.com\";\nProfile.SMTPPort = 587;\nProfile.SMTPUser = \"ada\";",
+      "availability": "Designer, enterprise, codeRunner, daemon, wenterprise-server",
+      "reviewed": false
+    }
+  ]
+}
